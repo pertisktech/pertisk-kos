@@ -19,6 +19,4 @@ pub use plan::{
     default_fixed_partitions, minimum_disk_size, plan_disk, DiskPlan, FsType, PartitionSpec,
     PlanError,
 };
-pub use state::{
-    prepare_state, StateError, StateSource, StateVolume, DEFAULT_CONFIG_NAME,
-};
+pub use state::{prepare_state, StateError, StateSource, StateVolume, DEFAULT_CONFIG_NAME};

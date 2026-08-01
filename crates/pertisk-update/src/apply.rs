@@ -127,7 +127,10 @@ fn stage_slot(
         }
         fs::copy(&src, &dst)?;
     }
-    fs::copy(bundle.root.join("manifest.json"), dest.join("manifest.json"))?;
+    fs::copy(
+        bundle.root.join("manifest.json"),
+        dest.join("manifest.json"),
+    )?;
     fs::copy(bundle.root.join("manifest.sig"), dest.join("manifest.sig"))?;
     Ok(())
 }

@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${ROOT}/out"
-DISK="${OUT}/pertisk-disk.raw"
+DISK="${PERTISK_DISK:-${OUT}/pertisk-disk.raw}"
 OVMF_CODE="${PERTISK_OVMF_CODE:-}"
 OVMF_VARS_SRC="${PERTISK_OVMF_VARS:-}"
 
@@ -14,7 +14,10 @@ if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
   exit 1
 fi
 
-[[ -f "${DISK}" ]] || { echo "missing ${DISK}; run install via ./image/run-qemu-disk.sh first" >&2; exit 1; }
+[[ -f "${DISK}" ]] || {
+  echo "missing ${DISK}; build with ./image/build-cloud-image.sh or install via ./image/run-qemu-disk.sh" >&2
+  exit 1
+}
 
 # Locate OVMF firmware (Homebrew qemu / Linux packages).
 if [[ -z "${OVMF_CODE}" ]]; then

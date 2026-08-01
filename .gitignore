@@ -14,6 +14,10 @@
 /.pertisk-state/
 /image/runtime-overlay/**
 !/image/runtime-overlay/.keep
+/image/boot-overlay/**
+!/image/boot-overlay/.keep
+**/bom.json
+**/*.cdx.json
 *.squashfs
 *.erofs
 *.img

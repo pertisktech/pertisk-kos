@@ -185,12 +185,14 @@ pertisk-kos/
 
 - Multi-arch initramfs (`amd64` / `arm64` via `image/build-all.sh`)
 - systemd-boot A/B slot switching when ESP is present
-- Metal EFI first-boot install (`PERTISK_EMBED_BOOT=1`, `run-qemu-uefi.sh`) — in progress
-- Bare metal + cloud images (metal, AWS, GCP, Azure)
-- Docs, SBOM, reproducible builds
-- CIS-ish hardening checklist
-- Compatibility matrix: Kubernetes versions, CNI choices
-- Observability: structured logs, metrics endpoint (read-only)
+- Metal EFI first-boot install (`PERTISK_EMBED_BOOT=1`, `run-qemu-uefi.sh`)
+- Bridge CNI (`bridge` / `host-local` / `portmap`) + `cluster.podCidr`
+- Cluster CNI mode `none` + Flannel/Cilium examples (`examples/cni/`)
+- CI (fmt/clippy/test + initramfs) and CycloneDX SBOM (`scripts/generate-sbom.sh`)
+- Observability: `Logs` RPC + Prometheus `/metrics` (`:50001`)
+- Cloud disk images (`image/build-cloud-image.sh` → raw/qcow2; AWS/GCP/Azure notes)
+- Compatibility matrix: Kubernetes versions, CNI choices (bridge, Flannel, Cilium)
+- CIS-ish hardening checklist ([docs/HARDENING.md](./docs/HARDENING.md)): kubelet 4.2.x, sysctls, STATE secrets modes
 
 ---
 
@@ -227,9 +229,9 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 - `ApplyConfiguration` / `ValidateConfiguration`
 - `Reboot` / `Shutdown`
 - `Version` / `Health`
-- `Logs` (pertiskd, containerd, kubelet)
+- `Logs` (pertiskd, containerd, kubelet, dmesg)
 - `Upgrade`
-
+- Metrics HTTP `/metrics` (Prometheus text)
 **Later (Talos parity)**
 
 - etcd snapshot (control plane)

@@ -1,0 +1,16 @@
+version: v1alpha1
+machine:
+  type: worker
+  # No install: disk is pre-imaged for cloud / golden QEMU.
+  network:
+    hostname: pertisk-cloud-1
+    interfaces:
+      - interface: eth0
+        dhcp: true
+    nameservers:
+      - 1.1.1.1
+# Optional: join an existing control plane
+# cluster:
+#   endpoint: https://10.0.0.10:6443
+#   token: <bootstrap-token>
+#   podCidr: 10.244.0.0/24

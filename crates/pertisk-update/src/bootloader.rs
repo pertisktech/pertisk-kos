@@ -72,10 +72,7 @@ impl BootAssets {
             .map(|n| dir.join(n))
             .find(|p| p.exists())
             .ok_or_else(|| {
-                BootloaderError::Msg(format!(
-                    "no EFI bootloader binary under {}",
-                    dir.display()
-                ))
+                BootloaderError::Msg(format!("no EFI bootloader binary under {}", dir.display()))
             })?;
 
         for (name, path) in [("kernel", &kernel), ("initramfs", &initramfs)] {
@@ -121,10 +118,7 @@ impl EspPaths {
         }
         for candidate in ["/boot/efi", "/efi", "/boot"] {
             let p = Path::new(candidate);
-            if p.join("loader").is_dir()
-                || p.join("EFI").is_dir()
-                || p.join("EFI/BOOT").is_dir()
-            {
+            if p.join("loader").is_dir() || p.join("EFI").is_dir() || p.join("EFI/BOOT").is_dir() {
                 return Ok(Self {
                     root: p.to_path_buf(),
                 });
@@ -144,9 +138,7 @@ impl EspPaths {
     }
 
     pub fn slot_image_dir(&self, slot: BootSlot) -> PathBuf {
-        self.root
-            .join("pertisk")
-            .join(slot.as_str().to_uppercase())
+        self.root.join("pertisk").join(slot.as_str().to_uppercase())
     }
 }
 

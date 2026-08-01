@@ -70,7 +70,9 @@ impl ContainerdHandle {
 /// Write config and spawn containerd. Returns error if binary is missing.
 pub fn start_containerd(paths: &RuntimePaths) -> Result<ContainerdHandle, RuntimeError> {
     if !paths.binary.exists() {
-        return Err(RuntimeError::MissingBinary(paths.binary.display().to_string()));
+        return Err(RuntimeError::MissingBinary(
+            paths.binary.display().to_string(),
+        ));
     }
     write_containerd_config(paths)?;
 

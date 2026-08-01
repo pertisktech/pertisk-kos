@@ -14,12 +14,14 @@ case "${ARCH}" in
   amd64)
     PLATFORM=linux/amd64
     EFI_NAME=BOOTX64.EFI
-    SRC_NAME=systemd-bootx64.efi
+    SRC_GLOB='systemd-bootx64.efi'
+    DEB_ARCH=amd64
     ;;
   arm64)
     PLATFORM=linux/arm64
     EFI_NAME=BOOTAA64.EFI
-    SRC_NAME=systemd-bootaa64.efi
+    SRC_GLOB='systemd-bootaa64.efi'
+    DEB_ARCH=arm64
     ;;
   *)
     echo "unsupported PERTISK_ARCH=${ARCH}" >&2
@@ -33,17 +35,19 @@ if [[ -f "${OUT}/${EFI_NAME}" ]]; then
   exit 0
 fi
 
-echo "==> extracting systemd-boot via alpine (${ARCH})"
-docker run --rm --platform "${PLATFORM}" -v "${OUT}:/out" alpine:3.20 sh -c "
+echo "==> extracting systemd-boot EFI via Debian (${ARCH})"
+docker run --rm --platform "${PLATFORM}" -v "${OUT}:/out" debian:bookworm-slim bash -c "
   set -e
-  apk add --no-cache systemd-boot >/dev/null
-  src=\$(find /usr -name '${SRC_NAME}' | head -1)
+  apt-get update -qq
+  apt-get install -y -qq systemd-boot-efi >/dev/null
+  src=\$(find /usr -name '${SRC_GLOB}' | head -1)
   if [ -z \"\$src\" ]; then
-    echo 'systemd-boot EFI not found in alpine package' >&2
+    echo 'systemd-boot EFI not found' >&2
+    find /usr -name '*boot*.efi' 2>/dev/null || true
     exit 1
   fi
   cp \"\$src\" /out/${EFI_NAME}
-  cp \"\$src\" /out/${SRC_NAME}
+  cp \"\$src\" /out/${SRC_GLOB}
   echo \"copied \$src\"
 "
 

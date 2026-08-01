@@ -55,7 +55,7 @@ pub fn default_fixed_partitions() -> Vec<PartitionSpec> {
         },
         PartitionSpec {
             role: PartitionRole::State,
-            size: Some(1 * GIB),
+            size: Some(GIB),
             fstype: FsType::Ext4,
         },
         PartitionSpec {

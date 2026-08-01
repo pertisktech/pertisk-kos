@@ -9,9 +9,8 @@ machine:
 cluster:
   endpoint: https://192.168.1.10:6443
   token: <bootstrap-token>
-  # Built-in bridge CNI (default). For Flannel/Cilium use examples/worker-join-flannel.yaml.
-  cni: bridge
-  podCidr: 10.244.0.0/24
+  # Leave pod networking to a cluster CNI DaemonSet (Flannel / Cilium / …).
+  cni: none
   # ca: |
   #   -----BEGIN CERTIFICATE-----
   #   ...

@@ -2,14 +2,19 @@
 
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use pertisk_config::Cluster;
 
 use crate::paths::KubeletPaths;
 use crate::process::KubeletError;
 
-/// Write KubeletConfiguration (v1beta1).
-pub fn write_kubelet_config(paths: &KubeletPaths, hostname: Option<&str>) -> Result<(), KubeletError> {
+/// Write KubeletConfiguration (v1beta1) with CIS-aligned defaults.
+pub fn write_kubelet_config(
+    paths: &KubeletPaths,
+    hostname: Option<&str>,
+) -> Result<(), KubeletError> {
     paths.ensure_dirs()?;
     let hostname_line = hostname
         .map(|h| format!("hostnameOverride: \"{h}\"\n"))
@@ -25,6 +30,18 @@ kind: KubeletConfiguration
     enabled: true
 authorization:
   mode: Webhook
+# CIS 4.2.4 — disable legacy read-only port
+readOnlyPort: 0
+# CIS 4.2.5
+streamingConnectionIdleTimeout: 5m
+# CIS 4.2.6 — requires matching sysctls applied by pertiskd
+protectKernelDefaults: true
+# CIS 4.2.7
+makeIPTablesUtilChains: true
+# CIS 4.2.10
+rotateCertificates: true
+serverTLSBootstrap: true
+eventRecordQPS: 5
 cgroupDriver: cgroupfs
 failSwapOn: false
 clusterDomain: cluster.local
@@ -38,6 +55,7 @@ staticPodPath: "/etc/kubernetes/manifests"
 
     let mut f = fs::File::create(&paths.config)?;
     f.write_all(body.as_bytes())?;
+    restrict_file_mode(&paths.config)?;
     tracing::info!(path = %paths.config.display(), "wrote kubelet config");
     Ok(())
 }
@@ -66,10 +84,7 @@ pub fn write_kubeconfig(paths: &KubeletPaths, cluster: &Cluster) -> Result<(), K
             "    insecure-skip-tls-verify: false\n",
         )
     } else {
-        (
-            String::new(),
-            "    insecure-skip-tls-verify: true\n",
-        )
+        (String::new(), "    insecure-skip-tls-verify: true\n")
     };
 
     let body = format!(
@@ -98,7 +113,22 @@ current-context: pertisk
 
     let mut f = fs::File::create(&paths.kubeconfig)?;
     f.write_all(body.as_bytes())?;
+    restrict_file_mode(&paths.kubeconfig)?;
+    if paths.ca_file.exists() {
+        restrict_file_mode(&paths.ca_file)?;
+    }
     tracing::info!(path = %paths.kubeconfig.display(), "wrote kubelet kubeconfig");
+    Ok(())
+}
+
+fn restrict_file_mode(path: &std::path::Path) -> Result<(), KubeletError> {
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms)?;
+    }
+    let _ = path;
     Ok(())
 }
 
@@ -116,6 +146,8 @@ mod tests {
             endpoint: "https://10.0.0.1:6443".into(),
             token: Some("abc.def".into()),
             ca: Some("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".into()),
+            pod_cidr: Some("10.244.0.0/24".into()),
+            cni: Default::default(),
         };
         write_kubeconfig(&paths, &cluster).unwrap();
         write_kubelet_config(&paths, Some("node-1")).unwrap();
@@ -124,6 +156,10 @@ mod tests {
         let kc = fs::read_to_string(&paths.kubeconfig).unwrap();
         assert!(kc.contains("https://10.0.0.1:6443"));
         assert!(kc.contains("abc.def"));
+        let cfg = fs::read_to_string(&paths.config).unwrap();
+        assert!(cfg.contains("readOnlyPort: 0"));
+        assert!(cfg.contains("protectKernelDefaults: true"));
+        assert!(cfg.contains("rotateCertificates: true"));
     }
 
     fn temp_dir() -> PathBuf {

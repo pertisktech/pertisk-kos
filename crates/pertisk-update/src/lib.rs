@@ -7,8 +7,8 @@ mod meta;
 mod sign;
 
 pub use apply::{
-    apply_bundle, mark_boot_good, record_boot_attempt, record_boot_attempt_with_layout,
-    ApplyError, ApplyResult, SlotLayout,
+    apply_bundle, mark_boot_good, record_boot_attempt, record_boot_attempt_with_layout, ApplyError,
+    ApplyResult, SlotLayout,
 };
 pub use bootloader::{
     activate_slot, bootstrap_esp, install_systemd_boot, try_activate_slot, BootAssets,

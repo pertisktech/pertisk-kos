@@ -75,10 +75,7 @@ fn run() -> anyhow::Result<()> {
             fs::write(bundle.join("manifest.json"), &json)?;
             let sig = sign_manifest(&load_signing_key(&secret)?, &json);
             fs::write(bundle.join("manifest.sig"), sig)?;
-            println!(
-                "signed {} artifacts for version {version}",
-                names.len()
-            );
+            println!("signed {} artifacts for version {version}", names.len());
         }
         Commands::Verify { bundle, public } => {
             let verified = verify_bundle(&bundle, &public)?;

@@ -9,20 +9,23 @@ use pertisk_config::MachineConfig;
 use pertisk_proto::machine_service_server::{MachineService, MachineServiceServer};
 use pertisk_proto::{
     ApplyConfigurationRequest, ApplyConfigurationResponse, HealthRequest, HealthResponse,
-    MarkBootGoodRequest, MarkBootGoodResponse, RebootRequest, RebootResponse, ServiceListRequest,
-    ServiceListResponse, ServiceStatus, ShutdownRequest, ShutdownResponse, UpgradeRequest,
-    UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse, ValidateConfigurationResponse,
-    VersionRequest, VersionResponse,
+    LogsRequest, LogsResponse, MarkBootGoodRequest, MarkBootGoodResponse, RebootRequest,
+    RebootResponse, ServiceListRequest, ServiceListResponse, ServiceStatus, ShutdownRequest,
+    ShutdownResponse, UpgradeRequest, UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse,
+    ValidateConfigurationResponse, VersionRequest, VersionResponse,
 };
 use pertisk_update::{apply_bundle, mark_boot_good, BootMeta, SlotLayout};
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 use tracing::info;
 
+use crate::logs::tail_logs;
 use crate::state::{PowerAction, SharedState};
 
 /// Default management listen address.
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:50000";
+/// Default Prometheus metrics listen address.
+pub const DEFAULT_METRICS_LISTEN: &str = "0.0.0.0:50001";
 
 #[derive(Debug, Clone)]
 pub struct TlsPaths {
@@ -36,6 +39,7 @@ struct MachineSvc {
     state: SharedState,
 }
 
+#[allow(clippy::result_large_err)]
 fn lock(state: &SharedState) -> Result<MutexGuard<'_, crate::state::NodeState>, Status> {
     state
         .lock()
@@ -91,8 +95,8 @@ impl MachineService for MachineSvc {
         request: Request<ApplyConfigurationRequest>,
     ) -> Result<Response<ApplyConfigurationResponse>, Status> {
         let yaml = request.into_inner().yaml;
-        let cfg = MachineConfig::from_yaml(&yaml)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let cfg =
+            MachineConfig::from_yaml(&yaml).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let path = {
             let st = lock(&self.state)?;
@@ -241,6 +245,26 @@ impl MachineService for MachineSvc {
             boot_ok: meta.boot_ok,
             active_version: meta.active_version.unwrap_or_default(),
             pending_version: meta.pending_version.unwrap_or_default(),
+        }))
+    }
+
+    async fn logs(&self, request: Request<LogsRequest>) -> Result<Response<LogsResponse>, Status> {
+        let req = request.into_inner();
+        let state_root = {
+            let st = lock(&self.state)?;
+            st.state_root.clone()
+        };
+        let service = if req.service.is_empty() {
+            "pertiskd".to_string()
+        } else {
+            req.service
+        };
+        let tail = tail_logs(&state_root, &service, req.tail_lines)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        Ok(Response::new(LogsResponse {
+            service: tail.service,
+            lines: tail.lines,
+            source: tail.source,
         }))
     }
 }

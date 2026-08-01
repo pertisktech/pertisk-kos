@@ -57,10 +57,7 @@ mod unix_impl {
             }
             refresh_state(services, &state);
 
-            let power = state
-                .lock()
-                .map(|s| s.power)
-                .unwrap_or(PowerAction::None);
+            let power = state.lock().map(|s| s.power).unwrap_or(PowerAction::None);
             match power {
                 PowerAction::Reboot => {
                     info!("executing API reboot");

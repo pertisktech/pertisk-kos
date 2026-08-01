@@ -34,13 +34,14 @@ curl -fsSL \
   -o "${OUT}/usr/local/bin/runc"
 chmod +x "${OUT}/usr/local/bin/runc"
 
-echo "==> CNI loopback plugin"
+echo "==> CNI plugins (loopback, bridge, host-local, portmap)"
 CNI_VER="${CNI_VER:-v1.6.2}"
 curl -fsSL \
   "https://github.com/containernetworking/plugins/releases/download/${CNI_VER}/cni-plugins-linux-${ARCH}-${CNI_VER}.tgz" \
   -o "${TMP}/cni.tgz"
-tar -xzf "${TMP}/cni.tgz" -C "${OUT}/opt/cni/bin" ./loopback
-chmod +x "${OUT}/opt/cni/bin/loopback"
+tar -xzf "${TMP}/cni.tgz" -C "${OUT}/opt/cni/bin" \
+  ./loopback ./bridge ./host-local ./portmap
+chmod +x "${OUT}/opt/cni/bin/"*
 
 echo "==> runtime tree ready at ${OUT}"
 find "${OUT}" -type f | sort

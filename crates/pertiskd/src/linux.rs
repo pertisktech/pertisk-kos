@@ -105,19 +105,8 @@ mod linux_impl {
         Ok(())
     }
 
-    fn try_mount(
-        source: &str,
-        target: &str,
-        fstype: &str,
-        flags: MsFlags,
-    ) -> Result<()> {
-        match mount(
-            Some(source),
-            target,
-            Some(fstype),
-            flags,
-            None::<&str>,
-        ) {
+    fn try_mount(source: &str, target: &str, fstype: &str, flags: MsFlags) -> Result<()> {
+        match mount(Some(source), target, Some(fstype), flags, None::<&str>) {
             Ok(()) => {
                 info!(source, target, fstype, "mounted");
                 Ok(())

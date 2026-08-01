@@ -61,10 +61,7 @@ impl NodeState {
         self.kubelet = kubelet.into();
         self.containerd_pid = containerd_pid;
         self.kubelet_pid = kubelet_pid;
-        self.message = format!(
-            "containerd={} kubelet={}",
-            self.containerd, self.kubelet
-        );
+        self.message = format!("containerd={} kubelet={}", self.containerd, self.kubelet);
         self.ready = self.power == PowerAction::None;
     }
 }

@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pertisk_proto::machine_service_client::MachineServiceClient;
 use pertisk_proto::{
-    ApplyConfigurationRequest, HealthRequest, MarkBootGoodRequest, RebootRequest,
+    ApplyConfigurationRequest, HealthRequest, LogsRequest, MarkBootGoodRequest, RebootRequest,
     ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest, VersionRequest,
 };
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
@@ -15,7 +15,12 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 #[command(name = "pertiskctl", about = "Pertisk KOS management CLI")]
 struct Cli {
     /// gRPC endpoint (host:port).
-    #[arg(long, short = 'e', env = "PERTISK_ENDPOINTS", default_value = "127.0.0.1:50000")]
+    #[arg(
+        long,
+        short = 'e',
+        env = "PERTISK_ENDPOINTS",
+        default_value = "127.0.0.1:50000"
+    )]
     endpoints: String,
 
     /// CA certificate (PEM) for mTLS.
@@ -66,6 +71,14 @@ enum Commands {
     UpgradeStatus,
     /// Mark the current boot as healthy (cancel auto-rollback).
     MarkBootGood,
+    /// Tail service or kernel logs.
+    Logs {
+        /// pertiskd | containerd | kubelet | dmesg
+        #[arg(default_value = "pertiskd")]
+        service: String,
+        #[arg(long, short = 'n', default_value_t = 100)]
+        tail: u32,
+    },
 }
 
 #[tokio::main]
@@ -98,7 +111,10 @@ async fn main() -> Result<()> {
         }
         Commands::Services => {
             let mut client = connect(&cli).await?;
-            let resp = client.service_list(ServiceListRequest {}).await?.into_inner();
+            let resp = client
+                .service_list(ServiceListRequest {})
+                .await?
+                .into_inner();
             for svc in resp.services {
                 if svc.pid > 0 {
                     println!("{:<12} {:<8} pid={}", svc.name, svc.state, svc.pid);
@@ -196,6 +212,20 @@ async fn main() -> Result<()> {
                 "mark-boot-good: ok={} slot={} — {}",
                 resp.ok, resp.active_slot, resp.message
             );
+        }
+        Commands::Logs { ref service, tail } => {
+            let mut client = connect(&cli).await?;
+            let resp = client
+                .logs(LogsRequest {
+                    service: service.clone(),
+                    tail_lines: tail,
+                })
+                .await?
+                .into_inner();
+            eprintln!("# {} from {}", resp.service, resp.source);
+            for line in resp.lines {
+                println!("{line}");
+            }
         }
     }
     Ok(())

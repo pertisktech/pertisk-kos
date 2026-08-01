@@ -50,6 +50,15 @@ impl StateVolume {
         for sub in ["machine", "secrets", "log"] {
             fs::create_dir_all(self.root.join(sub))?;
         }
+        // Secrets hold trust keys / TLS material — owner-only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let secrets = self.root.join("secrets");
+            let mut perms = fs::metadata(&secrets)?.permissions();
+            perms.set_mode(0o700);
+            fs::set_permissions(&secrets, perms)?;
+        }
         Ok(())
     }
 }

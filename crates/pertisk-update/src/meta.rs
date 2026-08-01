@@ -109,9 +109,11 @@ mod tests {
     #[test]
     fn roundtrip_meta() {
         let dir = tempdir().unwrap();
-        let mut meta = BootMeta::default();
-        meta.next = BootSlot::B;
-        meta.pending_version = Some("0.2.0".into());
+        let meta = BootMeta {
+            next: BootSlot::B,
+            pending_version: Some("0.2.0".into()),
+            ..Default::default()
+        };
         meta.save(dir.path()).unwrap();
         let loaded = BootMeta::load(dir.path()).unwrap();
         assert_eq!(loaded.next, BootSlot::B);

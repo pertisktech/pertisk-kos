@@ -76,6 +76,33 @@ pub struct Cluster {
     /// PEM-encoded cluster CA certificate.
     #[serde(default)]
     pub ca: Option<String>,
+    /// Pod CIDR for this node's bridge CNI (e.g. `10.244.0.0/24`).
+    /// Unused when `cni: none` (cluster CNI DaemonSet owns networking).
+    #[serde(default, rename = "podCidr")]
+    pub pod_cidr: Option<String>,
+    /// Pod networking mode: `bridge` (built-in) or `none` (Flannel/Cilium/etc.).
+    #[serde(default)]
+    pub cni: CniMode,
+}
+
+/// How pod networking is provided on the node.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CniMode {
+    /// Write bridge + host-local + portmap under `/etc/cni/net.d`.
+    #[default]
+    Bridge,
+    /// Only loopback; expect a cluster CNI DaemonSet (Flannel, Cilium, …).
+    None,
+}
+
+impl CniMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bridge => "bridge",
+            Self::None => "none",
+        }
+    }
 }
 
 impl MachineConfig {
@@ -166,6 +193,7 @@ machine:
 cluster:
   endpoint: https://192.168.1.10:6443
   token: abc.def
+  podCidr: 10.244.0.0/24
   ca: |
     -----BEGIN CERTIFICATE-----
     MIIB
@@ -176,5 +204,22 @@ cluster:
         assert_eq!(cluster.endpoint, "https://192.168.1.10:6443");
         assert_eq!(cluster.token.as_deref(), Some("abc.def"));
         assert!(cluster.ca.unwrap().contains("BEGIN CERTIFICATE"));
+        assert_eq!(cluster.pod_cidr.as_deref(), Some("10.244.0.0/24"));
+        assert_eq!(cluster.cni, CniMode::Bridge);
+    }
+
+    #[test]
+    fn parses_cni_none() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: worker
+cluster:
+  endpoint: https://192.168.1.10:6443
+  token: abc.def
+  cni: none
+"#;
+        let cfg = MachineConfig::from_yaml(yaml).unwrap();
+        assert_eq!(cfg.cluster.unwrap().cni, CniMode::None);
     }
 }

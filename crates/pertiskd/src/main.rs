@@ -6,6 +6,7 @@ mod hostname;
 mod linux;
 mod reaper;
 mod services;
+mod sysctl;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -14,12 +15,12 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use pertisk_api::{shared, SharedState, TlsPaths, DEFAULT_LISTEN};
+use pertisk_api::{shared, SharedState, TlsPaths, DEFAULT_LISTEN, DEFAULT_METRICS_LISTEN};
 use pertisk_config::MachineConfig;
 use pertisk_disk::{layout_present, prepare_state, try_prepare_esp, StateVolume};
-use pertisk_update::{record_boot_attempt_with_layout, SlotLayout};
 #[cfg(target_os = "linux")]
 use pertisk_update::{bootstrap_esp, BootAssets, EspPaths, INSTALLER_BOOT_DIR};
+use pertisk_update::{record_boot_attempt_with_layout, SlotLayout};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -56,9 +57,17 @@ struct Args {
     #[arg(long, default_value_t = false)]
     skip_api: bool,
 
+    /// Skip starting the Prometheus metrics HTTP endpoint.
+    #[arg(long, default_value_t = false)]
+    skip_metrics: bool,
+
     /// Management API listen address.
     #[arg(long, env = "PERTISK_API_LISTEN", default_value = DEFAULT_LISTEN)]
     api_listen: String,
+
+    /// Prometheus metrics listen address.
+    #[arg(long, env = "PERTISK_METRICS_LISTEN", default_value = DEFAULT_METRICS_LISTEN)]
+    metrics_listen: String,
 
     /// CA certificate for mTLS (enables TLS when set with server cert/key).
     #[arg(long, env = "PERTISK_TLS_CA")]
@@ -73,7 +82,11 @@ struct Args {
     tls_key: Option<PathBuf>,
 
     /// Ed25519 public key (hex) trusted for OS upgrade signatures.
-    #[arg(long, env = "PERTISK_TRUST_KEY", default_value = "/system/state/secrets/os-trust.pk")]
+    #[arg(
+        long,
+        env = "PERTISK_TRUST_KEY",
+        default_value = "/system/state/secrets/os-trust.pk"
+    )]
     trust_key: PathBuf,
 }
 
@@ -131,6 +144,8 @@ fn run() -> Result<()> {
     }
 
     linux::prepare_var()?;
+    // Before kubelet (`protectKernelDefaults: true`).
+    sysctl::apply_hardening_sysctls();
 
     // Track A/B boot attempts / auto-rollback before starting workloads.
     let boot_layout = SlotLayout::new(volume.root.clone(), resolve_trust_key(&args, &volume));
@@ -173,6 +188,9 @@ fn run() -> Result<()> {
     if !args.skip_api {
         start_api_thread(api_state.clone(), &args.api_listen, tls)?;
     }
+    if !args.skip_metrics {
+        start_metrics_thread(api_state.clone(), &args.metrics_listen)?;
+    }
 
     if args.smoke || !is_pid1 {
         info!(
@@ -211,11 +229,7 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn start_api_thread(
-    state: SharedState,
-    listen: &str,
-    tls: Option<TlsPaths>,
-) -> Result<()> {
+fn start_api_thread(state: SharedState, listen: &str, tls: Option<TlsPaths>) -> Result<()> {
     let addr: SocketAddr = listen
         .parse()
         .with_context(|| format!("invalid --api-listen {listen}"))?;
@@ -238,6 +252,31 @@ fn start_api_thread(
             }
         })?;
     info!(%addr, mode, "management API starting");
+    Ok(())
+}
+
+fn start_metrics_thread(state: SharedState, listen: &str) -> Result<()> {
+    let addr: SocketAddr = listen
+        .parse()
+        .with_context(|| format!("invalid --metrics-listen {listen}"))?;
+    thread::Builder::new()
+        .name("pertisk-metrics".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(err) => {
+                    warn!(error = %err, "failed to build metrics runtime");
+                    return;
+                }
+            };
+            if let Err(err) = rt.block_on(pertisk_api::serve_metrics(state, addr)) {
+                warn!(error = %err, "metrics endpoint stopped");
+            }
+        })?;
+    info!(%addr, "metrics endpoint starting");
     Ok(())
 }
 
@@ -311,21 +350,17 @@ fn maybe_install(cfg: &MachineConfig, args: &Args) -> Result<()> {
     {
         info!(disk = %install.disk, "install planned (not Linux); skipping");
         let _ = install;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
     {
         use pertisk_disk::{install_disk, InstallOptions};
 
-        let seed = args
-            .config
-            .clone()
-            .filter(|p| p.exists())
-            .or_else(|| {
-                let p = PathBuf::from("/system/state/config.yaml");
-                p.exists().then_some(p)
-            });
+        let seed = args.config.clone().filter(|p| p.exists()).or_else(|| {
+            let p = PathBuf::from("/system/state/config.yaml");
+            p.exists().then_some(p)
+        });
 
         let seed_path = if let Some(ref cfg_path) = seed {
             let mut seeded = read_config(cfg_path)?;
@@ -366,14 +401,12 @@ fn bootstrap_esp_after_install() -> Result<()> {
         return Ok(());
     }
 
-    let assets = BootAssets::from_installer_dir(&installer)
-        .context("resolve installer boot assets")?;
-    let esp_vol = prepare_esp().context("mount EFI after install")?.ok_or_else(|| {
-        anyhow::anyhow!("EFI partition not found after install")
-    })?;
-    let esp = EspPaths {
-        root: esp_vol.root,
-    };
+    let assets =
+        BootAssets::from_installer_dir(&installer).context("resolve installer boot assets")?;
+    let esp_vol = prepare_esp()
+        .context("mount EFI after install")?
+        .ok_or_else(|| anyhow::anyhow!("EFI partition not found after install"))?;
+    let esp = EspPaths { root: esp_vol.root };
     bootstrap_esp(&esp, &assets).context("bootstrap ESP")?;
     info!(esp = %esp.root.display(), "ESP bootstrapped with systemd-boot + slot A");
     Ok(())
@@ -414,8 +447,7 @@ fn load_boot_config(args: &Args, state: &StateVolume) -> Result<Option<MachineCo
 }
 
 fn read_config(path: &std::path::Path) -> Result<MachineConfig> {
-    let raw =
-        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let cfg = MachineConfig::from_yaml(&raw)?;
     info!(path = %path.display(), "config loaded");
     Ok(cfg)

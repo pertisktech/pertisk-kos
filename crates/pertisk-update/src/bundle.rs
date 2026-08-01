@@ -82,7 +82,10 @@ pub fn sha256_file(path: &Path) -> Result<String, BundleError> {
 }
 
 /// Load and verify a bundle directory containing `manifest.json` + `manifest.sig`.
-pub fn verify_bundle(bundle_dir: &Path, public_key_path: &Path) -> Result<VerifiedBundle, BundleError> {
+pub fn verify_bundle(
+    bundle_dir: &Path,
+    public_key_path: &Path,
+) -> Result<VerifiedBundle, BundleError> {
     let manifest_path = bundle_dir.join("manifest.json");
     let sig_path = bundle_dir.join("manifest.sig");
     let manifest_bytes = fs::read(&manifest_path)?;

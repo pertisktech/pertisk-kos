@@ -58,3 +58,13 @@ PERTISK_EMBED_RUNTIME=1 ./image/build-initramfs.sh
 Without embedded binaries, `pertiskd` logs `containerd=absent kubelet=absent` and continues.
 With binaries + valid `cluster:` config, kubelet should register and the node becomes Ready
 once networking/CNI beyond loopback is configured for your cluster.
+
+## Cloud golden image
+
+```bash
+PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
+./image/build-cloud-image.sh
+PERTISK_DISK=out/pertisk-cloud-amd64.raw ./image/run-qemu-uefi.sh
+```
+
+Details: [cloud/README.md](./cloud/README.md).

@@ -7,7 +7,7 @@ use pertisk_config::{Cluster, MachineConfig};
 use thiserror::Error;
 use tracing::{info, warn};
 
-use crate::cni::ensure_loopback_cni;
+use crate::cni::{ensure_cni_mode, DEFAULT_POD_CIDR};
 use crate::config::{write_kubeconfig, write_kubelet_config};
 use crate::paths::KubeletPaths;
 
@@ -62,9 +62,14 @@ impl KubeletHandle {
 }
 
 /// Prepare configs and spawn kubelet. Requires `cluster` in machine config.
-pub fn start_kubelet(paths: &KubeletPaths, cfg: &MachineConfig) -> Result<KubeletHandle, KubeletError> {
+pub fn start_kubelet(
+    paths: &KubeletPaths,
+    cfg: &MachineConfig,
+) -> Result<KubeletHandle, KubeletError> {
     if !paths.binary.exists() {
-        return Err(KubeletError::MissingBinary(paths.binary.display().to_string()));
+        return Err(KubeletError::MissingBinary(
+            paths.binary.display().to_string(),
+        ));
     }
 
     let cluster = cfg
@@ -75,17 +80,26 @@ pub fn start_kubelet(paths: &KubeletPaths, cfg: &MachineConfig) -> Result<Kubele
     prepare_kubelet(paths, cfg, cluster)?;
 
     let container_runtime_endpoint = "unix:///run/containerd/containerd.sock";
-    info!(bin = %paths.binary.display(), "starting kubelet");
+    info!(bin = %paths.binary.display(), cni = %cluster.cni.as_str(), "starting kubelet");
 
-    let child = Command::new(&paths.binary)
-        .arg(format!("--config={}", paths.config.display()))
+    let mut cmd = Command::new(&paths.binary);
+    cmd.arg(format!("--config={}", paths.config.display()))
         .arg(format!("--kubeconfig={}", paths.kubeconfig.display()))
-        .arg(format!("--container-runtime-endpoint={container_runtime_endpoint}"))
+        .arg(format!(
+            "--container-runtime-endpoint={container_runtime_endpoint}"
+        ))
         .arg(format!("--root-dir={}", paths.root_dir.display()))
         .arg("--v=2")
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()?;
+        .stderr(Stdio::inherit());
+
+    // Bridge mode needs an explicit pod CIDR; cluster CNI assigns via Node.Spec.PodCIDR.
+    if cluster.cni == pertisk_config::CniMode::Bridge {
+        let pod_cidr = cluster.pod_cidr.as_deref().unwrap_or(DEFAULT_POD_CIDR);
+        cmd.arg(format!("--pod-cidr={pod_cidr}"));
+    }
+
+    let child = cmd.spawn()?;
 
     // Give kubelet a moment; registration is async against the API server.
     std::thread::sleep(Duration::from_millis(200));
@@ -108,7 +122,8 @@ fn prepare_kubelet(
 ) -> Result<(), KubeletError> {
     write_kubelet_config(paths, cfg.machine.network.hostname.as_deref())?;
     write_kubeconfig(paths, cluster)?;
-    ensure_loopback_cni(paths)?;
+    let pod_cidr = cluster.pod_cidr.as_deref().unwrap_or(DEFAULT_POD_CIDR);
+    ensure_cni_mode(paths, cluster.cni, pod_cidr)?;
     // Static pod manifest dir expected by config.
     std::fs::create_dir_all("/etc/kubernetes/manifests").ok();
     Ok(())

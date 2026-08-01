@@ -16,6 +16,8 @@ service MachineService {
   rpc Upgrade(UpgradeRequest) returns (UpgradeResponse);
   rpc MarkBootGood(MarkBootGoodRequest) returns (MarkBootGoodResponse);
   rpc UpgradeStatus(UpgradeStatusRequest) returns (UpgradeStatusResponse);
+  // Tail recent log lines for a node service (or kernel dmesg).
+  rpc Logs(LogsRequest) returns (LogsResponse);
 }
 
 message VersionRequest {}
@@ -115,4 +117,17 @@ message UpgradeStatusResponse {
   bool boot_ok = 5;
   string active_version = 6;
   string pending_version = 7;
+}
+
+message LogsRequest {
+  // pertiskd | containerd | kubelet | dmesg
+  string service = 1;
+  // Number of trailing lines (default 100, max 5000).
+  uint32 tail_lines = 2;
+}
+
+message LogsResponse {
+  string service = 1;
+  repeated string lines = 2;
+  string source = 3; // path or "dmesg"
 }
