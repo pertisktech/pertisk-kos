@@ -1,0 +1,16 @@
+[package]
+name = "pertisk-disk"
+description = "Pertisk KOS disk layout, STATE mounts, and volume helpers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+nix = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

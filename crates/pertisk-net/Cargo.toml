@@ -1,0 +1,9 @@
+[package]
+name = "pertisk-net"
+description = "Pertisk KOS host networking and DNS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]

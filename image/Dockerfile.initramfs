@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+# Build a static-ish Linux pertiskd and pack it as an initramfs (cpio.gz).
+# Used for M1 QEMU smoke: kernel + initrd → serial logs from pertiskd.
+
+FROM rust:1.85-bookworm AS build
+WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    musl-tools \
+    && rm -rf /var/lib/apt/lists/*
+RUN rustup target add x86_64-unknown-linux-musl
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY examples ./examples
+
+RUN cargo build --release -p pertiskd --target x86_64-unknown-linux-musl
+
+FROM debian:bookworm-slim AS pack
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cpio gzip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /rootfs
+COPY image/rootfs/ ./
+COPY --from=build /src/target/x86_64-unknown-linux-musl/release/pertiskd ./init
+RUN chmod +x ./init \
+    && mkdir -p proc sys dev run tmp var system/state \
+    && find . | cpio -o -H newc | gzip -9 > /initramfs.cpio.gz
+
+FROM scratch AS export
+COPY --from=pack /initramfs.cpio.gz /initramfs.cpio.gz

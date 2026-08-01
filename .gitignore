@@ -1,0 +1,18 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Build artifacts
+/out/
+/dist/
+/.pertisk-state/
+*.squashfs
+*.erofs
+*.img
+*.qcow2

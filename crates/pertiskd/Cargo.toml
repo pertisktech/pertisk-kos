@@ -1,0 +1,21 @@
+[package]
+name = "pertiskd"
+description = "Pertisk KOS init and node supervisor (PID 1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "pertiskd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+nix = { workspace = true }
+pertisk-config = { workspace = true }
+pertisk-disk = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

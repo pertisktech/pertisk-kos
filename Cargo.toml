@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pertiskd",
+    "crates/pertisk-api",
+    "crates/pertisk-proto",
+    "crates/pertisk-disk",
+    "crates/pertisk-net",
+    "crates/pertisk-runtime",
+    "crates/pertisk-kubelet",
+    "crates/pertisk-update",
+    "crates/pertisk-config",
+    "crates/pertiskctl",
+]
+default-members = ["crates/pertiskd", "crates/pertiskctl"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/pertisk-tech/pertisk-kos"
+rust-version = "1.75"
+
+[workspace.dependencies]
+pertisk-config = { path = "crates/pertisk-config" }
+pertisk-disk = { path = "crates/pertisk-disk" }
+pertisk-net = { path = "crates/pertisk-net" }
+pertisk-runtime = { path = "crates/pertisk-runtime" }
+pertisk-kubelet = { path = "crates/pertisk-kubelet" }
+pertisk-update = { path = "crates/pertisk-update" }
+pertisk-api = { path = "crates/pertisk-api" }
+pertisk-proto = { path = "crates/pertisk-proto" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+nix = { version = "0.29", features = ["process", "signal", "mount", "fs", "hostname"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

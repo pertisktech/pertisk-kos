@@ -1,0 +1,9 @@
+[package]
+name = "pertisk-api"
+description = "Pertisk KOS management API (gRPC)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
