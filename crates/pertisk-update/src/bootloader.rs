@@ -54,6 +54,8 @@ impl EfiArch {
 pub struct BootAssets {
     pub kernel: PathBuf,
     pub initramfs: PathBuf,
+    /// Optional pre-built UKI (`pertisk.efi`); when set, loader entries use `efi` path.
+    pub uki: Option<PathBuf>,
     /// systemd-boot EFI binary (e.g. systemd-bootx64.efi).
     pub bootloader_efi: PathBuf,
     pub arch: EfiArch,
@@ -67,6 +69,10 @@ impl BootAssets {
         let arch = EfiArch::detect();
         let kernel = dir.join("kernel");
         let initramfs = dir.join("initramfs");
+        let uki = ["uki.efi", "pertisk.efi"]
+            .into_iter()
+            .map(|n| dir.join(n))
+            .find(|p| p.exists());
         let bootloader_efi = ["BOOTX64.EFI", "BOOTAA64.EFI", arch.systemd_boot_name()]
             .into_iter()
             .map(|n| dir.join(n))
@@ -87,6 +93,7 @@ impl BootAssets {
         Ok(Self {
             kernel,
             initramfs,
+            uki,
             bootloader_efi,
             arch,
             cmdline: "console=ttyS0 console=tty0 rdinit=/init".into(),
@@ -95,6 +102,11 @@ impl BootAssets {
 
     pub fn with_cmdline(mut self, cmdline: impl Into<String>) -> Self {
         self.cmdline = cmdline.into();
+        self
+    }
+
+    pub fn with_uki(mut self, uki: impl Into<PathBuf>) -> Self {
+        self.uki = Some(uki.into());
         self
     }
 }
@@ -140,6 +152,13 @@ impl EspPaths {
     pub fn slot_image_dir(&self, slot: BootSlot) -> PathBuf {
         self.root.join("pertisk").join(slot.as_str().to_uppercase())
     }
+
+    /// Path for a slot UKI under `EFI/Linux/`.
+    pub fn slot_uki_path(&self, slot: BootSlot) -> PathBuf {
+        self.root
+            .join("EFI/Linux")
+            .join(format!("pertisk-{}.efi", slot.as_str().to_lowercase()))
+    }
 }
 
 /// Install systemd-boot removable-path EFI binary onto the ESP.
@@ -166,7 +185,7 @@ pub fn install_systemd_boot(
     Ok(())
 }
 
-/// First-boot ESP populate: systemd-boot + slot A kernel/initramfs + loader entries.
+/// First-boot ESP populate: systemd-boot + slot A (UKI or kernel/initramfs) + loader entries.
 pub fn bootstrap_esp(esp: &EspPaths, assets: &BootAssets) -> Result<(), BootloaderError> {
     install_systemd_boot(esp, &assets.bootloader_efi, assets.arch)?;
 
@@ -177,14 +196,24 @@ pub fn bootstrap_esp(esp: &EspPaths, assets: &BootAssets) -> Result<(), Bootload
     fs::create_dir_all(&staging)?;
     fs::copy(&assets.kernel, staging.join("kernel"))?;
     fs::copy(&assets.initramfs, staging.join("initramfs"))?;
+    if let Some(ref uki) = assets.uki {
+        fs::copy(uki, staging.join("uki"))?;
+    }
 
     activate_slot(esp, &staging, BootSlot::A, &assets.cmdline)?;
     fs::remove_dir_all(&staging)?;
-    info!(esp = %esp.root.display(), "ESP bootstrap complete (slot A)");
+    info!(
+        esp = %esp.root.display(),
+        uki = assets.uki.is_some(),
+        "ESP bootstrap complete (slot A)"
+    );
     Ok(())
 }
 
-/// Copy slot kernel/initramfs onto the ESP and point systemd-boot at `next`.
+/// Copy slot artifacts onto the ESP and point systemd-boot at `next`.
+///
+/// If `slot_dir/uki` exists, installs a UKI under `EFI/Linux/` and writes an
+/// `efi`-style loader entry. Otherwise uses classic `linux` + `initrd` paths.
 pub fn activate_slot(
     esp: &EspPaths,
     slot_dir: &Path,
@@ -195,24 +224,41 @@ pub fn activate_slot(
     fs::create_dir_all(&image_dir)?;
     fs::create_dir_all(esp.root.join("loader/entries"))?;
 
-    for name in ["kernel", "initramfs"] {
-        let src = slot_dir.join(name);
-        if !src.exists() {
-            return Err(BootloaderError::Msg(format!(
-                "missing {} in slot dir {}",
-                name,
-                slot_dir.display()
-            )));
+    let uki_src = slot_dir.join("uki");
+    if uki_src.exists() {
+        let dest = esp.slot_uki_path(next);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
         }
-        fs::copy(&src, image_dir.join(name))?;
+        fs::copy(&uki_src, &dest)?;
+        // Keep classic copies for rollback tooling / non-UKI inspect.
+        for name in ["kernel", "initramfs"] {
+            let src = slot_dir.join(name);
+            if src.exists() {
+                fs::copy(&src, image_dir.join(name))?;
+            }
+        }
+        write_uki_entry(esp, next)?;
+    } else {
+        for name in ["kernel", "initramfs"] {
+            let src = slot_dir.join(name);
+            if !src.exists() {
+                return Err(BootloaderError::Msg(format!(
+                    "missing {} in slot dir {}",
+                    name,
+                    slot_dir.display()
+                )));
+            }
+            fs::copy(&src, image_dir.join(name))?;
+        }
+        write_entry(esp, next, cmdline)?;
     }
 
-    write_entry(esp, next, cmdline)?;
-    // Keep the other slot entry if present; only flip default.
     write_loader_default(esp, next)?;
     info!(
         slot = %next,
         esp = %esp.root.display(),
+        uki = uki_src.exists(),
         "systemd-boot default updated"
     );
     Ok(())
@@ -225,6 +271,20 @@ fn write_entry(esp: &EspPaths, slot: BootSlot, cmdline: &str) -> Result<(), Boot
          linux /pertisk/{slot_u}/kernel\n\
          initrd /pertisk/{slot_u}/initramfs\n\
          options {cmdline}\n"
+    );
+    let path = esp.entry_path(slot);
+    let mut f = fs::File::create(path)?;
+    f.write_all(body.as_bytes())?;
+    Ok(())
+}
+
+fn write_uki_entry(esp: &EspPaths, slot: BootSlot) -> Result<(), BootloaderError> {
+    let slot_u = slot.as_str().to_uppercase();
+    let slot_l = slot.as_str().to_lowercase();
+    // Cmdline is embedded inside the UKI; entry only points at the PE image.
+    let body = format!(
+        "title Pertisk KOS UKI (slot {slot_u})\n\
+         efi /EFI/Linux/pertisk-{slot_l}.efi\n"
     );
     let path = esp.entry_path(slot);
     let mut f = fs::File::create(path)?;
@@ -316,5 +376,27 @@ mod tests {
         assert!(esp_root.join("pertisk/A/kernel").exists());
         let loader = fs::read_to_string(esp_root.join("loader/loader.conf")).unwrap();
         assert!(loader.contains("default pertisk-a.conf"));
+    }
+
+    #[test]
+    fn activate_uki_writes_efi_entry() {
+        let dir = tempdir().unwrap();
+        let esp_root = dir.path().join("efi");
+        fs::create_dir_all(esp_root.join("EFI/BOOT")).unwrap();
+        let slot = dir.path().join("slotA");
+        fs::create_dir_all(&slot).unwrap();
+        fs::write(slot.join("kernel"), b"k").unwrap();
+        fs::write(slot.join("initramfs"), b"i").unwrap();
+        fs::write(slot.join("uki"), b"uki-pe").unwrap();
+
+        let esp = EspPaths {
+            root: esp_root.clone(),
+        };
+        activate_slot(&esp, &slot, BootSlot::A, "ignored").unwrap();
+
+        let entry = fs::read_to_string(esp.entry_path(BootSlot::A)).unwrap();
+        assert!(entry.contains("efi /EFI/Linux/pertisk-a.efi"));
+        assert!(!entry.contains("linux /pertisk"));
+        assert_eq!(fs::read(esp.slot_uki_path(BootSlot::A)).unwrap(), b"uki-pe");
     }
 }

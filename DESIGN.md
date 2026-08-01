@@ -194,6 +194,7 @@ pertisk-kos/
 - Compatibility matrix: Kubernetes versions, CNI choices (bridge, Flannel, Cilium) — [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md)
 - CIS-ish hardening checklist ([docs/HARDENING.md](./docs/HARDENING.md)): kubelet 4.2.x, sysctls, STATE secrets modes, metrics bearer token, CI gate (`scripts/check-hardening.sh`)
 - Image profiles: `production` (no `/bin/busybox`) vs `debug` (BusyBox ash) via `PERTISK_IMAGE_PROFILE` / `make PROFILE=`
+- UKI build + ESP install (`image/build-uki.sh`, optional SB signing) — [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 
 ---
 

@@ -33,5 +33,17 @@ esac
 
 cp "${KERNEL}" "${OVERLAY}/kernel"
 cp "${OUT}/bootloader/${EFI_NAME}" "${OVERLAY}/${EFI_NAME}"
+
+# Optional UKI embed (./image/build-uki.sh first).
+UKI="${PERTISK_UKI:-${OUT}/uki/pertisk-${ARCH}.efi}"
+if [[ "${PERTISK_EMBED_UKI:-0}" == "1" ]]; then
+  [[ -f "${UKI}" ]] || {
+    echo "PERTISK_EMBED_UKI=1 but missing ${UKI}; run ./image/build-uki.sh" >&2
+    exit 1
+  }
+  cp "${UKI}" "${OVERLAY}/uki.efi"
+  echo "==> embedded UKI ${UKI}"
+fi
+
 echo "==> staged boot assets in ${OVERLAY}"
 ls -lh "${OVERLAY}"

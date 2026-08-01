@@ -39,7 +39,7 @@ ifeq ($(filter $(PROFILE),production debug),)
   $(error unsupported PROFILE=$(PROFILE); use production or debug)
 endif
 
-.PHONY: help build build-host build-all initramfs cloud \
+.PHONY: help build build-host build-all initramfs cloud uki \
 	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version
 
 help:
@@ -49,6 +49,7 @@ help:
 	@echo "  make build-all [VERSION=...] [PROFILE=...] [EMBED_BOOT=1] [EMBED_RUNTIME=1]"
 	@echo "  make build-host [VERSION=...]          # cargo release (host)"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
+	@echo "  make uki [VERSION=...] [ARCH=...]     # Unified Kernel Image"
 	@echo "  make test | check-hardening | fmt | clippy | clean"
 	@echo ""
 	@echo "Current: VERSION=$(VERSION) ARCH=$(BUILD_ARCH) PLATFORM=$(PLATFORM) PROFILE=$(PROFILE)"
@@ -90,6 +91,11 @@ cloud:
 	@echo "==> cloud image VERSION=$(VERSION) ARCH=$(BUILD_ARCH)"
 	$(MAKE) build VERSION="$(VERSION)" ARCH="$(BUILD_ARCH)" EMBED_BOOT=1
 	PERTISK_VERSION="$(VERSION)" PERTISK_ARCH="$(BUILD_ARCH)" "$(ROOT)/image/build-cloud-image.sh"
+
+## Unified Kernel Image (requires kernel + initramfs artifacts).
+uki:
+	@echo "==> UKI VERSION=$(VERSION) ARCH=$(BUILD_ARCH)"
+	PERTISK_VERSION="$(VERSION)" PERTISK_ARCH="$(BUILD_ARCH)" "$(ROOT)/image/build-uki.sh"
 
 fetch-runtime:
 	PERTISK_ARCH="$(BUILD_ARCH)" "$(ROOT)/image/fetch-runtime.sh"

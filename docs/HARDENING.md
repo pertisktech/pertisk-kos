@@ -15,7 +15,7 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 | Metrics endpoint auth | pass | Optional bearer: `--metrics-token` / `PERTISK_METRICS_TOKEN` / STATE `secrets/metrics.token` |
 | STATE `secrets/` mode `0700` | pass | Set in `StateVolume::ensure_layout` |
 | Kernel sysctls before kubelet | pass | `pertiskd` `sysctl::apply_hardening_sysctls` |
-| Secure Boot / UKI measured boot | gap | Stretch — see below |
+| Secure Boot / UKI measured boot | partial | UKI build + ESP install done; firmware enrollment is lab/docs ([SECURE_BOOT.md](./SECURE_BOOT.md)) |
 | Minimal kernel modules | gap | Still using Alpine virt kernel for QEMU |
 
 ## Kubelet (CIS §4.2)
@@ -111,11 +111,11 @@ Pertisk goals (DESIGN §8): measured boot where feasible. Not required for v0.1.
 |------|------|--------|
 | 1 | Keep signed A/B bundles (Ed25519) on STATE | done |
 | 2 | systemd-boot ESP entries for A/B | done |
-| 3 | Optional UKI (`*.efi` with kernel+initrd+cmdline) per slot | todo |
-| 4 | Enroll PK/KEK/db in OVMF / firmware; reject unsigned UKI | todo |
+| 3 | Optional UKI (`*.efi` with kernel+initrd+cmdline) per slot | done — `./image/build-uki.sh`, ESP `EFI/Linux/` |
+| 4 | Enroll PK/KEK/db in OVMF / firmware; reject unsigned UKI | partial — keygen + signed UKI; manual OVMF enroll |
 | 5 | TPM PCR attestation of boot chain (optional) | todo |
 
-Until UKI lands, treat Secure Boot as an operator/firmware concern: enroll nothing that would block unsigned virt kernels used in QEMU labs.
+See [SECURE_BOOT.md](./SECURE_BOOT.md) for build/sign/enroll steps.
 
 ## Image profiles
 
@@ -129,5 +129,5 @@ Marker file in the image: `/etc/pertisk/image-profile`.
 ## Gaps tracked for later
 
 - Metrics over mTLS (bearer is interim)
-- Secure Boot UKI enrollment (steps 3–5 above)
+- TPM PCR attestation / automated OVMF enrollment in CI
 - BusyBox-free DHCP (replace multi-call `udhcpc` with a dedicated client / Rust DHCP)
