@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Build initramfs for one or more architectures.
 # Usage:
-#   ./image/build-initramfs.sh              # linux/amd64
+#   ./image/build-initramfs.sh
 #   PERTISK_PLATFORM=linux/arm64 ./image/build-initramfs.sh
-#   PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh   # + installer ESP assets
-#   ./image/build-all.sh                    # both
+#   PERTISK_VERSION=0.2.0 PERTISK_PLATFORM=linux/arm64 ./image/build-initramfs.sh
+#   PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
+#   make build VERSION=0.2.0 ARCH=arm64
+#   ./image/build-all.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,6 +24,10 @@ if [[ ! -f "${ROOT}/Cargo.lock" ]]; then
   (cd "${ROOT}" && cargo generate-lockfile)
 fi
 
+# Version baked into pertiskd via PERTISK_BUILD_VERSION. Default: workspace Cargo.toml.
+DEFAULT_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "${ROOT}/Cargo.toml" | head -1)"
+VERSION="${PERTISK_VERSION:-${DEFAULT_VERSION}}"
+
 find "${OVERLAY}" -mindepth 1 ! -name '.keep' -exec rm -rf {} + 2>/dev/null || true
 find "${BOOT_OVERLAY}" -mindepth 1 ! -name '.keep' -exec rm -rf {} + 2>/dev/null || true
 
@@ -34,12 +40,21 @@ if [[ "${PERTISK_EMBED_RUNTIME:-0}" == "1" ]]; then
   cp -a "${OUT}/runtime/." "${OVERLAY}/"
 fi
 
-PLATFORM="${PERTISK_PLATFORM:-linux/amd64}"
-case "${PLATFORM}" in
-  linux/amd64) ARCH_SUFFIX=amd64 ;;
-  linux/arm64) ARCH_SUFFIX=arm64 ;;
-  *) echo "unsupported PERTISK_PLATFORM=${PLATFORM}" >&2; exit 1 ;;
-esac
+# Prefer PERTISK_ARCH (amd64|arm64); fall back to PERTISK_PLATFORM (linux/...).
+if [[ -n "${PERTISK_ARCH:-}" ]]; then
+  case "${PERTISK_ARCH}" in
+    amd64|x86_64) ARCH_SUFFIX=amd64; PLATFORM=linux/amd64 ;;
+    arm64|aarch64) ARCH_SUFFIX=arm64; PLATFORM=linux/arm64 ;;
+    *) echo "unsupported PERTISK_ARCH=${PERTISK_ARCH}" >&2; exit 1 ;;
+  esac
+else
+  PLATFORM="${PERTISK_PLATFORM:-linux/amd64}"
+  case "${PLATFORM}" in
+    linux/amd64) ARCH_SUFFIX=amd64 ;;
+    linux/arm64) ARCH_SUFFIX=arm64 ;;
+    *) echo "unsupported PERTISK_PLATFORM=${PLATFORM}" >&2; exit 1 ;;
+  esac
+fi
 
 if [[ "${PERTISK_EMBED_BOOT:-0}" == "1" ]]; then
   echo "==> staging installer boot assets (kernel + systemd-boot)"
@@ -49,10 +64,12 @@ if [[ "${PERTISK_EMBED_BOOT:-0}" == "1" ]]; then
 fi
 
 ARTIFACT="${OUT}/initramfs-${ARCH_SUFFIX}.cpio.gz"
+VERSIONED="${OUT}/initramfs-${ARCH_SUFFIX}-v${VERSION}.cpio.gz"
 
-echo "==> building initramfs (platform=${PLATFORM})"
+echo "==> building initramfs (version=${VERSION} platform=${PLATFORM})"
 docker build \
   --platform "${PLATFORM}" \
+  --build-arg "VERSION=${VERSION}" \
   -f "${ROOT}/image/Dockerfile.initramfs" \
   --target export \
   -o "type=local,dest=${OUT}/.initramfs-tmp-${ARCH_SUFFIX}" \
@@ -60,10 +77,12 @@ docker build \
 
 mv "${OUT}/.initramfs-tmp-${ARCH_SUFFIX}/initramfs.cpio.gz" "${ARTIFACT}"
 rm -rf "${OUT}/.initramfs-tmp-${ARCH_SUFFIX}"
+cp "${ARTIFACT}" "${VERSIONED}"
 # Keep legacy name for amd64 QEMU scripts.
 if [[ "${ARCH_SUFFIX}" == "amd64" ]]; then
   cp "${ARTIFACT}" "${OUT}/initramfs.cpio.gz"
 fi
 
 echo "==> wrote ${ARTIFACT}"
-ls -lh "${ARTIFACT}"
+echo "==> wrote ${VERSIONED}"
+ls -lh "${ARTIFACT}" "${VERSIONED}"

@@ -22,3 +22,11 @@ pub use sign::{
     generate_keypair, load_signing_key, load_verifying_key, sign_manifest, verify_manifest,
     KeyError,
 };
+
+/// Override with `PERTISK_BUILD_VERSION` at compile time (`make VERSION=...`).
+pub fn release_version() -> &'static str {
+    match option_env!("PERTISK_BUILD_VERSION") {
+        Some(v) if !v.is_empty() => v,
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}

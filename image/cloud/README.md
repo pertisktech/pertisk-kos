@@ -29,6 +29,8 @@ Seed config must **not** set `machine.install` (image is already laid out).
 
 ```bash
 PERTISK_DISK=out/pertisk-cloud-amd64.raw ./image/run-qemu-uefi.sh
+# arm64 disk auto-selects qemu-system-aarch64 + AAVMF:
+PERTISK_DISK=out/pertisk-cloud-arm64.raw ./image/run-qemu-uefi.sh
 ```
 
 ## Cloud upload (operator outline)

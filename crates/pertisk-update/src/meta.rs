@@ -71,7 +71,7 @@ impl Default for BootMeta {
             boot_attempts: 0,
             boot_ok: true,
             pending_version: None,
-            active_version: Some(env!("CARGO_PKG_VERSION").into()),
+            active_version: Some(crate::release_version().into()),
         }
     }
 }

@@ -106,7 +106,7 @@ fn run() -> Result<()> {
 
     info!(
         pid,
-        version = env!("CARGO_PKG_VERSION"),
+        version = pertisk_config::release_version(),
         is_pid1,
         "pertiskd starting"
     );

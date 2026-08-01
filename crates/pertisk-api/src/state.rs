@@ -34,7 +34,7 @@ impl NodeState {
     pub fn new(state_root: PathBuf, trust_public_key: PathBuf) -> Self {
         let config_path = state_root.join(DEFAULT_CONFIG_NAME);
         Self {
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: pertisk_config::release_version().to_string(),
             api_version: "v1alpha1".into(),
             platform: std::env::consts::OS.to_string(),
             state_root,

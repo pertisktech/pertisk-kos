@@ -86,7 +86,10 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Version => {
-            println!("pertiskctl {}", env!("CARGO_PKG_VERSION"));
+            println!(
+                "pertiskctl {}",
+                option_env!("PERTISK_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+            );
             match connect(&cli).await {
                 Ok(mut client) => {
                     let resp = client.version(VersionRequest {}).await?.into_inner();

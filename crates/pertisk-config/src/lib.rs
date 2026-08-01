@@ -5,6 +5,17 @@ use thiserror::Error;
 
 pub const CONFIG_VERSION: &str = "v1alpha1";
 
+/// OS / package release version.
+///
+/// Override at compile time: `PERTISK_BUILD_VERSION=0.2.0 cargo build`
+/// (also used by `make build VERSION=...` / Docker `--build-arg VERSION=`).
+pub fn release_version() -> &'static str {
+    match option_env!("PERTISK_BUILD_VERSION") {
+        Some(v) if !v.is_empty() => v,
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("parse error: {0}")]

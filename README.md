@@ -8,6 +8,20 @@ See [DESIGN.md](./DESIGN.md) for architecture and phases.
 
 **P5 (partial)** — CIS-ish hardening, cluster CNI modes, cloud images, observability, CI/SBOM, metal EFI, A/B + mTLS.
 
+## Build (Make)
+
+```bash
+make help
+make build                              # initramfs amd64, Cargo.toml version
+make build VERSION=0.2.0 ARCH=arm64     # custom version + arch
+make build VERSION=0.2.0 ARCH=amd64 EMBED_BOOT=1 EMBED_RUNTIME=1
+make build-all VERSION=0.2.0            # amd64 + arm64
+make build-host VERSION=0.2.0           # host cargo release bins → out/bin/
+make cloud VERSION=0.2.0 ARCH=amd64     # golden disk image
+```
+
+Artifacts: `out/initramfs-<arch>.cpio.gz` and `out/initramfs-<arch>-v<version>.cpio.gz`.
+
 ## Quick start (mTLS + upgrade)
 
 ```bash

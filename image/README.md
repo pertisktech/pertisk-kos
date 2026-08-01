@@ -13,6 +13,7 @@ Build a minimal bootable smoke environment: Linux kernel + initramfs where
 
 ```bash
 ./image/build-initramfs.sh   # → out/initramfs.cpio.gz (linux/amd64)
+# or: make build VERSION=0.2.0 ARCH=amd64
 ./image/fetch-kernel.sh      # → out/bzImage (Alpine virt, amd64)
 brew install qemu            # once
 ./image/run-qemu.sh

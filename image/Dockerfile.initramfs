@@ -9,6 +9,9 @@ FROM --platform=$BUILDPLATFORM rust:1.85-bookworm AS build
 ARG TARGETARCH
 ARG BUILDPLATFORM
 ARG ZIG_VERSION=0.13.0
+# OS / binary version (override: docker --build-arg VERSION=... or make VERSION=...)
+ARG VERSION=0.1.0
+ENV PERTISK_BUILD_VERSION=${VERSION}
 WORKDIR /src
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -48,7 +51,9 @@ COPY examples ./examples
 COPY proto ./proto
 
 # Native BUILDPLATFORM rustc + Zig cross link (avoids qemu-user codegen bugs).
+# PERTISK_BUILD_VERSION (from ARG VERSION) is baked into release_version().
 RUN RUST_TARGET="$(cat /tmp/rust-target)" \
+    && echo "==> cargo zigbuild PERTISK_BUILD_VERSION=${PERTISK_BUILD_VERSION} target=${RUST_TARGET}" \
     && cargo zigbuild --release -p pertiskd --target "${RUST_TARGET}" \
     && cp "target/${RUST_TARGET}/release/pertiskd" /pertiskd \
     && file /pertiskd \
