@@ -1,6 +1,7 @@
-//! Management API server (Phase 3). Placeholder for M0.
+//! Management gRPC API for Pertisk KOS (M4).
 
-/// API crate version string.
-pub fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
+mod server;
+mod state;
+
+pub use server::{serve, TlsPaths, DEFAULT_LISTEN};
+pub use state::{shared, NodeState, PowerAction, SharedState};

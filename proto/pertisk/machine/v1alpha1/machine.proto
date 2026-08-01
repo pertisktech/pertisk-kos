@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package pertisk.machine.v1alpha1;
+
+option go_package = "github.com/pertisk-tech/pertisk-kos/api/machine/v1alpha1";
+
+// MachineService is the node management API (Talos-shaped, not wire-compatible).
+service MachineService {
+  rpc Version(VersionRequest) returns (VersionResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc ValidateConfiguration(ApplyConfigurationRequest) returns (ValidateConfigurationResponse);
+  rpc ApplyConfiguration(ApplyConfigurationRequest) returns (ApplyConfigurationResponse);
+  rpc Reboot(RebootRequest) returns (RebootResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+  rpc ServiceList(ServiceListRequest) returns (ServiceListResponse);
+  rpc Upgrade(UpgradeRequest) returns (UpgradeResponse);
+  rpc MarkBootGood(MarkBootGoodRequest) returns (MarkBootGoodResponse);
+  rpc UpgradeStatus(UpgradeStatusRequest) returns (UpgradeStatusResponse);
+}
+
+message VersionRequest {}
+
+message VersionResponse {
+  string version = 1;
+  string api_version = 2;
+  string platform = 3;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool ready = 1;
+  string message = 2;
+  string containerd = 3;
+  string kubelet = 4;
+}
+
+message ApplyConfigurationRequest {
+  // Full machine config YAML (v1alpha1).
+  string yaml = 1;
+}
+
+message ValidateConfigurationResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message ApplyConfigurationResponse {
+  bool ok = 1;
+  string message = 2;
+  string path = 3;
+}
+
+message RebootRequest {
+  // Soft reboot request; node schedules reboot after RPC returns.
+  bool graceful = 1;
+}
+
+message RebootResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message ShutdownRequest {
+  bool graceful = 1;
+}
+
+message ShutdownResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message ServiceListRequest {}
+
+message ServiceStatus {
+  string name = 1;
+  string state = 2; // up | down | absent
+  uint32 pid = 3;
+}
+
+message ServiceListResponse {
+  repeated ServiceStatus services = 1;
+}
+
+message UpgradeRequest {
+  // Absolute path on the node to a verified-ready bundle directory
+  // (manifest.json, manifest.sig, artifacts).
+  string bundle_path = 1;
+  // If true, schedule reboot after staging the inactive slot.
+  bool reboot = 2;
+}
+
+message UpgradeResponse {
+  bool ok = 1;
+  string message = 2;
+  string target_slot = 3;
+  string version = 4;
+}
+
+message MarkBootGoodRequest {}
+
+message MarkBootGoodResponse {
+  bool ok = 1;
+  string message = 2;
+  string active_slot = 3;
+}
+
+message UpgradeStatusRequest {}
+
+message UpgradeStatusResponse {
+  string active_slot = 1;
+  string next_slot = 2;
+  string previous_good = 3;
+  uint32 boot_attempts = 4;
+  bool boot_ok = 5;
+  string active_version = 6;
+  string pending_version = 7;
+}

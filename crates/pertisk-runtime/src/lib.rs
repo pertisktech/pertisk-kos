@@ -1,6 +1,9 @@
-//! containerd supervisor (Phase 2). Placeholder for M0.
+//! containerd supervisor for Pertisk KOS (M3).
 
-/// Runtime crate version string.
-pub fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
+mod config;
+mod process;
+mod paths;
+
+pub use config::write_containerd_config;
+pub use paths::RuntimePaths;
+pub use process::{ContainerdHandle, RuntimeError, start_containerd};

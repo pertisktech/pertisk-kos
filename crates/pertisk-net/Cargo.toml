@@ -7,3 +7,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+pertisk-config = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+futures = "0.3"
+ipnet = "2"
+rtnetlink = "0.14"

@@ -7,3 +7,20 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex = "0.4"
+rand = "0.8"
+serde = { workspace = true }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[[bin]]
+name = "pertisk-sign"
+path = "src/bin/pertisk-sign.rs"
+
+[dev-dependencies]
+tempfile = "3"

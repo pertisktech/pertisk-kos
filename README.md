@@ -6,49 +6,56 @@ See [DESIGN.md](./DESIGN.md) for architecture and phases.
 
 ## Status
 
-**M1** — STATE volume + config boot path + QEMU initramfs pipeline.
+**P5 (partial)** — systemd-boot A/B slot switching + multi-arch initramfs builds (amd64/arm64).
 
-| Crate | Role | Phase |
-|-------|------|-------|
-| `pertiskd` | Init / supervisor (PID 1) | P0/M1 |
-| `pertisk-disk` | GPT labels, STATE mount | M1 |
-| `pertisk-config` | Machine config schema | P0 |
-| `pertiskctl` | Management CLI | P3 (stub) |
-| others | net, runtime, … | stubs |
+Prior: **M5** signed A/B upgrades + rollback; management API mTLS.
 
-## Quick start (dev / M1)
+## Quick start (mTLS + upgrade)
 
 ```bash
-# Unit tests
-cargo test -p pertisk-config -p pertisk-disk
+# Certs + OS trust key
+./scripts/gen-mtls-certs.sh
+mkdir -p /tmp/pertisk-state/secrets
+cargo run -p pertisk-update --bin pertisk-sign -- keygen \
+  --secret /tmp/pertisk-state/secrets/os-trust.sk \
+  --public /tmp/pertisk-state/secrets/os-trust.pk
 
-# Local STATE smoke (no QEMU)
-mkdir -p /tmp/pertisk-state
+# Sign a bundle
+mkdir -p /tmp/bundle && echo k >/tmp/bundle/kernel && echo i >/tmp/bundle/initramfs
+cargo run -p pertisk-update --bin pertisk-sign -- sign \
+  --bundle /tmp/bundle --version 0.2.0 \
+  --secret /tmp/pertisk-state/secrets/os-trust.sk
+
+# Node
 cp examples/worker.yaml /tmp/pertisk-state/config.yaml
-cargo run -p pertiskd -- --state-dir /tmp/pertisk-state --smoke
+cargo run -p pertiskd -- --state-dir /tmp/pertisk-state --force-init --skip-runtime \
+  --api-listen 127.0.0.1:50001 \
+  --tls-ca out/mtls/ca.crt --tls-cert out/mtls/server.crt --tls-key out/mtls/server.key \
+  --trust-key /tmp/pertisk-state/secrets/os-trust.pk
 
-# QEMU smoke (Docker + qemu)
-./image/build-initramfs.sh
-./image/fetch-kernel.sh
-brew install qemu   # once
-./image/run-qemu.sh
+# Client
+cargo run -p pertiskctl -- -e 127.0.0.1:50001 \
+  --ca out/mtls/ca.crt --cert out/mtls/client.crt --key out/mtls/client.key \
+  upgrade --bundle /tmp/bundle
+cargo run -p pertiskctl -- -e 127.0.0.1:50001 \
+  --ca out/mtls/ca.crt --cert out/mtls/client.crt --key out/mtls/client.key \
+  upgrade-status
 ```
 
-Details: [image/README.md](./image/README.md).
+Plaintext API still works when TLS flags are omitted (dev only).
 
-## Example machine config
+## Images
 
-```yaml
-version: v1alpha1
-machine:
-  type: worker
-  network:
-    hostname: pertisk-node-1
-    interfaces:
-      - interface: eth0
-        dhcp: true
+```bash
+./image/build-initramfs.sh                          # out/initramfs.cpio.gz (amd64)
+PERTISK_PLATFORM=linux/arm64 ./image/build-initramfs.sh
+./image/build-all.sh                                # both arches
+PERTISK_ARCH=arm64 ./image/fetch-kernel.sh
+PERTISK_ARCH=arm64 ./image/fetch-runtime.sh
 ```
 
-## Next (P1 / M2)
+On upgrade, if an ESP is mounted (`/boot/efi`, `/efi`, or `/boot` with EFI/loader), `pertiskd` copies the staged kernel/initramfs and flips systemd-boot `loader.conf` default. Without ESP (dev/QEMU), staging is meta-only.
 
-GPT install on virtio disk, DHCP networking, then containerd.
+## Next
+
+P5 remainder: metal EFI install images, full CNI, SBOM/reproducible builds, observability.

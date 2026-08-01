@@ -11,4 +11,8 @@ name = "pertiskctl"
 path = "src/main.rs"
 
 [dependencies]
+anyhow = { workspace = true }
 clap = { workspace = true }
+pertisk-proto = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }

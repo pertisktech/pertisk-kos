@@ -1,6 +1,9 @@
-//! Generated protobuf types (Phase 3). Placeholder for M0.
+//! Generated protobuf + gRPC types for Pertisk KOS.
 
-/// Proto crate version string.
-pub fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+pub mod machine {
+    pub mod v1alpha1 {
+        tonic::include_proto!("pertisk.machine.v1alpha1");
+    }
 }
+
+pub use machine::v1alpha1::*;

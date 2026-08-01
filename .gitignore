@@ -12,6 +12,8 @@
 /out/
 /dist/
 /.pertisk-state/
+/image/runtime-overlay/**
+!/image/runtime-overlay/.keep
 *.squashfs
 *.erofs
 *.img

@@ -1,6 +1,21 @@
-//! Signed A/B OS updates (Phase 4). Placeholder for M0.
+//! Signed A/B OS updates for Pertisk KOS (M5+).
 
-/// Update crate version string.
-pub fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
+mod apply;
+mod bootloader;
+mod bundle;
+mod meta;
+mod sign;
+
+pub use apply::{
+    apply_bundle, mark_boot_good, record_boot_attempt, record_boot_attempt_with_layout,
+    ApplyError, ApplyResult, SlotLayout,
+};
+pub use bootloader::{activate_slot, try_activate_slot, BootloaderError, EspPaths};
+pub use bundle::{
+    build_manifest, sha256_file, verify_bundle, BundleError, BundleManifest, VerifiedBundle,
+};
+pub use meta::{BootMeta, BootSlot, MetaError, META_FILENAME};
+pub use sign::{
+    generate_keypair, load_signing_key, load_verifying_key, sign_manifest, verify_manifest,
+    KeyError,
+};

@@ -7,3 +7,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+prost = { workspace = true }
+tonic = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+prost-build = { workspace = true }

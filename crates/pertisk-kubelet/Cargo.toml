@@ -7,3 +7,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+pertisk-config = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

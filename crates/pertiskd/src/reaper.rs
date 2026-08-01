@@ -1,16 +1,25 @@
-//! PID 1 supervise loop: reap children and exit on stop signals.
+//! PID 1 supervise loop: reap zombies, babysit services, honor API power actions.
 
 use anyhow::Result;
+use pertisk_api::{PowerAction, SharedState};
+use pertisk_config::MachineConfig;
 use tracing::{info, warn};
 
-/// Block forever reaping zombies until SIGTERM/SIGINT/SIGQUIT.
-pub fn supervise() -> Result<()> {
+use crate::services::NodeServices;
+
+/// Block forever until stop signal or API-requested power action.
+pub fn supervise(
+    cfg: Option<MachineConfig>,
+    mut services: NodeServices,
+    state: SharedState,
+) -> Result<()> {
     #[cfg(unix)]
     {
-        unix_impl::supervise()
+        unix_impl::supervise(cfg, &mut services, state)
     }
     #[cfg(not(unix))]
     {
+        let _ = (cfg, services, state);
         anyhow::bail!("pertiskd supervise loop requires Unix")
     }
 }
@@ -30,22 +39,95 @@ mod unix_impl {
         STOP.store(true, Ordering::SeqCst);
     }
 
-    extern "C" fn handle_chld(_: nix::libc::c_int) {
-        // Actual reaping happens in the loop via waitpid(WNOHANG).
-    }
+    extern "C" fn handle_chld(_: nix::libc::c_int) {}
 
-    pub fn supervise() -> Result<()> {
+    pub fn supervise(
+        cfg: Option<MachineConfig>,
+        services: &mut NodeServices,
+        state: SharedState,
+    ) -> Result<()> {
         install_handlers()?;
-        info!("supervise loop entered");
+        refresh_state(services, &state);
+        info!(status = %services.status_summary(), "supervise loop entered");
 
         while !STOP.load(Ordering::SeqCst) {
             reap_zombies();
-            // Cheap sleep so we do not spin; SIGCHLD/signals still interrupt.
+            if let Some(ref cfg) = cfg {
+                services.ensure_alive(cfg);
+            }
+            refresh_state(services, &state);
+
+            let power = state
+                .lock()
+                .map(|s| s.power)
+                .unwrap_or(PowerAction::None);
+            match power {
+                PowerAction::Reboot => {
+                    info!("executing API reboot");
+                    stop_services(services);
+                    do_reboot()?;
+                    break;
+                }
+                PowerAction::Shutdown => {
+                    info!("executing API shutdown");
+                    stop_services(services);
+                    do_shutdown()?;
+                    break;
+                }
+                PowerAction::None => {}
+            }
+
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
 
-        info!("stop signal received; shutting down");
-        // Later phases: stop kubelet/containerd orderly here.
+        info!("supervise loop exiting");
+        stop_services(services);
+        Ok(())
+    }
+
+    fn refresh_state(services: &mut NodeServices, state: &SharedState) {
+        let (cd, kl, cd_pid, kl_pid) = services.status_parts();
+        if let Ok(mut st) = state.lock() {
+            st.set_runtime_status(cd, kl, cd_pid, kl_pid);
+        }
+    }
+
+    fn stop_services(services: &mut NodeServices) {
+        if let Some(cd) = services.containerd.take() {
+            cd.stop();
+        }
+        if let Some(kl) = services.kubelet.take() {
+            kl.stop();
+        }
+    }
+
+    fn do_reboot() -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            use nix::sys::reboot::{reboot, RebootMode};
+            let _ = nix::unistd::sync();
+            reboot(RebootMode::RB_AUTOBOOT)?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            info!("reboot requested (dev host — exiting process)");
+            STOP.store(true, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
+    fn do_shutdown() -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            use nix::sys::reboot::{reboot, RebootMode};
+            let _ = nix::unistd::sync();
+            reboot(RebootMode::RB_POWER_OFF)?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            info!("shutdown requested (dev host — exiting process)");
+            STOP.store(true, Ordering::SeqCst);
+        }
         Ok(())
     }
 

@@ -1,8 +1,13 @@
 version: v1alpha1
 machine:
   type: worker
+  install:
+    disk: /dev/vda
+    wipe: true
   network:
     hostname: pertisk-qemu-1
     interfaces:
       - interface: eth0
         dhcp: true
+    nameservers:
+      - 1.1.1.1

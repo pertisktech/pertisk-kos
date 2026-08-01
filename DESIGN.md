@@ -183,7 +183,9 @@ pertisk-kos/
 
 ### Phase 5 — Productize (ongoing)
 
-- Multi-arch (`aarch64`, bare metal + cloud images: metal, AWS, GCP, Azure)
+- Multi-arch initramfs (`amd64` / `arm64` via `image/build-all.sh`) — in progress
+- systemd-boot A/B slot switching when ESP is present — in progress
+- Bare metal + cloud images (metal, AWS, GCP, Azure)
 - Docs, SBOM, reproducible builds
 - CIS-ish hardening checklist
 - Compatibility matrix: Kubernetes versions, CNI choices

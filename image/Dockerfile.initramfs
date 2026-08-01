@@ -1,30 +1,73 @@
 # syntax=docker/dockerfile:1
-# Build a static-ish Linux pertiskd and pack it as an initramfs (cpio.gz).
-# Used for M1 QEMU smoke: kernel + initrd → serial logs from pertiskd.
+# Multi-arch initramfs build. Pass --platform=linux/amd64 or linux/arm64.
+
+ARG TARGETARCH
 
 FROM rust:1.85-bookworm AS build
+ARG TARGETARCH
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends \
     musl-tools \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
-RUN rustup target add x86_64-unknown-linux-musl
+
+# Map Docker arch → Rust musl triple + linker.
+RUN case "${TARGETARCH}" in \
+      amd64) echo x86_64-unknown-linux-musl > /tmp/rust-target; \
+             echo musl-gcc > /tmp/linker ;; \
+      arm64) echo aarch64-unknown-linux-musl > /tmp/rust-target; \
+             echo musl-gcc > /tmp/linker ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && rustup target add "$(cat /tmp/rust-target)"
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY examples ./examples
+COPY proto ./proto
 
-RUN cargo build --release -p pertiskd --target x86_64-unknown-linux-musl
+RUN RUST_TARGET="$(cat /tmp/rust-target)" \
+    && export "CARGO_TARGET_$(echo "$RUST_TARGET" | tr 'a-z-' 'A-Z_')_LINKER=$(cat /tmp/linker)" \
+    && cargo build --release -p pertiskd --target "${RUST_TARGET}" \
+    && cp "target/${RUST_TARGET}/release/pertiskd" /pertiskd
+
+FROM alpine:3.20 AS tools
+ARG TARGETARCH
+RUN apk add --no-cache sgdisk e2fsprogs dosfstools busybox parted \
+    && mkdir -p /tools/bin /tools/lib \
+    && cp /usr/bin/sgdisk /usr/sbin/partprobe /sbin/mkfs.ext4 /sbin/mkfs.vfat /bin/busybox /tools/bin/ \
+    && ln -sf busybox /tools/bin/udhcpc \
+    && for bin in /tools/bin/sgdisk /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/partprobe; do \
+         ldd "$bin" | awk '{print $3}' | grep -E '^/' | while read -r lib; do cp -n "$lib" /tools/lib/; done; \
+       done \
+    && case "${TARGETARCH}" in \
+         amd64) cp /lib/ld-musl-x86_64.so.1 /tools/lib/ ;; \
+         arm64) cp /lib/ld-musl-aarch64.so.1 /tools/lib/ ;; \
+       esac
 
 FROM debian:bookworm-slim AS pack
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cpio gzip \
     && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /rootfs
 COPY image/rootfs/ ./
-COPY --from=build /src/target/x86_64-unknown-linux-musl/release/pertiskd ./init
+COPY image/runtime-overlay/ ./
+COPY --from=build /pertiskd ./init
+COPY --from=tools /tools/bin/ ./usr/sbin/
+COPY --from=tools /tools/bin/busybox ./bin/busybox
+COPY --from=tools /tools/bin/udhcpc ./usr/sbin/udhcpc
+COPY --from=tools /tools/lib/ ./lib/
 RUN chmod +x ./init \
-    && mkdir -p proc sys dev run tmp var system/state \
+    && chmod +x ./usr/sbin/* ./bin/busybox 2>/dev/null || true \
+    && mkdir -p proc sys dev run tmp var system/state etc sbin \
+       usr/local/bin opt/cni/bin etc/cni/net.d etc/kubernetes/manifests boot/efi \
+    && ln -sf /usr/sbin/sgdisk ./sbin/sgdisk \
+    && ln -sf /usr/sbin/mkfs.ext4 ./sbin/mkfs.ext4 \
+    && ln -sf /usr/sbin/mkfs.vfat ./sbin/mkfs.vfat \
+    && ln -sf /usr/sbin/partprobe ./sbin/partprobe \
+    && ln -sf /usr/sbin/udhcpc ./sbin/udhcpc \
+    && if [ -f ./usr/local/bin/containerd ]; then chmod +x ./usr/local/bin/*; fi \
+    && if [ -f ./opt/cni/bin/loopback ]; then chmod +x ./opt/cni/bin/*; fi \
     && find . | cpio -o -H newc | gzip -9 > /initramfs.cpio.gz
 
 FROM scratch AS export

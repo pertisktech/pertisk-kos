@@ -7,3 +7,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+pertisk-config = { workspace = true }
+pertisk-disk = { workspace = true }
+pertisk-proto = { workspace = true }
+pertisk-update = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,2 @@
+# Populated by `PERTISK_EMBED_RUNTIME=1 ./image/build-initramfs.sh` after
+# `./image/fetch-runtime.sh`. Keep this placeholder so Docker COPY always works.

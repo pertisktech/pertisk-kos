@@ -1,14 +1,21 @@
-//! Disk layout, STATE volume, and mount helpers for Pertisk KOS.
-//!
-//! Milestone M1: discover/mount STATE (or use a directory in dev mode),
-//! ensure layout, and resolve the machine-config path.
+//! Disk layout, STATE volume, install, and mount helpers for Pertisk KOS.
 
+mod install;
 mod layout;
+mod plan;
 mod state;
 
+pub use install::{
+    disk_size, install_disk, layout_present, partition_node, plan_install, InstallError,
+    InstallOptions,
+};
 pub use layout::{
     MountPaths, PartitionRole, PARTLABEL_BOOT_A, PARTLABEL_BOOT_B, PARTLABEL_EFI,
     PARTLABEL_EPHEMERAL, PARTLABEL_META, PARTLABEL_STATE,
+};
+pub use plan::{
+    default_fixed_partitions, minimum_disk_size, plan_disk, DiskPlan, FsType, PartitionSpec,
+    PlanError,
 };
 pub use state::{
     prepare_state, StateError, StateSource, StateVolume, DEFAULT_CONFIG_NAME,
