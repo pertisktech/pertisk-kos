@@ -12,10 +12,10 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 | Immutable root FS | partial | Initramfs root; STATE/EPHEMERAL writable; full SquashFS/EROFS root still Phase 4/5 |
 | Management API mTLS | pass | `PERTISK_TLS_*` + `scripts/gen-mtls-certs.sh` |
 | Signed A/B OS upgrades | pass | Ed25519 trust key on STATE; unsigned rejected |
-| Metrics endpoint auth | gap | Prometheus `:50001` is plaintext HTTP — firewall or bind to loopback in prod |
+| Metrics endpoint auth | pass | Optional bearer: `--metrics-token` / `PERTISK_METRICS_TOKEN` / STATE `secrets/metrics.token` |
 | STATE `secrets/` mode `0700` | pass | Set in `StateVolume::ensure_layout` |
 | Kernel sysctls before kubelet | pass | `pertiskd` `sysctl::apply_hardening_sysctls` |
-| Secure Boot / UKI measured boot | gap | Stretch (DESIGN §8.6) |
+| Secure Boot / UKI measured boot | gap | Stretch — see below |
 | Minimal kernel modules | gap | Still using Alpine virt kernel for QEMU |
 
 ## Kubelet (CIS §4.2)
@@ -33,7 +33,7 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 | 4.2.9 | eventRecordQPS | pass | `5` |
 | 4.2.10 | rotateCertificates | pass | `true` |
 | 4.2.11 | Rotate kubelet server cert | partial | `serverTLSBootstrap: true` (needs CSR approval on CP) |
-| 4.2.12 | Strong TLS ciphers | gap | Not yet pinned in KubeletConfiguration |
+| 4.2.12 | Strong TLS ciphers | pass | `tlsCipherSuites` pinned (ECDHE + AES-GCM / ChaCha20) |
 | — | kubeconfig / CA mode `0600` | pass | After write |
 
 ## Filesystem mounts
@@ -51,13 +51,74 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 2. Place `os-trust.pk` under `STATE/secrets/` before first upgrade.
 3. Always set `cluster.ca` for join configs (avoid insecure-skip).
 4. Prefer `cluster.cni: none` + audited CNI (Cilium) for multi-tenant clusters.
-5. Firewall or restrict scrape of `:50001` (or set `--metrics-listen 127.0.0.1:50001`).
+5. Set a metrics bearer token (`PERTISK_METRICS_TOKEN` or STATE `secrets/metrics.token`) and/or bind `--metrics-listen 127.0.0.1:50001`.
 6. Approve kubelet serving certificate CSRs after first join (`serverTLSBootstrap`).
 7. Keep SBOM (`scripts/generate-sbom.sh`) and CI green on release tags.
 
+## Automated checks (CI)
+
+```bash
+./scripts/check-hardening.sh
+# or: make check-hardening
+```
+
+CI runs this gate on every PR (static CIS 4.2.x source checks + unit tests). It is **not** a full [kube-bench](https://github.com/aquasecurity/kube-bench) scan against a live node.
+
+## Running kube-bench (manual)
+
+Against a running Pertisk worker (after join), use a privileged Pod:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kube-bench
+  namespace: kube-system
+spec:
+  hostPID: true
+  hostNetwork: true
+  containers:
+    - name: kube-bench
+      image: docker.io/aquasec/kube-bench:v0.10.0
+      command: ["kube-bench", "run", "--targets", "node"]
+      volumeMounts:
+        - name: var-lib-kubelet
+          mountPath: /var/lib/kubelet
+          readOnly: true
+        - name: etc-kubernetes
+          mountPath: /etc/kubernetes
+          readOnly: true
+  restartPolicy: Never
+  volumes:
+    - name: var-lib-kubelet
+      hostPath: { path: /var/lib/kubelet }
+    - name: etc-kubernetes
+      hostPath: { path: /etc/kubernetes }
+  tolerations:
+    - operator: Exists
+EOF
+kubectl logs -n kube-system kube-bench
+```
+
+Expect worker-node controls to largely match this checklist; control-plane targets are **n/a** (Pertisk is worker-oriented).
+
+## Secure Boot / UKI (stretch roadmap)
+
+Pertisk goals (DESIGN §8): measured boot where feasible. Not required for v0.1.
+
+| Step | Work | Status |
+|------|------|--------|
+| 1 | Keep signed A/B bundles (Ed25519) on STATE | done |
+| 2 | systemd-boot ESP entries for A/B | done |
+| 3 | Optional UKI (`*.efi` with kernel+initrd+cmdline) per slot | todo |
+| 4 | Enroll PK/KEK/db in OVMF / firmware; reject unsigned UKI | todo |
+| 5 | TPM PCR attestation of boot chain (optional) | todo |
+
+Until UKI lands, treat Secure Boot as an operator/firmware concern: enroll nothing that would block unsigned virt kernels used in QEMU labs.
+
 ## Gaps tracked for later
 
-- Metrics mTLS or authn token
-- Explicit kubelet `tlsCipherSuites`
+- Metrics over mTLS (bearer is interim)
 - Production debug image signed separately (no BusyBox in default)
-- CIS automated scan job in CI (kube-bench against QEMU worker)
+- Secure Boot UKI enrollment (steps 3–5 above)

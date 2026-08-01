@@ -34,7 +34,7 @@ EMBED_BOOT ?= 0
 EMBED_RUNTIME ?= 0
 
 .PHONY: help build build-host build-all initramfs cloud \
-	fetch-runtime fetch-kernel test fmt clippy check clean version
+	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version
 
 help:
 	@echo "Pertisk KOS make targets"
@@ -43,7 +43,7 @@ help:
 	@echo "  make build-all [VERSION=...] [EMBED_BOOT=1] [EMBED_RUNTIME=1]"
 	@echo "  make build-host [VERSION=...]          # cargo release (host)"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
-	@echo "  make test | fmt | clippy | clean"
+	@echo "  make test | check-hardening | fmt | clippy | clean"
 	@echo ""
 	@echo "Current: VERSION=$(VERSION) ARCH=$(BUILD_ARCH) PLATFORM=$(PLATFORM)"
 
@@ -93,13 +93,16 @@ fetch-kernel:
 test:
 	cargo test --workspace
 
+check-hardening:
+	"$(ROOT)/scripts/check-hardening.sh"
+
 fmt:
 	cargo fmt --all
 
 clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
 
-check: fmt clippy test
+check: fmt clippy test check-hardening
 
 clean:
 	cargo clean

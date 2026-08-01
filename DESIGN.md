@@ -191,8 +191,8 @@ pertisk-kos/
 - CI (fmt/clippy/test + initramfs) and CycloneDX SBOM (`scripts/generate-sbom.sh`)
 - Observability: `Logs` RPC + Prometheus `/metrics` (`:50001`)
 - Cloud disk images (`image/build-cloud-image.sh` → raw/qcow2; AWS/GCP/Azure notes)
-- Compatibility matrix: Kubernetes versions, CNI choices (bridge, Flannel, Cilium)
-- CIS-ish hardening checklist ([docs/HARDENING.md](./docs/HARDENING.md)): kubelet 4.2.x, sysctls, STATE secrets modes
+- Compatibility matrix: Kubernetes versions, CNI choices (bridge, Flannel, Cilium) — [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md)
+- CIS-ish hardening checklist ([docs/HARDENING.md](./docs/HARDENING.md)): kubelet 4.2.x, sysctls, STATE secrets modes, metrics bearer token, CI gate (`scripts/check-hardening.sh`)
 
 ---
 

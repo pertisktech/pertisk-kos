@@ -6,7 +6,7 @@ See [DESIGN.md](./DESIGN.md) for architecture and phases.
 
 ## Status
 
-**P5 (partial)** — CIS-ish hardening, cluster CNI modes, cloud images, observability, CI/SBOM, metal EFI, A/B + mTLS.
+**P5 (partial)** — hardening CI gate, compatibility matrix, metrics auth, CNI modes, cloud images, Make VERSION/ARCH.
 
 ## Build (Make)
 
@@ -83,10 +83,18 @@ See `examples/cni/cilium.md` for Helm install.
 # Prometheus text metrics (default :50001)
 curl -s http://127.0.0.1:50001/metrics
 
+# Optional bearer (also: STATE secrets/metrics.token)
+# --metrics-token "$TOKEN"   or   PERTISK_METRICS_TOKEN=...
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:50001/metrics
+
 # Tail logs via management API (gRPC :50000)
 cargo run -p pertiskctl -- -e 127.0.0.1:50000 logs dmesg -n 50
 cargo run -p pertiskctl -- -e 127.0.0.1:50000 logs pertiskd
 ```
+
+## Compatibility
+
+See [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md) for Kubernetes / containerd / CNI / arch matrix.
 
 ## CI / SBOM
 
@@ -99,6 +107,10 @@ GitHub Actions runs fmt, clippy, tests, SBOM, and amd64 initramfs build.
 ## Hardening
 
 See [docs/HARDENING.md](./docs/HARDENING.md) for the CIS-ish worker checklist (kubelet 4.2.x, sysctls, secrets modes, operator steps).
+
+```bash
+./scripts/check-hardening.sh   # or: make check-hardening
+```
 
 ## Cloud / golden disk image
 
@@ -114,4 +126,4 @@ See [image/cloud/README.md](./image/cloud/README.md) for AWS / GCP / Azure uploa
 
 ## Next
 
-P5 remainder: compatibility matrix polish; Secure Boot / metrics auth (see hardening gaps).
+P5 remainder: Secure Boot UKI (stretch); production image without BusyBox.

@@ -34,6 +34,9 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: Hardening gate
+        run: ./scripts/check-hardening.sh
+
   sbom:
     name: SBOM
     runs-on: ubuntu-latest

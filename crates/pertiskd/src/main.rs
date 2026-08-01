@@ -69,6 +69,11 @@ struct Args {
     #[arg(long, env = "PERTISK_METRICS_LISTEN", default_value = DEFAULT_METRICS_LISTEN)]
     metrics_listen: String,
 
+    /// Optional bearer token for GET /metrics (`Authorization: Bearer …`).
+    /// Also loaded from STATE `secrets/metrics.token` when unset.
+    #[arg(long, env = "PERTISK_METRICS_TOKEN")]
+    metrics_token: Option<String>,
+
     /// CA certificate for mTLS (enables TLS when set with server cert/key).
     #[arg(long, env = "PERTISK_TLS_CA")]
     tls_ca: Option<PathBuf>,
@@ -189,7 +194,8 @@ fn run() -> Result<()> {
         start_api_thread(api_state.clone(), &args.api_listen, tls)?;
     }
     if !args.skip_metrics {
-        start_metrics_thread(api_state.clone(), &args.metrics_listen)?;
+        let token = resolve_metrics_token(&args, &volume);
+        start_metrics_thread(api_state.clone(), &args.metrics_listen, token)?;
     }
 
     if args.smoke || !is_pid1 {
@@ -255,10 +261,19 @@ fn start_api_thread(state: SharedState, listen: &str, tls: Option<TlsPaths>) -> 
     Ok(())
 }
 
-fn start_metrics_thread(state: SharedState, listen: &str) -> Result<()> {
+fn start_metrics_thread(
+    state: SharedState,
+    listen: &str,
+    bearer_token: Option<String>,
+) -> Result<()> {
     let addr: SocketAddr = listen
         .parse()
         .with_context(|| format!("invalid --metrics-listen {listen}"))?;
+    let auth = if bearer_token.is_some() {
+        "bearer"
+    } else {
+        "none"
+    };
     thread::Builder::new()
         .name("pertisk-metrics".into())
         .spawn(move || {
@@ -272,12 +287,34 @@ fn start_metrics_thread(state: SharedState, listen: &str) -> Result<()> {
                     return;
                 }
             };
-            if let Err(err) = rt.block_on(pertisk_api::serve_metrics(state, addr)) {
+            if let Err(err) = rt.block_on(pertisk_api::serve_metrics(state, addr, bearer_token)) {
                 warn!(error = %err, "metrics endpoint stopped");
             }
         })?;
-    info!(%addr, "metrics endpoint starting");
+    info!(%addr, auth, "metrics endpoint starting");
     Ok(())
+}
+
+fn resolve_metrics_token(args: &Args, volume: &StateVolume) -> Option<String> {
+    if let Some(ref t) = args.metrics_token {
+        let t = t.trim();
+        if !t.is_empty() {
+            return Some(t.to_string());
+        }
+    }
+    let path = volume.root.join("secrets/metrics.token");
+    match std::fs::read_to_string(&path) {
+        Ok(s) => {
+            let s = s.trim().to_string();
+            if s.is_empty() {
+                None
+            } else {
+                info!(path = %path.display(), "loaded metrics bearer token from STATE");
+                Some(s)
+            }
+        }
+        Err(_) => None,
+    }
 }
 
 fn resolve_tls(args: &Args) -> Option<TlsPaths> {

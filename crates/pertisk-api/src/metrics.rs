@@ -5,35 +5,104 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::state::SharedState;
 
 static METRICS_SCRAPES: AtomicU64 = AtomicU64::new(0);
 
-/// Bind and serve `GET /metrics` (Prometheus text format). Ignores path otherwise.
-pub async fn serve_metrics(state: SharedState, listen: SocketAddr) -> anyhow::Result<()> {
+/// Bind and serve `GET /metrics` (Prometheus text format).
+///
+/// When `bearer_token` is `Some`, requests must include
+/// `Authorization: Bearer <token>` (case-insensitive scheme).
+pub async fn serve_metrics(
+    state: SharedState,
+    listen: SocketAddr,
+    bearer_token: Option<String>,
+) -> anyhow::Result<()> {
     let listener = TcpListener::bind(listen).await?;
-    info!(%listen, "metrics endpoint listening");
+    if bearer_token.is_some() {
+        info!(%listen, auth = "bearer", "metrics endpoint listening");
+    } else {
+        info!(%listen, auth = "none", "metrics endpoint listening");
+    }
 
     loop {
         let (mut sock, _) = listener.accept().await?;
         let state = state.clone();
+        let token = bearer_token.clone();
         tokio::spawn(async move {
-            let mut buf = [0u8; 1024];
-            let _ = sock.read(&mut buf).await;
+            let mut buf = [0u8; 4096];
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+
+            if !path_is_metrics(&req) {
+                let _ = write_http(&mut sock, 404, "text/plain", b"not found\n").await;
+                return;
+            }
+
+            if let Some(ref expected) = token {
+                if !bearer_authorized(&req, expected) {
+                    let _ = write_http(&mut sock, 401, "text/plain", b"unauthorized\n").await;
+                    return;
+                }
+            }
+
             METRICS_SCRAPES.fetch_add(1, Ordering::Relaxed);
             let body = render_metrics(&state);
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            if let Err(err) = sock.write_all(resp.as_bytes()).await {
-                warn!(error = %err, "metrics write failed");
-            }
+            let _ = write_http(&mut sock, 200, "text/plain; version=0.0.4", body.as_bytes()).await;
         });
     }
+}
+
+fn path_is_metrics(req: &str) -> bool {
+    let line = req.lines().next().unwrap_or("");
+    // GET /metrics HTTP/1.1  (also allow /metrics?…)
+    let mut parts = line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+    method.eq_ignore_ascii_case("GET") && (path == "/metrics" || path.starts_with("/metrics?"))
+}
+
+fn bearer_authorized(req: &str, expected: &str) -> bool {
+    for line in req.lines() {
+        let line = line.trim_end_matches('\r');
+        let Some(rest) = line
+            .strip_prefix("Authorization:")
+            .or_else(|| line.strip_prefix("authorization:"))
+        else {
+            continue;
+        };
+        let rest = rest.trim();
+        if let Some(tok) = rest
+            .strip_prefix("Bearer ")
+            .or_else(|| rest.strip_prefix("bearer "))
+        {
+            return tok.trim() == expected;
+        }
+    }
+    false
+}
+
+async fn write_http(
+    sock: &mut tokio::net::TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let reason = match status {
+        200 => "OK",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        _ => "Error",
+    };
+    let resp = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    sock.write_all(resp.as_bytes()).await?;
+    sock.write_all(body).await?;
+    Ok(())
 }
 
 fn render_metrics(state: &SharedState) -> String {
@@ -113,5 +182,24 @@ mod tests {
         let body = render_metrics(&st);
         assert!(body.contains("pertisk_node_ready"));
         assert!(body.contains("pertisk_info{"));
+    }
+
+    #[test]
+    fn accepts_bearer_header() {
+        let req = "GET /metrics HTTP/1.1\r\nAuthorization: Bearer s3cret\r\n\r\n";
+        assert!(bearer_authorized(req, "s3cret"));
+        assert!(!bearer_authorized(req, "nope"));
+        assert!(!bearer_authorized(
+            "GET /metrics HTTP/1.1\r\n\r\n",
+            "s3cret"
+        ));
+    }
+
+    #[test]
+    fn metrics_path_only() {
+        assert!(path_is_metrics("GET /metrics HTTP/1.1"));
+        assert!(path_is_metrics("GET /metrics?foo=1 HTTP/1.1"));
+        assert!(!path_is_metrics("GET / HTTP/1.1"));
+        assert!(!path_is_metrics("POST /metrics HTTP/1.1"));
     }
 }
