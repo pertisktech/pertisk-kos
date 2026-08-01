@@ -20,7 +20,7 @@ fi
 echo "==> qemu disk boot (Ctrl-A X to exit)"
 exec qemu-system-x86_64 \
   -machine q35 \
-  -cpu qemu64 \
+  -cpu max \
   -m 1024M \
   -nographic \
   -no-reboot \

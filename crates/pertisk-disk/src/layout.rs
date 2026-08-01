@@ -54,6 +54,8 @@ impl PartitionRole {
 pub struct MountPaths {
     /// Persistent STATE mount (config, identity).
     pub state: &'static str,
+    /// EFI System Partition (systemd-boot + A/B kernels).
+    pub efi: &'static str,
     /// Writable ephemeral data (logs, containerd, kubelet).
     pub var: &'static str,
     /// Optional EPHEMERAL mount backing `/var`.
@@ -62,11 +64,7 @@ pub struct MountPaths {
 
 impl Default for MountPaths {
     fn default() -> Self {
-        Self {
-            state: "/system/state",
-            var: "/var",
-            ephemeral: "/system/ephemeral",
-        }
+        Self::standard()
     }
 }
 
@@ -74,6 +72,7 @@ impl MountPaths {
     pub const fn standard() -> Self {
         Self {
             state: "/system/state",
+            efi: "/boot/efi",
             var: "/var",
             ephemeral: "/system/ephemeral",
         }

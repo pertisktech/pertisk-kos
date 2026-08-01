@@ -3,13 +3,15 @@
 # Usage:
 #   ./image/build-initramfs.sh              # linux/amd64
 #   PERTISK_PLATFORM=linux/arm64 ./image/build-initramfs.sh
+#   PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh   # + installer ESP assets
 #   ./image/build-all.sh                    # both
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${ROOT}/out"
 OVERLAY="${ROOT}/image/runtime-overlay"
-mkdir -p "${OUT}" "${OVERLAY}"
+BOOT_OVERLAY="${ROOT}/image/boot-overlay"
+mkdir -p "${OUT}" "${OVERLAY}" "${BOOT_OVERLAY}"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is required to build the initramfs" >&2
@@ -21,6 +23,8 @@ if [[ ! -f "${ROOT}/Cargo.lock" ]]; then
 fi
 
 find "${OVERLAY}" -mindepth 1 ! -name '.keep' -exec rm -rf {} + 2>/dev/null || true
+find "${BOOT_OVERLAY}" -mindepth 1 ! -name '.keep' -exec rm -rf {} + 2>/dev/null || true
+
 if [[ "${PERTISK_EMBED_RUNTIME:-0}" == "1" ]]; then
   if [[ ! -x "${OUT}/runtime/usr/local/bin/containerd" ]]; then
     echo "PERTISK_EMBED_RUNTIME=1 but out/runtime missing; run ./image/fetch-runtime.sh" >&2
@@ -36,6 +40,13 @@ case "${PLATFORM}" in
   linux/arm64) ARCH_SUFFIX=arm64 ;;
   *) echo "unsupported PERTISK_PLATFORM=${PLATFORM}" >&2; exit 1 ;;
 esac
+
+if [[ "${PERTISK_EMBED_BOOT:-0}" == "1" ]]; then
+  echo "==> staging installer boot assets (kernel + systemd-boot)"
+  PERTISK_ARCH="${ARCH_SUFFIX}" "${ROOT}/image/fetch-kernel.sh"
+  PERTISK_ARCH="${ARCH_SUFFIX}" "${ROOT}/image/fetch-bootloader.sh"
+  PERTISK_ARCH="${ARCH_SUFFIX}" "${ROOT}/image/stage-boot-assets.sh"
+fi
 
 ARTIFACT="${OUT}/initramfs-${ARCH_SUFFIX}.cpio.gz"
 

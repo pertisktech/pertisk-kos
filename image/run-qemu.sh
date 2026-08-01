@@ -30,7 +30,7 @@ APPEND="${PERTISK_QEMU_CMDLINE:-console=ttyS0 pertiskd.smoke=1}"
 echo "==> qemu boot (Ctrl-A X to exit)"
 exec qemu-system-x86_64 \
   -machine q35 \
-  -cpu qemu64 \
+  -cpu max \
   -m 512M \
   -nographic \
   -no-reboot \

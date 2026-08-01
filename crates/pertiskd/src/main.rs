@@ -16,8 +16,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use pertisk_api::{shared, SharedState, TlsPaths, DEFAULT_LISTEN};
 use pertisk_config::MachineConfig;
-use pertisk_disk::{layout_present, prepare_state, StateVolume};
+use pertisk_disk::{layout_present, prepare_state, try_prepare_esp, StateVolume};
 use pertisk_update::{record_boot_attempt_with_layout, SlotLayout};
+#[cfg(target_os = "linux")]
+use pertisk_update::{bootstrap_esp, BootAssets, EspPaths, INSTALLER_BOOT_DIR};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -107,6 +109,7 @@ fn run() -> Result<()> {
     }
 
     let volume = prepare_boot_state(args.state_dir.as_deref())?;
+    let _esp = try_prepare_esp();
     let cfg = load_boot_config(&args, &volume)?.or(early_cfg);
 
     if let Some(ref cfg) = cfg {
@@ -189,8 +192,18 @@ fn run() -> Result<()> {
         }
         if !is_pid1 {
             info!("dev mode (not PID 1); use --force-init to supervise + serve API");
+            return Ok(());
         }
-        return Ok(());
+        // PID 1 must not return — power off so QEMU -no-reboot exits cleanly.
+        info!("smoke done; powering off");
+        #[cfg(target_os = "linux")]
+        {
+            use nix::sys::reboot::{reboot, RebootMode};
+            let _ = reboot(RebootMode::RB_POWER_OFF);
+        }
+        loop {
+            std::thread::park();
+        }
     }
 
     info!("running as init");
@@ -333,8 +346,37 @@ fn maybe_install(cfg: &MachineConfig, args: &Args) -> Result<()> {
         info!(disk = %opts.disk.display(), wipe = opts.wipe, "starting disk install");
         install_disk(&opts)?;
         info!("disk install complete");
+
+        // Mount fresh EFI and seed systemd-boot + slot A when installer assets exist.
+        bootstrap_esp_after_install()?;
         Ok(())
     }
+}
+
+#[cfg(target_os = "linux")]
+fn bootstrap_esp_after_install() -> Result<()> {
+    use pertisk_disk::prepare_esp;
+
+    let installer = PathBuf::from(INSTALLER_BOOT_DIR);
+    if !installer.join("kernel").exists() {
+        warn!(
+            dir = %installer.display(),
+            "installer boot assets missing; ESP left empty (re-build with PERTISK_EMBED_BOOT=1)"
+        );
+        return Ok(());
+    }
+
+    let assets = BootAssets::from_installer_dir(&installer)
+        .context("resolve installer boot assets")?;
+    let esp_vol = prepare_esp().context("mount EFI after install")?.ok_or_else(|| {
+        anyhow::anyhow!("EFI partition not found after install")
+    })?;
+    let esp = EspPaths {
+        root: esp_vol.root,
+    };
+    bootstrap_esp(&esp, &assets).context("bootstrap ESP")?;
+    info!(esp = %esp.root.display(), "ESP bootstrapped with systemd-boot + slot A");
+    Ok(())
 }
 
 fn prepare_boot_state(state_dir: Option<&std::path::Path>) -> Result<StateVolume> {

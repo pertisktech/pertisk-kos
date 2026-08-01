@@ -10,7 +10,10 @@ pub use apply::{
     apply_bundle, mark_boot_good, record_boot_attempt, record_boot_attempt_with_layout,
     ApplyError, ApplyResult, SlotLayout,
 };
-pub use bootloader::{activate_slot, try_activate_slot, BootloaderError, EspPaths};
+pub use bootloader::{
+    activate_slot, bootstrap_esp, install_systemd_boot, try_activate_slot, BootAssets,
+    BootloaderError, EfiArch, EspPaths, INSTALLER_BOOT_DIR,
+};
 pub use bundle::{
     build_manifest, sha256_file, verify_bundle, BundleError, BundleManifest, VerifiedBundle,
 };

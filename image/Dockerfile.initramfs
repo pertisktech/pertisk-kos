@@ -1,35 +1,61 @@
 # syntax=docker/dockerfile:1
-# Multi-arch initramfs build. Pass --platform=linux/amd64 or linux/arm64.
+# Build Rust on $BUILDPLATFORM (native), cross-compile to TARGETARCH musl.
+# Avoids broken amd64 Rust codegen under qemu-user on Apple Silicon.
 
 ARG TARGETARCH
+ARG BUILDPLATFORM
 
-FROM rust:1.85-bookworm AS build
+FROM --platform=$BUILDPLATFORM rust:1.85-bookworm AS build
 ARG TARGETARCH
+ARG BUILDPLATFORM
+ARG ZIG_VERSION=0.13.0
 WORKDIR /src
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    musl-tools \
+    curl \
+    xz-utils \
     protobuf-compiler \
+    file \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Map Docker arch → Rust musl triple + linker.
+# Zig cross linker for the builder CPU (not the target).
+RUN BUILD_ARCH="$(echo "${BUILDPLATFORM}" | cut -d/ -f2)" \
+    && case "${BUILD_ARCH}" in \
+         amd64) ZIG_ARCH=x86_64 ;; \
+         arm64) ZIG_ARCH=aarch64 ;; \
+         *) echo "unsupported BUILDPLATFORM=${BUILDPLATFORM}" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" \
+         -o /tmp/zig.tar.xz \
+    && tar -xJf /tmp/zig.tar.xz -C /opt \
+    && ln -s "/opt/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}/zig" /usr/local/bin/zig \
+    && zig version
+
+# Map Docker TARGETARCH → Rust triple.
 RUN case "${TARGETARCH}" in \
-      amd64) echo x86_64-unknown-linux-musl > /tmp/rust-target; \
-             echo musl-gcc > /tmp/linker ;; \
-      arm64) echo aarch64-unknown-linux-musl > /tmp/rust-target; \
-             echo musl-gcc > /tmp/linker ;; \
+      amd64) echo x86_64-unknown-linux-musl > /tmp/rust-target ;; \
+      arm64) echo aarch64-unknown-linux-musl > /tmp/rust-target ;; \
       *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-    && rustup target add "$(cat /tmp/rust-target)"
+    && rustup target add "$(cat /tmp/rust-target)" \
+    && cargo install --locked cargo-zigbuild --version 0.21.8
 
 COPY Cargo.toml Cargo.lock ./
+COPY .cargo ./.cargo
 COPY crates ./crates
 COPY examples ./examples
 COPY proto ./proto
 
+# Native BUILDPLATFORM rustc + Zig cross link (avoids qemu-user codegen bugs).
 RUN RUST_TARGET="$(cat /tmp/rust-target)" \
-    && export "CARGO_TARGET_$(echo "$RUST_TARGET" | tr 'a-z-' 'A-Z_')_LINKER=$(cat /tmp/linker)" \
-    && cargo build --release -p pertiskd --target "${RUST_TARGET}" \
-    && cp "target/${RUST_TARGET}/release/pertiskd" /pertiskd
+    && cargo zigbuild --release -p pertiskd --target "${RUST_TARGET}" \
+    && cp "target/${RUST_TARGET}/release/pertiskd" /pertiskd \
+    && file /pertiskd \
+    && if ! file /pertiskd | grep -Eqi 'statically linked|static-pie'; then \
+         echo "ERROR: pertiskd must be statically linked for initramfs" >&2; \
+         exit 1; \
+       fi
 
 FROM alpine:3.20 AS tools
 ARG TARGETARCH
@@ -52,6 +78,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /rootfs
 COPY image/rootfs/ ./
 COPY image/runtime-overlay/ ./
+COPY image/boot-overlay/ ./
 COPY --from=build /pertiskd ./init
 COPY --from=tools /tools/bin/ ./usr/sbin/
 COPY --from=tools /tools/bin/busybox ./bin/busybox
@@ -61,6 +88,7 @@ RUN chmod +x ./init \
     && chmod +x ./usr/sbin/* ./bin/busybox 2>/dev/null || true \
     && mkdir -p proc sys dev run tmp var system/state etc sbin \
        usr/local/bin opt/cni/bin etc/cni/net.d etc/kubernetes/manifests boot/efi \
+       usr/lib/pertisk/boot \
     && ln -sf /usr/sbin/sgdisk ./sbin/sgdisk \
     && ln -sf /usr/sbin/mkfs.ext4 ./sbin/mkfs.ext4 \
     && ln -sf /usr/sbin/mkfs.vfat ./sbin/mkfs.vfat \
@@ -68,7 +96,13 @@ RUN chmod +x ./init \
     && ln -sf /usr/sbin/udhcpc ./sbin/udhcpc \
     && if [ -f ./usr/local/bin/containerd ]; then chmod +x ./usr/local/bin/*; fi \
     && if [ -f ./opt/cni/bin/loopback ]; then chmod +x ./opt/cni/bin/*; fi \
-    && find . | cpio -o -H newc | gzip -9 > /initramfs.cpio.gz
+    && find . | cpio -o -H newc | gzip -9 > /tmp/initramfs-base.cpio.gz \
+    && if [ -f usr/lib/pertisk/boot/kernel ]; then \
+         cp /tmp/initramfs-base.cpio.gz usr/lib/pertisk/boot/initramfs; \
+         find . | cpio -o -H newc | gzip -9 > /initramfs.cpio.gz; \
+       else \
+         cp /tmp/initramfs-base.cpio.gz /initramfs.cpio.gz; \
+       fi
 
 FROM scratch AS export
 COPY --from=pack /initramfs.cpio.gz /initramfs.cpio.gz

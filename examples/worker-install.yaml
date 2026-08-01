@@ -5,7 +5,7 @@ machine:
     disk: /dev/vda
     wipe: true
   network:
-    hostname: pertisk-metal-1
+    hostname: pertisk-node-1
     interfaces:
       - interface: eth0
         dhcp: true

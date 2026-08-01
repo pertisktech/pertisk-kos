@@ -1,10 +1,12 @@
 //! Disk layout, STATE volume, install, and mount helpers for Pertisk KOS.
 
+mod esp;
 mod install;
 mod layout;
 mod plan;
 mod state;
 
+pub use esp::{prepare_esp, prepare_esp_at, try_prepare_esp, EspError, EspVolume};
 pub use install::{
     disk_size, install_disk, layout_present, partition_node, plan_install, InstallError,
     InstallOptions,

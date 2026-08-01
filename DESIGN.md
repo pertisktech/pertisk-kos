@@ -183,8 +183,9 @@ pertisk-kos/
 
 ### Phase 5 — Productize (ongoing)
 
-- Multi-arch initramfs (`amd64` / `arm64` via `image/build-all.sh`) — in progress
-- systemd-boot A/B slot switching when ESP is present — in progress
+- Multi-arch initramfs (`amd64` / `arm64` via `image/build-all.sh`)
+- systemd-boot A/B slot switching when ESP is present
+- Metal EFI first-boot install (`PERTISK_EMBED_BOOT=1`, `run-qemu-uefi.sh`) — in progress
 - Bare metal + cloud images (metal, AWS, GCP, Azure)
 - Docs, SBOM, reproducible builds
 - CIS-ish hardening checklist
