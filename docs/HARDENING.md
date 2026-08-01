@@ -8,7 +8,7 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 
 | Control | Status | Notes |
 |---------|--------|-------|
-| No SSH / interactive shell in production image | pass | Default initramfs is API-only; BusyBox present for install/DHCP helpers only |
+| No SSH / interactive shell in production image | pass | Default `IMAGE_PROFILE=production`: no `/bin/busybox`; DHCP via `udhcpc` only. Debug profile adds ash (`PROFILE=debug`) |
 | Immutable root FS | partial | Initramfs root; STATE/EPHEMERAL writable; full SquashFS/EROFS root still Phase 4/5 |
 | Management API mTLS | pass | `PERTISK_TLS_*` + `scripts/gen-mtls-certs.sh` |
 | Signed A/B OS upgrades | pass | Ed25519 trust key on STATE; unsigned rejected |
@@ -117,8 +117,17 @@ Pertisk goals (DESIGN §8): measured boot where feasible. Not required for v0.1.
 
 Until UKI lands, treat Secure Boot as an operator/firmware concern: enroll nothing that would block unsigned virt kernels used in QEMU labs.
 
+## Image profiles
+
+| Profile | Flag | Shell | Use |
+|---------|------|-------|-----|
+| `production` (default) | `make build` / `PERTISK_IMAGE_PROFILE=production` | none (`/bin/busybox` absent) | Releases, cloud images |
+| `debug` | `make build PROFILE=debug` | BusyBox `ash` at `/bin/sh` | Lab recovery only; ship/sign separately |
+
+Marker file in the image: `/etc/pertisk/image-profile`.
+
 ## Gaps tracked for later
 
 - Metrics over mTLS (bearer is interim)
-- Production debug image signed separately (no BusyBox in default)
 - Secure Boot UKI enrollment (steps 3–5 above)
+- BusyBox-free DHCP (replace multi-call `udhcpc` with a dedicated client / Rust DHCP)

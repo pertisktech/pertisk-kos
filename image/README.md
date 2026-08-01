@@ -21,6 +21,13 @@ brew install qemu            # once
 
 Defaults to **linux/amd64** so artifacts match `qemu-system-x86_64` on Apple Silicon.
 
+Production images omit `/bin/busybox` (API-only). For a recovery shell:
+
+```bash
+make build PROFILE=debug
+# → out/initramfs-amd64-debug.cpio.gz
+```
+
 You should see serial logs roughly like:
 
 ```

@@ -74,6 +74,13 @@ check "tmpfs nosuid/nodev" file_has "${LINUX}" 'MS_NOSUID \| MsFlags::MS_NODEV'
 check "HARDENING.md exists" test -f docs/HARDENING.md
 check "COMPATIBILITY.md exists" test -f docs/COMPATIBILITY.md
 
+# --- Production image: no interactive BusyBox by default ---
+DF="image/Dockerfile.initramfs"
+check "IMAGE_PROFILE defaults to production" file_has "${DF}" 'ARG IMAGE_PROFILE=production'
+check "production removes /bin/busybox" file_has "${DF}" 'rm -f ./bin/busybox'
+check "debug profile installs ash" file_has "${DF}" 'IMAGE_PROFILE.*=.*"debug"'
+check "udhcpc without /bin/busybox path" file_has "${DF}" 'usr/sbin/udhcpc'
+
 # --- Unit tests for kubelet CIS fields ---
 echo
 echo "==> cargo test (kubelet config / metrics auth)"

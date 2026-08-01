@@ -5,7 +5,8 @@
 #   PERTISK_PLATFORM=linux/arm64 ./image/build-initramfs.sh
 #   PERTISK_VERSION=0.2.0 PERTISK_PLATFORM=linux/arm64 ./image/build-initramfs.sh
 #   PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
-#   make build VERSION=0.2.0 ARCH=arm64
+#   PERTISK_IMAGE_PROFILE=debug ./image/build-initramfs.sh   # + BusyBox ash
+#   make build PROFILE=production|debug
 #   ./image/build-all.sh
 set -euo pipefail
 
@@ -56,6 +57,16 @@ else
   esac
 fi
 
+# production (default): no /bin/busybox. debug: BusyBox ash for recovery.
+IMAGE_PROFILE="${PERTISK_IMAGE_PROFILE:-production}"
+case "${IMAGE_PROFILE}" in
+  production | debug) ;;
+  *)
+    echo "unsupported PERTISK_IMAGE_PROFILE=${IMAGE_PROFILE} (use production|debug)" >&2
+    exit 1
+    ;;
+esac
+
 if [[ "${PERTISK_EMBED_BOOT:-0}" == "1" ]]; then
   echo "==> staging installer boot assets (kernel + systemd-boot)"
   PERTISK_ARCH="${ARCH_SUFFIX}" "${ROOT}/image/fetch-kernel.sh"
@@ -65,11 +76,16 @@ fi
 
 ARTIFACT="${OUT}/initramfs-${ARCH_SUFFIX}.cpio.gz"
 VERSIONED="${OUT}/initramfs-${ARCH_SUFFIX}-v${VERSION}.cpio.gz"
+if [[ "${IMAGE_PROFILE}" == "debug" ]]; then
+  ARTIFACT="${OUT}/initramfs-${ARCH_SUFFIX}-debug.cpio.gz"
+  VERSIONED="${OUT}/initramfs-${ARCH_SUFFIX}-debug-v${VERSION}.cpio.gz"
+fi
 
-echo "==> building initramfs (version=${VERSION} platform=${PLATFORM})"
+echo "==> building initramfs (version=${VERSION} platform=${PLATFORM} profile=${IMAGE_PROFILE})"
 docker build \
   --platform "${PLATFORM}" \
   --build-arg "VERSION=${VERSION}" \
+  --build-arg "IMAGE_PROFILE=${IMAGE_PROFILE}" \
   -f "${ROOT}/image/Dockerfile.initramfs" \
   --target export \
   -o "type=local,dest=${OUT}/.initramfs-tmp-${ARCH_SUFFIX}" \
@@ -78,8 +94,8 @@ docker build \
 mv "${OUT}/.initramfs-tmp-${ARCH_SUFFIX}/initramfs.cpio.gz" "${ARTIFACT}"
 rm -rf "${OUT}/.initramfs-tmp-${ARCH_SUFFIX}"
 cp "${ARTIFACT}" "${VERSIONED}"
-# Keep legacy name for amd64 QEMU scripts.
-if [[ "${ARCH_SUFFIX}" == "amd64" ]]; then
+# Keep legacy name for amd64 QEMU scripts (production only).
+if [[ "${ARCH_SUFFIX}" == "amd64" && "${IMAGE_PROFILE}" == "production" ]]; then
   cp "${ARTIFACT}" "${OUT}/initramfs.cpio.gz"
 fi
 

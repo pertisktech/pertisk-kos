@@ -56,9 +56,10 @@ Built-in bridge and a cluster CNI DaemonSet must not both own `/etc/cni/net.d`.
 
 | Artifact | Command |
 |----------|---------|
-| Initramfs amd64 | `make build ARCH=amd64` |
+| Initramfs amd64 (production) | `make build ARCH=amd64` |
 | Initramfs arm64 | `make build ARCH=arm64` |
-| Both | `make build-all` |
+| Debug (BusyBox ash) | `make build PROFILE=debug` |
+| Both arches | `make build-all` |
 | Versioned release | `make build VERSION=0.2.0 ARCH=amd64` |
 | Cloud raw + qcow2 | `make cloud VERSION=… ARCH=…` |
 

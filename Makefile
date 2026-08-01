@@ -2,6 +2,7 @@
 #
 #   make build                         # initramfs, default VERSION + ARCH=amd64
 #   make build VERSION=0.2.0 ARCH=arm64
+#   make build PROFILE=debug                 # BusyBox ash recovery image
 #   make build EMBED_BOOT=1 EMBED_RUNTIME=1
 #   make build-all VERSION=0.2.0       # amd64 + arm64
 #   make build-host VERSION=0.2.0      # host cargo release bins
@@ -32,6 +33,11 @@ PLATFORM := linux/$(BUILD_ARCH)
 
 EMBED_BOOT ?= 0
 EMBED_RUNTIME ?= 0
+# production (default): no interactive shell. debug: BusyBox ash.
+PROFILE ?= production
+ifeq ($(filter $(PROFILE),production debug),)
+  $(error unsupported PROFILE=$(PROFILE); use production or debug)
+endif
 
 .PHONY: help build build-host build-all initramfs cloud \
 	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version
@@ -39,13 +45,13 @@ EMBED_RUNTIME ?= 0
 help:
 	@echo "Pertisk KOS make targets"
 	@echo ""
-	@echo "  make build [VERSION=...] [ARCH=amd64|arm64] [EMBED_BOOT=1] [EMBED_RUNTIME=1]"
-	@echo "  make build-all [VERSION=...] [EMBED_BOOT=1] [EMBED_RUNTIME=1]"
+	@echo "  make build [VERSION=...] [ARCH=amd64|arm64] [PROFILE=production|debug] [EMBED_BOOT=1] [EMBED_RUNTIME=1]"
+	@echo "  make build-all [VERSION=...] [PROFILE=...] [EMBED_BOOT=1] [EMBED_RUNTIME=1]"
 	@echo "  make build-host [VERSION=...]          # cargo release (host)"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
 	@echo "  make test | check-hardening | fmt | clippy | clean"
 	@echo ""
-	@echo "Current: VERSION=$(VERSION) ARCH=$(BUILD_ARCH) PLATFORM=$(PLATFORM)"
+	@echo "Current: VERSION=$(VERSION) ARCH=$(BUILD_ARCH) PLATFORM=$(PLATFORM) PROFILE=$(PROFILE)"
 
 version:
 	@echo "$(VERSION)"
@@ -54,18 +60,19 @@ version:
 build: initramfs
 
 initramfs:
-	@echo "==> make initramfs VERSION=$(VERSION) ARCH=$(BUILD_ARCH)"
+	@echo "==> make initramfs VERSION=$(VERSION) ARCH=$(BUILD_ARCH) PROFILE=$(PROFILE)"
 	PERTISK_VERSION="$(VERSION)" \
 	PERTISK_PLATFORM="$(PLATFORM)" \
 	PERTISK_ARCH="$(BUILD_ARCH)" \
+	PERTISK_IMAGE_PROFILE="$(PROFILE)" \
 	PERTISK_EMBED_BOOT="$(EMBED_BOOT)" \
 	PERTISK_EMBED_RUNTIME="$(EMBED_RUNTIME)" \
 	  "$(ROOT)/image/build-initramfs.sh"
 
 ## Build both architectures.
 build-all:
-	$(MAKE) build VERSION="$(VERSION)" ARCH=amd64 EMBED_BOOT="$(EMBED_BOOT)" EMBED_RUNTIME="$(EMBED_RUNTIME)"
-	$(MAKE) build VERSION="$(VERSION)" ARCH=arm64 EMBED_BOOT="$(EMBED_BOOT)" EMBED_RUNTIME="$(EMBED_RUNTIME)"
+	$(MAKE) build VERSION="$(VERSION)" ARCH=amd64 PROFILE="$(PROFILE)" EMBED_BOOT="$(EMBED_BOOT)" EMBED_RUNTIME="$(EMBED_RUNTIME)"
+	$(MAKE) build VERSION="$(VERSION)" ARCH=arm64 PROFILE="$(PROFILE)" EMBED_BOOT="$(EMBED_BOOT)" EMBED_RUNTIME="$(EMBED_RUNTIME)"
 	@echo "==> multi-arch artifacts"
 	@ls -lh "$(ROOT)/out"/initramfs-*.cpio.gz
 

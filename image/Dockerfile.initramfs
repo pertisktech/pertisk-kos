@@ -67,7 +67,6 @@ ARG TARGETARCH
 RUN apk add --no-cache sgdisk e2fsprogs dosfstools busybox parted \
     && mkdir -p /tools/bin /tools/lib \
     && cp /usr/bin/sgdisk /usr/sbin/partprobe /sbin/mkfs.ext4 /sbin/mkfs.vfat /bin/busybox /tools/bin/ \
-    && ln -sf busybox /tools/bin/udhcpc \
     && for bin in /tools/bin/sgdisk /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/partprobe; do \
          ldd "$bin" | awk '{print $3}' | grep -E '^/' | while read -r lib; do cp -n "$lib" /tools/lib/; done; \
        done \
@@ -77,6 +76,7 @@ RUN apk add --no-cache sgdisk e2fsprogs dosfstools busybox parted \
        esac
 
 FROM debian:bookworm-slim AS pack
+ARG IMAGE_PROFILE=production
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cpio gzip \
     && rm -rf /var/lib/apt/lists/*
@@ -85,20 +85,32 @@ COPY image/rootfs/ ./
 COPY image/runtime-overlay/ ./
 COPY image/boot-overlay/ ./
 COPY --from=build /pertiskd ./init
-COPY --from=tools /tools/bin/ ./usr/sbin/
-COPY --from=tools /tools/bin/busybox ./bin/busybox
-COPY --from=tools /tools/bin/udhcpc ./usr/sbin/udhcpc
+# Disk/net helpers (required). BusyBox multi-call binary is only shipped as udhcpc
+# in production — no /bin/busybox shell entrypoint. Debug profile adds ash/sh.
+COPY --from=tools /tools/bin/sgdisk /tools/bin/partprobe /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat ./usr/sbin/
+COPY --from=tools /tools/bin/busybox ./usr/sbin/udhcpc
 COPY --from=tools /tools/lib/ ./lib/
-RUN chmod +x ./init \
-    && chmod +x ./usr/sbin/* ./bin/busybox 2>/dev/null || true \
-    && mkdir -p proc sys dev run tmp var system/state etc sbin \
+RUN chmod +x ./init ./usr/sbin/* \
+    && mkdir -p proc sys dev run tmp var system/state etc/pertisk sbin \
        usr/local/bin opt/cni/bin etc/cni/net.d etc/kubernetes/manifests boot/efi \
-       usr/lib/pertisk/boot \
+       usr/lib/pertisk/boot bin \
     && ln -sf /usr/sbin/sgdisk ./sbin/sgdisk \
     && ln -sf /usr/sbin/mkfs.ext4 ./sbin/mkfs.ext4 \
     && ln -sf /usr/sbin/mkfs.vfat ./sbin/mkfs.vfat \
     && ln -sf /usr/sbin/partprobe ./sbin/partprobe \
     && ln -sf /usr/sbin/udhcpc ./sbin/udhcpc \
+    && echo "${IMAGE_PROFILE}" > ./etc/pertisk/image-profile \
+    && if [ "${IMAGE_PROFILE}" = "debug" ]; then \
+         cp ./usr/sbin/udhcpc ./bin/busybox \
+         && ln -sf busybox ./bin/sh \
+         && ln -sf busybox ./bin/ash \
+         && chmod +x ./bin/busybox \
+         && echo "debug profile: BusyBox ash enabled"; \
+       else \
+         # Production: ensure no interactive shell binary sneaks in.
+         rm -f ./bin/busybox ./bin/sh ./bin/ash ./bin/bash \
+         && echo "production profile: no /bin/busybox"; \
+       fi \
     && if [ -f ./usr/local/bin/containerd ]; then chmod +x ./usr/local/bin/*; fi \
     && if [ -f ./opt/cni/bin/loopback ]; then chmod +x ./opt/cni/bin/*; fi \
     && find . | cpio -o -H newc | gzip -9 > /tmp/initramfs-base.cpio.gz \

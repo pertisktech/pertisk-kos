@@ -6,7 +6,7 @@ See [DESIGN.md](./DESIGN.md) for architecture and phases.
 
 ## Status
 
-**P5 (partial)** — hardening CI gate, compatibility matrix, metrics auth, CNI modes, cloud images, Make VERSION/ARCH.
+**P5 (partial)** — production image (no shell), hardening CI, compatibility matrix, metrics auth, CNI, cloud images.
 
 ## Build (Make)
 
@@ -14,13 +14,14 @@ See [DESIGN.md](./DESIGN.md) for architecture and phases.
 make help
 make build                              # initramfs amd64, Cargo.toml version
 make build VERSION=0.2.0 ARCH=arm64     # custom version + arch
+make build PROFILE=debug                # recovery image with BusyBox ash
 make build VERSION=0.2.0 ARCH=amd64 EMBED_BOOT=1 EMBED_RUNTIME=1
 make build-all VERSION=0.2.0            # amd64 + arm64
 make build-host VERSION=0.2.0           # host cargo release bins → out/bin/
 make cloud VERSION=0.2.0 ARCH=amd64     # golden disk image
 ```
 
-Artifacts: `out/initramfs-<arch>.cpio.gz` and `out/initramfs-<arch>-v<version>.cpio.gz`.
+Artifacts: `out/initramfs-<arch>.cpio.gz` (production) or `out/initramfs-<arch>-debug.cpio.gz`, plus `-v<version>` copies.
 
 ## Quick start (mTLS + upgrade)
 
@@ -126,4 +127,4 @@ See [image/cloud/README.md](./image/cloud/README.md) for AWS / GCP / Azure uploa
 
 ## Next
 
-P5 remainder: Secure Boot UKI (stretch); production image without BusyBox.
+P5 remainder: Secure Boot UKI (stretch).
