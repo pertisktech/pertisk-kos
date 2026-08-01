@@ -12,6 +12,8 @@
 /out/
 /dist/
 /.pertisk-state/
+/proxmox.sh
+*.local.sh
 /image/runtime-overlay/**
 !/image/runtime-overlay/.keep
 /image/boot-overlay/**

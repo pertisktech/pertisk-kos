@@ -33,6 +33,22 @@ PERTISK_DISK=out/pertisk-cloud-amd64.raw ./image/run-qemu-uefi.sh
 PERTISK_DISK=out/pertisk-cloud-arm64.raw ./image/run-qemu-uefi.sh
 ```
 
+## Proxmox VE
+
+See [docs/PROXMOX.md](../../docs/PROXMOX.md). Summary:
+
+```bash
+# API token (not root password)
+export PROXMOX_URL=https://proxmox:8006 PROXMOX_INSECURE=1
+export PROXMOX_TOKEN_ID='root@pam!pertisk' PROXMOX_TOKEN_SECRET='…'
+export PROXMOX_NODE=pve PROXMOX_STORAGE=local
+# optional but reliable:
+# export PROXMOX_SSH=root@proxmox
+
+./scripts/proxmox-upload-vm.sh --vmid 9100 --name pertisk-worker-1 \
+  --disk out/pertisk-cloud-amd64.qcow2
+```
+
 ## Cloud upload (operator outline)
 
 ### AWS

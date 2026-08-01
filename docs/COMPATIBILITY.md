@@ -9,6 +9,7 @@ Pinned defaults come from [`image/fetch-runtime.sh`](../image/fetch-runtime.sh) 
 | QEMU (UEFI) | amd64 | supported | `./image/run-qemu-uefi.sh` + OVMF |
 | QEMU (UEFI) | arm64 | supported | auto-selects `qemu-system-aarch64` + AAVMF |
 | Bare metal EFI | amd64 / arm64 | supported | `PERTISK_EMBED_BOOT=1` first-boot install |
+| Proxmox VE | amd64 | documented | [PROXMOX.md](./PROXMOX.md) + `scripts/proxmox-upload-vm.sh` |
 | AWS (raw/qcow2 upload) | amd64 / arm64 | outlined | See [`image/cloud/README.md`](../image/cloud/README.md) |
 | GCP / Azure | amd64 / arm64 | outlined | Same cloud image pipeline |
 

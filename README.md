@@ -128,6 +128,8 @@ PERTISK_DISK=out/pertisk-cloud-amd64.raw ./image/run-qemu-uefi.sh
 
 See [image/cloud/README.md](./image/cloud/README.md) for AWS / GCP / Azure upload outlines.
 
+**Proxmox:** [docs/PROXMOX.md](./docs/PROXMOX.md) — API-token upload + UEFI worker VM (`scripts/proxmox-upload-vm.sh`).
+
 ## Next
 
 P5 remainder: TPM attestation / OVMF enroll automation; metrics mTLS.

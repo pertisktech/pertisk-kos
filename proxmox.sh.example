@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Local Proxmox deploy helper — DO NOT COMMIT (gitignored).
+# Copy from proxmox.sh.example and fill in token + node.
+set -euo pipefail
+
+export PROXMOX_URL="${PROXMOX_URL:-https://10.1.1.197:8006}"
+export PROXMOX_INSECURE="${PROXMOX_INSECURE:-1}"
+export PROXMOX_TOKEN_ID="${PROXMOX_TOKEN_ID:?set PROXMOX_TOKEN_ID}"
+export PROXMOX_TOKEN_SECRET="${PROXMOX_TOKEN_SECRET:?set PROXMOX_TOKEN_SECRET}"
+export PROXMOX_NODE="${PROXMOX_NODE:-pve}"
+# Final VM disks on ZFS; upload via directory storage or SSH.
+export PROXMOX_STORAGE="${PROXMOX_STORAGE:-local-zfs}"
+export PROXMOX_UPLOAD_STORAGE="${PROXMOX_UPLOAD_STORAGE:-local}"
+# Most reliable for ZFS:
+# export PROXMOX_SSH="root@10.1.1.197"
+
+exec ./scripts/proxmox-upload-vm.sh --vmid "${PROXMOX_VMID:-9100}" --name "${PROXMOX_VM_NAME:-pertisk-worker-1}" \
+  --disk "${PROXMOX_DISK:-out/pertisk-cloud-amd64.qcow2}" \
+  "$@"
