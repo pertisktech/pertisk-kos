@@ -53,7 +53,16 @@ mod linux {
             rt.block_on(link::set_link_up(&iface.interface))?;
             if iface.dhcp {
                 match link::run_dhcp(&iface.interface) {
-                    Ok(()) => info!(interface = %iface.interface, "DHCP configured"),
+                    Ok(()) => {
+                        let addrs = rt
+                            .block_on(link::list_addresses(&iface.interface))
+                            .unwrap_or_default();
+                        info!(
+                            interface = %iface.interface,
+                            addresses = ?addrs,
+                            "DHCP configured"
+                        );
+                    }
                     Err(err) => warn!(
                         interface = %iface.interface,
                         error = %err,

@@ -76,6 +76,28 @@ The script:
 
 Manual UI alternative: upload `pertisk-cloud-amd64.qcow2` to storage → Create VM (UEFI, q35) → attach disk → start.
 
+### Finding the guest IP
+
+Pertisk has **no qemu-guest-agent** and no SSH, so Proxmox Summary will not show an IP.
+
+After a successful DHCP lease, Serial logs a line like:
+
+```text
+DHCP configured interface=eth0 addresses=["10.1.1.50/24"]
+```
+
+Use **Console → xterm.js / Serial** (`console=ttyS0`).
+
+Or look up the VM MAC on the Proxmox host / DHCP server:
+
+```bash
+# MAC from Hardware → Network Device, e.g. BC:24:11:F2:B6:53
+ip neigh | grep -i bc:24:11:f2:b6:53
+# or your router's DHCP lease table for that MAC
+```
+
+To force a known address, bake static config into the image (`dhcp: false` + `addresses` / `gateway` in the seed YAML) and rebuild.
+
 ### If the VM does not boot
 
 **`TASK ERROR: connection timed out`** on Console is often a **VNC proxy** failure — check Serial instead, or SSH: `qm terminal <vmid>`.

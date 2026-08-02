@@ -969,6 +969,7 @@ dependencies = [
  "anyhow",
  "futures",
  "ipnet",
+ "netlink-packet-route",
  "pertisk-config",
  "rtnetlink",
  "thiserror 2.0.19",

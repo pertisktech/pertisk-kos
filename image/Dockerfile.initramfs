@@ -52,15 +52,21 @@ COPY proto ./proto
 
 # Native BUILDPLATFORM rustc + Zig cross link (avoids qemu-user codegen bugs).
 # PERTISK_BUILD_VERSION (from ARG VERSION) is baked into release_version().
+# Note: a single `--bin NAME` filters the whole build to that binary only, so
+# build packages separately (pertiskd + udhcpc hook).
 RUN RUST_TARGET="$(cat /tmp/rust-target)" \
     && echo "==> cargo zigbuild PERTISK_BUILD_VERSION=${PERTISK_BUILD_VERSION} target=${RUST_TARGET}" \
     && cargo zigbuild --release -p pertiskd --target "${RUST_TARGET}" \
+    && cargo zigbuild --release -p pertisk-net --bin pertisk-udhcpc-hook --target "${RUST_TARGET}" \
     && cp "target/${RUST_TARGET}/release/pertiskd" /pertiskd \
-    && file /pertiskd \
-    && if ! file /pertiskd | grep -Eqi 'statically linked|static-pie'; then \
-         echo "ERROR: pertiskd must be statically linked for initramfs" >&2; \
-         exit 1; \
-       fi
+    && cp "target/${RUST_TARGET}/release/pertisk-udhcpc-hook" /pertisk-udhcpc-hook \
+    && file /pertiskd /pertisk-udhcpc-hook \
+    && for bin in /pertiskd /pertisk-udhcpc-hook; do \
+         if ! file "$bin" | grep -Eqi 'statically linked|static-pie'; then \
+           echo "ERROR: $bin must be statically linked for initramfs" >&2; \
+           exit 1; \
+         fi; \
+       done
 
 FROM alpine:3.20 AS tools
 ARG TARGETARCH
@@ -87,13 +93,15 @@ COPY image/boot-overlay/ ./
 COPY --from=build /pertiskd ./init
 # Disk/net helpers (required). BusyBox multi-call binary is only shipped as udhcpc
 # in production — no /bin/busybox shell entrypoint. Debug profile adds ash/sh.
+# DHCP leases apply via /usr/lib/pertisk/udhcpc-hook (Rust; no shell script).
 COPY --from=tools /tools/bin/sgdisk /tools/bin/partprobe /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat ./usr/sbin/
 COPY --from=tools /tools/bin/busybox ./usr/sbin/udhcpc
 COPY --from=tools /tools/lib/ ./lib/
-RUN chmod +x ./init ./usr/sbin/* \
-    && mkdir -p proc sys dev run tmp var system/state etc/pertisk sbin \
+RUN mkdir -p proc sys dev run tmp var system/state etc/pertisk sbin \
        usr/local/bin opt/cni/bin etc/cni/net.d etc/kubernetes/manifests boot/efi \
-       usr/lib/pertisk/boot bin \
+       usr/lib/pertisk/boot bin
+COPY --from=build /pertisk-udhcpc-hook ./usr/lib/pertisk/udhcpc-hook
+RUN chmod +x ./init ./usr/sbin/* ./usr/lib/pertisk/udhcpc-hook \
     && ln -sf /usr/sbin/sgdisk ./sbin/sgdisk \
     && ln -sf /usr/sbin/mkfs.ext4 ./sbin/mkfs.ext4 \
     && ln -sf /usr/sbin/mkfs.vfat ./sbin/mkfs.vfat \

@@ -16,4 +16,9 @@ tracing = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 futures = "0.3"
 ipnet = "2"
+netlink-packet-route = "0.19"
 rtnetlink = "0.14"
+
+[[bin]]
+name = "pertisk-udhcpc-hook"
+path = "src/bin/pertisk-udhcpc-hook.rs"

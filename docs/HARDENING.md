@@ -130,4 +130,4 @@ Marker file in the image: `/etc/pertisk/image-profile`.
 
 - Metrics over mTLS (bearer is interim)
 - TPM PCR attestation / automated OVMF enrollment in CI
-- BusyBox-free DHCP (replace multi-call `udhcpc` with a dedicated client / Rust DHCP)
+- BusyBox-free DHCP (leases already applied by Rust `pertisk-udhcpc-hook`; replace multi-call `udhcpc` itself next)
