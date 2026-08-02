@@ -347,6 +347,8 @@ mod tests {
         .unwrap();
         assert!(g.token.contains('.'));
         assert!(g.controlplane_yaml.contains("controlplane"));
+        assert!(!g.controlplane_yaml.contains("dashboard"));
         assert!(g.worker_yaml.contains("worker"));
+        assert!(!g.worker_yaml.contains("dashboard"));
     }
 }

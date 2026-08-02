@@ -44,6 +44,7 @@ pub fn gen_config(
                 nameservers: vec!["1.1.1.1".into()],
             },
             install: None,
+            dashboard: None,
         },
         cluster: Some(Cluster {
             endpoint: endpoint.clone(),
@@ -74,6 +75,7 @@ pub fn gen_config(
                 nameservers: vec!["1.1.1.1".into()],
             },
             install: None,
+            dashboard: None,
         },
         cluster: Some(Cluster {
             endpoint: endpoint.clone(),

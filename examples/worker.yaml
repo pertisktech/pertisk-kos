@@ -6,3 +6,7 @@ machine:
     interfaces:
       - interface: eth0
         dhcp: true
+  # dashboard omitted → built-in defaults (catppuccin / rounded / 93x25 / utf8)
+cluster:
+  endpoint: https://10.1.1.210:6443
+  token: replace.me000000000000

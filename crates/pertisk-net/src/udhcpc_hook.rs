@@ -29,8 +29,7 @@ pub fn run_from_env(args: &[String]) -> Result<(), NetError> {
                 .map_err(|_| NetError::Msg("udhcpc hook: missing $ip".into()))?;
             let prefix = lease_prefix_len()?;
             let cidr = format!("{ip}/{prefix}");
-            // Surface lease details on serial even if tracing isn't configured.
-            eprintln!("pertisk-udhcpc-hook: {action} {iface} {cidr}");
+            tracing::info!(%action, interface = %iface, %cidr, "udhcpc lease");
             rt.block_on(async {
                 crate::link::flush_addresses(&iface).await?;
                 crate::link::add_address(&iface, &cidr).await?;

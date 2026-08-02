@@ -38,8 +38,40 @@ pub struct Machine {
     pub machine_type: MachineType,
     #[serde(default)]
     pub network: Network,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install: Option<Install>,
+    /// Console status dashboard (Serial / xterm.js).
+    /// Omit for built-in defaults; set fields to override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dashboard: Option<Dashboard>,
+}
+
+/// Serial console TUI appearance and geometry.
+///
+/// Kernel cmdline `PERTISK_DASHBOARD_*` env vars override these when set.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Dashboard {
+    /// `dracula` | `nord` | `gruvbox` | `wild-cherry` | `tokyo-night` |
+    /// `catppuccin` | `solarized` | `cyberpunk` | `mono`
+    ///
+    /// Default when omitted: `catppuccin`.
+    #[serde(default)]
+    pub theme: Option<String>,
+    /// `auto` | `ascii` | `light` | `rounded` | `heavy` | `double`
+    ///
+    /// Default when omitted: `rounded`.
+    #[serde(default)]
+    pub border: Option<String>,
+    /// Force column count. Default when omitted: `93`.
+    #[serde(default)]
+    pub cols: Option<u16>,
+    /// Force row count. Default when omitted: `25`.
+    #[serde(default)]
+    pub rows: Option<u16>,
+    /// Force Unicode box-drawing even when the Serial UTF-8 probe fails.
+    /// Default when omitted: `true`.
+    #[serde(default)]
+    pub utf8: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -156,6 +188,7 @@ impl MachineConfig {
                     nameservers: vec![],
                 },
                 install: None,
+                dashboard: None,
             },
             cluster: None,
         }
@@ -247,5 +280,56 @@ cluster:
 "#;
         let cfg = MachineConfig::from_yaml(yaml).unwrap();
         assert_eq!(cfg.cluster.unwrap().cni, CniMode::None);
+    }
+
+    #[test]
+    fn parses_dashboard() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: controlplane
+  network:
+    hostname: cp-1
+  dashboard:
+    theme: nord
+    border: light
+    cols: 140
+    rows: 40
+"#;
+        let cfg = MachineConfig::from_yaml(yaml).unwrap();
+        let dash = cfg.machine.dashboard.unwrap();
+        assert_eq!(dash.theme.as_deref(), Some("nord"));
+        assert_eq!(dash.border.as_deref(), Some("light"));
+        assert_eq!(dash.cols, Some(140));
+        assert_eq!(dash.rows, Some(40));
+        assert_eq!(dash.utf8, None);
+    }
+
+    #[test]
+    fn parses_dashboard_utf8_flag() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: controlplane
+  dashboard:
+    theme: gruvbox
+    border: double
+    utf8: true
+"#;
+        let cfg = MachineConfig::from_yaml(yaml).unwrap();
+        let dash = cfg.machine.dashboard.unwrap();
+        assert_eq!(dash.border.as_deref(), Some("double"));
+        assert_eq!(dash.utf8, Some(true));
+    }
+
+    #[test]
+    fn dashboard_optional() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: worker
+"#;
+        let cfg = MachineConfig::from_yaml(yaml).unwrap();
+        assert!(cfg.machine.dashboard.is_none());
     }
 }

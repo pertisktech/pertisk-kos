@@ -35,7 +35,7 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
     sock.set_broadcast(true)
         .map_err(|e| NetError::Msg(format!("dhcp broadcast: {e}")))?;
     if let Err(err) = sock.bind_device(Some(iface.as_bytes())) {
-        eprintln!("pertisk-net: bind_device({iface}) failed: {err}; continuing");
+        tracing::warn!(interface = iface, error = %err, "DHCP bind_device failed; continuing");
     }
     sock.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 68).into())
         .map_err(|e| NetError::Msg(format!("dhcp bind :68: {e}")))?;
@@ -71,11 +71,10 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
         msg.encode(&mut Encoder::new(&mut buf))
             .map_err(|e| NetError::Msg(format!("dhcp encode discover: {e}")))?;
         discovers += 1;
-        eprintln!("pertisk-net: DHCP discover #{discovers} on {iface} mac={mac:02x?}");
+        tracing::debug!(interface = iface, discovers, mac = ?mac, "DHCP discover");
         match sock.send_to(&buf, dest) {
-            Ok(n) => eprintln!("pertisk-net: sent {n} byte discover"),
+            Ok(n) => tracing::debug!(bytes = n, "DHCP discover sent"),
             Err(err) => {
-                eprintln!("pertisk-net: discover send failed: {err}");
                 tracing::warn!(interface = iface, error = %err, "DHCP discover send failed");
             }
         }
@@ -83,7 +82,7 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
         let mut rbuf = [0u8; 1500];
         match sock.recv_from(&mut rbuf) {
             Ok((n, from)) => {
-                eprintln!("pertisk-net: DHCP recv {n} bytes from {from}");
+                tracing::debug!(bytes = n, %from, "DHCP packet received");
                 if let Ok(resp) = Message::decode(&mut Decoder::new(&rbuf[..n])) {
                     if resp.xid() == xid {
                         if let Some(DhcpOption::MessageType(MessageType::Offer)) =
@@ -91,16 +90,13 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
                         {
                             offer = Some(resp);
                         } else {
-                            eprintln!("pertisk-net: ignoring non-offer DHCP message");
+                            tracing::debug!("ignoring non-offer DHCP message");
                         }
                     } else {
-                        eprintln!(
-                            "pertisk-net: ignoring xid mismatch got={} want={xid}",
-                            resp.xid()
-                        );
+                        tracing::debug!(got = resp.xid(), want = xid, "ignoring DHCP xid mismatch");
                     }
                 } else {
-                    eprintln!("pertisk-net: failed to decode DHCP packet ({n} bytes)");
+                    tracing::debug!(bytes = n, "failed to decode DHCP packet");
                 }
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -124,7 +120,7 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
         Some(DhcpOption::ServerIdentifier(ip)) => *ip,
         _ => offer.siaddr(),
     };
-    eprintln!("pertisk-net: DHCP offer {yiaddr} from {server_ip}");
+    tracing::info!(interface = iface, %yiaddr, %server_ip, "DHCP offer");
 
     // REQUEST → ACK
     let mut ack: Option<Message> = None;
@@ -152,9 +148,9 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
         let mut buf = Vec::new();
         msg.encode(&mut Encoder::new(&mut buf))
             .map_err(|e| NetError::Msg(format!("dhcp encode request: {e}")))?;
-        eprintln!("pertisk-net: DHCP request {yiaddr} on {iface}");
+        tracing::debug!(interface = iface, %yiaddr, "DHCP request");
         if let Err(err) = sock.send_to(&buf, dest) {
-            eprintln!("pertisk-net: request send failed: {err}");
+            tracing::warn!(interface = iface, error = %err, "DHCP request send failed");
         }
 
         let mut rbuf = [0u8; 1500];
@@ -211,7 +207,6 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
         }
     }
 
-    eprintln!("pertisk-net: DHCP bound {iface} {cidr}");
     tracing::info!(interface = iface, %cidr, "DHCP bound (builtin)");
     Ok(())
 }

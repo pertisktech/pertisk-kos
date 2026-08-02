@@ -387,6 +387,7 @@ fn run() -> Result<()> {
 
     info!("running as init");
     let _dashboard = if should_enable_dashboard(args.no_dashboard, args.smoke) {
+        dashboard::apply_config(cfg.as_ref());
         match start_dashboard(
             cfg.clone(),
             api_state.clone(),
@@ -527,6 +528,9 @@ fn init_tracing() {
         .with_env_filter(filter)
         .with_target(false)
         .with_writer(ring.make_writer())
+        // Escape codes in the ring survive into the dashboard as literal
+        // "[32m" text on Proxmox Serial.
+        .with_ansi(false)
         .compact()
         .init();
 }

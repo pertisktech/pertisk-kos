@@ -271,6 +271,18 @@ pub async fn resolve_iface(configured: &str) -> Result<String, NetError> {
     )))
 }
 
+/// Funnel a child's captured output into tracing, one line per record.
+fn log_child_output(bin: &str, stdout: &[u8], stderr: &[u8]) {
+    for (stream, bytes) in [("stdout", stdout), ("stderr", stderr)] {
+        for line in String::from_utf8_lossy(bytes).lines() {
+            let line = line.trim();
+            if !line.is_empty() {
+                tracing::info!(bin, stream, "{line}");
+            }
+        }
+    }
+}
+
 fn dhcp_bin(candidates: &[&'static str]) -> Option<&'static str> {
     for c in candidates {
         if std::path::Path::new(c).is_file() {
@@ -308,7 +320,6 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
     match crate::dhcp::run_dhcp(iface) {
         Ok(()) => return Ok(()),
         Err(err) => {
-            eprintln!("pertisk-net: builtin DHCP failed: {err}");
             tracing::warn!(interface = iface, error = %err, "builtin DHCP failed; trying udhcpc");
         }
     }
@@ -322,13 +333,19 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
                 args.extend_from_slice(&["-s", script]);
             }
             use std::process::Stdio;
+            // Capture rather than inherit: udhcpc and its hook would otherwise
+            // write straight onto the serial console, scribbling over the
+            // dashboard and parking the cursor mid-screen.
             match Command::new(bin)
                 .args(&args)
                 .stdin(Stdio::null())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .status()
-            {
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .map(|out| {
+                    log_child_output(bin, &out.stdout, &out.stderr);
+                    out.status
+                }) {
                 Ok(status) if status.success() => {
                     // Confirm the hook actually installed an address.
                     let rt = tokio::runtime::Builder::new_current_thread()

@@ -1,8 +1,9 @@
 //! Full-pane panel TUI for Proxmox Serial (xterm.js).
 //!
-//! Size is pinned once (ptkube-style). Re-probing every tick with CPR
-//! (`CSI 999;999H`) makes the cursor blink and breaks width when the
-//! reply does not match the real pane. Frame dump keeps the cursor hidden.
+//! Renders into a ratatui `TestBackend`, then paints only the rows that
+//! changed (absolute CUP, no DEC synchronized updates — those blank Proxmox).
+//! Cursor is forced off around every write so a slow serial line does not
+//! show it walking through the node panel / mid-screen.
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -14,24 +15,24 @@ use std::time::Duration;
 use pertisk_api::SharedState;
 use pertisk_config::MachineConfig;
 use ratatui::backend::TestBackend;
+use ratatui::style::Modifier;
 use ratatui::Terminal;
 use tracing::info;
 
-use crate::dashboard::panels;
 use crate::dashboard::snapshot::StatusSnapshot;
+use crate::dashboard::{panels, probe, theme};
 use crate::log_ring::LogRing;
 
-/// Safe defaults for Proxmox Serial / xterm.js (same as ptkube-dashboard).
-const PIN_WIDTH: u16 = 80;
-const PIN_HEIGHT: u16 = 24;
 const REFRESH_MS: u64 = 2000;
 
 /// Hide cursor + disable blink (xterm).
-const CURSOR_OFF: &[u8] = b"\x1b[?25l\x1b[?12l";
+///
+/// Do **not** send DECSCUSR (`CSI 2 SP q`) — Proxmox Serial / xterm.js often
+/// fails to parse the space, and a literal `q` appears on screen.
+const CURSOR_OFF: &str = "\x1b[?25l\x1b[?12l";
 
-pub fn tui_available() -> bool {
-    true
-}
+/// Clear any stuck synchronized-update mode from a previous build.
+const UNSYNC: &str = "\x1b[?2026l";
 
 pub fn run_tui_loop(
     stop: Arc<AtomicBool>,
@@ -57,30 +58,53 @@ fn run_tui_inner(
     state_root: PathBuf,
     logs: LogRing,
 ) -> Result<(), String> {
-    let (width, height) = pinned_size();
+    // Safety net: apply built-ins / YAML even if the caller forgot.
+    crate::dashboard::apply_config(cfg.as_ref());
+    let caps = probe::detect();
+    let (width, height) = (caps.cols, caps.rows);
+    let chrome = theme::chrome(caps.utf8);
+    let skin = panels::Skin {
+        theme: theme::active(),
+        chrome,
+        badge: format!("{width}x{height} {}", caps.source),
+    };
     let mut terminal = Terminal::new(TestBackend::new(width, height))
         .map_err(|e| format!("terminal init: {e}"))?;
 
-    info!(width, height, "console TUI started (pinned size)");
-    // One-shot status on stderr before we own the screen (not every refresh).
-    let _ = writeln!(
-        io::stderr(),
-        "pertiskd: console TUI {width}x{height} (pinned)"
+    info!(
+        width,
+        height,
+        size_source = caps.source,
+        utf8 = caps.utf8,
+        theme = skin.theme.name,
+        border = skin.chrome.name,
+        "console TUI started"
+    );
+    // Log only — never writeln to the console after we own it.
+    info!(
+        "console TUI {width}x{height} ({}) theme={} border={}",
+        caps.source,
+        skin.theme.name,
+        skin.chrome.name
     );
 
-    // Clear once, hide cursor. Do not re-clear every tick (causes blink).
+    let _ = io::stderr().write_all(UNSYNC.as_bytes());
+    if !skin.chrome.ascii_only {
+        let _ = io::stderr().write_all(b"\x1b%G");
+    }
     let _ = io::stderr().write_all(b"\x1b[2J\x1b[H");
-    let _ = io::stderr().write_all(CURSOR_OFF);
+    let _ = io::stderr().write_all(CURSOR_OFF.as_bytes());
     let _ = io::stderr().flush();
 
+    let mut writer = FrameWriter::default();
     while !stop.load(Ordering::SeqCst) {
         let snap = StatusSnapshot::collect(cfg.as_ref(), &state, &state_root);
-        let log_lines = panels::log_inner_height(height).max(2) as usize;
-        let recent = logs.tail(log_lines);
+        let log_rows = panels::log_inner_height(height).max(2) as usize;
+        let recent = logs.tail(panels::log_tail_count(log_rows));
         terminal
-            .draw(|frame| panels::render(frame, &snap, &recent, width))
+            .draw(|frame| panels::render_themed(frame, &snap, &recent, &skin))
             .map_err(|e| format!("TUI draw: {e}"))?;
-        dump_frame(terminal.backend())?;
+        dump_frame(&mut writer, terminal.backend(), skin.chrome.ascii_only)?;
 
         let steps = (REFRESH_MS / 100).max(1);
         for _ in 0..steps {
@@ -96,57 +120,366 @@ fn run_tui_inner(
     Ok(())
 }
 
-/// Pin console size — env override, else 80×24.
-///
-/// Proxmox Serial size probes are unreliable; a wider dump than the pane
-/// wraps lines and destroys ASCII borders. Matching ptkube: always pin.
-fn pinned_size() -> (u16, u16) {
-    let cols = std::env::var("PERTISK_DASHBOARD_COLS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .or_else(|| std::env::var("COLUMNS").ok().and_then(|s| s.parse().ok()))
-        .unwrap_or(PIN_WIDTH);
-    let rows = std::env::var("PERTISK_DASHBOARD_ROWS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .or_else(|| std::env::var("LINES").ok().and_then(|s| s.parse().ok()))
-        .unwrap_or(PIN_HEIGHT);
-    // Keep within a range that fits typical Serial panes without wrapping.
-    (
-        cols.clamp(60, 100),
-        rows.clamp(20, 40),
-    )
-}
-
-fn dump_frame(backend: &TestBackend) -> Result<(), String> {
-    let buf = backend.buffer();
-    let area = buf.area();
-    let mut out = String::with_capacity((area.width as usize + 3) * area.height as usize + 32);
-    // Home + hide cursor (never park at bottom-right — that blinks).
-    out.push_str("\x1b[H\x1b[?25l\x1b[?12l");
-    for y in 0..area.height {
-        for x in 0..area.width {
-            let sym = buf[(x, y)].symbol();
-            let ch = sym.chars().next().unwrap_or(' ');
-            out.push(if ch == '\0' || !ch.is_ascii() {
-                ' '
-            } else if ch.is_control() {
-                ' '
-            } else {
-                ch
-            });
-        }
-        // Clear remainder of the real terminal line (handles wider panes).
-        out.push_str("\x1b[K");
-        if y + 1 < area.height {
-            out.push_str("\r\n");
-        }
-    }
-    // Leave cursor at home, hidden — not on the last cell.
-    out.push_str("\x1b[H\x1b[?25l\x1b[?12l");
+fn dump_frame(
+    writer: &mut FrameWriter,
+    backend: &TestBackend,
+    ascii_only: bool,
+) -> Result<(), String> {
+    let Some(out) = writer.encode(backend.buffer(), ascii_only) else {
+        // Still remind the terminal the cursor is off — some rebuilds re-enable it.
+        let _ = io::stderr().write_all(CURSOR_OFF.as_bytes());
+        let _ = io::stderr().flush();
+        return Ok(());
+    };
     io::stderr()
         .write_all(out.as_bytes())
         .map_err(|e| format!("TUI write: {e}"))?;
     io::stderr().flush().map_err(|e| format!("TUI flush: {e}"))?;
     Ok(())
+}
+
+/// Paints only rows whose SGR+glyph payload changed since the last frame.
+///
+/// A full `\x1b[H` + `\r\n` walk made the (sometimes still-visible) cursor
+/// flash on the node title every tick, then again mid-screen on the way down.
+#[derive(Default)]
+struct FrameWriter {
+    rows: Vec<String>,
+}
+
+impl FrameWriter {
+    fn encode(&mut self, buf: &ratatui::buffer::Buffer, ascii_only: bool) -> Option<String> {
+        let area = buf.area();
+        if self.rows.len() != area.height as usize {
+            self.rows = vec![String::new(); area.height as usize];
+        }
+
+        let mut out = String::new();
+        for y in 0..area.height {
+            let row = encode_row(buf, y, ascii_only);
+            if self.rows[y as usize] == row {
+                continue;
+            }
+            if out.is_empty() {
+                out.push_str(CURSOR_OFF);
+            }
+            // 1-based CUP — skip unchanged rows so the cursor never walks them.
+            out.push_str(&format!("\x1b[{};1H", y + 1));
+            out.push_str(&row);
+            out.push_str("\x1b[0m\x1b[K");
+            self.rows[y as usize] = row;
+        }
+
+        if out.is_empty() {
+            return None;
+        }
+        // Hide first, then park at home. Leaving the cursor on the last painted
+        // cell made it blink bottom/center-right; DECSCUSR is avoided (prints `q`).
+        out.push_str(CURSOR_OFF);
+        out.push_str("\x1b[H");
+        out.push_str(CURSOR_OFF);
+        Some(out)
+    }
+}
+
+fn encode_row(buf: &ratatui::buffer::Buffer, y: u16, ascii_only: bool) -> String {
+    let area = buf.area();
+    let mut out = String::with_capacity(area.width as usize + 16);
+    let mut current = Some((None, false));
+    for x in 0..area.width {
+        let cell = &buf[(x, y)];
+        let want = (
+            theme::ansi_fg(cell.fg),
+            cell.modifier.contains(Modifier::BOLD),
+        );
+        if current != Some(want) {
+            out.push_str(&sgr(want.0, want.1));
+            current = Some(want);
+        }
+        out.push_str(&glyph(cell.symbol(), ascii_only));
+    }
+    out
+}
+
+fn glyph(symbol: &str, ascii_only: bool) -> String {
+    let ch = symbol.chars().next().unwrap_or(' ');
+    if ch.is_control() || ch == '\0' {
+        return " ".into();
+    }
+    if ch.is_ascii() {
+        return ch.to_string();
+    }
+    if ascii_only {
+        return ascii_fallback(ch).to_string();
+    }
+    ch.to_string()
+}
+
+fn ascii_fallback(ch: char) -> char {
+    match ch {
+        '─' | '━' | '═' => '-',
+        '│' | '┃' | '║' => '|',
+        '█' | '▓' | '▒' => '|',
+        '░' => '-',
+        '┌' | '┐' | '└' | '┘' | '┏' | '┓' | '┗' | '┛' | '╔' | '╗' | '╚' | '╝' | '╭' | '╮'
+        | '╯' | '╰' => '+',
+        '├' | '┤' | '┬' | '┴' | '┼' => '+',
+        _ => ' ',
+    }
+}
+
+fn sgr(fg: Option<u8>, bold: bool) -> String {
+    match (fg, bold) {
+        (None, false) => "\x1b[0m".to_string(),
+        (None, true) => "\x1b[0;1m".to_string(),
+        (Some(code), false) => format!("\x1b[0;{code}m"),
+        (Some(code), true) => format!("\x1b[0;1;{code}m"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dashboard::snapshot::{DiskUsage, StatusSnapshot};
+
+    fn demo_snapshot() -> StatusSnapshot {
+        StatusSnapshot {
+            hostname: "pertisk-node-01".into(),
+            version: "0.1.0".into(),
+            ready: true,
+            cpu_cores: 4,
+            mem_total_kb: 8 * 1024 * 1024,
+            mem_available_kb: 3 * 1024 * 1024,
+            disks: vec![DiskUsage {
+                label: "state".into(),
+                total_bytes: 40 * 1024 * 1024 * 1024,
+                used_bytes: 9 * 1024 * 1024 * 1024,
+            }],
+            net_rows: vec!["eth0 192.168.1.50/24".into()],
+            machine_type: "controlplane".into(),
+            cluster_endpoint: "https://10.0.0.1:6443".into(),
+            cni: "flannel".into(),
+            pod_cidr: "10.244.0.0/16".into(),
+            containerd: "up".into(),
+            containerd_pid: 412,
+            kubelet: "failed".into(),
+            boot_slot: "A".into(),
+            boot_ok: true,
+            boot_attempts: 1,
+            ..Default::default()
+        }
+    }
+
+    fn demo_logs() -> Vec<String> {
+        vec![
+            "INFO kubelet starting with a very long argument list that must wrap instead of being cut off".into(),
+            "ERROR failed to pull image registry.k8s.io/pause:3.9".into(),
+            "INFO node ready".into(),
+        ]
+    }
+
+    fn draw_demo(
+        width: u16,
+        height: u16,
+        chrome: theme::Chrome,
+        logs: &[String],
+    ) -> Terminal<TestBackend> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let skin = panels::Skin {
+            theme: theme::DRACULA,
+            chrome,
+            badge: format!("{width}x{height} test"),
+        };
+        terminal
+            .draw(|f| panels::render_themed(f, &demo_snapshot(), logs, &skin))
+            .unwrap();
+        terminal
+    }
+
+    fn render_demo(width: u16, height: u16, chrome: theme::Chrome) -> String {
+        let terminal = draw_demo(width, height, chrome, &demo_logs());
+        FrameWriter::default()
+            .encode(terminal.backend().buffer(), chrome.ascii_only)
+            .expect("first frame is never empty")
+    }
+
+    fn demo_rows(width: u16, height: u16, chrome: theme::Chrome) -> Vec<String> {
+        let terminal = draw_demo(width, height, chrome, &demo_logs());
+        let buf = terminal.backend().buffer();
+        (0..height)
+            .map(|y| encode_row(buf, y, chrome.ascii_only))
+            .collect()
+    }
+
+    #[test]
+    fn ascii_chrome_dump_is_pure_ascii() {
+        let out = render_demo(80, 24, theme::ASCII);
+        assert!(out.is_ascii(), "frame dump contained non-ASCII bytes");
+    }
+
+    #[test]
+    fn dump_only_emits_known_escape_sequences() {
+        let out = render_demo(80, 24, theme::ASCII);
+        for seq in out.split('\u{1b}').skip(1) {
+            let ok = seq.starts_with("[H")
+                || seq.starts_with("[K")
+                || seq.starts_with("[?25l")
+                || seq.starts_with("[?12l")
+                || (seq.starts_with('[') && seq[1..].starts_with(|c: char| c.is_ascii_digit()));
+            assert!(
+                ok,
+                "unexpected escape sequence: {:?}",
+                &seq[..seq.len().min(12)]
+            );
+            assert!(
+                !seq.starts_with("[2 q") && !seq.contains(" q"),
+                "DECSCUSR must not be used (prints literal q on Serial): {seq:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_row_is_exactly_frame_width() {
+        for (chrome, width) in [
+            (theme::ASCII, 80u16),
+            (theme::LIGHT, 80),
+            (theme::DOUBLE, 120),
+            (theme::ASCII, 200),
+        ] {
+            let rows = demo_rows(width, 24, chrome);
+            assert_eq!(rows.len(), 24);
+            for (i, row) in rows.iter().enumerate() {
+                let cols = strip_escapes(row).chars().count();
+                assert_eq!(
+                    cols, width as usize,
+                    "{} row {i} is {cols} columns",
+                    chrome.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn panels_span_the_full_width() {
+        let rows = demo_rows(160, 24, theme::ASCII);
+        let first = strip_escapes(&rows[0]);
+        assert!(first.starts_with('+'), "left edge missing: {first:?}");
+        assert!(first.ends_with('+'), "right edge missing: {first:?}");
+    }
+
+    #[test]
+    fn status_colors_reach_the_wire() {
+        let out = render_demo(80, 24, theme::ASCII);
+        // Base ANSI (no bold/bright) — same SGR shape as Magenta labels.
+        assert!(out.contains("\x1b[0;32m[up]"), "missing green [up]: {out:?}");
+        assert!(
+            out.contains("\x1b[0;31m[failed]"),
+            "missing red [failed]: {out:?}"
+        );
+    }
+
+    #[test]
+    fn absent_status_is_red_on_the_wire() {
+        let mut snap = demo_snapshot();
+        snap.containerd = "absent".into();
+        snap.containerd_pid = 0;
+        snap.kubelet = "absent".into();
+        snap.kubelet_pid = 0;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let skin = panels::Skin {
+            theme: theme::WILD_CHERRY,
+            chrome: theme::ASCII,
+            badge: "test".into(),
+        };
+        terminal
+            .draw(|f| panels::render_themed(f, &snap, &demo_logs(), &skin))
+            .unwrap();
+        let out = FrameWriter::default()
+            .encode(terminal.backend().buffer(), true)
+            .expect("frame");
+        assert!(
+            out.contains("\x1b[0;31m[absent]"),
+            "absent must be red: {out:?}"
+        );
+        assert!(out.contains("kubelet"), "{out:?}");
+    }
+
+    #[test]
+    fn frame_always_paints_something() {
+        let out = render_demo(80, 24, theme::ASCII);
+        assert!(out.contains("pertisk-node-01"));
+        assert!(out.contains(" node "));
+        assert!(!out.contains("?2026h"), "synchronized update begin present");
+    }
+
+    #[test]
+    fn cursor_stays_hidden() {
+        let out = render_demo(80, 24, theme::ASCII);
+        assert!(out.contains("\x1b[?25l"));
+        assert!(!out.contains("\x1b[?25h"));
+    }
+
+    #[test]
+    fn identical_frame_emits_nothing() {
+        let terminal = draw_demo(80, 24, theme::ASCII, &demo_logs());
+        let mut writer = FrameWriter::default();
+        assert!(writer.encode(terminal.backend().buffer(), true).is_some());
+        assert!(writer.encode(terminal.backend().buffer(), true).is_none());
+    }
+
+    #[test]
+    fn changed_log_does_not_repaint_node() {
+        let mut writer = FrameWriter::default();
+        let first = draw_demo(80, 24, theme::ASCII, &demo_logs());
+        writer.encode(first.backend().buffer(), true).unwrap();
+
+        let mut logs = demo_logs();
+        logs.push("INFO one more line".into());
+        let second = draw_demo(80, 24, theme::ASCII, &logs);
+        let out = writer.encode(second.backend().buffer(), true).unwrap();
+        assert!(
+            !out.contains("pertisk-node-01"),
+            "static node row was needlessly repainted"
+        );
+        assert!(out.contains("one more line"));
+    }
+
+    fn strip_escapes(line: &str) -> String {
+        let mut out = String::new();
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                }
+                for next in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&next) {
+                        break;
+                    }
+                }
+                continue;
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    #[test]
+    fn demo_frame_has_all_panels() {
+        for chrome in [theme::ASCII, theme::LIGHT, theme::DOUBLE, theme::ROUNDED] {
+            let rows = demo_rows(100, 26, chrome);
+            let out = rows.join("\n");
+            for title in [" node ", " network ", " mem ", " services ", " logs "] {
+                assert!(out.contains(title), "missing panel {title}");
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_glyphs_degrade_to_ascii() {
+        assert_eq!(glyph("─", true), "-");
+        assert_eq!(glyph("╔", true), "+");
+        assert_eq!(glyph("║", true), "|");
+        assert_eq!(glyph("─", false), "─");
+    }
 }

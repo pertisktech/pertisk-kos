@@ -71,7 +71,6 @@ mod linux_impl {
             let path = dir.join(format!("{name}.ko"));
             match load_module(&path) {
                 Ok(()) => {
-                    eprintln!("pertiskd: loaded module {name}");
                     info!(module = name, "module loaded");
                 }
                 Err(err) => {
@@ -79,7 +78,6 @@ mod linux_impl {
                     if err.contains("File exists") || err.contains("EEXIST") {
                         info!(module = name, "module already loaded");
                     } else {
-                        eprintln!("pertiskd: module {name} failed: {err}");
                         warn!(module = name, error = %err, "module load failed");
                     }
                 }

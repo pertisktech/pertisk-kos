@@ -10,6 +10,56 @@ use tracing_subscriber::fmt::MakeWriter;
 
 const DEFAULT_CAPACITY: usize = 500;
 
+/// Drop ANSI escape sequences and control bytes.
+///
+/// The console dashboard renders one character per terminal cell, so an
+/// embedded `\x1b[32m` would otherwise show up as literal `[32m` text.
+/// Child processes (containerd, kubelet) colorize their output too.
+pub fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.peek() {
+                // CSI: consume through the final byte (@ to ~).
+                Some('[') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: consume through BEL or ESC \.
+                Some(']') => {
+                    chars.next();
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Two-character escape.
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+            continue;
+        }
+        if c == '\t' {
+            out.push(' ');
+        } else if !c.is_control() {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Shared ring of recent log lines.
 #[derive(Clone, Debug)]
 pub struct LogRing {
@@ -73,7 +123,7 @@ impl LogRing {
     }
 
     fn push_line(&self, line: String, mirror_stderr: bool, to_state_log: bool) {
-        let line = line.trim_end_matches(['\r', '\n']).to_string();
+        let line = strip_ansi(line.trim_end_matches(['\r', '\n']));
         if line.is_empty() {
             return;
         }
@@ -174,5 +224,25 @@ impl Write for LogRingIo {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_ansi;
+
+    #[test]
+    fn removes_sgr_color_codes() {
+        assert_eq!(strip_ansi("\u{1b}[32m INFO\u{1b}[0m ready"), " INFO ready");
+    }
+
+    #[test]
+    fn removes_bare_csi_left_by_earlier_stripping() {
+        assert_eq!(strip_ansi("\u{1b}[2K\u{1b}[1;33mwarn\u{1b}[0m"), "warn");
+    }
+
+    #[test]
+    fn keeps_plain_text_and_tabs() {
+        assert_eq!(strip_ansi("kubelet\tup"), "kubelet up");
     }
 }

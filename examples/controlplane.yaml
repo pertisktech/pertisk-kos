@@ -8,6 +8,13 @@ machine:
         dhcp: true
     nameservers:
       - 1.1.1.1
+  # Optional — omit to use built-in defaults (catppuccin / rounded / 93x25 / utf8).
+  # dashboard:
+  #   theme: catppuccin
+  #   border: rounded
+  #   cols: 93
+  #   rows: 25
+  #   utf8: true
 cluster:
   endpoint: https://10.1.1.210:6443
   # From: pertiskctl gen config …

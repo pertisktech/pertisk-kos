@@ -84,7 +84,87 @@ Cloud images set systemd-boot `timeout 0` so there is **no countdown menu**. Wit
 
 Pertisk has **no qemu-guest-agent** and no SSH, so Proxmox Summary will not show an IP.
 
-After boot, `pertiskd` shows a Serial TUI (ptkube-dashboard style): **node** → full-width **network** (`iface  state  IP/prefix` via getifaddrs / `ip -br addr`) → **mem**|**services** → **logs** (hand-painted ASCII frame). Size is **pinned 80×24** (override with `PERTISK_DASHBOARD_COLS` / `PERTISK_DASHBOARD_ROWS`) so lines do not wrap; cursor is hidden (`CSI ?25l`); ~2s refresh.
+After boot, `pertiskd` shows a Serial TUI (ptkube-dashboard style): **node** → full-width **network** (`iface  state  IP/prefix` via getifaddrs / `ip -br addr`) → **mem**|**services** → **logs**. Cursor is hidden (`CSI ?25l`); ~2s refresh.
+
+Repaints only rewrite rows that changed (absolute cursor addressing). A full `\x1b[H` + line-feed walk every 2s is what made the cursor flash on the **node** title and again mid-screen. Synchronized updates (`CSI ?2026`) are still avoided — they can blank Proxmox xterm.js. Cursor style is forced steady then hidden (`CSI 2 SP q` + `?25l`) around every paint. Default chrome is rounded Unicode (`╭─╮`).
+
+Nothing else may write to the console while the dashboard owns it: tracing stays in the ring, and `udhcpc` / module load no longer `eprintln!` onto Serial.
+
+Colors use the **16 base ANSI colors only** — 256-color and truecolor SGR arrive mangled through Serial. Status follows the usual convention: `up`/`ready` green, `failed`/`absent` red, anything else amber; memory and disk meters redden past 70% and 90%. Log lines are word-wrapped (continuations indented two columns) and colored by severity.
+
+#### Size and glyph detection
+
+A serial line carries no `SIGWINCH`, and `TIOCGWINSZ` answers with a stale 80×24, so at startup `pertiskd` asks the terminal directly — **once**. Repeating the query on every refresh is what made the cursor blink in earlier builds.
+
+1. `CSI 18 t` → `CSI 8 ; rows ; cols t`. Exact and leaves the cursor alone, but **xterm.js ships with `windowOptions` disabled and usually will not answer**, so this normally falls through.
+2. Cursor extent: `CSI 9999;9999H` then `CSI 6n`. The terminal clamps the move to its own bounds, so the reported cursor position *is* the pane size. This only needs DSR, which xterm.js always answers — the same trick `resize(1)` has always used. The screen is cleared right after, so the cursor excursion is never visible.
+3. `TIOCGWINSZ`, if neither query was answered.
+4. 80×24.
+
+The result is written back with `TIOCSWINSZ` so child processes agree, and clamped to 60–240 × 20–80.
+
+UTF-8 support is probed the same way: print one `─` at the home position and ask where the cursor landed with `CSI 6n`. Column 2 means the terminal decoded the three bytes as one cell, so box-drawing glyphs (`┌ ─ │ ┘`) and block meters (`████░░░░`) are safe. Column 4 means it is in raw-byte mode, and the dashboard falls back to `+ - |`.
+
+The detected geometry is shown in the top-right of the **node** panel — `120x30 cursor-extent` — and on the startup line:
+
+```
+pertiskd: console TUI 120x30 (cursor-extent) theme=dracula border=light
+```
+
+The source word tells you which step won. `default` or `ioctl` means both queries went unanswered, and you should pin the size with `PERTISK_DASHBOARD_COLS` / `_ROWS`.
+
+#### Overrides
+
+Priority (highest first):
+
+1. Kernel cmdline env (`PERTISK_DASHBOARD_*` — the kernel forwards unknown `KEY=value` tokens to PID 1)
+2. `machine.dashboard` in `config.yaml`
+3. Built-in defaults (`catppuccin` / `rounded` / `93×25` / `utf8`)
+
+**config.yaml:**
+
+```yaml
+machine:
+  type: controlplane
+  dashboard:
+    theme: catppuccin  # optional override; omit machine.dashboard for built-ins
+    border: rounded    # auto | ascii | light | rounded | heavy | double
+    cols: 93           # optional — pin width (else probe, fallback 93)
+    rows: 25           # optional — pin height (else probe, fallback 25)
+    utf8: true         # optional — force Unicode borders on Serial
+```
+
+Built-in defaults (no YAML needed): `catppuccin` / `rounded` / `93×25` / `utf8`.
+Override any field via YAML or cmdline env.
+
+**Kernel cmdline / env:**
+
+| Variable | Values |
+| --- | --- |
+| `PERTISK_DASHBOARD_THEME` | `catppuccin` (default), `dracula`, `nord`, `gruvbox`, `wild-cherry`, `tokyo-night`, `solarized`, `cyberpunk`, `mono` |
+| `PERTISK_DASHBOARD_BORDER` | `rounded` (default), `ascii`, `auto`, `light`, `heavy`, `double` |
+| `PERTISK_DASHBOARD_COLS` / `_ROWS` | default `93` / `25` |
+| `PERTISK_DASHBOARD_UTF8` | `1` (default) — Unicode borders even if the probe failed |
+
+`mono` drops all frame color and keeps only status colors. On Proxmox Serial the UTF-8 probe often fails; `auto` then picks ASCII. Explicit `double` / `heavy` without `utf8: true` use `=` / `#` ASCII stand-ins so the frame still renders. With `utf8: true` you get real box-drawing (`╔═╗`). Check the startup line for `border=double` vs `border=double-ascii`.
+
+#### Making the font smaller (more rows and columns)
+
+Font size lives in the Proxmox web UI, not in the guest — the guest only ever learns the resulting column count. Two ways to change it:
+
+- **Persistent:** click your username (top right) → **My Settings** → the **xterm.js** panel → set **Font-Size** (try 10, or 8 for a very dense console) → **Save**. This sticks for every console you open.
+- **Ad hoc:** **Ctrl+-** inside an active console tab.
+
+Size is probed **once at startup**. After changing the font, reopen the Console tab (or reboot the VM) so `pertiskd` re-measures — or pin the size with `PERTISK_DASHBOARD_COLS` / `_ROWS` on the kernel cmdline.
+
+Borders default to rounded Unicode. For ASCII-only Serial: `PERTISK_DASHBOARD_BORDER=ascii` or `utf8: false`.
+
+#### If the panel still looks too small for the window
+
+Read the badge in the node panel first — it tells you what the guest thinks the size is.
+
+- **Badge says `93x25 default` or `93x25 ioctl`.** Both terminal queries went unanswered, so nothing was detected. Override: add `PERTISK_DASHBOARD_COLS=140 PERTISK_DASHBOARD_ROWS=40` to the kernel cmdline.
+- **Badge is smaller than the window looks.** xterm.js measured the pane before the browser finished laying it out. Reload the console tab and wait one resize check.
 
 Deploy scripts set `serial0=socket` and **`vga=serial0`**, so Proxmox **Console** opens serial/xterm.js. Guest cmdline ends with `console=ttyS0`; `pertiskd` also redirects stdio to `/dev/ttyS0`. Host: `qm terminal <vmid>`.
 
