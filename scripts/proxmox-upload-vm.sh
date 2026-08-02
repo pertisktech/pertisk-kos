@@ -106,11 +106,26 @@ api_put_form() {
     "${BASE}${path}" "$@"
 }
 
+# PUT /config often returns {"data":null} on success; treat errors/message as failure.
+api_response_ok() {
+  local body="$1"
+  if echo "${body}" | jq -e 'has("errors") or (.message|type=="string" and length>0)' >/dev/null 2>&1; then
+    return 1
+  fi
+  echo "${body}" | jq -e 'has("data")' >/dev/null 2>&1
+}
+
+vm_has_scsi0() {
+  local conf
+  conf="$(api_get "/nodes/${NODE}/qemu/${VMID}/config")"
+  echo "${conf}" | jq -e '.data.scsi0 != null' >/dev/null 2>&1
+}
+
 echo "==> Proxmox ${PROXMOX_URL} node=${NODE} storage=${STORAGE} vmid=${VMID}"
 
 # --- Create VM skeleton (UEFI / q35) ---
 EXISTS="$(api_get "/nodes/${NODE}/qemu/${VMID}/status/current" 2>/dev/null || echo '{}')"
-if echo "${EXISTS}" | jq -e '.data' >/dev/null 2>&1; then
+if echo "${EXISTS}" | jq -e '.data != null' >/dev/null 2>&1; then
   echo "==> VM ${VMID} already exists"
 else
   echo "==> creating VM ${VMID} (${NAME}) bios=ovmf machine=q35"
@@ -127,7 +142,7 @@ else
       --data-urlencode "net0=virtio,bridge=${BRIDGE}" \
       --data-urlencode "ostype=l26"
   )"
-  echo "${RESP}" | jq -e '.data' >/dev/null || {
+  echo "${RESP}" | jq -e '.data != null' >/dev/null || {
     echo "create failed: ${RESP}" >&2
     exit 1
   }
@@ -141,11 +156,10 @@ api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
   echo "    (efidisk0 may already exist — check Hardware)"
 
 # Serial console: Pertisk cmdline uses console=ttyS0 (VGA may look blank).
-echo "==> serial0=socket + boot order"
+echo "==> serial0=socket + vga=std"
 api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
   --data-urlencode "serial0=socket" \
-  --data-urlencode "vga=std" \
-  --data-urlencode "boot=order=scsi0;net0" >/dev/null 2>&1 || true
+  --data-urlencode "vga=std" >/dev/null 2>&1 || true
 
 # --- Disk import ---
 if [[ -n "${PROXMOX_SSH:-}" ]]; then
@@ -175,47 +189,52 @@ else
   # Directory storage "local" can also use import.
   UPLOAD_STORAGE="${PROXMOX_UPLOAD_STORAGE:-${STORAGE}}"
   VOL="pertisk-${VMID}.qcow2"
-  echo "==> API upload content=import → storage=${UPLOAD_STORAGE} as ${VOL}"
-
-  UP="$("${CURL[@]}" -w "\n%{http_code}" -X POST -H "${AUTH}" \
-    -F "content=import" \
-    -F "filename=@${DISK};filename=${VOL}" \
-    "${BASE}/nodes/${NODE}/storage/${UPLOAD_STORAGE}/upload" || true)"
-  UP_BODY="$(echo "${UP}" | sed '$d')"
-  UP_CODE="$(echo "${UP}" | tail -n1)"
-
-  if [[ "${UP_CODE}" != "200" ]] || ! echo "${UP_BODY}" | jq -e '.data' >/dev/null 2>&1; then
-    echo "upload failed (HTTP ${UP_CODE}): ${UP_BODY}" >&2
-    echo >&2
-    echo "local-zfs cannot use content=images. Fixes:" >&2
-    echo "  1) Recommended: export PROXMOX_SSH=root@${NODE%%.*}  # or root@host" >&2
-    echo "     and re-run (scp + qm importdisk → ${STORAGE})" >&2
-    echo "  2) Or upload via directory storage first:" >&2
-    echo "     PROXMOX_UPLOAD_STORAGE=local PROXMOX_STORAGE=${STORAGE} ./scripts/proxmox-upload-vm.sh ..." >&2
-    echo "  3) Or UI: upload qcow2 → Hardware → Import disk" >&2
-    exit 1
-  fi
-  echo "==> uploaded: $(echo "${UP_BODY}" | jq -r '.data')"
-
-  # Import into VM disk on target STORAGE (may differ from upload storage).
   IMPORT_REF="${UPLOAD_STORAGE}:import/${VOL}"
-  echo "==> attaching scsi0 via import-from=${IMPORT_REF} → ${STORAGE}"
-  ATT="$(
-    api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
-      --data-urlencode "scsi0=${STORAGE}:0,import-from=${IMPORT_REF}" \
-      --data-urlencode "boot=order=scsi0"
-  )"
-  if ! echo "${ATT}" | jq -e '.data' >/dev/null 2>&1; then
-    echo "import-from failed: ${ATT}" >&2
-    echo "Disk is on ${IMPORT_REF}. In UI: VM ${VMID} → Hardware → Add → Import," >&2
-    echo "or: PROXMOX_SSH=root@host ./scripts/proxmox-upload-vm.sh ..." >&2
-    exit 1
+
+  if vm_has_scsi0; then
+    echo "==> scsi0 already present — skip upload/import (delete scsi0 to re-import)"
+  else
+    echo "==> API upload content=import → storage=${UPLOAD_STORAGE} as ${VOL}"
+
+    UP="$("${CURL[@]}" -w "\n%{http_code}" -X POST -H "${AUTH}" \
+      -F "content=import" \
+      -F "filename=@${DISK};filename=${VOL}" \
+      "${BASE}/nodes/${NODE}/storage/${UPLOAD_STORAGE}/upload" || true)"
+    UP_BODY="$(echo "${UP}" | sed '$d')"
+    UP_CODE="$(echo "${UP}" | tail -n1)"
+
+    if [[ "${UP_CODE}" != "200" ]] || ! echo "${UP_BODY}" | jq -e '.data != null' >/dev/null 2>&1; then
+      echo "upload failed (HTTP ${UP_CODE}): ${UP_BODY}" >&2
+      echo >&2
+      echo "local-zfs cannot use content=images. Fixes:" >&2
+      echo "  1) Recommended: export PROXMOX_SSH=root@${NODE%%.*}  # or root@host" >&2
+      echo "     and re-run (scp + qm importdisk → ${STORAGE})" >&2
+      echo "  2) Or upload via directory storage first:" >&2
+      echo "     PROXMOX_UPLOAD_STORAGE=local PROXMOX_STORAGE=${STORAGE} ./scripts/proxmox-upload-vm.sh ..." >&2
+      echo "  3) Or UI: upload qcow2 → Hardware → Import disk" >&2
+      exit 1
+    fi
+    echo "==> uploaded: $(echo "${UP_BODY}" | jq -r '.data')"
+
+    # Import into VM disk on target STORAGE (may differ from upload storage).
+    # PUT /config returns {"data":null} on success — do not require a truthy .data.
+    echo "==> attaching scsi0 via import-from=${IMPORT_REF} → ${STORAGE}"
+    ATT="$(
+      api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+        --data-urlencode "scsi0=${STORAGE}:0,import-from=${IMPORT_REF}"
+    )"
+    if ! api_response_ok "${ATT}"; then
+      echo "import-from failed: ${ATT}" >&2
+      echo "Disk is on ${IMPORT_REF}. In UI: VM ${VMID} → Hardware → Add → Import," >&2
+      echo "or: PROXMOX_SSH=root@host ./scripts/proxmox-upload-vm.sh ..." >&2
+      exit 1
+    fi
+    echo "==> scsi0 import-from ok"
   fi
-  echo "==> scsi0 import-from ok"
 fi
 
 api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
-  --data-urlencode "boot=order=scsi0" \
+  --data-urlencode "boot=order=scsi0;net0" \
   --data-urlencode "serial0=socket" \
   --data-urlencode "vga=std" >/dev/null 2>&1 || true
 
