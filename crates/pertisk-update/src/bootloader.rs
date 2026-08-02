@@ -297,8 +297,9 @@ fn write_loader_default(esp: &EspPaths, next: BootSlot) -> Result<(), Bootloader
     if let Some(parent) = conf.parent() {
         fs::create_dir_all(parent)?;
     }
+    // timeout 0 skips the menu countdown (garbled on Proxmox serial / vga=serial0).
     let body = format!(
-        "default pertisk-{}.conf\ntimeout 3\nconsole-mode keep\n",
+        "default pertisk-{}.conf\ntimeout 0\nconsole-mode keep\neditor no\n",
         next.as_str().to_lowercase()
     );
     fs::write(conf, body)?;

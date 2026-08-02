@@ -16,6 +16,8 @@ ASSETS="${OUT}/cloud-boot"
 SIZE_GB="${PERTISK_DISK_GB:-8}"
 ARCH="${PERTISK_ARCH:-amd64}"
 SEED="${PERTISK_SEED_CONFIG:-${ROOT}/examples/worker-cloud.yaml}"
+# Guest hostname (defaults to Proxmox VM name convention).
+HOSTNAME_SEED="${PERTISK_HOSTNAME:-${PROXMOX_VM_NAME:-pertisk-cp-1}}"
 RAW="${OUT}/pertisk-cloud-${ARCH}.raw"
 QCOW="${OUT}/pertisk-cloud-${ARCH}.qcow2"
 
@@ -72,13 +74,14 @@ echo "==> creating sparse raw disk ${RAW} (${SIZE_GB}G)"
 rm -f "${RAW}" "${QCOW}"
 dd if=/dev/zero of="${RAW}" bs=1m count=0 seek=$((SIZE_GB * 1024)) status=none
 
-echo "==> populating GPT / ESP / STATE (Docker privileged)"
+echo "==> populating GPT / ESP / STATE (Docker privileged), hostname=${HOSTNAME_SEED}"
 docker run --rm --privileged \
   --platform "${PLATFORM}" \
   -e PERTISK_DISK=/work/disk.raw \
   -e PERTISK_BOOT_ASSETS=/work/boot \
   -e PERTISK_SEED_CONFIG=/work/config.yaml \
   -e PERTISK_ARCH="${ARCH}" \
+  -e PERTISK_HOSTNAME="${HOSTNAME_SEED}" \
   -v "${RAW}:/work/disk.raw" \
   -v "${ASSETS}:/work/boot:ro" \
   -v "${SEED}:/work/config.yaml:ro" \

@@ -1,0 +1,100 @@
+//! Plain-text fallback mirroring node / network / mem / services / logs.
+
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+use pertisk_api::SharedState;
+use pertisk_config::MachineConfig;
+
+use crate::dashboard::snapshot::{format_bytes, format_kib, StatusSnapshot};
+use crate::log_ring::LogRing;
+
+fn pct(used: u64, total: u64) -> u16 {
+    if total == 0 {
+        return 0;
+    }
+    ((used.saturating_mul(100)) / total).min(100) as u16
+}
+
+/// Run a ~2s status loop until `stop` is set.
+pub fn run_banner_loop(
+    stop: Arc<AtomicBool>,
+    cfg: Option<MachineConfig>,
+    state: SharedState,
+    state_root: PathBuf,
+    logs: LogRing,
+) {
+    while !stop.load(Ordering::SeqCst) {
+        let snap = StatusSnapshot::collect(cfg.as_ref(), &state, &state_root);
+        let recent = logs.tail(16);
+        let mut out = String::from("\x1b[2J\x1b[H");
+
+        out.push_str("==== node ====\r\n");
+        out.push_str(&format!(
+            "{}  v{}  {}  {}  cpu {}c\r\n",
+            snap.hostname,
+            snap.version,
+            snap.machine_type,
+            if snap.ready { "ready" } else { "not-ready" },
+            snap.cpu_cores
+        ));
+
+        out.push_str("==== network ====\r\n");
+        if snap.net_rows.is_empty() {
+            out.push_str("(no addresses)\r\n");
+        } else {
+            for row in &snap.net_rows {
+                out.push_str(row);
+                out.push_str("\r\n");
+            }
+        }
+        out.push_str(&format!(
+            "cluster {}  cni {}  pod {}\r\n",
+            snap.cluster_endpoint, snap.cni, snap.pod_cidr
+        ));
+
+        out.push_str("==== mem ====\r\n");
+        let mem_pct = pct(snap.mem_used_kb(), snap.mem_total_kb);
+        out.push_str(&format!(
+            "mem [{}%] {}/{}\r\n",
+            mem_pct,
+            format_kib(snap.mem_used_kb()),
+            format_kib(snap.mem_total_kb)
+        ));
+        for d in &snap.disks {
+            out.push_str(&format!(
+                "{} {}/{}\r\n",
+                d.label,
+                format_bytes(d.used_bytes),
+                format_bytes(d.total_bytes)
+            ));
+        }
+
+        out.push_str("==== services ====\r\n");
+        out.push_str(&format!("containerd  {}\r\n", snap.containerd));
+        out.push_str(&format!("kubelet     {}\r\n", snap.kubelet));
+
+        out.push_str("==== logs ====\r\n");
+        if recent.is_empty() {
+            out.push_str("(no logs)\r\n");
+        } else {
+            for line in &recent {
+                out.push_str(line);
+                out.push_str("\r\n");
+            }
+        }
+
+        let _ = io::stderr().write_all(out.as_bytes());
+        let _ = io::stderr().flush();
+        for _ in 0..20 {
+            if stop.load(Ordering::SeqCst) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+}

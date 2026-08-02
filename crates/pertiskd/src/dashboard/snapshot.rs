@@ -18,6 +18,8 @@ pub struct StatusSnapshot {
     pub mem_available_kb: u64,
     pub disks: Vec<DiskUsage>,
     pub interfaces: Vec<IfaceAddrs>,
+    /// Display rows like ptkube: `eth0  up  10.1.1.192/24`.
+    pub net_rows: Vec<String>,
     pub machine_type: String,
     pub cluster_endpoint: String,
     pub cni: String,
@@ -82,28 +84,16 @@ impl StatusSnapshot {
                 snap.cni = "-".into();
                 snap.pod_cidr = "-".into();
             }
-            for iface in &cfg.machine.network.interfaces {
-                let addrs = pertisk_net::list_addresses(&iface.interface).unwrap_or_default();
-                snap.interfaces.push(IfaceAddrs {
-                    name: iface.interface.clone(),
-                    addresses: addrs,
-                });
-            }
         } else {
             snap.hostname = read_hostname().unwrap_or_else(|| "pertisk".into());
             snap.machine_type = "-".into();
             snap.cluster_endpoint = "(no config)".into();
         }
 
-        if snap.interfaces.is_empty() {
-            // Show whatever NICs exist (eth0 / ens18 / …) even without config.
-            if let Ok(names) = pertisk_net::list_interfaces() {
-                for name in names {
-                    let addrs = pertisk_net::list_addresses(&name).unwrap_or_default();
-                    snap.interfaces.push(IfaceAddrs { name, addresses: addrs });
-                }
-            }
-        }
+        // Always discover live NICs (config names alone miss ens18 vs eth0).
+        let (ifaces, rows) = collect_network();
+        snap.interfaces = ifaces;
+        snap.net_rows = rows;
 
         let (model, cores) = parse_cpuinfo(&read_to_string("/proc/cpuinfo").unwrap_or_default());
         snap.cpu_model = model;
@@ -143,6 +133,220 @@ impl StatusSnapshot {
 
 fn read_to_string(path: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
+}
+
+/// Collect interfaces + display rows (ptkube-style). Prefer `ip -br addr`, else getifaddrs.
+fn collect_network() -> (Vec<IfaceAddrs>, Vec<String>) {
+    if let Some(rows) = read_addresses_ip_br() {
+        let ifaces = rows_to_ifaces(&rows);
+        return (ifaces, rows);
+    }
+    let ifaces = read_addresses_getifaddrs();
+    let ifaces = if ifaces.is_empty() {
+        read_addresses_netlink()
+    } else {
+        ifaces
+    };
+    let rows = ifaces_to_rows(&ifaces);
+    (ifaces, rows)
+}
+
+/// Same approach as ptkube-dashboard `read_addresses`.
+fn read_addresses_ip_br() -> Option<Vec<String>> {
+    use std::process::Command;
+    for bin in ["/sbin/ip", "/usr/sbin/ip", "ip"] {
+        let Ok(out) = Command::new(bin).args(["-br", "addr"]).output() else {
+            continue;
+        };
+        if !out.status.success() {
+            continue;
+        }
+        let mut rows = Vec::new();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.split_whitespace();
+            let Some(iface) = parts.next() else {
+                continue;
+            };
+            if iface == "lo" {
+                continue;
+            }
+            let state = parts.next().unwrap_or("?");
+            let addrs: Vec<_> = parts.collect();
+            if addrs.is_empty() {
+                rows.push(format!("{iface}  {state}  (no ip)"));
+            } else {
+                rows.push(format!("{iface}  {state}  {}", addrs.join("  ")));
+            }
+        }
+        if !rows.is_empty() {
+            return Some(rows);
+        }
+    }
+    None
+}
+
+fn rows_to_ifaces(rows: &[String]) -> Vec<IfaceAddrs> {
+    let mut out = Vec::new();
+    for row in rows {
+        let mut parts = row.split_whitespace();
+        let Some(name) = parts.next() else {
+            continue;
+        };
+        let _state = parts.next();
+        let addresses: Vec<String> = parts
+            .filter(|p| *p != "(no" && *p != "ip)")
+            .map(|s| s.to_string())
+            .collect();
+        out.push(IfaceAddrs {
+            name: name.to_string(),
+            addresses,
+        });
+    }
+    out
+}
+
+fn ifaces_to_rows(ifaces: &[IfaceAddrs]) -> Vec<String> {
+    if ifaces.is_empty() {
+        return vec!["(no interfaces)".into()];
+    }
+    ifaces
+        .iter()
+        .map(|i| {
+            let state = operstate(&i.name);
+            if i.addresses.is_empty() {
+                format!("{}  {}  (no ip)", i.name, state)
+            } else {
+                format!("{}  {}  {}", i.name, state, i.addresses.join("  "))
+            }
+        })
+        .collect()
+}
+
+fn operstate(iface: &str) -> String {
+    std::fs::read_to_string(format!("/sys/class/net/{iface}/operstate"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "?".into())
+}
+
+fn read_addresses_netlink() -> Vec<IfaceAddrs> {
+    let Ok(names) = pertisk_net::list_interfaces() else {
+        return Vec::new();
+    };
+    names
+        .into_iter()
+        .map(|name| {
+            let addresses = pertisk_net::list_addresses(&name).unwrap_or_default();
+            IfaceAddrs { name, addresses }
+        })
+        .collect()
+}
+
+/// libc getifaddrs — works without iproute2 / netlink runtime.
+#[cfg(target_os = "linux")]
+fn read_addresses_getifaddrs() -> Vec<IfaceAddrs> {
+    use std::collections::BTreeMap;
+    use std::ffi::CStr;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name != "lo" {
+                map.entry(name).or_default();
+            }
+        }
+    }
+
+    unsafe {
+        let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut ifap) != 0 {
+            return map
+                .into_iter()
+                .map(|(name, addresses)| IfaceAddrs { name, addresses })
+                .collect();
+        }
+        let mut cur = ifap;
+        while !cur.is_null() {
+            let entry = &*cur;
+            if entry.ifa_addr.is_null() || entry.ifa_name.is_null() {
+                cur = entry.ifa_next;
+                continue;
+            }
+            let name = CStr::from_ptr(entry.ifa_name)
+                .to_string_lossy()
+                .into_owned();
+            if name == "lo" {
+                cur = entry.ifa_next;
+                continue;
+            }
+            let family = i32::from((*entry.ifa_addr).sa_family);
+            let addr = if family == libc::AF_INET {
+                let sin = &*(entry.ifa_addr as *const libc::sockaddr_in);
+                let ip = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+                if ip.is_unspecified() {
+                    None
+                } else {
+                    let prefix = if !entry.ifa_netmask.is_null() {
+                        let mask = &*(entry.ifa_netmask as *const libc::sockaddr_in);
+                        u32::from_be(mask.sin_addr.s_addr).count_ones() as u8
+                    } else {
+                        32
+                    };
+                    Some(format!("{ip}/{prefix}"))
+                }
+            } else if family == libc::AF_INET6 {
+                let sin6 = &*(entry.ifa_addr as *const libc::sockaddr_in6);
+                let octets = sin6.sin6_addr.s6_addr;
+                let ip = Ipv6Addr::from(octets);
+                if ip.is_unspecified() {
+                    None
+                } else {
+                    let prefix = if !entry.ifa_netmask.is_null() {
+                        let mask = &*(entry.ifa_netmask as *const libc::sockaddr_in6);
+                        mask.sin6_addr.s6_addr.iter().map(|b| b.count_ones()).sum::<u32>() as u8
+                    } else {
+                        128
+                    };
+                    Some(format!("{ip}/{prefix}"))
+                }
+            } else {
+                None
+            };
+            if let Some(a) = addr {
+                let list = map.entry(name).or_default();
+                if !list.contains(&a) {
+                    list.push(a);
+                }
+            }
+            cur = entry.ifa_next;
+        }
+        libc::freeifaddrs(ifap);
+    }
+
+    // Prefer IPv4 first within each iface.
+    for addrs in map.values_mut() {
+        addrs.sort_by(|a, b| {
+            let a4 = a.contains('.');
+            let b4 = b.contains('.');
+            b4.cmp(&a4)
+        });
+    }
+
+    map.into_iter()
+        .map(|(name, addresses)| IfaceAddrs { name, addresses })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_addresses_getifaddrs() -> Vec<IfaceAddrs> {
+    Vec::new()
 }
 
 fn read_hostname() -> Option<String> {

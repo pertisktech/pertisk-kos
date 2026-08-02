@@ -4,7 +4,7 @@ machine:
   # No install block: cloud/golden images are pre-partitioned.
   # Metal first-boot install uses examples/worker-install.yaml (or PERTISK_CONFIG).
   network:
-    hostname: pertisk-1
+    hostname: pertisk-cp-1
     interfaces:
       - interface: eth0
         dhcp: true

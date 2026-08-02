@@ -118,10 +118,13 @@ linux /pertisk/A/kernel
 initrd /pertisk/A/initramfs
 options ${CMDLINE}
 EOF
+# timeout 0: skip systemd-boot menu countdown. With Proxmox vga=serial0 the
+# menu/countdown text is garbled on Serial; auto-boot is correct for cloud.
 cat >/mnt/pertisk-efi/loader/loader.conf <<EOF
 default pertisk-a.conf
-timeout 3
+timeout 0
 console-mode keep
+editor no
 EOF
 
 echo "==> STATE seed"
@@ -130,6 +133,14 @@ mkdir -p /mnt/pertisk-state/machine \
   /mnt/pertisk-state/log \
   /mnt/pertisk-state/slots
 cp "${SEED_CONFIG}" /mnt/pertisk-state/config.yaml
+# Optional: override hostname to match Proxmox VM name (PERTISK_HOSTNAME).
+if [[ -n "${PERTISK_HOSTNAME:-}" ]]; then
+  if command -v sed >/dev/null 2>&1; then
+    sed -i "s/^\\([[:space:]]*hostname:[[:space:]]*\\).*/\\1${PERTISK_HOSTNAME}/" \
+      /mnt/pertisk-state/config.yaml
+    echo "    hostname -> ${PERTISK_HOSTNAME}"
+  fi
+fi
 cat >/mnt/pertisk-state/boot-meta.json <<EOF
 {
   "active": "a",

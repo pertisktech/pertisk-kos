@@ -5,7 +5,8 @@
 ARG TARGETARCH
 ARG BUILDPLATFORM
 
-FROM --platform=$BUILDPLATFORM rust:1.85-bookworm AS build
+# ratatui / instability currently require rustc ≥ 1.88
+FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS build
 ARG TARGETARCH
 ARG BUILDPLATFORM
 ARG ZIG_VERSION=0.13.0

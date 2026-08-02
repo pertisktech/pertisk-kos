@@ -350,11 +350,11 @@ fn run() -> Result<()> {
             log_ring().clone(),
         ) {
             Some(handle) => {
-                info!("console status banner started");
+                info!("console dashboard started");
                 Some(handle)
             }
             None => {
-                warn!("console status banner failed to start");
+                warn!("console dashboard failed to start");
                 None
             }
         }

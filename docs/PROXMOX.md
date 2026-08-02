@@ -76,17 +76,21 @@ The script:
 
 Manual UI alternative: upload `pertisk-cloud-amd64.qcow2` to storage → Create VM (UEFI, q35) → attach disk → start.
 
+### Boot menu
+
+Cloud images set systemd-boot `timeout 0` so there is **no countdown menu**. With `vga=serial0`, that menu’s text is usually garbled on Serial; the VM boots straight into the kernel.
+
 ### Console dashboard + finding the guest IP
 
 Pertisk has **no qemu-guest-agent** and no SSH, so Proxmox Summary will not show an IP.
 
-After boot, `pertiskd` prints a **text status banner** every ~2s on serial (hostname, CPU/mem/disk, IPs, cluster/runtime, recent logs). Disable with `--no-dashboard`.
+After boot, `pertiskd` shows a Serial TUI (ptkube-dashboard style): **node** → full-width **network** (`iface  state  IP/prefix` via getifaddrs / `ip -br addr`) → **mem**|**services** → **logs** (hand-painted ASCII frame). Size is **pinned 80×24** (override with `PERTISK_DASHBOARD_COLS` / `PERTISK_DASHBOARD_ROWS`) so lines do not wrap; cursor is hidden (`CSI ?25l`); ~2s refresh.
 
 Deploy scripts set `serial0=socket` and **`vga=serial0`**, so Proxmox **Console** opens serial/xterm.js. Guest cmdline ends with `console=ttyS0`; `pertiskd` also redirects stdio to `/dev/ttyS0`. Host: `qm terminal <vmid>`.
 
-IPs appear in the `net` lines of the banner.
+IPs appear in the **network** panel.
 
-Disable with kernel/process flag `--no-dashboard` if you need raw serial logs only.
+Disable with `--no-dashboard` if you need raw scrolling serial logs only.
 
 Or look up the VM MAC on the Proxmox host / DHCP server:
 
