@@ -107,14 +107,14 @@ spec:
           operator: Exists
       initContainers:
         - name: install-cni-plugin
-          image: ghcr.io/flannel-io/flannel-cni-plugin:v1.6.0-flannel1
+          image: ghcr.io/flannel-io/flannel-cni-plugin:v1.6.2-flannel1
           command: ["cp"]
           args: ["-f", "/flannel", "/opt/cni/bin/flannel"]
           volumeMounts:
             - name: cni-plugin
               mountPath: /opt/cni/bin
         - name: install-cni
-          image: ghcr.io/flannel-io/flannel:v0.26.1
+          image: ghcr.io/flannel-io/flannel:v0.26.7
           command: ["cp"]
           args:
             - "-f"
@@ -127,7 +127,7 @@ spec:
               mountPath: /etc/kube-flannel/
       containers:
         - name: kube-flannel
-          image: ghcr.io/flannel-io/flannel:v0.26.1
+          image: ghcr.io/flannel-io/flannel:v0.26.7
           command: ["/opt/bin/flanneld"]
           args: ["--ip-masq", "--kube-subnet-mgr"]
           securityContext:

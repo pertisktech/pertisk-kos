@@ -47,6 +47,18 @@ pub fn prepare_var() -> Result<()> {
     }
 }
 
+/// Write `/etc/os-release` so kubelet reports OS-IMAGE as `pertisk-kos`.
+pub fn ensure_os_release() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_impl::ensure_os_release()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use super::*;
@@ -97,8 +109,31 @@ mod linux_impl {
         )?;
 
         prepare_cgroups()?;
+        ensure_os_release()?;
 
         info!("essential filesystems ready");
+        Ok(())
+    }
+
+    pub fn ensure_os_release() -> Result<()> {
+        ensure_dir("/etc")?;
+        let ver = pertisk_config::release_version();
+        let body = format!(
+            "PRETTY_NAME=\"pertisk-kos\"\n\
+             NAME=\"pertisk-kos\"\n\
+             ID=pertisk-kos\n\
+             ID_LIKE=pertisk\n\
+             VERSION_ID=\"{ver}\"\n\
+             VERSION=\"{ver}\"\n\
+             HOME_URL=\"https://github.com/pertisk-tech/pertisk-kos\"\n\
+             SUPPORT_URL=\"https://github.com/pertisk-tech/pertisk-kos\"\n\
+             BUG_REPORT_URL=\"https://github.com/pertisk-tech/pertisk-kos/issues\"\n"
+        );
+        fs::write("/etc/os-release", body)?;
+        // Some tools also read /usr/lib/os-release.
+        ensure_dir("/usr/lib")?;
+        let _ = fs::copy("/etc/os-release", "/usr/lib/os-release");
+        info!(version = ver, "wrote /etc/os-release");
         Ok(())
     }
 

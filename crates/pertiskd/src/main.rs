@@ -142,6 +142,11 @@ fn run() -> Result<()> {
         if let Err(err) = linux::prepare_filesystem() {
             eprintln!("pertiskd: filesystem prepare failed: {err:#}");
         }
+        // os-release is also written inside prepare_filesystem; ensure even if
+        // mounts partially failed so kubelet never reports OS-IMAGE=Unknown.
+        if let Err(err) = linux::ensure_os_release() {
+            eprintln!("pertiskd: os-release write failed: {err:#}");
+        }
         if let Err(err) = linux::redirect_stdio_serial() {
             eprintln!("pertiskd: serial stdio redirect failed: {err:#}");
         }
