@@ -33,6 +33,15 @@ PERTISK_DISK=out/pertisk-cloud-amd64.raw ./image/run-qemu-uefi.sh
 PERTISK_DISK=out/pertisk-cloud-arm64.raw ./image/run-qemu-uefi.sh
 ```
 
+## Control-plane role (same image)
+
+The cloud image is used for **both** `controlplane` and `worker`. After
+`pertiskctl bootstrap`, the CP pulls static-pod images from `registry.k8s.io`
+(kube-apiserver / controller-manager / scheduler / etcd). Ensure the guest can
+reach that registry (or configure a mirror in containerd). Kubelet binary
+version should match `cluster.kubernetesVersion` (default `v1.32.5` via
+`image/fetch-runtime.sh`).
+
 ## Proxmox VE
 
 See [docs/PROXMOX.md](../../docs/PROXMOX.md). Summary:
@@ -73,5 +82,6 @@ export PROXMOX_NODE=pve PROXMOX_STORAGE=local
 
 ## Layout
 
-Same as metal install: `EFI`, `BOOT_A`, `BOOT_B`, `META`, `STATE`, `EPHEMERAL`.
+Same as metal install: `EFI` (512MiB — holds kernel+runtime initramfs), `BOOT_A`/`BOOT_B` (768MiB), `META`, `STATE`, `EPHEMERAL`.
 ESP holds `EFI/BOOT/BOOT*.EFI`, `loader/`, and `pertisk/A/{kernel,initramfs}`.
+Override with `PERTISK_ESP_MIB` / `PERTISK_BOOT_MIB` when populating.

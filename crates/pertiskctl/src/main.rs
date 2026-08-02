@@ -1,18 +1,23 @@
-//! `pertiskctl` — node management CLI.
+//! `pertiskctl` — Talos-shaped node + cluster management CLI.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use pertisk_bootstrap::{
+    gen_config, patch_worker_ca, sanitize_kubeconfig, write_gen_config, DEFAULT_K8S_VERSION,
+    DEFAULT_POD_SUBNET, DEFAULT_SERVICE_SUBNET,
+};
 use pertisk_proto::machine_service_client::MachineServiceClient;
 use pertisk_proto::{
-    ApplyConfigurationRequest, HealthRequest, LogsRequest, MarkBootGoodRequest, RebootRequest,
-    ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest, VersionRequest,
+    ApplyConfigurationRequest, BootstrapRequest, HealthRequest, KubeconfigRequest, LogsRequest,
+    MarkBootGoodRequest, RebootRequest, ServiceListRequest, ShutdownRequest, UpgradeRequest,
+    UpgradeStatusRequest, VersionRequest,
 };
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 #[derive(Parser)]
-#[command(name = "pertiskctl", about = "Pertisk KOS management CLI")]
+#[command(name = "pertiskctl", about = "Pertisk KOS management CLI (Talos-shaped)")]
 struct Cli {
     /// gRPC endpoint (host:port).
     #[arg(
@@ -56,28 +61,78 @@ enum Commands {
         #[arg(short = 'f', long)]
         file: PathBuf,
     },
+    /// Generate machine configs (like `talosctl gen`).
+    Gen {
+        #[command(subcommand)]
+        command: GenCommands,
+    },
+    /// Alias for `gen config`.
+    #[command(name = "gen-config", hide = true)]
+    GenConfig {
+        /// Cluster name (DNS-1123 label).
+        cluster_name: String,
+        /// Kubernetes API endpoint, e.g. https://10.1.1.210:6443
+        endpoint: String,
+        #[arg(short = 'o', long, default_value = ".")]
+        output: PathBuf,
+        #[arg(long, default_value = DEFAULT_K8S_VERSION)]
+        kubernetes_version: String,
+        #[arg(long, default_value = DEFAULT_POD_SUBNET)]
+        pod_subnet: String,
+        #[arg(long, default_value = DEFAULT_SERVICE_SUBNET)]
+        service_subnet: String,
+    },
+    /// Bootstrap the first control-plane (PKI + static pods).
+    Bootstrap {
+        /// Optional advertise address (node IPv4).
+        #[arg(long)]
+        advertise_address: Option<String>,
+    },
+    /// Fetch admin kubeconfig from a bootstrapped control-plane.
+    Kubeconfig {
+        #[arg(short = 'f', long, default_value = "admin.conf")]
+        file: PathBuf,
+    },
+    /// Patch worker.yaml with the cluster CA from a bootstrapped CP.
+    JoinConfig {
+        /// Worker machine config to patch (must already contain token + endpoint).
+        #[arg(short = 'f', long)]
+        file: PathBuf,
+    },
     Reboot,
     Shutdown,
-    /// Stage a signed OS bundle onto the inactive A/B slot.
     Upgrade {
-        /// Bundle directory on the node (absolute path).
         #[arg(long)]
         bundle: String,
-        /// Reboot after staging.
         #[arg(long, default_value_t = false)]
         reboot: bool,
     },
-    /// Show A/B boot / upgrade metadata.
     UpgradeStatus,
-    /// Mark the current boot as healthy (cancel auto-rollback).
     MarkBootGood,
-    /// Tail service or kernel logs.
     Logs {
-        /// pertiskd | containerd | kubelet | dmesg
         #[arg(default_value = "pertiskd")]
         service: String,
         #[arg(long, short = 'n', default_value_t = 100)]
         tail: u32,
+    },
+}
+
+#[derive(Subcommand)]
+enum GenCommands {
+    /// Generate controlplane.yaml + worker.yaml (like `talosctl gen config`).
+    Config {
+        /// Cluster name (DNS-1123 label).
+        cluster_name: String,
+        /// Kubernetes API endpoint, e.g. https://10.1.1.210:6443
+        endpoint: String,
+        #[arg(short = 'o', long, default_value = ".")]
+        output: PathBuf,
+        #[arg(long, default_value = DEFAULT_K8S_VERSION)]
+        kubernetes_version: String,
+        #[arg(long, default_value = DEFAULT_POD_SUBNET)]
+        pod_subnet: String,
+        #[arg(long, default_value = DEFAULT_SERVICE_SUBNET)]
+        service_subnet: String,
     },
 }
 
@@ -153,6 +208,79 @@ async fn main() -> Result<()> {
             } else {
                 anyhow::bail!("apply failed: {}", resp.message);
             }
+        }
+        Commands::Gen {
+            command:
+                GenCommands::Config {
+                    ref cluster_name,
+                    ref endpoint,
+                    ref output,
+                    ref kubernetes_version,
+                    ref pod_subnet,
+                    ref service_subnet,
+                },
+        }
+        | Commands::GenConfig {
+            ref cluster_name,
+            ref endpoint,
+            ref output,
+            ref kubernetes_version,
+            ref pod_subnet,
+            ref service_subnet,
+        } => {
+            let gen = gen_config(
+                cluster_name,
+                endpoint,
+                kubernetes_version,
+                pod_subnet,
+                service_subnet,
+            )?;
+            write_gen_config(output, &gen)?;
+            println!(
+                "wrote {}/controlplane.yaml + worker.yaml (token {})",
+                output.display(),
+                gen.token
+            );
+        }
+        Commands::Bootstrap {
+            ref advertise_address,
+        } => {
+            let mut client = connect(&cli).await?;
+            let resp = client
+                .bootstrap(BootstrapRequest {
+                    advertise_address: advertise_address.clone().unwrap_or_default(),
+                })
+                .await?
+                .into_inner();
+            if resp.ok {
+                println!(
+                    "bootstrap ok already={} — {}",
+                    resp.already_bootstrapped, resp.message
+                );
+            } else {
+                anyhow::bail!("{}", resp.message);
+            }
+        }
+        Commands::Kubeconfig { ref file } => {
+            let mut client = connect(&cli).await?;
+            let resp = client.kubeconfig(KubeconfigRequest {}).await?.into_inner();
+            let kc = sanitize_kubeconfig(&resp.kubeconfig);
+            std::fs::write(file, &kc).with_context(|| format!("write {}", file.display()))?;
+            println!("wrote {}", file.display());
+        }
+        Commands::JoinConfig { ref file } => {
+            let mut client = connect(&cli).await?;
+            let resp = client.kubeconfig(KubeconfigRequest {}).await?.into_inner();
+            let kc = sanitize_kubeconfig(&resp.kubeconfig);
+            // Prefer ca.crt from node STATE via a second call path: parse from kubeconfig CA data
+            // or use BootstrapResult — here decode certificate-authority-data if present.
+            let ca = extract_ca_from_kubeconfig(&kc)
+                .context("CA missing from kubeconfig; is the CP bootstrapped?")?;
+            let yaml = std::fs::read_to_string(file)
+                .with_context(|| format!("read {}", file.display()))?;
+            let patched = patch_worker_ca(&yaml, &ca)?;
+            std::fs::write(file, patched).with_context(|| format!("write {}", file.display()))?;
+            println!("patched CA into {}", file.display());
         }
         Commands::Reboot => {
             let mut client = connect(&cli).await?;
@@ -232,6 +360,20 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn extract_ca_from_kubeconfig(kc: &str) -> Option<String> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    for line in kc.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("certificate-authority-data:") {
+            let b64 = rest.trim();
+            if let Ok(bytes) = B64.decode(b64) {
+                return String::from_utf8(bytes).ok();
+            }
+        }
+    }
+    None
 }
 
 async fn connect(cli: &Cli) -> Result<MachineServiceClient<Channel>> {

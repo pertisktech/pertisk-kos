@@ -71,6 +71,64 @@ impl NodeServices {
         }
     }
 
+    /// After `pertiskctl apply`, start kubelet if cluster config is now present.
+    pub fn on_config_reload(&mut self, cfg: &MachineConfig, logs: &crate::log_ring::LogRing) {
+        if self.containerd.is_none() {
+            match start_containerd_with_sink(
+                &RuntimePaths::default(),
+                Some(logs.sink("containerd")),
+            ) {
+                Ok(handle) => {
+                    info!(pid = handle.pid(), "containerd started after config reload");
+                    self.containerd = Some(handle);
+                }
+                Err(err) => warn!(error = %err, "containerd start after reload failed"),
+            }
+        }
+        if self.kubelet.is_none() && self.containerd.is_some() && cfg.cluster.is_some() {
+            match start_kubelet_with_sink(
+                &KubeletPaths::default(),
+                cfg,
+                Some(logs.sink("kubelet")),
+            ) {
+                Ok(handle) => {
+                    info!(pid = handle.pid(), "kubelet started after config reload");
+                    self.kubelet = Some(handle);
+                }
+                Err(err) => warn!(error = %err, "kubelet start after reload failed"),
+            }
+        } else if cfg.cluster.is_none() {
+            info!("config reload: still no cluster block; kubelet not started");
+        }
+    }
+
+    /// After bootstrap, restart kubelet so it loads cert credentials.
+    pub fn restart_kubelet(&mut self, cfg: &MachineConfig, logs: &crate::log_ring::LogRing) {
+        if let Some(kl) = self.kubelet.take() {
+            info!(pid = kl.pid(), "stopping kubelet for credential reload");
+            kl.stop();
+        }
+        if self.containerd.is_none() {
+            warn!("kubelet restart skipped; containerd not running");
+            return;
+        }
+        if cfg.cluster.is_none() {
+            warn!("kubelet restart skipped; no cluster config");
+            return;
+        }
+        match start_kubelet_with_sink(
+            &KubeletPaths::default(),
+            cfg,
+            Some(logs.sink("kubelet")),
+        ) {
+            Ok(handle) => {
+                info!(pid = handle.pid(), "kubelet restarted after bootstrap");
+                self.kubelet = Some(handle);
+            }
+            Err(err) => warn!(error = %err, "kubelet restart after bootstrap failed"),
+        }
+    }
+
     pub fn status_summary(&mut self) -> String {
         let (cd, kl, _, _) = self.status_parts();
         format!("containerd={cd} kubelet={kl}")

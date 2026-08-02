@@ -26,6 +26,10 @@ pub struct NodeState {
     pub containerd_pid: u32,
     pub kubelet_pid: u32,
     pub power: PowerAction,
+    /// Set by ApplyConfiguration — supervise loop reloads config + starts kubelet.
+    pub config_reload: bool,
+    /// Set after Bootstrap — supervise loop restarts kubelet with cert kubeconfig.
+    pub kubelet_reload: bool,
     pub ready: bool,
     pub message: String,
 }
@@ -45,6 +49,8 @@ impl NodeState {
             containerd_pid: 0,
             kubelet_pid: 0,
             power: PowerAction::None,
+            config_reload: false,
+            kubelet_reload: false,
             ready: true,
             message: "booting".into(),
         }

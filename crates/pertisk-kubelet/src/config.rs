@@ -4,6 +4,7 @@ use std::fs;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 
 use pertisk_config::Cluster;
 
@@ -11,19 +12,21 @@ use crate::paths::KubeletPaths;
 use crate::process::KubeletError;
 
 /// Write KubeletConfiguration (v1beta1) with CIS-aligned defaults.
+///
+/// `tls_bootstrap`: workers need certificate rotation so a bootstrap token can
+/// be exchanged for a `system:node:` client cert.
 pub fn write_kubelet_config(
     paths: &KubeletPaths,
-    hostname: Option<&str>,
+    _hostname: Option<&str>,
+    tls_bootstrap: bool,
 ) -> Result<(), KubeletError> {
     paths.ensure_dirs()?;
-    let hostname_line = hostname
-        .map(|h| format!("hostnameOverride: \"{h}\"\n"))
-        .unwrap_or_default();
+    let rotate = if tls_bootstrap { "true" } else { "false" };
 
     let body = format!(
         r#"apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
-{hostname_line}authentication:
+authentication:
   anonymous:
     enabled: false
   webhook:
@@ -38,9 +41,6 @@ streamingConnectionIdleTimeout: 5m
 protectKernelDefaults: true
 # CIS 4.2.7
 makeIPTablesUtilChains: true
-# CIS 4.2.10
-rotateCertificates: true
-serverTLSBootstrap: true
 eventRecordQPS: 5
 # CIS 4.2.12 — strong TLS cipher suites
 tlsCipherSuites:
@@ -51,25 +51,46 @@ tlsCipherSuites:
   - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
   - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
 cgroupDriver: cgroupfs
+# Unified cgroup v2 (mounted by pertiskd at /sys/fs/cgroup).
+cgroupRoot: /
 failSwapOn: false
 clusterDomain: cluster.local
 clusterDNS:
   - 10.96.0.10
 serializeImagePulls: false
 staticPodPath: "/etc/kubernetes/manifests"
-"#,
-        hostname_line = hostname_line,
+# Workers: rotateCertificates + bootstrap-kubeconfig → node client cert.
+# Control-plane: cert kubeconfig from pertiskctl bootstrap (no rotation needed).
+rotateCertificates: {rotate}
+serverTLSBootstrap: false
+"#
     );
 
     let mut f = fs::File::create(&paths.config)?;
     f.write_all(body.as_bytes())?;
     restrict_file_mode(&paths.config)?;
-    tracing::info!(path = %paths.config.display(), "wrote kubelet config");
+    tracing::info!(path = %paths.config.display(), tls_bootstrap, "wrote kubelet config");
     Ok(())
 }
 
-/// Write bootstrap kubeconfig from cluster join settings.
+/// Write bootstrap-token kubeconfig (TLS bootstrap input).
+pub fn write_bootstrap_kubeconfig(
+    paths: &KubeletPaths,
+    cluster: &Cluster,
+) -> Result<(), KubeletError> {
+    write_token_kubeconfig(paths, &paths.bootstrap_kubeconfig, cluster)
+}
+
+/// Write token kubeconfig to the main kubeconfig path (legacy / tests).
 pub fn write_kubeconfig(paths: &KubeletPaths, cluster: &Cluster) -> Result<(), KubeletError> {
+    write_token_kubeconfig(paths, &paths.kubeconfig, cluster)
+}
+
+fn write_token_kubeconfig(
+    paths: &KubeletPaths,
+    dest: &Path,
+    cluster: &Cluster,
+) -> Result<(), KubeletError> {
     paths.ensure_dirs()?;
 
     if let Some(ca) = &cluster.ca {
@@ -85,7 +106,6 @@ pub fn write_kubeconfig(paths: &KubeletPaths, cluster: &Cluster) -> Result<(), K
         .as_deref()
         .ok_or_else(|| KubeletError::Msg("cluster.token is required to start kubelet".into()))?;
 
-    // Embed CA via path reference when present; otherwise insecure-skip (dev only).
     let (ca_block, insecure) = if paths.ca_file.exists() {
         (
             format!("    certificate-authority: {}\n", paths.ca_file.display()),
@@ -119,13 +139,13 @@ current-context: pertisk
         token = token,
     );
 
-    let mut f = fs::File::create(&paths.kubeconfig)?;
+    let mut f = fs::File::create(dest)?;
     f.write_all(body.as_bytes())?;
-    restrict_file_mode(&paths.kubeconfig)?;
+    restrict_file_mode(dest)?;
     if paths.ca_file.exists() {
         restrict_file_mode(&paths.ca_file)?;
     }
-    tracing::info!(path = %paths.kubeconfig.display(), "wrote kubelet kubeconfig");
+    tracing::info!(path = %dest.display(), "wrote kubelet token kubeconfig");
     Ok(())
 }
 
@@ -154,11 +174,16 @@ mod tests {
             endpoint: "https://10.0.0.1:6443".into(),
             token: Some("abc.def".into()),
             ca: Some("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".into()),
+            ca_key: None,
+            sa_key: None,
+            pod_subnet: None,
+            service_subnet: None,
+            kubernetes_version: None,
             pod_cidr: Some("10.244.0.0/24".into()),
             cni: Default::default(),
         };
         write_kubeconfig(&paths, &cluster).unwrap();
-        write_kubelet_config(&paths, Some("node-1")).unwrap();
+        write_kubelet_config(&paths, Some("node-1"), true).unwrap();
         assert!(paths.kubeconfig.exists());
         assert!(paths.ca_file.exists());
         let kc = fs::read_to_string(&paths.kubeconfig).unwrap();

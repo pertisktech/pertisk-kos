@@ -1,0 +1,18 @@
+PERTISK_FORCE_KERNEL=1 make fetch-kernel ARCH=amd64
+make cloud ARCH=amd64
+./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
+
+
+./out/bin/pertiskctl gen config lab-ha https://10.1.1.174:6443 -o ./out/cluster
+./out/bin/pertiskctl -e 10.1.1.174:50000 apply -f ./out/cluster/controlplane.yaml
+./out/bin/pertiskctl -e 10.1.1.174:50000 health
+./out/bin/pertiskctl -e 10.1.1.174:50000 bootstrap
+./out/bin/pertiskctl -e 10.1.1.174:50000 kubeconfig -f ./out/cluster/admin.conf
+./out/bin/pertiskctl -e 10.1.1.174:50000 join-config -f ./out/cluster/worker.yaml
+# Bootstrap token Secret + node join RBAC (once per cluster):
+#   kubectl apply secret from token in worker.yaml
+#   kubectl apply -f examples/bootstrap/node-rbac.yaml
+#   kubectl label node <cp> node-role.kubernetes.io/control-plane=
+# Workers (unique hostname each):
+#   ./out/bin/pertiskctl -e <WK_IP>:50000 apply -f ./out/cluster/worker.yaml
+kubectl --kubeconfig ./out/cluster/admin.conf get nodes -o wide

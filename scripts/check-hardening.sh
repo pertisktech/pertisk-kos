@@ -78,6 +78,7 @@ check "COMPATIBILITY.md exists" test -f docs/COMPATIBILITY.md
 DF="image/Dockerfile.initramfs"
 check "IMAGE_PROFILE defaults to production" file_has "${DF}" 'ARG IMAGE_PROFILE=production'
 check "production removes /bin/busybox" file_has "${DF}" 'rm -f ./bin/busybox'
+check "production ships mount applet" file_has "${DF}" 'ln -sf /usr/sbin/udhcpc ./bin/mount'
 check "debug profile installs ash" file_has "${DF}" 'IMAGE_PROFILE.*=.*"debug"'
 check "udhcpc without /bin/busybox path" file_has "${DF}" 'usr/sbin/udhcpc'
 check "shell-less udhcpc hook in image" file_has "${DF}" 'usr/lib/pertisk/udhcpc-hook'

@@ -10,6 +10,7 @@ members = [
     "crates/pertisk-kubelet",
     "crates/pertisk-update",
     "crates/pertisk-config",
+    "crates/pertisk-bootstrap",
     "crates/pertiskctl",
 ]
 default-members = ["crates/pertiskd", "crates/pertiskctl"]
@@ -30,6 +31,7 @@ pertisk-kubelet = { path = "crates/pertisk-kubelet" }
 pertisk-update = { path = "crates/pertisk-update" }
 pertisk-api = { path = "crates/pertisk-api" }
 pertisk-proto = { path = "crates/pertisk-proto" }
+pertisk-bootstrap = { path = "crates/pertisk-bootstrap" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }

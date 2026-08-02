@@ -1,0 +1,41 @@
+# kubeadm-shaped RBAC so bootstrap-token kubelets can TLS-bootstrap.
+# Apply after control-plane API is up (pertiskctl bootstrap + kubeconfig).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pertisk:kubelet-bootstrap
+subjects:
+  - kind: Group
+    name: system:bootstrappers:kubeadm:default-node-token
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:node-bootstrapper
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pertisk:node-autoapprove-bootstrap
+subjects:
+  - kind: Group
+    name: system:bootstrappers:kubeadm:default-node-token
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:certificates.k8s.io:certificatesigningrequests:nodeclient
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pertisk:node-autoapprove-certificate-rotation
+subjects:
+  - kind: Group
+    name: system:nodes
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:certificates.k8s.io:certificatesigningrequests:selfnodeclient

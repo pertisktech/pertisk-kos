@@ -5,14 +5,16 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::MutexGuard;
 
+use pertisk_bootstrap::{bootstrap_control_plane, read_admin_kubeconfig};
 use pertisk_config::MachineConfig;
 use pertisk_proto::machine_service_server::{MachineService, MachineServiceServer};
 use pertisk_proto::{
-    ApplyConfigurationRequest, ApplyConfigurationResponse, HealthRequest, HealthResponse,
-    LogsRequest, LogsResponse, MarkBootGoodRequest, MarkBootGoodResponse, RebootRequest,
-    RebootResponse, ServiceListRequest, ServiceListResponse, ServiceStatus, ShutdownRequest,
-    ShutdownResponse, UpgradeRequest, UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse,
-    ValidateConfigurationResponse, VersionRequest, VersionResponse,
+    ApplyConfigurationRequest, ApplyConfigurationResponse, BootstrapRequest, BootstrapResponse,
+    HealthRequest, HealthResponse, KubeconfigRequest, KubeconfigResponse, LogsRequest, LogsResponse,
+    MarkBootGoodRequest, MarkBootGoodResponse, RebootRequest, RebootResponse, ServiceListRequest,
+    ServiceListResponse, ServiceStatus, ShutdownRequest, ShutdownResponse, UpgradeRequest,
+    UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse, ValidateConfigurationResponse,
+    VersionRequest, VersionResponse,
 };
 use pertisk_update::{apply_bundle, mark_boot_good, BootMeta, SlotLayout};
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
@@ -108,12 +110,20 @@ impl MachineService for MachineSvc {
         }
         let serialized =
             serde_yaml::to_string(&cfg).map_err(|e| Status::internal(e.to_string()))?;
-        fs::write(&path, serialized).map_err(|e| Status::internal(e.to_string()))?;
+        fs::write(&path, &serialized).map_err(|e| Status::internal(e.to_string()))?;
+        // Ensure apply survives reboot (STATE may be on slow storage).
+        if let Ok(f) = fs::File::open(&path) {
+            let _ = f.sync_all();
+        }
+        if let Ok(mut st) = self.state.lock() {
+            st.config_reload = true;
+            st.message = "configuration applied".into();
+        }
 
         info!(path = %path.display(), "configuration applied");
         Ok(Response::new(ApplyConfigurationResponse {
             ok: true,
-            message: "configuration written; reboot to fully apply network/install changes".into(),
+            message: "configuration written; runtime will reload (reboot still needed for install/network edge cases)".into(),
             path: path.display().to_string(),
         }))
     }
@@ -266,6 +276,57 @@ impl MachineService for MachineSvc {
             lines: tail.lines,
             source: tail.source,
         }))
+    }
+
+    async fn bootstrap(
+        &self,
+        request: Request<BootstrapRequest>,
+    ) -> Result<Response<BootstrapResponse>, Status> {
+        let advertise = request.into_inner().advertise_address;
+        let (state_root, config_path) = {
+            let st = lock(&self.state)?;
+            (st.state_root.clone(), st.config_path.clone())
+        };
+        let yaml = fs::read_to_string(&config_path).map_err(|e| {
+            Status::failed_precondition(format!(
+                "read config {}: {e}; apply a controlplane config first",
+                config_path.display()
+            ))
+        })?;
+        let cfg = MachineConfig::from_yaml(&yaml)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let adv = if advertise.is_empty() {
+            None
+        } else {
+            Some(advertise.as_str())
+        };
+        let result = bootstrap_control_plane(&state_root, &cfg, adv)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        {
+            let mut st = lock(&self.state)?;
+            st.message = result.message.clone();
+            // Always bounce kubelet so it picks up cert credentials under
+            // /var/lib/kubelet (apply may have started it with a join token).
+            st.kubelet_reload = true;
+        }
+        Ok(Response::new(BootstrapResponse {
+            ok: true,
+            message: result.message,
+            already_bootstrapped: result.already_bootstrapped,
+        }))
+    }
+
+    async fn kubeconfig(
+        &self,
+        _request: Request<KubeconfigRequest>,
+    ) -> Result<Response<KubeconfigResponse>, Status> {
+        let state_root = {
+            let st = lock(&self.state)?;
+            st.state_root.clone()
+        };
+        let kubeconfig = read_admin_kubeconfig(&state_root)
+            .map_err(|e| Status::failed_precondition(e.to_string()))?;
+        Ok(Response::new(KubeconfigResponse { kubeconfig }))
     }
 }
 

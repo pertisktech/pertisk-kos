@@ -234,9 +234,17 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 - `Logs` (pertiskd, containerd, kubelet, dmesg)
 - `Upgrade`
 - Metrics HTTP `/metrics` (Prometheus text)
-**Later (Talos parity)**
+**Control plane (Phase A — in progress)**
 
-- etcd snapshot (control plane)
+- `Bootstrap` / `Kubeconfig` RPCs
+- `pertiskctl gen config` / `bootstrap` / `kubeconfig` / `join-config`
+- Static-pod etcd + apiserver + controller-manager + scheduler (`pertisk-bootstrap`)
+
+**Later (Talos / Omni parity)**
+
+- Stacked etcd HA (3 CP)
+- etcd snapshot
+- Proxmox provider automation + Omni-like web
 - container/CRI introspection
 - net / disk inspect
 - reset / wipe

@@ -25,13 +25,17 @@ mod linux_impl {
     use std::path::{Path, PathBuf};
 
     const MODULE_DIR: &str = "/lib/pertisk/modules";
-    /// Dependency order for Alpine linux-virt virtio networking + disk.
+    /// Dependency order for Alpine linux-virt virtio networking + disk + overlay.
+    /// `sd_mod` is required for `/dev/sd*` nodes behind virtio-scsi (Proxmox).
+    /// `overlay` is required for containerd/runc rootfs mounts.
     const BOOT_MODULES: &[&str] = &[
         "failover",
         "net_failover",
         "virtio_net",
         "virtio_scsi",
         "virtio_blk",
+        "sd_mod",
+        "overlay",
     ];
 
     pub fn load_boot_modules() {

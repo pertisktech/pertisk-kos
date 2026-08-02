@@ -42,7 +42,7 @@ mod unix_impl {
     extern "C" fn handle_chld(_: nix::libc::c_int) {}
 
     pub fn supervise(
-        cfg: Option<MachineConfig>,
+        mut cfg: Option<MachineConfig>,
         services: &mut NodeServices,
         state: SharedState,
     ) -> Result<()> {
@@ -55,6 +55,63 @@ mod unix_impl {
 
         while !STOP.load(Ordering::SeqCst) {
             reap_zombies();
+
+            let reload = state
+                .lock()
+                .map(|mut s| {
+                    let r = s.config_reload;
+                    if r {
+                        s.config_reload = false;
+                    }
+                    r
+                })
+                .unwrap_or(false);
+            if reload {
+                let path = state
+                    .lock()
+                    .map(|s| s.config_path.clone())
+                    .unwrap_or_default();
+                match std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|y| MachineConfig::from_yaml(&y).ok())
+                {
+                    Some(new_cfg) => {
+                        info!(
+                            machine_type = ?new_cfg.machine.machine_type,
+                            has_cluster = new_cfg.cluster.is_some(),
+                            "reloading machine config after apply"
+                        );
+                        if let Some(name) = new_cfg.machine.network.hostname.as_deref() {
+                            if let Err(err) = crate::hostname::set_hostname(name) {
+                                warn!(error = %err, "hostname apply on reload failed");
+                            }
+                        }
+                        services.on_config_reload(&new_cfg, crate::log_ring());
+                        cfg = Some(new_cfg);
+                    }
+                    None => warn!(path = %path.display(), "config reload failed to parse"),
+                }
+            }
+
+            let kubelet_reload = state
+                .lock()
+                .map(|mut s| {
+                    let r = s.kubelet_reload;
+                    if r {
+                        s.kubelet_reload = false;
+                    }
+                    r
+                })
+                .unwrap_or(false);
+            if kubelet_reload {
+                if let Some(ref c) = cfg {
+                    info!("restarting kubelet after bootstrap");
+                    services.restart_kubelet(c, crate::log_ring());
+                } else {
+                    warn!("kubelet reload requested but no machine config loaded");
+                }
+            }
+
             if let Some(ref cfg) = cfg {
                 services.ensure_alive(cfg);
             }
@@ -137,7 +194,8 @@ mod unix_impl {
         };
         for name in names {
             if let Ok(addrs) = pertisk_net::list_addresses(&name) {
-                if !addrs.is_empty() {
+                // Need IPv4 for management reachability on typical lab LANs.
+                if addrs.iter().any(|a| a.contains('.')) {
                     return true;
                 }
             }

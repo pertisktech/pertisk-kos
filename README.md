@@ -62,25 +62,22 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 
 `examples/worker-install.yaml` / rootfs config set `machine.install.disk: /dev/vda`.
 
-## Runtime + CNI (join a cluster)
+## Runtime + cluster (Talos-shaped ctl)
 
 ```bash
 ./image/fetch-runtime.sh
 PERTISK_EMBED_RUNTIME=1 ./image/build-initramfs.sh
-# machine config: examples/worker-join.yaml (cluster.endpoint/token/podCidr)
+make pertiskctl
+
+# Generate machine configs (like talosctl gen config):
+./out/bin/pertiskctl gen config lab-ha https://<cp-ip>:6443 -o ./out/cluster
+# Apply + bootstrap CP, then join-config workers — see docs/PROXMOX.md
 ```
 
-Kubelet gets bridge CNI at `/etc/cni/net.d/10-pertisk.conflist` (`cni0` + host-local + portmap). Set a unique `cluster.podCidr` per node (e.g. `10.244.1.0/24`).
+Same cloud image for `controlplane` and `worker`. Proxmox multi-VM helper:
+`scripts/proxmox-create-cluster-vms.sh`.
 
-For Flannel / Cilium, set `cluster.cni: none` and apply a cluster CNI DaemonSet:
-
-```bash
-# On control plane:
-kubectl apply -f examples/cni/kube-flannel.yaml
-# Nodes: examples/worker-join-flannel.yaml
-```
-
-See `examples/cni/cilium.md` for Helm install.
+Kubelet bridge CNI: `cluster.cni: bridge` + unique `podCidr`. For Flannel/Cilium use `cni: none` and `examples/cni/`.
 
 ## Observability
 

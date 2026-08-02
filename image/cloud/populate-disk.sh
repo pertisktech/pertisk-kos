@@ -29,13 +29,28 @@ echo "==> partitioning ${DISK}"
 sgdisk --zap-all "${DISK}" >/dev/null
 sgdisk -o "${DISK}" >/dev/null
 # Sizes match crates/pertisk-disk plan defaults (MiB).
-sgdisk -n 1:0:+100M -t 1:EF00 -c 1:EFI "${DISK}" >/dev/null
-sgdisk -n 2:0:+512M -t 2:8300 -c 2:BOOT_A "${DISK}" >/dev/null
-sgdisk -n 3:0:+512M -t 3:8300 -c 3:BOOT_B "${DISK}" >/dev/null
+# ESP must fit systemd-boot + kernel + runtime-embedded initramfs (~170MiB+).
+ESP_MIB="${PERTISK_ESP_MIB:-512}"
+BOOT_MIB="${PERTISK_BOOT_MIB:-768}"
+sgdisk -n "1:0:+${ESP_MIB}M" -t 1:EF00 -c 1:EFI "${DISK}" >/dev/null
+sgdisk -n "2:0:+${BOOT_MIB}M" -t 2:8300 -c 2:BOOT_A "${DISK}" >/dev/null
+sgdisk -n "3:0:+${BOOT_MIB}M" -t 3:8300 -c 3:BOOT_B "${DISK}" >/dev/null
 sgdisk -n 4:0:+32M -t 4:8300 -c 4:META "${DISK}" >/dev/null
 sgdisk -n 5:0:+1024M -t 5:8300 -c 5:STATE "${DISK}" >/dev/null
 sgdisk -n 6:0:0 -t 6:8300 -c 6:EPHEMERAL "${DISK}" >/dev/null
 sgdisk -p "${DISK}" || true
+
+# Fail early if boot assets cannot fit on ESP (vfat usable ≈ partition size).
+asset_bytes() { wc -c <"$1" | tr -d ' '; }
+NEED_BYTES=$(( $(asset_bytes "${BOOT_ASSETS}/kernel") \
+  + $(asset_bytes "${BOOT_ASSETS}/initramfs") \
+  + $(asset_bytes "${BOOT_ASSETS}/${EFI_NAME}") \
+  + 2 * 1024 * 1024 ))
+ESP_BYTES=$((ESP_MIB * 1024 * 1024))
+if (( NEED_BYTES > ESP_BYTES )); then
+  echo "boot assets (~$((NEED_BYTES / 1024 / 1024))MiB) exceed ESP (${ESP_MIB}MiB); set PERTISK_ESP_MIB=..." >&2
+  exit 1
+fi
 
 # Map partitions via loop + partx (partition nodes are not always auto-created).
 LOOP="$(losetup --find --show -P "${DISK}")"

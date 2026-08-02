@@ -25,6 +25,9 @@ state = "{state}"
           runtime_type = "io.containerd.runc.v2"
           [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
             SystemdCgroup = false
+            BinaryName = "/usr/local/bin/runc"
+            # Host root is initramfs (rootfs); pivot_root(2) returns EINVAL there.
+            NoPivotRoot = true
 "#,
         root = paths.root.display(),
         state = paths.state.display(),
@@ -49,6 +52,8 @@ mod tests {
         write_containerd_config(&paths).unwrap();
         let text = fs::read_to_string(&paths.config).unwrap();
         assert!(text.contains("SystemdCgroup = false"));
+        assert!(text.contains("BinaryName"));
+        assert!(text.contains("NoPivotRoot = true"));
         assert!(text.contains("version = 2"));
     }
 

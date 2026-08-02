@@ -49,6 +49,11 @@ mod linux {
             .build()
             .map_err(|e| NetError::Msg(e.to_string()))?;
 
+        // containerd/kubelet/etcd bind 127.0.0.1 — lo must be up with an address.
+        if let Err(err) = rt.block_on(ensure_loopback()) {
+            warn!(error = %err, "loopback setup failed");
+        }
+
         for iface in &network.interfaces {
             let name = match rt.block_on(link::resolve_iface(&iface.interface)) {
                 Ok(n) => n,
@@ -64,11 +69,14 @@ mod linux {
             rt.block_on(link::set_link_up(&name))?;
             if iface.dhcp {
                 let existing = rt.block_on(link::list_addresses(&name)).unwrap_or_default();
-                if !existing.is_empty() {
+                // IPv6 SLAAC/link-local often appears before DHCPv4 — only skip when
+                // we already have an IPv4 address.
+                let has_v4 = existing.iter().any(|a| a.contains('.'));
+                if has_v4 {
                     info!(
                         interface = %name,
                         addresses = ?existing,
-                        "DHCP already configured"
+                        "DHCP already configured (IPv4 present)"
                     );
                     continue;
                 }
@@ -109,6 +117,26 @@ mod linux {
             write_resolv_conf(&network.nameservers)?;
         }
 
+        Ok(())
+    }
+
+    async fn ensure_loopback() -> Result<(), NetError> {
+        link::set_link_up("lo").await?;
+        let addrs = link::list_addresses("lo").await.unwrap_or_default();
+        let has_v4 = addrs.iter().any(|a| a.starts_with("127."));
+        if !has_v4 {
+            match link::add_address("lo", "127.0.0.1/8").await {
+                Ok(()) => {}
+                Err(err) => {
+                    // Race / already present.
+                    let addrs = link::list_addresses("lo").await.unwrap_or_default();
+                    if !addrs.iter().any(|a| a.starts_with("127.")) {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+        info!(addresses = ?link::list_addresses("lo").await.unwrap_or_default(), "loopback ready");
         Ok(())
     }
 }

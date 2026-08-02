@@ -18,6 +18,10 @@ service MachineService {
   rpc UpgradeStatus(UpgradeStatusRequest) returns (UpgradeStatusResponse);
   // Tail recent log lines for a node service (or kernel dmesg).
   rpc Logs(LogsRequest) returns (LogsResponse);
+  // Bootstrap the first control-plane (PKI + static pods). Idempotent.
+  rpc Bootstrap(BootstrapRequest) returns (BootstrapResponse);
+  // Fetch admin kubeconfig after bootstrap (control-plane only).
+  rpc Kubeconfig(KubeconfigRequest) returns (KubeconfigResponse);
 }
 
 message VersionRequest {}
@@ -130,4 +134,22 @@ message LogsResponse {
   string service = 1;
   repeated string lines = 2;
   string source = 3; // path or "dmesg"
+}
+
+message BootstrapRequest {
+  // Optional advertise IP (defaults to first non-loopback IPv4 on the node).
+  string advertise_address = 1;
+}
+
+message BootstrapResponse {
+  bool ok = 1;
+  string message = 2;
+  bool already_bootstrapped = 3;
+}
+
+message KubeconfigRequest {}
+
+message KubeconfigResponse {
+  // admin.conf YAML
+  string kubeconfig = 1;
 }

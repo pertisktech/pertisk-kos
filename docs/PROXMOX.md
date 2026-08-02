@@ -1,6 +1,6 @@
-# Deploy Pertisk workers on Proxmox VE
+# Deploy Pertisk on Proxmox VE
 
-Pertisk is a **worker OS**. Create the Kubernetes control plane elsewhere (e.g. a Debian VM with `kubeadm`), then join Pertisk VMs.
+Pertisk KOS is a **Talos-shaped** Kubernetes OS: the **same cloud image** runs as `controlplane` or `worker` (role comes from machine config). Create/join clusters with `pertiskctl` (see [Talos-shaped cluster](#talos-shaped-cluster-1-cp--workers) below).
 
 Do **not** put Proxmox root passwords in git, chat, or scripts. Use an **API token**.
 
@@ -20,7 +20,7 @@ PERTISK_EMBED_BOOT=1 PERTISK_EMBED_RUNTIME=1 ./image/build-initramfs.sh
 # → out/pertisk-cloud-amd64.qcow2
 ```
 
-Or: `make cloud ARCH=amd64` (after fetch + embed boot/runtime as needed).
+Or: `make cloud ARCH=amd64` (fetches/embeds boot + containerd/kubelet, then builds qcow2).
 
 ## 2. Create a Proxmox API token
 
@@ -121,33 +121,48 @@ Other boot tips:
 | No EFI disk | Hardware → Add EFI Disk |
 | Still UEFI shell | Confirm GPT has ESP; re-import cloud image |
 
-## 4. Join a cluster
+## 4. Talos-shaped cluster (1 CP + workers)
 
-Either bake `cluster:` into the seed config before `build-cloud-image.sh`, or after boot apply via management API:
+Same qcow2 for control-plane and workers. Prefer VMIDs **210+** so lab VM 200 is untouched.
 
-```yaml
-# examples/worker-join.yaml (edit endpoint/token/ca/podCidr)
-cluster:
-  endpoint: https://<cp-ip>:6443
-  token: <bootstrap-token>
-  ca: |
-    -----BEGIN CERTIFICATE-----
-    ...
-  cni: bridge          # or none + Flannel/Cilium
-  podCidr: 10.244.1.0/24
-```
+### 4a. Create VMs
 
 ```bash
-# mTLS required in production
-pertiskctl -e <worker-ip>:50000 apply -f examples/worker-join.yaml
+make cloud ARCH=amd64   # embed boot + runtime as usual
+# Uses ./proxmox.sh for PROXMOX_* if not already exported (does not run its exec).
+./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
+# → 210 pertisk-cp-1, 211 pertisk-wk-1, 212 pertisk-wk-2
 ```
 
-On the control plane:
+### 4b. gen config → apply → bootstrap → join
 
 ```bash
-kubectl get nodes
-# For Flannel/Cilium workers: see examples/cni/
+make pertiskctl
+# Use the CP guest IP (Serial / DHCP), not the VIP until HA exists:
+./out/bin/pertiskctl gen config lab-ha https://<CP_IP>:6443 -o ./out/cluster
+
+./out/bin/pertiskctl -e <CP_IP>:50000 apply -f ./out/cluster/controlplane.yaml
+./out/bin/pertiskctl -e <CP_IP>:50000 bootstrap
+./out/bin/pertiskctl -e <CP_IP>:50000 kubeconfig -f ./out/cluster/admin.conf
+./out/bin/pertiskctl -e <CP_IP>:50000 join-config -f ./out/cluster/worker.yaml
+
+# After apiserver is up, create the bootstrap token Secret (written on the CP):
+kubectl --kubeconfig ./out/cluster/admin.conf apply \
+  -f <(ssh …)  # or copy /var/lib/pertisk/kubernetes/bootstrap-token-secret.yaml from the CP
+# Lab: use Console to note the path; apply via kubectl once you can reach :6443
+
+# Per worker (edit hostname in a copy of worker.yaml):
+./out/bin/pertiskctl -e <WK_IP>:50000 apply -f ./out/cluster/worker.yaml
+
+kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/cni/kube-flannel.yaml
+kubectl --kubeconfig ./out/cluster/admin.conf get nodes
 ```
+
+**Control-plane images:** static pods pull `registry.k8s.io/pause`, `etcd`, `kube-apiserver`, `kube-controller-manager`, `kube-scheduler` (default tag `v1.32.5`). The guest needs outbound HTTPS to that registry **and** a system CA bundle (`/etc/ssl/certs/ca-certificates.crt` is embedded in the image). Corporate TLS interception requires injecting your proxy CA. See [COMPATIBILITY.md](./COMPATIBILITY.md).
+
+### 4c. Worker-only join (existing external CP)
+
+You can still join Pertisk workers to a non-Pertisk control plane with `examples/worker-join.yaml` + `pertiskctl apply`.
 
 ## 5. Networking notes
 
@@ -158,6 +173,7 @@ kubectl get nodes
 | Management API | `:50000` (mTLS); firewall carefully |
 | Metrics | `:50001` (optional bearer token) |
 | CNI | Prefer `cni: none` + Cilium/Flannel on multi-node Proxmox |
+| Loopback | `lo` + `127.0.0.1/8` brought up by `pertisk-net` (required for containerd CRI) |
 
 Ensure the worker can reach the API server on `:6443` and that Node/Pod networks are routable as your CNI expects.
 
@@ -167,11 +183,12 @@ Ensure the worker can reach the API server on `:6443` and that Node/Pod networks
 - [ ] API token in env, not in repo
 - [ ] VM is **UEFI** (OVMF), not SeaBIOS
 - [ ] Image built with **runtime embedded** for kubelet/containerd
-- [ ] Control plane exists; worker join config has `ca` + token
-- [ ] `kubectl get nodes` shows Ready
+- [ ] CP bootstrapped (`pertiskctl bootstrap`); workers have `ca` + token
+- [ ] CNI applied; `kubectl get nodes` shows Ready
 
 ## Related
 
 - Cloud image layout: [image/cloud/README.md](../image/cloud/README.md)
-- Join examples: `examples/worker-join.yaml`, `examples/worker-join-flannel.yaml`
+- Examples: `examples/controlplane.yaml`, `examples/worker-join.yaml`
+- Multi-VM helper: `scripts/proxmox-create-cluster-vms.sh`
 - Compatibility: [COMPATIBILITY.md](./COMPATIBILITY.md)

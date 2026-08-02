@@ -21,7 +21,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use pertisk_api::{shared, SharedState, TlsPaths, DEFAULT_LISTEN, DEFAULT_METRICS_LISTEN};
 use pertisk_config::MachineConfig;
-use pertisk_disk::{layout_present, prepare_state, try_prepare_esp, StateVolume};
+use pertisk_disk::{
+    layout_present, prepare_state, try_prepare_ephemeral, try_prepare_esp, StateVolume,
+};
 #[cfg(target_os = "linux")]
 use pertisk_update::{bootstrap_esp, BootAssets, EspPaths, INSTALLER_BOOT_DIR};
 use pertisk_update::{record_boot_attempt_with_layout, SlotLayout};
@@ -195,6 +197,22 @@ fn run() -> Result<()> {
         if let Err(err) = maybe_install(cfg, &args) {
             warn!(error = %err, "install step failed");
         }
+    } else if !args.skip_network {
+        // Cloud images: no /config.yaml early path. Still DHCP eth0 so Serial/API
+        // are reachable while STATE mounts (seed is applied again after mount).
+        let early_net = pertisk_config::Network {
+            hostname: None,
+            interfaces: vec![pertisk_config::Interface {
+                interface: "eth0".into(),
+                dhcp: true,
+                addresses: vec![],
+                gateway: None,
+            }],
+            nameservers: vec![],
+        };
+        if let Err(err) = pertisk_net::apply_network(&early_net) {
+            warn!(error = %err, "early default DHCP failed");
+        }
     }
 
     let volume = match prepare_boot_state(args.state_dir.as_deref()) {
@@ -247,6 +265,8 @@ fn run() -> Result<()> {
     if let Err(err) = linux::prepare_var() {
         warn!(error = %err, "/var prepare failed");
     }
+    // Prefer disk-backed /var (container images, etcd, logs) over tmpfs.
+    let _ephemeral = try_prepare_ephemeral();
     // Before kubelet (`protectKernelDefaults: true`).
     sysctl::apply_hardening_sysctls();
 
@@ -491,10 +511,10 @@ fn load_early_config(args: &Args) -> Result<Option<MachineConfig>> {
     if let Some(ref path) = args.config {
         return Ok(Some(read_config(path)?));
     }
-    for candidate in [
-        PathBuf::from("/system/state/config.yaml"),
-        PathBuf::from("/config.yaml"),
-    ] {
+    // Do NOT read /system/state/config.yaml here — that path is the initramfs
+    // seed until the STATE partition is mounted, and using it early makes apply
+    // look like it "didn't stick" across reboot when STATE was ephemeral.
+    for candidate in [PathBuf::from("/config.yaml")] {
         if candidate.exists() {
             return Ok(Some(read_config(&candidate)?));
         }

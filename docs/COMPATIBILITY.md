@@ -21,6 +21,7 @@ Host build (dev): macOS / Linux with Rust + Docker (initramfs cross via Zig).
 |-----------|---------|----------|
 | Kubernetes kubelet | `v1.32.5` | `K8S_VER` |
 | containerd | `2.0.5` | `CONTAINERD_VER` |
+| glibc (loader + libc for containerd/kubelet) | Debian bookworm via `fetch-runtime.sh` | — |
 | runc | `v1.2.6` | `RUNC_VER` |
 | CNI plugins | `v1.6.2` | `CNI_VER` |
 | Kernel (QEMU virt) | Alpine `linux-virt` | via `image/fetch-kernel.sh` |
@@ -33,7 +34,9 @@ Host build (dev): macOS / Linux with Rust + Docker (initramfs cross via Zig).
 | v1.32.x (default) | v1.32.x (±1 skew OK) | Follow [version skew policy](https://kubernetes.io/releases/version-skew-policy/) |
 | Custom `K8S_VER` | Matching minor | Rebuild runtime overlay + initramfs |
 
-Pertisk does **not** run the control plane; join an existing cluster with `cluster.endpoint` / `token` / `ca`.
+**In-OS control plane (Phase A):** `machine.type: controlplane` + `pertiskctl bootstrap` writes kubeadm-shaped static pods (etcd + apiserver + controller-manager + scheduler). Images default to `registry.k8s.io/*:v1.32.5` and `registry.k8s.io/etcd:3.5.16-0` — guests must pull from a registry (or mirror). Single-CP first; stacked HA (3 CP) is planned next.
+
+Workers still join with `cluster.endpoint` / `token` / `ca` (`pertiskctl gen config` + `join-config`).
 
 ## CNI choices
 
@@ -67,6 +70,7 @@ Built-in bridge and a cluster CNI DaemonSet must not both own `/etc/cni/net.d`.
 ## Explicitly out of scope (v0.1)
 
 - Talos API wire compatibility
-- In-OS etcd / control-plane bootstrap
+- Stacked etcd HA / multi-CP join (Phase B)
+- Omni-like web fleet manager (Phase D)
 - Secure Boot / UKI enrollment (tracked as hardening gap)
 - Windows / non-Linux hosts as nodes

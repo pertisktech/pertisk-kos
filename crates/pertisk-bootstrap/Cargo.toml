@@ -1,6 +1,6 @@
 [package]
-name = "pertisk-api"
-description = "Pertisk KOS management API (gRPC)"
+name = "pertisk-bootstrap"
+description = "Control-plane PKI + static-pod bootstrap (Talos-shaped)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,16 +8,17 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-pertisk-bootstrap = { workspace = true }
+base64 = "0.22"
 pertisk-config = { workspace = true }
-pertisk-disk = { workspace = true }
-pertisk-proto = { workspace = true }
-pertisk-update = { workspace = true }
+rand = "0.8"
+rcgen = "0.13"
+serde = { workspace = true }
+serde_json = "1"
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
-tonic = { workspace = true }
+time = "0.3"
 tracing = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

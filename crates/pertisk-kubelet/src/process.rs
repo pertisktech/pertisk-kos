@@ -1,14 +1,16 @@
 //! Spawn and babysit kubelet.
 
+use std::fs;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use pertisk_config::{Cluster, MachineConfig};
+use pertisk_config::{Cluster, MachineConfig, MachineType};
 use thiserror::Error;
 use tracing::{info, warn};
 
 use crate::cni::{ensure_cni_mode, DEFAULT_POD_CIDR};
-use crate::config::{write_kubeconfig, write_kubelet_config};
+use crate::config::{write_bootstrap_kubeconfig, write_kubelet_config};
 use crate::log_tee::{ensure_var_log, kubelet_log_path, spawn_stderr_tee, LineSink};
 use crate::paths::KubeletPaths;
 
@@ -102,9 +104,27 @@ pub fn start_kubelet_with_sink(
         ))
         .arg(format!("--root-dir={}", paths.root_dir.display()))
         .arg("--v=2")
+        .env("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
 
+    // Workers: exchange bootstrap token for a node client cert.
+    if cfg.machine.machine_type != MachineType::Controlplane
+        && paths.bootstrap_kubeconfig.is_file()
+    {
+        cmd.arg(format!(
+            "--bootstrap-kubeconfig={}",
+            paths.bootstrap_kubeconfig.display()
+        ));
+    }
+
+    // hostnameOverride is NOT a KubeletConfiguration field — must be a flag.
+    if let Some(name) = cfg.machine.network.hostname.as_deref() {
+        if !name.is_empty() {
+            cmd.arg(format!("--hostname-override={name}"));
+        }
+    }
     // Bridge mode needs an explicit pod CIDR; cluster CNI assigns via Node.Spec.PodCIDR.
     if cluster.cni == pertisk_config::CniMode::Bridge {
         let pod_cidr = cluster.pod_cidr.as_deref().unwrap_or(DEFAULT_POD_CIDR);
@@ -136,11 +156,23 @@ fn prepare_kubelet(
     cfg: &MachineConfig,
     cluster: &Cluster,
 ) -> Result<(), KubeletError> {
-    write_kubelet_config(paths, cfg.machine.network.hostname.as_deref())?;
-    write_kubeconfig(paths, cluster)?;
+    let is_cp = cfg.machine.machine_type == MachineType::Controlplane;
+    let live_cp = Path::new("/etc/kubernetes/kubelet.conf");
+    let tls_bootstrap = !is_cp || !live_cp.exists();
+    write_kubelet_config(paths, cfg.machine.network.hostname.as_deref(), tls_bootstrap)?;
+
+    if is_cp && live_cp.exists() {
+        // Cert kubeconfig from pertiskctl bootstrap — no token bootstrap.
+        fs::copy(live_cp, &paths.kubeconfig)?;
+        let _ = fs::remove_file(&paths.bootstrap_kubeconfig);
+    } else {
+        // Token → CSR → node cert. Remove any stale token kubeconfig so kubelet
+        // is forced through --bootstrap-kubeconfig.
+        write_bootstrap_kubeconfig(paths, cluster)?;
+        let _ = fs::remove_file(&paths.kubeconfig);
+    }
     let pod_cidr = cluster.pod_cidr.as_deref().unwrap_or(DEFAULT_POD_CIDR);
     ensure_cni_mode(paths, cluster.cni, pod_cidr)?;
-    // Static pod manifest dir expected by config.
     std::fs::create_dir_all("/etc/kubernetes/manifests").ok();
     Ok(())
 }

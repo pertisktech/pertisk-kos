@@ -90,7 +90,16 @@ pub fn prepare_state(state_dir: Option<&Path>) -> Result<StateVolume, StateError
         // Virtio + no udev: wait briefly, then sysfs PARTNAME / node guess.
         if let Some(dev) = find_state_device() {
             match mount_state_partition(&dev, Path::new(paths.state)) {
-                Ok(vol) => return Ok(vol),
+                Ok(vol) => {
+                    info!(
+                        path = %vol.root.display(),
+                        source = ?vol.source,
+                        config = %vol.config_path().display(),
+                        config_exists = vol.config_path().exists(),
+                        "STATE ready"
+                    );
+                    return Ok(vol);
+                }
                 Err(err) => {
                     tracing::warn!(
                         device = %dev.display(),
@@ -100,7 +109,7 @@ pub fn prepare_state(state_dir: Option<&Path>) -> Result<StateVolume, StateError
                 }
             }
         }
-        tracing::warn!("no STATE partition found; using ephemeral STATE on root");
+        tracing::warn!("no STATE partition found; using ephemeral STATE on root (apply will not persist across reboot)");
         return prepare_ephemeral_state(Path::new(paths.state));
     }
 
@@ -115,7 +124,7 @@ pub fn prepare_state(state_dir: Option<&Path>) -> Result<StateVolume, StateError
 
 #[cfg(target_os = "linux")]
 fn find_state_device() -> Option<PathBuf> {
-    if let Some(dev) = wait_for_partlabel(PARTLABEL_STATE, Duration::from_secs(5)) {
+    if let Some(dev) = wait_for_partlabel(PARTLABEL_STATE, Duration::from_secs(15)) {
         info!(device = %dev.display(), "found STATE partition");
         return Some(dev);
     }

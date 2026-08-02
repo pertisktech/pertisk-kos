@@ -87,6 +87,21 @@ pub struct Cluster {
     /// PEM-encoded cluster CA certificate.
     #[serde(default)]
     pub ca: Option<String>,
+    /// PEM-encoded cluster CA private key (control-plane bootstrap only).
+    #[serde(default, rename = "caKey")]
+    pub ca_key: Option<String>,
+    /// PEM-encoded service-account signing key (control-plane bootstrap only).
+    #[serde(default, rename = "saKey")]
+    pub sa_key: Option<String>,
+    /// Cluster-wide pod network CIDR (e.g. `10.244.0.0/16`).
+    #[serde(default, rename = "podSubnet")]
+    pub pod_subnet: Option<String>,
+    /// Cluster service CIDR (default `10.96.0.0/12`).
+    #[serde(default, rename = "serviceSubnet")]
+    pub service_subnet: Option<String>,
+    /// Kubernetes version tag for static-pod images (e.g. `v1.32.5`).
+    #[serde(default, rename = "kubernetesVersion")]
+    pub kubernetes_version: Option<String>,
     /// Pod CIDR for this node's bridge CNI (e.g. `10.244.0.0/24`).
     /// Unused when `cni: none` (cluster CNI DaemonSet owns networking).
     #[serde(default, rename = "podCidr")]

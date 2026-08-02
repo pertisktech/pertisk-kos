@@ -88,12 +88,29 @@ pub fn start_containerd_with_sink(
     ensure_var_log();
 
     info!(bin = %paths.binary.display(), "starting containerd");
-    let mut child = Command::new(&paths.binary)
+    let mut child = match Command::new(&paths.binary)
         .arg("--config")
         .arg(&paths.config)
+        .env("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
+        .env(
+            "PATH",
+            "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        )
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()?;
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            // Linux returns ENOENT when the ELF interpreter (e.g. glibc ld-linux)
+            // is missing, not only when the binary path is absent.
+            return Err(RuntimeError::Msg(format!(
+                "failed to exec {}: {err} (missing binary or dynamic linker/libs — rebuild with fetch-runtime glibc libs)",
+                paths.binary.display()
+            )));
+        }
+        Err(err) => return Err(RuntimeError::Io(err)),
+    };
 
     if let Some(stderr) = child.stderr.take() {
         // Caller sink (e.g. LogRing) should apply its own prefix.

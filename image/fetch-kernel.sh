@@ -32,7 +32,7 @@ NEED_KERNEL=1
 NEED_MODULES=1
 if [[ "${PERTISK_FORCE_KERNEL:-0}" != "1" ]]; then
   [[ -f "${KERNEL_OUT}" ]] && NEED_KERNEL=0
-  [[ -f "${MODULES_OUT}/virtio_net.ko" && -f "${MODULES_OUT}/version" ]] && NEED_MODULES=0
+  [[ -f "${MODULES_OUT}/virtio_net.ko" && -f "${MODULES_OUT}/sd_mod.ko" && -f "${MODULES_OUT}/overlay.ko" && -f "${MODULES_OUT}/version" ]] && NEED_MODULES=0
 fi
 
 # Kernel and modules must come from the same linux-virt package (vermagic).
@@ -70,8 +70,9 @@ docker run --rm --platform "${PLATFORM}" \
     rm -rf "/out/${MODULES_NAME}"
     mkdir -p "/out/${MODULES_NAME}"
     # Order matters for loading: failover → net_failover → virtio_net.
-    # Also ship disk drivers (also =m on linux-virt).
-    for name in failover net_failover virtio_net virtio_scsi virtio_blk; do
+    # Disk: virtio_scsi (Proxmox scsi) / virtio_blk (QEMU) + sd_mod (SCSI disk nodes).
+    # overlay: containerd snapshotter / runc rootfs.
+    for name in failover net_failover virtio_net virtio_scsi virtio_blk sd_mod overlay; do
       src=$(find "/lib/modules/${KVER}" -name "${name}.ko.gz" -o -name "${name}.ko" | head -1)
       if [ -z "$src" ]; then
         echo "WARNING: module ${name} not found" >&2

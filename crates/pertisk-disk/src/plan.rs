@@ -30,22 +30,26 @@ pub struct DiskPlan {
     pub partitions: Vec<PartitionSpec>,
 }
 
-/// Default fixed sizes (Talos-inspired, sized for small QEMU disks).
+/// Default fixed sizes.
+///
+/// ESP must hold systemd-boot + A/B `kernel`+`initramfs` (runtime-embedded
+/// initramfs is ~160MiB+). 100MiB was enough for boot-only images; 512MiB
+/// fits one full slot today with room for a second slot / UKI growth.
 pub fn default_fixed_partitions() -> Vec<PartitionSpec> {
     vec![
         PartitionSpec {
             role: PartitionRole::Efi,
-            size: Some(100 * MIB),
+            size: Some(512 * MIB),
             fstype: FsType::Vfat,
         },
         PartitionSpec {
             role: PartitionRole::BootA,
-            size: Some(512 * MIB),
+            size: Some(768 * MIB),
             fstype: FsType::Ext4,
         },
         PartitionSpec {
             role: PartitionRole::BootB,
-            size: Some(512 * MIB),
+            size: Some(768 * MIB),
             fstype: FsType::Ext4,
         },
         PartitionSpec {
