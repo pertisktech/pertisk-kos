@@ -53,7 +53,7 @@ impl SlotLayout {
             trust_public_key: trust_public_key.into(),
             state_root,
             esp_root: None,
-            cmdline: "console=ttyS0 console=tty0 rdinit=/init".into(),
+            cmdline: "console=tty0 console=ttyS0 rdinit=/init".into(),
         }
     }
 

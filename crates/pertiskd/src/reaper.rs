@@ -50,12 +50,41 @@ mod unix_impl {
         refresh_state(services, &state);
         info!(status = %services.status_summary(), "supervise loop entered");
 
+        let mut dhcp_retry_at = std::time::Instant::now();
+        let mut dhcp_ok = iface_has_address(cfg.as_ref());
+
         while !STOP.load(Ordering::SeqCst) {
             reap_zombies();
             if let Some(ref cfg) = cfg {
                 services.ensure_alive(cfg);
             }
             refresh_state(services, &state);
+
+            // Keep trying DHCP if we came up before the NIC/carrier/server was ready.
+            if !dhcp_ok && std::time::Instant::now() >= dhcp_retry_at {
+                if let Some(ref cfg) = cfg {
+                    match pertisk_net::apply_network(&cfg.machine.network) {
+                        Ok(()) => {
+                            dhcp_ok = iface_has_address(Some(cfg));
+                            if dhcp_ok {
+                                info!("DHCP retry succeeded");
+                            } else {
+                                warn!("DHCP retry produced no address; will try again");
+                                dhcp_retry_at = std::time::Instant::now()
+                                    + std::time::Duration::from_secs(15);
+                            }
+                        }
+                        Err(err) => {
+                            warn!(error = %err, "DHCP retry failed");
+                            dhcp_retry_at = std::time::Instant::now()
+                                + std::time::Duration::from_secs(15);
+                        }
+                    }
+                } else {
+                    dhcp_retry_at =
+                        std::time::Instant::now() + std::time::Duration::from_secs(30);
+                }
+            }
 
             let power = state.lock().map(|s| s.power).unwrap_or(PowerAction::None);
             match power {
@@ -87,6 +116,33 @@ mod unix_impl {
         if let Ok(mut st) = state.lock() {
             st.set_runtime_status(cd, kl, cd_pid, kl_pid);
         }
+    }
+
+    fn iface_has_address(cfg: Option<&MachineConfig>) -> bool {
+        let names: Vec<String> = if let Some(cfg) = cfg {
+            cfg.machine
+                .network
+                .interfaces
+                .iter()
+                .filter(|i| i.dhcp)
+                .map(|i| i.interface.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let names = if names.is_empty() {
+            pertisk_net::list_interfaces().unwrap_or_default()
+        } else {
+            names
+        };
+        for name in names {
+            if let Ok(addrs) = pertisk_net::list_addresses(&name) {
+                if !addrs.is_empty() {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn stop_services(services: &mut NodeServices) {

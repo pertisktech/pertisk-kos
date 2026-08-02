@@ -3,10 +3,12 @@
 mod esp;
 mod install;
 mod layout;
+mod partlabel;
 mod plan;
 mod state;
 
 pub use esp::{prepare_esp, prepare_esp_at, try_prepare_esp, EspError, EspVolume};
+pub use partlabel::{find_by_partlabel, wait_for_partlabel};
 pub use install::{
     disk_size, install_disk, layout_present, partition_node, plan_install, InstallError,
     InstallOptions,

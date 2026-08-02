@@ -2,8 +2,11 @@
 //!
 //! Milestone M4: management gRPC API + containerd/kubelet supervision.
 
+mod dashboard;
 mod hostname;
 mod linux;
+mod log_ring;
+mod modules;
 mod reaper;
 mod services;
 mod sysctl;
@@ -11,6 +14,7 @@ mod sysctl;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process;
+use std::sync::OnceLock;
 use std::thread;
 
 use anyhow::{Context, Result};
@@ -24,7 +28,15 @@ use pertisk_update::{record_boot_attempt_with_layout, SlotLayout};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+use dashboard::{should_enable_dashboard, start_dashboard};
+use log_ring::LogRing;
 use services::NodeServices;
+
+static LOG_RING: OnceLock<LogRing> = OnceLock::new();
+
+fn log_ring() -> &'static LogRing {
+    LOG_RING.get_or_init(LogRing::default)
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "pertiskd", about = "Pertisk KOS init and node supervisor")]
@@ -93,20 +105,58 @@ struct Args {
         default_value = "/system/state/secrets/os-trust.pk"
     )]
     trust_key: PathBuf,
+
+    /// Disable the fullscreen serial/console status dashboard.
+    #[arg(long, default_value_t = false)]
+    no_dashboard: bool,
 }
 
 fn main() {
+    let pid = process::id();
     if let Err(err) = run() {
         eprintln!("pertiskd fatal: {err:#}");
-        process::exit(1);
+        if pid != 1 {
+            process::exit(1);
+        }
+        // PID 1 must never exit — that becomes "Attempted to kill init".
+        eprintln!("pertiskd: staying alive as PID 1 after fatal error");
+    }
+    if pid == 1 {
+        loop {
+            thread::sleep(std::time::Duration::from_secs(3600));
+        }
     }
 }
 
 fn run() -> Result<()> {
+    let pid = process::id();
+    // PID 1: mount /dev and bind stdio to serial *before* any logs, otherwise
+    // "Run /init as init process" is the last thing visible on Proxmox Serial.
+    if pid == 1 {
+        // Kernel starts init with an empty PATH; udhcpc lives in /usr/sbin.
+        if std::env::var_os("PATH").is_none() {
+            std::env::set_var("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
+        }
+        if let Err(err) = linux::prepare_filesystem() {
+            eprintln!("pertiskd: filesystem prepare failed: {err:#}");
+        }
+        if let Err(err) = linux::redirect_stdio_serial() {
+            eprintln!("pertiskd: serial stdio redirect failed: {err:#}");
+        }
+        // Alpine linux-virt ships virtio_net as a module — load before DHCP.
+        modules::load_boot_modules();
+    }
+
     init_tracing();
 
-    let args = Args::parse();
-    let pid = process::id();
+    // Kernel may forward leftover cmdline tokens; never let clap exit PID 1.
+    let args = match Args::try_parse() {
+        Ok(a) => a,
+        Err(err) => {
+            eprintln!("pertiskd: arg parse warning (using defaults): {err}");
+            Args::parse_from(["pertiskd"])
+        }
+    };
     let is_pid1 = pid == 1 || args.force_init;
 
     info!(
@@ -116,24 +166,70 @@ fn run() -> Result<()> {
         "pertiskd starting"
     );
 
-    if is_pid1 {
+    if is_pid1 && pid != 1 {
+        // --force-init on a non-PID1 process still needs mounts in some lab setups.
         linux::prepare_filesystem()?;
     }
 
-    let early_cfg = load_early_config(&args)?;
+    let early_cfg = match load_early_config(&args) {
+        Ok(c) => c,
+        Err(err) => {
+            warn!(error = %err, "early config load failed");
+            None
+        }
+    };
 
+    // Bring up DHCP before install — install can warn/fail on cloud (/dev/vda
+    // vs scsi) and must not delay addressing.
     if let Some(ref cfg) = early_cfg {
-        maybe_install(cfg, &args)?;
+        if let Some(name) = cfg.machine.network.hostname.as_deref() {
+            if let Err(err) = hostname::set_hostname(name) {
+                warn!(error = %err, "hostname apply failed");
+            }
+        }
+        if !args.skip_network {
+            if let Err(err) = pertisk_net::apply_network(&cfg.machine.network) {
+                warn!(error = %err, "early network apply failed");
+            }
+        }
+        if let Err(err) = maybe_install(cfg, &args) {
+            warn!(error = %err, "install step failed");
+        }
     }
 
-    let volume = prepare_boot_state(args.state_dir.as_deref())?;
+    let volume = match prepare_boot_state(args.state_dir.as_deref()) {
+        Ok(v) => v,
+        Err(err) => {
+            // Never abort PID 1 for STATE — keep going with a tmp dir.
+            eprintln!("pertiskd: STATE prepare failed: {err:#}");
+            warn!(error = %err, "STATE prepare failed; using /tmp/pertisk-state");
+            let fallback = PathBuf::from("/tmp/pertisk-state");
+            let _ = std::fs::create_dir_all(&fallback);
+            match prepare_boot_state(Some(&fallback)) {
+                Ok(v) => v,
+                Err(err2) => {
+                    eprintln!("pertiskd: fallback STATE failed: {err2:#}");
+                    return Err(err2);
+                }
+            }
+        }
+    };
+    log_ring().set_state_root(&volume.root);
     let _esp = try_prepare_esp();
-    let cfg = load_boot_config(&args, &volume)?.or(early_cfg);
+    let cfg = load_boot_config(&args, &volume)
+        .unwrap_or_else(|err| {
+            warn!(error = %err, "boot config load failed");
+            None
+        })
+        .or(early_cfg);
 
     if let Some(ref cfg) = cfg {
         if let Some(name) = cfg.machine.network.hostname.as_deref() {
-            hostname::set_hostname(name)?;
+            if let Err(err) = hostname::set_hostname(name) {
+                warn!(error = %err, "hostname apply failed");
+            }
         }
+        // Re-apply after STATE mount (seed config may differ from initramfs).
         if !args.skip_network {
             if let Err(err) = pertisk_net::apply_network(&cfg.machine.network) {
                 warn!(error = %err, "network apply failed");
@@ -148,7 +244,9 @@ fn run() -> Result<()> {
         warn!("no machine config found; continuing without");
     }
 
-    linux::prepare_var()?;
+    if let Err(err) = linux::prepare_var() {
+        warn!(error = %err, "/var prepare failed");
+    }
     // Before kubelet (`protectKernelDefaults: true`).
     sysctl::apply_hardening_sysctls();
 
@@ -171,7 +269,16 @@ fn run() -> Result<()> {
             kubelet: None,
         }
     } else if let Some(ref cfg) = cfg {
-        NodeServices::start(cfg)?
+        match NodeServices::start(cfg, log_ring()) {
+            Ok(s) => s,
+            Err(err) => {
+                warn!(error = %err, "runtime services failed to start");
+                NodeServices {
+                    containerd: None,
+                    kubelet: None,
+                }
+            }
+        }
     } else {
         NodeServices {
             containerd: None,
@@ -191,11 +298,15 @@ fn run() -> Result<()> {
 
     let tls = resolve_tls(&args);
     if !args.skip_api {
-        start_api_thread(api_state.clone(), &args.api_listen, tls)?;
+        if let Err(err) = start_api_thread(api_state.clone(), &args.api_listen, tls) {
+            warn!(error = %err, "management API failed to start");
+        }
     }
     if !args.skip_metrics {
         let token = resolve_metrics_token(&args, &volume);
-        start_metrics_thread(api_state.clone(), &args.metrics_listen, token)?;
+        if let Err(err) = start_metrics_thread(api_state.clone(), &args.metrics_listen, token) {
+            warn!(error = %err, "metrics endpoint failed to start");
+        }
     }
 
     if args.smoke || !is_pid1 {
@@ -231,7 +342,28 @@ fn run() -> Result<()> {
     }
 
     info!("running as init");
-    reaper::supervise(cfg, services, api_state)?;
+    let _dashboard = if should_enable_dashboard(args.no_dashboard, args.smoke) {
+        match start_dashboard(
+            cfg.clone(),
+            api_state.clone(),
+            volume.root.clone(),
+            log_ring().clone(),
+        ) {
+            Some(handle) => {
+                info!("console status banner started");
+                Some(handle)
+            }
+            None => {
+                warn!("console status banner failed to start");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Err(err) = reaper::supervise(cfg, services, api_state) {
+        warn!(error = %err, "supervise loop exited");
+    }
     Ok(())
 }
 
@@ -346,9 +478,11 @@ fn resolve_trust_key(args: &Args, volume: &StateVolume) -> PathBuf {
 
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let ring = log_ring().clone();
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .with_writer(ring.make_writer())
         .compact()
         .init();
 }
@@ -373,13 +507,32 @@ fn maybe_install(cfg: &MachineConfig, args: &Args) -> Result<()> {
         return Ok(());
     };
 
-    if layout_present() && !install.wipe {
-        info!(disk = %install.disk, "Pertisk layout present; skipping install");
+    // Cloud / golden images already have GPT+STATE. Never wipe them from the
+    // early initramfs config (which historically shipped wipe:true for lab
+    // installs and raced ahead of the mounted STATE config).
+    if layout_present() {
+        if install.wipe {
+            warn!(
+                disk = %install.disk,
+                "install.wipe ignored; Pertisk layout already present"
+            );
+        } else {
+            info!(disk = %install.disk, "Pertisk layout present; skipping install");
+        }
         return Ok(());
     }
 
     if args.state_dir.is_some() {
         info!("--state-dir set; skipping disk install");
+        return Ok(());
+    }
+
+    let disk = PathBuf::from(&install.disk);
+    if !disk.exists() {
+        warn!(
+            disk = %disk.display(),
+            "install disk missing; skipping (cloud images use scsi /dev/sda, not virtio /dev/vda)"
+        );
         return Ok(());
     }
 
@@ -411,7 +564,7 @@ fn maybe_install(cfg: &MachineConfig, args: &Args) -> Result<()> {
         };
 
         let opts = InstallOptions {
-            disk: PathBuf::from(&install.disk),
+            disk,
             wipe: install.wipe,
             seed_config: seed_path,
         };

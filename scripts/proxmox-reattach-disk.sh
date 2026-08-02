@@ -48,7 +48,7 @@ qm set "\${VMID}" --scsi0 "\${UVAL}"
 qm set "\${VMID}" --delete "\${UKEY}" || true
 qm set "\${VMID}" --boot order=scsi0
 qm set "\${VMID}" --bios ovmf --machine q35
-qm set "\${VMID}" --serial0 socket --vga std
+qm set "\${VMID}" --serial0 socket --vga serial0
 
 # Ensure EFI vars without Secure Boot MS keys
 if qm config "\${VMID}" | grep -q '^efidisk0:'; then

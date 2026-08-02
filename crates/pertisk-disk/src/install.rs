@@ -33,9 +33,10 @@ pub struct InstallOptions {
     pub seed_config: Option<PathBuf>,
 }
 
-/// True when `/dev/disk/by-partlabel/STATE` exists.
+/// True when a STATE partition is visible (udev symlink or sysfs PARTNAME).
 pub fn layout_present() -> bool {
-    Path::new(&format!("/dev/disk/by-partlabel/{PARTLABEL_STATE}")).exists()
+    crate::partlabel::find_by_partlabel(PARTLABEL_STATE).is_some()
+        || crate::partlabel::guess_state_nodes().next().is_some()
 }
 
 /// Read block device (or image file) size in bytes.

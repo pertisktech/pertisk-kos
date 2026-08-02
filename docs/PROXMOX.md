@@ -76,17 +76,17 @@ The script:
 
 Manual UI alternative: upload `pertisk-cloud-amd64.qcow2` to storage → Create VM (UEFI, q35) → attach disk → start.
 
-### Finding the guest IP
+### Console dashboard + finding the guest IP
 
 Pertisk has **no qemu-guest-agent** and no SSH, so Proxmox Summary will not show an IP.
 
-After a successful DHCP lease, Serial logs a line like:
+After boot, `pertiskd` prints a **text status banner** every ~2s on serial (hostname, CPU/mem/disk, IPs, cluster/runtime, recent logs). Disable with `--no-dashboard`.
 
-```text
-DHCP configured interface=eth0 addresses=["10.1.1.50/24"]
-```
+Deploy scripts set `serial0=socket` and **`vga=serial0`**, so Proxmox **Console** opens serial/xterm.js. Guest cmdline ends with `console=ttyS0`; `pertiskd` also redirects stdio to `/dev/ttyS0`. Host: `qm terminal <vmid>`.
 
-Use **Console → xterm.js / Serial** (`console=ttyS0`).
+IPs appear in the `net` lines of the banner.
+
+Disable with kernel/process flag `--no-dashboard` if you need raw serial logs only.
 
 Or look up the VM MAC on the Proxmox host / DHCP server:
 
@@ -149,7 +149,7 @@ kubectl get nodes
 
 | Item | Recommendation |
 |------|----------------|
-| Guest NIC | virtio on `vmbr0` (or VLAN bridge) |
+| Guest NIC | virtio on `vmbr0` (or VLAN bridge); image loads `virtio_net` module at boot |
 | Guest IP | DHCP (default seed) or static in machine config |
 | Management API | `:50000` (mTLS); firewall carefully |
 | Metrics | `:50001` (optional bearer token) |

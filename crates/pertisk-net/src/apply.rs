@@ -50,34 +50,54 @@ mod linux {
             .map_err(|e| NetError::Msg(e.to_string()))?;
 
         for iface in &network.interfaces {
-            rt.block_on(link::set_link_up(&iface.interface))?;
+            let name = match rt.block_on(link::resolve_iface(&iface.interface)) {
+                Ok(n) => n,
+                Err(err) => {
+                    warn!(
+                        configured = %iface.interface,
+                        error = %err,
+                        "skip interface"
+                    );
+                    continue;
+                }
+            };
+            rt.block_on(link::set_link_up(&name))?;
             if iface.dhcp {
-                match link::run_dhcp(&iface.interface) {
+                let existing = rt.block_on(link::list_addresses(&name)).unwrap_or_default();
+                if !existing.is_empty() {
+                    info!(
+                        interface = %name,
+                        addresses = ?existing,
+                        "DHCP already configured"
+                    );
+                    continue;
+                }
+                match link::run_dhcp(&name) {
                     Ok(()) => {
-                        let addrs = rt
-                            .block_on(link::list_addresses(&iface.interface))
-                            .unwrap_or_default();
+                        let addrs = rt.block_on(link::list_addresses(&name)).unwrap_or_default();
                         info!(
-                            interface = %iface.interface,
+                            interface = %name,
+                            configured = %iface.interface,
                             addresses = ?addrs,
                             "DHCP configured"
                         );
                     }
                     Err(err) => warn!(
-                        interface = %iface.interface,
+                        interface = %name,
+                        configured = %iface.interface,
                         error = %err,
                         "DHCP failed; continuing"
                     ),
                 }
             } else {
                 for addr in &iface.addresses {
-                    rt.block_on(link::add_address(&iface.interface, addr))?;
+                    rt.block_on(link::add_address(&name, addr))?;
                 }
                 if let Some(gw) = &iface.gateway {
                     rt.block_on(link::add_default_route(gw))?;
                 }
                 info!(
-                    interface = %iface.interface,
+                    interface = %name,
                     addresses = ?iface.addresses,
                     gateway = ?iface.gateway,
                     "static network configured"

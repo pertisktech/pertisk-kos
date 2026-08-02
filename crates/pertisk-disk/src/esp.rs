@@ -6,6 +6,7 @@ use thiserror::Error;
 use tracing::warn;
 
 use crate::layout::{MountPaths, PARTLABEL_EFI};
+use crate::partlabel::find_by_partlabel;
 
 #[derive(Debug, Error)]
 pub enum EspError {
@@ -49,8 +50,12 @@ pub fn prepare_esp_at(mountpoint: &Path) -> Result<Option<EspVolume>, EspError> 
 
 #[cfg(target_os = "linux")]
 fn find_efi_device() -> Option<PathBuf> {
-    let by_label = PathBuf::from(format!("/dev/disk/by-partlabel/{PARTLABEL_EFI}"));
-    by_label.exists().then_some(by_label)
+    find_by_partlabel(PARTLABEL_EFI).or_else(|| {
+        ["/dev/vda1", "/dev/sda1", "/dev/nvme0n1p1"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|p| p.exists())
+    })
 }
 
 #[cfg(target_os = "linux")]

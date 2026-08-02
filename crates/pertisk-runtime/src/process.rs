@@ -8,6 +8,7 @@ use thiserror::Error;
 use tracing::{info, warn};
 
 use crate::config::write_containerd_config;
+use crate::log_tee::{containerd_log_path, ensure_var_log, spawn_stderr_tee, LineSink};
 use crate::paths::RuntimePaths;
 
 #[derive(Debug, Error)]
@@ -24,6 +25,7 @@ pub enum RuntimeError {
 pub struct ContainerdHandle {
     pub paths: RuntimePaths,
     child: Child,
+    log_sink: Option<LineSink>,
 }
 
 impl ContainerdHandle {
@@ -56,7 +58,7 @@ impl ContainerdHandle {
             return Ok(());
         }
         warn!("restarting containerd");
-        let restarted = start_containerd(&self.paths)?;
+        let restarted = start_containerd_with_sink(&self.paths, self.log_sink.clone())?;
         self.child = restarted.child;
         Ok(())
     }
@@ -69,24 +71,39 @@ impl ContainerdHandle {
 
 /// Write config and spawn containerd. Returns error if binary is missing.
 pub fn start_containerd(paths: &RuntimePaths) -> Result<ContainerdHandle, RuntimeError> {
+    start_containerd_with_sink(paths, None)
+}
+
+/// Like [`start_containerd`], but tees stderr lines to `log_sink` (prefixed by caller).
+pub fn start_containerd_with_sink(
+    paths: &RuntimePaths,
+    log_sink: Option<LineSink>,
+) -> Result<ContainerdHandle, RuntimeError> {
     if !paths.binary.exists() {
         return Err(RuntimeError::MissingBinary(
             paths.binary.display().to_string(),
         ));
     }
     write_containerd_config(paths)?;
+    ensure_var_log();
 
     info!(bin = %paths.binary.display(), "starting containerd");
-    let child = Command::new(&paths.binary)
+    let mut child = Command::new(&paths.binary)
         .arg("--config")
         .arg(&paths.config)
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()?;
+
+    if let Some(stderr) = child.stderr.take() {
+        // Caller sink (e.g. LogRing) should apply its own prefix.
+        spawn_stderr_tee(stderr, containerd_log_path(), "containerd", log_sink.clone());
+    }
 
     let mut handle = ContainerdHandle {
         paths: paths.clone(),
         child,
+        log_sink,
     };
 
     // Brief wait for the socket (non-fatal if slow).

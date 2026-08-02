@@ -56,7 +56,7 @@ fi
 qm set \"\${VMID}\" --bios ovmf --machine q35
 qm set \"\${VMID}\" --scsihw virtio-scsi-single
 qm set \"\${VMID}\" --boot order=scsi0
-qm set \"\${VMID}\" --serial0 socket --vga std
+qm set \"\${VMID}\" --serial0 socket --vga serial0
 
 # Recreate EFI disk without Microsoft Secure Boot keys.
 if qm config \"\${VMID}\" | grep -q '^efidisk0:'; then
@@ -74,5 +74,5 @@ qm config \"\${VMID}\" | grep -E '^(scsi|unused|efidisk|boot|bios|machine|serial
 
 qm start \"\${VMID}\"
 echo \"==> started \${VMID}\"
-echo \"    Console → Serial (or: qm terminal \${VMID})\"
+echo \"    Console opens serial (vga=serial0). Host: qm terminal \${VMID}\"
 "

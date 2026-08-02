@@ -29,6 +29,8 @@ pub fn run_from_env(args: &[String]) -> Result<(), NetError> {
                 .map_err(|_| NetError::Msg("udhcpc hook: missing $ip".into()))?;
             let prefix = lease_prefix_len()?;
             let cidr = format!("{ip}/{prefix}");
+            // Surface lease details on serial even if tracing isn't configured.
+            eprintln!("pertisk-udhcpc-hook: {action} {iface} {cidr}");
             rt.block_on(async {
                 crate::link::flush_addresses(&iface).await?;
                 crate::link::add_address(&iface, &cidr).await?;
@@ -38,8 +40,19 @@ pub fn run_from_env(args: &[String]) -> Result<(), NetError> {
                         let _ = crate::link::add_default_route(gw).await;
                     }
                 }
-                Ok(())
-            })
+                Ok::<(), NetError>(())
+            })?;
+            if let Ok(dns) = std::env::var("dns") {
+                let servers: Vec<String> = dns
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !servers.is_empty() {
+                    let _ = crate::dns::write_resolv_conf(&servers);
+                }
+            }
+            Ok(())
         }
         "leasefail" | "nak" => {
             tracing::warn!(interface = %iface, action, "DHCP lease failed");

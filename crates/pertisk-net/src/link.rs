@@ -195,52 +195,204 @@ pub async fn add_default_route(gateway: &str) -> Result<(), NetError> {
     Ok(())
 }
 
+/// Non-loopback interface names (kernel order).
+#[cfg(target_os = "linux")]
+pub async fn list_interfaces() -> Result<Vec<String>, NetError> {
+    use netlink_packet_route::link::LinkAttribute;
+    use rtnetlink::new_connection;
+
+    let (connection, handle, _) = new_connection().map_err(|e| NetError::Msg(e.to_string()))?;
+    tokio::spawn(connection);
+
+    let mut out = Vec::new();
+    let mut links = handle.link().get().execute();
+    while let Some(link) = links
+        .try_next()
+        .await
+        .map_err(|e| NetError::Msg(e.to_string()))?
+    {
+        let mut name = None;
+        for attr in &link.attributes {
+            if let LinkAttribute::IfName(n) = attr {
+                name = Some(n.clone());
+                break;
+            }
+        }
+        if let Some(n) = name {
+            if n != "lo" {
+                out.push(n);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Wait until the link reports carrier (or timeout). Virtio often needs a beat after UP.
+#[cfg(target_os = "linux")]
+pub fn wait_carrier(iface: &str, timeout: std::time::Duration) -> Result<(), NetError> {
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let path = format!("/sys/class/net/{iface}/carrier");
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(s) = std::fs::read_to_string(&path) {
+            if s.trim() == "1" {
+                tracing::info!(interface = iface, "carrier up");
+                return Ok(());
+            }
+        }
+        if Instant::now() >= deadline {
+            tracing::warn!(interface = iface, "carrier wait timed out; trying DHCP anyway");
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Resolve a configured iface name, or the first non-loopback NIC if missing.
+#[cfg(target_os = "linux")]
+pub async fn resolve_iface(configured: &str) -> Result<String, NetError> {
+    let names = list_interfaces().await?;
+    if names.iter().any(|n| n == configured) {
+        return Ok(configured.to_string());
+    }
+    if let Some(first) = names.first() {
+        tracing::warn!(
+            configured,
+            using = %first,
+            available = ?names,
+            "configured interface missing; using first NIC"
+        );
+        return Ok(first.clone());
+    }
+    Err(NetError::Msg(format!(
+        "interface {configured} not found and no other NICs present"
+    )))
+}
+
+fn dhcp_bin(candidates: &[&'static str]) -> Option<&'static str> {
+    for c in candidates {
+        if std::path::Path::new(c).is_file() {
+            return Some(*c);
+        }
+    }
+    None
+}
+
 /// Run a DHCP client if available (`udhcpc`, then `dhclient`).
 ///
 /// Prefer `udhcpc -s /usr/lib/pertisk/udhcpc-hook` so leases apply without `/bin/sh`.
+/// Uses absolute paths — PID 1 often has an empty `PATH`.
 #[cfg(target_os = "linux")]
 pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
     use std::process::Command;
+    use std::thread;
+    use std::time::Duration;
 
     const UDHCPC_HOOK: &str = "/usr/lib/pertisk/udhcpc-hook";
+    const UDHCPC_BINS: &[&str] = &["/usr/sbin/udhcpc", "/sbin/udhcpc", "udhcpc"];
+    const DHCLIENT_BINS: &[&str] = &["/usr/sbin/dhclient", "/sbin/dhclient", "dhclient"];
 
     let hook = if std::path::Path::new(UDHCPC_HOOK).is_file() {
         Some(UDHCPC_HOOK)
     } else {
+        tracing::warn!("udhcpc hook missing at {UDHCPC_HOOK}; lease may not apply");
         None
     };
 
-    let mut args = vec!["-i", iface, "-n", "-q", "-t", "5"];
-    if let Some(script) = hook {
-        args.extend_from_slice(&["-s", script]);
+    wait_carrier(iface, Duration::from_secs(10))?;
+
+    // Prefer in-process DHCP — BusyBox udhcpc daemonizes without `-f`, and
+    // `Command::output()` then returns before the lease/hook runs.
+    match crate::dhcp::run_dhcp(iface) {
+        Ok(()) => return Ok(()),
+        Err(err) => {
+            eprintln!("pertisk-net: builtin DHCP failed: {err}");
+            tracing::warn!(interface = iface, error = %err, "builtin DHCP failed; trying udhcpc");
+        }
     }
 
-    let udhcpc = Command::new("udhcpc").args(&args).output();
-    if let Ok(out) = udhcpc {
-        if out.status.success() {
-            return Ok(());
+    let mut last_err = String::new();
+    for attempt in 1..=4 {
+        if let Some(bin) = dhcp_bin(UDHCPC_BINS) {
+            // `-f` keeps udhcpc in the foreground so we can wait for the lease.
+            let mut args = vec!["-i", iface, "-f", "-n", "-q", "-t", "8"];
+            if let Some(script) = hook {
+                args.extend_from_slice(&["-s", script]);
+            }
+            use std::process::Stdio;
+            match Command::new(bin)
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status()
+            {
+                Ok(status) if status.success() => {
+                    // Confirm the hook actually installed an address.
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| NetError::Msg(e.to_string()))?;
+                    let addrs = rt.block_on(list_addresses(iface)).unwrap_or_default();
+                    if !addrs.is_empty() {
+                        tracing::info!(
+                            interface = iface,
+                            attempt,
+                            addresses = ?addrs,
+                            "udhcpc lease applied"
+                        );
+                        return Ok(());
+                    }
+                    last_err = format!(
+                        "{bin} exited 0 but no address on {iface} (hook={})",
+                        hook.unwrap_or("none")
+                    );
+                    tracing::warn!(%last_err, attempt, "DHCP incomplete");
+                }
+                Ok(status) => {
+                    last_err = format!("{bin} status={status}");
+                    tracing::warn!(
+                        interface = iface,
+                        attempt,
+                        %status,
+                        bin,
+                        hook = hook.unwrap_or("(default.script)"),
+                        "udhcpc failed"
+                    );
+                }
+                Err(err) => {
+                    last_err = format!("spawn {bin}: {err}");
+                    tracing::warn!(interface = iface, bin, error = %err, "udhcpc spawn failed");
+                }
+            }
         }
-        let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        tracing::warn!(
-            interface = iface,
-            status = %out.status,
-            stderr = %detail,
-            hook = hook.unwrap_or("(default.script)"),
-            "udhcpc failed"
-        );
+
+        if let Some(bin) = dhcp_bin(DHCLIENT_BINS) {
+            match Command::new(bin).args(["-1", "-v", iface]).output() {
+                Ok(out) if out.status.success() => return Ok(()),
+                Ok(out) => {
+                    let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    last_err = format!("{bin}: {detail}");
+                }
+                Err(err) => {
+                    last_err = format!("spawn {bin}: {err}");
+                }
+            }
+        }
+
+        if attempt < 4 {
+            thread::sleep(Duration::from_secs(2));
+        }
     }
 
-    let dhclient = Command::new("dhclient").args(["-1", "-v", iface]).output();
-    match dhclient {
-        Ok(out) if out.status.success() => Ok(()),
-        Ok(out) => {
-            let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            Err(NetError::Msg(format!(
-                "DHCP clients failed for {iface}: {detail}"
-            )))
-        }
-        Err(_) => Err(NetError::Msg(format!(
-            "no DHCP client found (tried udhcpc, dhclient) for {iface}"
-        ))),
+    if dhcp_bin(UDHCPC_BINS).is_none() && dhcp_bin(DHCLIENT_BINS).is_none() {
+        return Err(NetError::Msg(format!(
+            "no DHCP client found for {iface} (tried /usr/sbin/udhcpc)"
+        )));
     }
+    Err(NetError::Msg(format!(
+        "DHCP failed for {iface} after retries: {last_err}"
+    )))
 }

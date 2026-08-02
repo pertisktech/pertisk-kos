@@ -2,11 +2,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use thiserror::Error;
 use tracing::info;
 
 use crate::layout::{MountPaths, PARTLABEL_STATE};
+use crate::partlabel::{guess_state_nodes, wait_for_partlabel};
 
 /// Default machine config filename under STATE.
 pub const DEFAULT_CONFIG_NAME: &str = "config.yaml";
@@ -85,8 +87,18 @@ pub fn prepare_state(state_dir: Option<&Path>) -> Result<StateVolume, StateError
 
     #[cfg(target_os = "linux")]
     {
+        // Virtio + no udev: wait briefly, then sysfs PARTNAME / node guess.
         if let Some(dev) = find_state_device() {
-            return mount_state_partition(&dev, Path::new(paths.state));
+            match mount_state_partition(&dev, Path::new(paths.state)) {
+                Ok(vol) => return Ok(vol),
+                Err(err) => {
+                    tracing::warn!(
+                        device = %dev.display(),
+                        error = %err,
+                        "STATE mount failed; trying ephemeral"
+                    );
+                }
+            }
         }
         tracing::warn!("no STATE partition found; using ephemeral STATE on root");
         return prepare_ephemeral_state(Path::new(paths.state));
@@ -103,9 +115,13 @@ pub fn prepare_state(state_dir: Option<&Path>) -> Result<StateVolume, StateError
 
 #[cfg(target_os = "linux")]
 fn find_state_device() -> Option<PathBuf> {
-    let by_label = PathBuf::from(format!("/dev/disk/by-partlabel/{PARTLABEL_STATE}"));
-    if by_label.exists() {
-        return Some(by_label);
+    if let Some(dev) = wait_for_partlabel(PARTLABEL_STATE, Duration::from_secs(5)) {
+        info!(device = %dev.display(), "found STATE partition");
+        return Some(dev);
+    }
+    for dev in guess_state_nodes() {
+        info!(device = %dev.display(), "guessing STATE partition node");
+        return Some(dev);
     }
     None
 }

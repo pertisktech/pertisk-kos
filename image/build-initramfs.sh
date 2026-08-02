@@ -72,6 +72,18 @@ if [[ "${PERTISK_EMBED_BOOT:-0}" == "1" ]]; then
   PERTISK_ARCH="${ARCH_SUFFIX}" "${ROOT}/image/fetch-kernel.sh"
   PERTISK_ARCH="${ARCH_SUFFIX}" "${ROOT}/image/fetch-bootloader.sh"
   PERTISK_ARCH="${ARCH_SUFFIX}" "${ROOT}/image/stage-boot-assets.sh"
+else
+  # Still need virtio_net.ko etc. even when the kernel itself is not embedded.
+  PERTISK_ARCH="${ARCH_SUFFIX}" "${ROOT}/image/fetch-kernel.sh"
+fi
+
+MODULES_SRC="${OUT}/modules-${ARCH_SUFFIX}"
+if [[ -d "${MODULES_SRC}" ]]; then
+  echo "==> embedding kernel modules from ${MODULES_SRC}"
+  mkdir -p "${OVERLAY}/lib/pertisk/modules"
+  cp -a "${MODULES_SRC}/." "${OVERLAY}/lib/pertisk/modules/"
+else
+  echo "WARNING: ${MODULES_SRC} missing — virtio NIC/disk modules unavailable" >&2
 fi
 
 ARTIFACT="${OUT}/initramfs-${ARCH_SUFFIX}.cpio.gz"
@@ -82,6 +94,8 @@ if [[ "${IMAGE_PROFILE}" == "debug" ]]; then
 fi
 
 echo "==> building initramfs (version=${VERSION} platform=${PLATFORM} profile=${IMAGE_PROFILE})"
+# BuildKit required for Dockerfile cache mounts (cargo registry/target).
+export DOCKER_BUILDKIT=1
 docker build \
   --platform "${PLATFORM}" \
   --build-arg "VERSION=${VERSION}" \

@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+libc = "0.2"
 nix = { workspace = true }
 pertisk-api = { workspace = true }
 pertisk-config = { workspace = true }

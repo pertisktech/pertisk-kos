@@ -2,9 +2,11 @@
 
 use anyhow::Result;
 use pertisk_config::MachineConfig;
-use pertisk_kubelet::{start_kubelet, KubeletHandle, KubeletPaths};
-use pertisk_runtime::{start_containerd, ContainerdHandle, RuntimePaths};
+use pertisk_kubelet::{start_kubelet_with_sink, KubeletHandle, KubeletPaths};
+use pertisk_runtime::{start_containerd_with_sink, ContainerdHandle, RuntimePaths};
 use tracing::{info, warn};
+
+use crate::log_ring::LogRing;
 
 pub struct NodeServices {
     pub containerd: Option<ContainerdHandle>,
@@ -13,13 +15,13 @@ pub struct NodeServices {
 
 impl NodeServices {
     /// Attempt to start runtime services. Missing binaries are soft-warned.
-    pub fn start(cfg: &MachineConfig) -> Result<Self> {
+    pub fn start(cfg: &MachineConfig, logs: &LogRing) -> Result<Self> {
         let mut services = Self {
             containerd: None,
             kubelet: None,
         };
 
-        match start_containerd(&RuntimePaths::default()) {
+        match start_containerd_with_sink(&RuntimePaths::default(), Some(logs.sink("containerd"))) {
             Ok(handle) => {
                 info!(pid = handle.pid(), "containerd running");
                 services.containerd = Some(handle);
@@ -33,7 +35,11 @@ impl NodeServices {
         }
 
         if services.containerd.is_some() && cfg.cluster.is_some() {
-            match start_kubelet(&KubeletPaths::default(), cfg) {
+            match start_kubelet_with_sink(
+                &KubeletPaths::default(),
+                cfg,
+                Some(logs.sink("kubelet")),
+            ) {
                 Ok(handle) => {
                     info!(pid = handle.pid(), "kubelet running");
                     services.kubelet = Some(handle);

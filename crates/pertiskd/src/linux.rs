@@ -18,6 +18,22 @@ pub fn prepare_filesystem() -> Result<()> {
     }
 }
 
+/// Point stdin/stdout/stderr at the serial console (Proxmox xterm.js / ttyS0).
+///
+/// Kernel printk goes to all `console=` devices, but PID 1 stdio follows
+/// `/dev/console` (last `console=`). Explicitly binding to ttyS0 makes logs
+/// and the dashboard visible on Serial even if cmdline order is wrong.
+pub fn redirect_stdio_serial() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_impl::redirect_stdio_serial()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(())
+    }
+}
+
 /// Ensure writable `/var` exists (tmpfs in initramfs; EPHEMERAL bind later).
 pub fn prepare_var() -> Result<()> {
     #[cfg(target_os = "linux")]
@@ -94,6 +110,28 @@ mod linux_impl {
         ensure_dir("/var/log")?;
         ensure_dir("/var/lib")?;
         info!("/var ready");
+        Ok(())
+    }
+
+    pub fn redirect_stdio_serial() -> Result<()> {
+        use std::os::unix::io::AsRawFd;
+
+        for path in ["/dev/ttyS0", "/dev/console", "/dev/tty0"] {
+            let Ok(file) = fs::OpenOptions::new().read(true).write(true).open(path) else {
+                continue;
+            };
+            let fd = file.as_raw_fd();
+            // SAFETY: dup2 replaces stdio fds; kernel keeps references after close.
+            unsafe {
+                if libc::dup2(fd, 0) < 0 || libc::dup2(fd, 1) < 0 || libc::dup2(fd, 2) < 0 {
+                    return Err(anyhow::anyhow!("dup2 to {path} failed"));
+                }
+            }
+            drop(file);
+            eprintln!("pertiskd: stdio -> {path}");
+            return Ok(());
+        }
+        eprintln!("pertiskd: no ttyS0/console for stdio redirect");
         Ok(())
     }
 

@@ -9,6 +9,7 @@ use tracing::{info, warn};
 
 use crate::cni::{ensure_cni_mode, DEFAULT_POD_CIDR};
 use crate::config::{write_kubeconfig, write_kubelet_config};
+use crate::log_tee::{ensure_var_log, kubelet_log_path, spawn_stderr_tee, LineSink};
 use crate::paths::KubeletPaths;
 
 #[derive(Debug, Error)]
@@ -24,6 +25,7 @@ pub enum KubeletError {
 pub struct KubeletHandle {
     pub paths: KubeletPaths,
     child: Child,
+    log_sink: Option<LineSink>,
 }
 
 impl KubeletHandle {
@@ -50,7 +52,7 @@ impl KubeletHandle {
             return Ok(());
         }
         warn!("restarting kubelet");
-        let restarted = start_kubelet(&self.paths, cfg)?;
+        let restarted = start_kubelet_with_sink(&self.paths, cfg, self.log_sink.clone())?;
         self.child = restarted.child;
         Ok(())
     }
@@ -66,6 +68,15 @@ pub fn start_kubelet(
     paths: &KubeletPaths,
     cfg: &MachineConfig,
 ) -> Result<KubeletHandle, KubeletError> {
+    start_kubelet_with_sink(paths, cfg, None)
+}
+
+/// Like [`start_kubelet`], teeing stderr to `log_sink` (caller applies prefix).
+pub fn start_kubelet_with_sink(
+    paths: &KubeletPaths,
+    cfg: &MachineConfig,
+    log_sink: Option<LineSink>,
+) -> Result<KubeletHandle, KubeletError> {
     if !paths.binary.exists() {
         return Err(KubeletError::MissingBinary(
             paths.binary.display().to_string(),
@@ -78,6 +89,7 @@ pub fn start_kubelet(
         .ok_or_else(|| KubeletError::Msg("cluster config required for kubelet".into()))?;
 
     prepare_kubelet(paths, cfg, cluster)?;
+    ensure_var_log();
 
     let container_runtime_endpoint = "unix:///run/containerd/containerd.sock";
     info!(bin = %paths.binary.display(), cni = %cluster.cni.as_str(), "starting kubelet");
@@ -91,7 +103,7 @@ pub fn start_kubelet(
         .arg(format!("--root-dir={}", paths.root_dir.display()))
         .arg("--v=2")
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
 
     // Bridge mode needs an explicit pod CIDR; cluster CNI assigns via Node.Spec.PodCIDR.
     if cluster.cni == pertisk_config::CniMode::Bridge {
@@ -99,7 +111,10 @@ pub fn start_kubelet(
         cmd.arg(format!("--pod-cidr={pod_cidr}"));
     }
 
-    let child = cmd.spawn()?;
+    let mut child = cmd.spawn()?;
+    if let Some(stderr) = child.stderr.take() {
+        spawn_stderr_tee(stderr, kubelet_log_path(), "kubelet", log_sink.clone());
+    }
 
     // Give kubelet a moment; registration is async against the API server.
     std::thread::sleep(Duration::from_millis(200));
@@ -107,6 +122,7 @@ pub fn start_kubelet(
     let mut handle = KubeletHandle {
         paths: paths.clone(),
         child,
+        log_sink,
     };
     if !handle.is_alive() {
         return Err(KubeletError::Msg("kubelet exited immediately".into()));

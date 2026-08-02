@@ -1,11 +1,10 @@
 version: v1alpha1
 machine:
   type: worker
-  install:
-    disk: /dev/vda
-    wipe: true
+  # No install block: cloud/golden images are pre-partitioned.
+  # Metal first-boot install uses examples/worker-install.yaml (or PERTISK_CONFIG).
   network:
-    hostname: pertisk-qemu-1
+    hostname: pertisk-1
     interfaces:
       - interface: eth0
         dhcp: true

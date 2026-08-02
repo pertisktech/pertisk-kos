@@ -110,7 +110,8 @@ cp "${BOOT_ASSETS}/initramfs" /mnt/pertisk-efi/pertisk/A/initramfs
 cp "${BOOT_ASSETS}/kernel" /mnt/pertisk-boot-a/kernel
 cp "${BOOT_ASSETS}/initramfs" /mnt/pertisk-boot-a/initramfs
 
-CMDLINE="${PERTISK_CMDLINE:-console=ttyS0 console=tty0 rdinit=/init}"
+# Last console= becomes /dev/console for userspace — keep ttyS0 last for Proxmox serial.
+CMDLINE="${PERTISK_CMDLINE:-console=tty0 console=ttyS0 rdinit=/init}"
 cat >/mnt/pertisk-efi/loader/entries/pertisk-a.conf <<EOF
 title Pertisk KOS (slot A)
 linux /pertisk/A/kernel

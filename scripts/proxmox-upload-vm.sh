@@ -121,6 +121,63 @@ vm_has_scsi0() {
   echo "${conf}" | jq -e '.data.scsi0 != null' >/dev/null 2>&1
 }
 
+# Upload/import return UPIDs; wait until stopped + exitstatus OK.
+wait_task() {
+  local upid="$1"
+  local label="${2:-task}"
+  local enc status exitst i
+  [[ -n "${upid}" && "${upid}" == UPID:* ]] || return 0
+  enc="$(printf '%s' "${upid}" | jq -sRr @uri)"
+  echo "==> waiting for ${label}: ${upid}"
+  for i in $(seq 1 600); do
+    status="$(api_get "/nodes/${NODE}/tasks/${enc}/status" 2>/dev/null || echo '{}')"
+    if echo "${status}" | jq -e '.data.status == "stopped"' >/dev/null 2>&1; then
+      exitst="$(echo "${status}" | jq -r '.data.exitstatus // empty')"
+      if [[ "${exitst}" == "OK" ]]; then
+        echo "==> ${label} OK"
+        return 0
+      fi
+      echo "${label} failed: ${exitst}" >&2
+      echo "${status}" | jq . >&2 || true
+      return 1
+    fi
+    sleep 1
+  done
+  echo "${label} timed out after 600s" >&2
+  return 1
+}
+
+vm_stop() {
+  local cur
+  cur="$(api_get "/nodes/${NODE}/qemu/${VMID}/status/current" 2>/dev/null || echo '{}')"
+  if echo "${cur}" | jq -e '.data.status == "running"' >/dev/null 2>&1; then
+    echo "==> stopping VM ${VMID}"
+    api_post_form "/nodes/${NODE}/qemu/${VMID}/status/stop" >/dev/null 2>&1 || true
+    local i
+    for i in $(seq 1 60); do
+      cur="$(api_get "/nodes/${NODE}/qemu/${VMID}/status/current" 2>/dev/null || echo '{}')"
+      echo "${cur}" | jq -e '.data.status == "stopped"' >/dev/null 2>&1 && return 0
+      sleep 1
+    done
+    echo "WARNING: VM ${VMID} still not stopped" >&2
+  fi
+}
+
+# Remove scsi0 so a fresh import-from can replace the guest disk.
+detach_scsi0() {
+  if ! vm_has_scsi0; then
+    return 0
+  fi
+  echo "==> detaching scsi0 for re-import"
+  vm_stop
+  local att
+  att="$(api_put_form "/nodes/${NODE}/qemu/${VMID}/config" --data-urlencode "delete=scsi0")"
+  if ! api_response_ok "${att}"; then
+    echo "detach scsi0 failed: ${att}" >&2
+    exit 1
+  fi
+}
+
 echo "==> Proxmox ${PROXMOX_URL} node=${NODE} storage=${STORAGE} vmid=${VMID}"
 
 # --- Create VM skeleton (UEFI / q35) ---
@@ -155,33 +212,40 @@ api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
   --data-urlencode "efidisk0=${EFI_STORAGE}:1,efitype=4m,pre-enrolled-keys=0" >/dev/null 2>&1 || \
   echo "    (efidisk0 may already exist — check Hardware)"
 
-# Serial console: Pertisk cmdline uses console=ttyS0 (VGA may look blank).
-echo "==> serial0=socket + vga=std"
+# Serial as primary console: Proxmox Console opens xterm.js on serial0.
+# Pertisk cmdline uses console=ttyS0; vga=serial0 makes UI default to Serial.
+echo "==> serial0=socket + vga=serial0 (Console → Serial)"
 api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
   --data-urlencode "serial0=socket" \
-  --data-urlencode "vga=std" >/dev/null 2>&1 || true
+  --data-urlencode "vga=serial0" >/dev/null 2>&1 || true
 
 # --- Disk import ---
 if [[ -n "${PROXMOX_SSH:-}" ]]; then
-  echo "==> SCP + qm importdisk via ${PROXMOX_SSH}"
-  REMOTE="/var/tmp/pertisk-${VMID}.qcow2"
-  scp -o StrictHostKeyChecking=accept-new "${DISK}" "${PROXMOX_SSH}:${REMOTE}"
-  ssh "${PROXMOX_SSH}" "qm importdisk ${VMID} ${REMOTE} ${STORAGE} --format qcow2 && rm -f ${REMOTE}"
-  # Attach unused disk0 if present.
-  CONF="$(api_get "/nodes/${NODE}/qemu/${VMID}/config")"
-  UNUSED="$(echo "${CONF}" | jq -r '.data | to_entries[] | select(.key|startswith("unused")) | "\(.key)=\(.value)"' | head -1 || true)"
-  if [[ -n "${UNUSED}" ]]; then
-    KEY="${UNUSED%%=*}"
-    VAL="${UNUSED#*=}"
-    api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
-      --data-urlencode "scsihw=virtio-scsi-single" \
-      --data-urlencode "scsi0=${VAL}" \
-      --data-urlencode "delete=${KEY}" \
-      --data-urlencode "boot=order=scsi0" >/dev/null
-    echo "==> attached ${VAL} as scsi0"
+  if [[ "${PROXMOX_KEEP_DISK:-0}" == "1" ]] && vm_has_scsi0; then
+    echo "==> scsi0 already present — keep disk (unset PROXMOX_KEEP_DISK to re-import)"
   else
-    echo "==> WARNING: no unused disk found after importdisk" >&2
-    echo "    Run: PROXMOX_SSH=${PROXMOX_SSH} ./scripts/proxmox-fix-boot.sh ${VMID}" >&2
+    detach_scsi0
+    echo "==> SCP + qm importdisk via ${PROXMOX_SSH}"
+    REMOTE="/var/tmp/pertisk-${VMID}.qcow2"
+    scp -o StrictHostKeyChecking=accept-new "${DISK}" "${PROXMOX_SSH}:${REMOTE}"
+    ssh "${PROXMOX_SSH}" "qm importdisk ${VMID} ${REMOTE} ${STORAGE} --format qcow2 && rm -f ${REMOTE}"
+    # Attach unused disk0 if present.
+    CONF="$(api_get "/nodes/${NODE}/qemu/${VMID}/config")"
+    UNUSED="$(echo "${CONF}" | jq -r '.data | to_entries[] | select(.key|startswith("unused")) | "\(.key)=\(.value)"' | head -1 || true)"
+    if [[ -n "${UNUSED}" ]]; then
+      KEY="${UNUSED%%=*}"
+      VAL="${UNUSED#*=}"
+      api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+        --data-urlencode "scsihw=virtio-scsi-single" \
+        --data-urlencode "scsi0=${VAL}" \
+        --data-urlencode "delete=${KEY}" \
+        --data-urlencode "boot=order=scsi0" >/dev/null
+      echo "==> attached ${VAL} as scsi0"
+    else
+      echo "==> WARNING: no unused disk found after importdisk" >&2
+      echo "    Run: PROXMOX_SSH=${PROXMOX_SSH} ./scripts/proxmox-fix-boot.sh ${VMID}" >&2
+      exit 1
+    fi
   fi
 else
   # PVE 8+: upload only accepts content ∈ {iso, vztmpl, import} on many backends.
@@ -191,14 +255,18 @@ else
   VOL="pertisk-${VMID}.qcow2"
   IMPORT_REF="${UPLOAD_STORAGE}:import/${VOL}"
 
-  if vm_has_scsi0; then
-    echo "==> scsi0 already present — skip upload/import (delete scsi0 to re-import)"
+  # Always replace the guest disk so redeploys pick up a new image.
+  # Set PROXMOX_KEEP_DISK=1 to skip upload/import when scsi0 already exists.
+  if [[ "${PROXMOX_KEEP_DISK:-0}" == "1" ]] && vm_has_scsi0; then
+    echo "==> scsi0 already present — keep disk (unset PROXMOX_KEEP_DISK to re-import)"
   else
-    echo "==> API upload content=import → storage=${UPLOAD_STORAGE} as ${VOL}"
+    detach_scsi0
 
+    echo "==> API upload content=import → storage=${UPLOAD_STORAGE} as ${VOL}"
+    # Explicit octet-stream: some PVE versions require a Content-Type on the file part.
     UP="$("${CURL[@]}" -w "\n%{http_code}" -X POST -H "${AUTH}" \
       -F "content=import" \
-      -F "filename=@${DISK};filename=${VOL}" \
+      -F "filename=@${DISK};type=application/octet-stream;filename=${VOL}" \
       "${BASE}/nodes/${NODE}/storage/${UPLOAD_STORAGE}/upload" || true)"
     UP_BODY="$(echo "${UP}" | sed '$d')"
     UP_CODE="$(echo "${UP}" | tail -n1)"
@@ -214,7 +282,11 @@ else
       echo "  3) Or UI: upload qcow2 → Hardware → Import disk" >&2
       exit 1
     fi
-    echo "==> uploaded: $(echo "${UP_BODY}" | jq -r '.data')"
+    UPID="$(echo "${UP_BODY}" | jq -r '.data')"
+    echo "==> upload accepted: ${UPID}"
+    # Critical: import-from before the upload worker finishes yields a truncated
+    # non-qcow2 file ("Image is not in qcow2 format").
+    wait_task "${UPID}" "upload" || exit 1
 
     # Import into VM disk on target STORAGE (may differ from upload storage).
     # PUT /config returns {"data":null} on success — do not require a truthy .data.
@@ -229,6 +301,15 @@ else
       echo "or: PROXMOX_SSH=root@host ./scripts/proxmox-upload-vm.sh ..." >&2
       exit 1
     fi
+    # Some PVE versions return a UPID for import-from as well.
+    IMP_UPID="$(echo "${ATT}" | jq -r '.data // empty')"
+    if [[ "${IMP_UPID}" == UPID:* ]]; then
+      wait_task "${IMP_UPID}" "import-from" || exit 1
+    fi
+    if ! vm_has_scsi0; then
+      echo "import-from reported OK but scsi0 missing" >&2
+      exit 1
+    fi
     echo "==> scsi0 import-from ok"
   fi
 fi
@@ -236,14 +317,14 @@ fi
 api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
   --data-urlencode "boot=order=scsi0;net0" \
   --data-urlencode "serial0=socket" \
-  --data-urlencode "vga=std" >/dev/null 2>&1 || true
+  --data-urlencode "vga=serial0" >/dev/null 2>&1 || true
 
 if [[ "${START}" == "1" ]]; then
   echo "==> starting VM ${VMID}"
   api_post_form "/nodes/${NODE}/qemu/${VMID}/status/start" >/dev/null 2>&1 || true
 fi
 
-echo "==> done — open console for ${NAME} (vmid ${VMID})"
-echo "    Use Console → xterm.js, or Serial if VGA is blank (Pertisk logs on ttyS0)."
+echo "==> done — open Console for ${NAME} (vmid ${VMID})"
+echo "    Console uses serial (vga=serial0 / xterm.js). Host: qm terminal ${VMID}"
 echo "    If stuck in UEFI: Options → disable Secure Boot; ensure efidisk pre-enrolled-keys=0."
 echo "    join cluster: docs/PROXMOX.md"

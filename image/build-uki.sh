@@ -16,7 +16,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${ROOT}/out"
 UKI_OUT="${OUT}/uki"
 ARCH="${PERTISK_ARCH:-amd64}"
-CMDLINE="${PERTISK_CMDLINE:-console=ttyS0 console=tty0 rdinit=/init}"
+CMDLINE="${PERTISK_CMDLINE:-console=tty0 console=ttyS0 rdinit=/init}"
 VERSION="${PERTISK_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "${ROOT}/Cargo.toml" | head -1)}"
 
 mkdir -p "${UKI_OUT}"

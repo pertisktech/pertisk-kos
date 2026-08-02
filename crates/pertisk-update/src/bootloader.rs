@@ -96,7 +96,7 @@ impl BootAssets {
             uki,
             bootloader_efi,
             arch,
-            cmdline: "console=ttyS0 console=tty0 rdinit=/init".into(),
+            cmdline: "console=tty0 console=ttyS0 rdinit=/init".into(),
         })
     }
 
