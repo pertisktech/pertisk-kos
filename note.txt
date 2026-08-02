@@ -39,16 +39,16 @@ make cloud ARCH=amd64
 # expect: source=Partition , ephemeral_mounted=true
 
 ## Bootstrap CP
-./out/bin/pertiskctl gen config lab-ha https://<CP_IP>:6443 -o ./out/cluster
-./out/bin/pertiskctl -e <CP_IP>:50000 apply -f ./out/cluster/controlplane.yaml
-./out/bin/pertiskctl -e <CP_IP>:50000 bootstrap
-./out/bin/pertiskctl -e <CP_IP>:50000 kubeconfig -f ./out/cluster/admin.conf
-./out/bin/pertiskctl -e <CP_IP>:50000 join-config -f ./out/cluster/worker.yaml
+./out/bin/pertiskctl gen config lab-ha https://10.1.1.244:6443 -o ./out/cluster -k v1.36.3
+./out/bin/pertiskctl -e 10.1.1.244:50000 apply -f ./out/cluster/controlplane.yaml
+./out/bin/pertiskctl -e 10.1.1.244:50000 bootstrap
+./out/bin/pertiskctl -e 10.1.1.244:50000 kubeconfig -f ./out/cluster/admin.conf
+./out/bin/pertiskctl -e 10.1.1.244:50000 join-config -f ./out/cluster/worker.yaml
 
 ## Join workers (until #2 is automated)
 # 1) Secret bootstrap-token-<id> from worker.yaml cluster.token
 # 2) kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/bootstrap/node-rbac.yaml
-# 3) kubectl label node lab-ha-cp-1 node-role.kubernetes.io/control-plane=
+# 3) kubectl --kubeconfig ./out/cluster/admin.conf label node lab-ha-cp-1 node-role.kubernetes.io/control-plane=
 # 4) unique hostname per worker → pertiskctl apply worker.yaml
 # 5) kubectl apply -f examples/cni/kube-flannel.yaml
 kubectl --kubeconfig ./out/cluster/admin.conf get nodes -o wide

@@ -185,7 +185,7 @@ EXISTS="$(api_get "/nodes/${NODE}/qemu/${VMID}/status/current" 2>/dev/null || ec
 if echo "${EXISTS}" | jq -e '.data != null' >/dev/null 2>&1; then
   echo "==> VM ${VMID} already exists"
 else
-  echo "==> creating VM ${VMID} (${NAME}) bios=ovmf machine=q35"
+  echo "==> creating VM ${VMID} (${NAME}) bios=ovmf machine=q35 agent=1"
   RESP="$(
     api_post_form "/nodes/${NODE}/qemu" \
       --data-urlencode "vmid=${VMID}" \
@@ -198,6 +198,7 @@ else
       --data-urlencode "scsihw=virtio-scsi-single" \
       --data-urlencode "net0=virtio,bridge=${BRIDGE}" \
       --data-urlencode "ostype=l26" \
+      --data-urlencode "agent=enabled=1" \
       --data-urlencode "onboot=1"
   )"
   echo "${RESP}" | jq -e '.data != null' >/dev/null || {
@@ -215,10 +216,11 @@ api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
 
 # Serial as primary console: Proxmox Console opens xterm.js on serial0.
 # Pertisk cmdline uses console=ttyS0; vga=serial0 makes UI default to Serial.
-echo "==> serial0=socket + vga=serial0 (Console → Serial)"
+echo "==> serial0=socket + vga=serial0 + qemu-guest-agent"
 api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
   --data-urlencode "serial0=socket" \
-  --data-urlencode "vga=serial0" >/dev/null 2>&1 || true
+  --data-urlencode "vga=serial0" \
+  --data-urlencode "agent=enabled=1" >/dev/null 2>&1 || true
 
 # --- Disk import ---
 if [[ -n "${PROXMOX_SSH:-}" ]]; then
@@ -319,7 +321,8 @@ api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
   --data-urlencode "boot=order=scsi0;net0" \
   --data-urlencode "onboot=1" \
   --data-urlencode "serial0=socket" \
-  --data-urlencode "vga=serial0" >/dev/null 2>&1 || true
+  --data-urlencode "vga=serial0" \
+  --data-urlencode "agent=enabled=1" >/dev/null 2>&1 || true
 
 if [[ "${START}" == "1" ]]; then
   echo "==> starting VM ${VMID}"
@@ -328,5 +331,7 @@ fi
 
 echo "==> done — open Console for ${NAME} (vmid ${VMID})"
 echo "    Console uses serial (vga=serial0 / xterm.js). Host: qm terminal ${VMID}"
+echo "    QEMU guest agent enabled on the VM (Options → QEMU Guest Agent)."
+echo "    Guest IP in Summary still needs qemu-guest-agent inside the image."
 echo "    If stuck in UEFI: Options → disable Secure Boot; ensure efidisk pre-enrolled-keys=0."
 echo "    join cluster: docs/PROXMOX.md"

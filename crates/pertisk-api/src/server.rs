@@ -97,13 +97,20 @@ impl MachineService for MachineSvc {
         request: Request<ApplyConfigurationRequest>,
     ) -> Result<Response<ApplyConfigurationResponse>, Status> {
         let yaml = request.into_inner().yaml;
-        let cfg =
+        let mut cfg =
             MachineConfig::from_yaml(&yaml).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let path = {
             let st = lock(&self.state)?;
             st.config_path.clone()
         };
+
+        // gen config omits dashboard — preserve the on-disk section (or write
+        // built-ins) so apply does not wipe console theme/size after reboot.
+        let previous = fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| MachineConfig::from_yaml(&raw).ok());
+        cfg.resolve_dashboard(previous.as_ref());
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| Status::internal(e.to_string()))?;

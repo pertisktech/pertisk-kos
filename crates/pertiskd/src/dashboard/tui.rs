@@ -89,9 +89,17 @@ fn run_tui_inner(
     );
 
     let _ = io::stderr().write_all(UNSYNC.as_bytes());
-    if !skin.chrome.ascii_only {
-        let _ = io::stderr().write_all(b"\x1b%G");
-    }
+    // Visible proof the Serial pipe works — if this shows but panels do not,
+    // the frame encoder is at fault; if neither shows, stdio redirect failed.
+    let _ = writeln!(
+        io::stderr(),
+        "pertiskd dashboard {}x{} ({}) theme={} border={}",
+        width,
+        height,
+        caps.source,
+        skin.theme.name,
+        skin.chrome.name
+    );
     let _ = io::stderr().write_all(b"\x1b[2J\x1b[H");
     let _ = io::stderr().write_all(CURSOR_OFF.as_bytes());
     let _ = io::stderr().flush();
@@ -126,7 +134,6 @@ fn dump_frame(
     ascii_only: bool,
 ) -> Result<(), String> {
     let Some(out) = writer.encode(backend.buffer(), ascii_only) else {
-        // Still remind the terminal the cursor is off — some rebuilds re-enable it.
         let _ = io::stderr().write_all(CURSOR_OFF.as_bytes());
         let _ = io::stderr().flush();
         return Ok(());
@@ -138,46 +145,31 @@ fn dump_frame(
     Ok(())
 }
 
-/// Paints only rows whose SGR+glyph payload changed since the last frame.
-///
-/// A full `\x1b[H` + `\r\n` walk made the (sometimes still-visible) cursor
-/// flash on the node title every tick, then again mid-screen on the way down.
+/// Full-frame Serial dump: home + one `\r\n` per row (same shape as the text
+/// banner). Per-row CUP left Proxmox xterm.js blank on some builds; the
+/// newline walk is slightly blinkier but always visible with the cursor off.
 #[derive(Default)]
 struct FrameWriter {
-    rows: Vec<String>,
+    last: String,
 }
 
 impl FrameWriter {
     fn encode(&mut self, buf: &ratatui::buffer::Buffer, ascii_only: bool) -> Option<String> {
         let area = buf.area();
-        if self.rows.len() != area.height as usize {
-            self.rows = vec![String::new(); area.height as usize];
-        }
-
-        let mut out = String::new();
+        let mut out = String::with_capacity((area.width as usize + 8) * area.height as usize);
+        out.push_str(CURSOR_OFF);
+        out.push_str("\x1b[H");
         for y in 0..area.height {
-            let row = encode_row(buf, y, ascii_only);
-            if self.rows[y as usize] == row {
-                continue;
-            }
-            if out.is_empty() {
-                out.push_str(CURSOR_OFF);
-            }
-            // 1-based CUP — skip unchanged rows so the cursor never walks them.
-            out.push_str(&format!("\x1b[{};1H", y + 1));
-            out.push_str(&row);
-            out.push_str("\x1b[0m\x1b[K");
-            self.rows[y as usize] = row;
+            out.push_str(&encode_row(buf, y, ascii_only));
+            out.push_str("\x1b[0m\x1b[K\r\n");
         }
-
-        if out.is_empty() {
-            return None;
-        }
-        // Hide first, then park at home. Leaving the cursor on the last painted
-        // cell made it blink bottom/center-right; DECSCUSR is avoided (prints `q`).
         out.push_str(CURSOR_OFF);
         out.push_str("\x1b[H");
         out.push_str(CURSOR_OFF);
+        if out == self.last {
+            return None;
+        }
+        self.last = out.clone();
         Some(out)
     }
 }
@@ -423,12 +415,16 @@ mod tests {
     fn identical_frame_emits_nothing() {
         let terminal = draw_demo(80, 24, theme::ASCII, &demo_logs());
         let mut writer = FrameWriter::default();
-        assert!(writer.encode(terminal.backend().buffer(), true).is_some());
-        assert!(writer.encode(terminal.backend().buffer(), true).is_none());
+        assert!(writer
+            .encode(terminal.backend().buffer(), true)
+            .is_some());
+        assert!(writer
+            .encode(terminal.backend().buffer(), true)
+            .is_none());
     }
 
     #[test]
-    fn changed_log_does_not_repaint_node() {
+    fn changed_log_repaints_full_frame() {
         let mut writer = FrameWriter::default();
         let first = draw_demo(80, 24, theme::ASCII, &demo_logs());
         writer.encode(first.backend().buffer(), true).unwrap();
@@ -438,10 +434,10 @@ mod tests {
         let second = draw_demo(80, 24, theme::ASCII, &logs);
         let out = writer.encode(second.backend().buffer(), true).unwrap();
         assert!(
-            !out.contains("pertisk-node-01"),
-            "static node row was needlessly repainted"
+            out.contains("pertisk-node-01"),
+            "full-frame dump still includes node"
         );
-        assert!(out.contains("one more line"));
+        assert!(out.contains("one more line"), "new log missing: {out:?}");
     }
 
     fn strip_escapes(line: &str) -> String {

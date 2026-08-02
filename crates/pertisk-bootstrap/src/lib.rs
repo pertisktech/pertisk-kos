@@ -347,8 +347,29 @@ mod tests {
         .unwrap();
         assert!(g.token.contains('.'));
         assert!(g.controlplane_yaml.contains("controlplane"));
-        assert!(!g.controlplane_yaml.contains("dashboard"));
+        assert!(g.controlplane_yaml.contains("dashboard"));
+        assert!(g.controlplane_yaml.contains("catppuccin"));
         assert!(g.worker_yaml.contains("worker"));
-        assert!(!g.worker_yaml.contains("dashboard"));
+        assert!(g.worker_yaml.contains("dashboard"));
+        assert!(g.worker_yaml.contains("catppuccin"));
+    }
+
+    #[test]
+    fn patch_worker_ca_fills_builtin_dashboard() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: worker
+  network:
+    hostname: wk-1
+cluster:
+  endpoint: https://10.1.1.10:6443
+  token: a.b
+"#;
+        let out = patch_worker_ca(yaml, "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----")
+            .unwrap();
+        assert!(out.contains("dashboard"));
+        assert!(out.contains("catppuccin"));
+        assert!(out.contains("BEGIN CERTIFICATE"));
     }
 }

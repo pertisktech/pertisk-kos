@@ -5,7 +5,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use pertisk_config::{
-    Cluster, CniMode, Interface, Machine, MachineConfig, MachineType, Network, CONFIG_VERSION,
+    Cluster, CniMode, Dashboard, Interface, Machine, MachineConfig, MachineType, Network,
+    CONFIG_VERSION,
 };
 
 use crate::token::generate_bootstrap_token;
@@ -44,7 +45,7 @@ pub fn gen_config(
                 nameservers: vec!["1.1.1.1".into()],
             },
             install: None,
-            dashboard: None,
+            dashboard: Some(Dashboard::builtin()),
         },
         cluster: Some(Cluster {
             endpoint: endpoint.clone(),
@@ -75,7 +76,7 @@ pub fn gen_config(
                 nameservers: vec!["1.1.1.1".into()],
             },
             install: None,
-            dashboard: None,
+            dashboard: Some(Dashboard::builtin()),
         },
         cluster: Some(Cluster {
             endpoint: endpoint.clone(),
@@ -130,8 +131,10 @@ fn normalize_endpoint(endpoint: &str) -> String {
 }
 
 /// Patch worker YAML with CA PEM from bootstrap (keeps existing token).
+/// Fills built-in dashboard when the file omits it (same as apply).
 pub fn patch_worker_ca(worker_yaml: &str, ca_pem: &str) -> Result<String> {
     let mut cfg = MachineConfig::from_yaml(worker_yaml)?;
+    cfg.resolve_dashboard(None);
     if let Some(ref mut c) = cfg.cluster {
         c.ca = Some(ca_pem.trim().to_string());
     }

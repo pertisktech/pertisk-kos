@@ -417,8 +417,8 @@ pub fn chrome(utf8: bool) -> Chrome {
                 ASCII_DOUBLE
             }
         }
-        // auto / empty / unknown → rounded (install default) when UTF-8-safe
-        _ if use_unicode => ROUNDED,
+        // auto / empty / unknown → ASCII (safe on Serial); use `rounded`/`light`
+        // explicitly when UTF-8 is known-good.
         _ => ASCII,
     }
 }
@@ -560,7 +560,7 @@ mod tests {
             std::env::remove_var("PERTISK_DASHBOARD_BORDER");
             std::env::remove_var("PERTISK_DASHBOARD_UTF8");
         }
-        assert_eq!(chrome(true).name, "rounded");
+        assert_eq!(chrome(true).name, "ascii");
         assert_eq!(chrome(false).name, "ascii");
     }
 

@@ -29,17 +29,17 @@ use tracing::{info, warn};
 use crate::log_ring::LogRing;
 
 /// Built-in dashboard when config.yaml omits `machine.dashboard`.
-pub const DEFAULT_THEME: &str = "catppuccin";
-pub const DEFAULT_BORDER: &str = "rounded";
-/// Probe fallback when size is not pinned by YAML/env (`93`×`25`).
-pub use probe::{FALLBACK_COLS as DEFAULT_COLS, FALLBACK_ROWS as DEFAULT_ROWS};
-pub const DEFAULT_UTF8: bool = true;
+pub const DEFAULT_THEME: &str = pertisk_config::Dashboard::DEFAULT_THEME;
+pub const DEFAULT_BORDER: &str = pertisk_config::Dashboard::DEFAULT_BORDER;
+pub const DEFAULT_COLS: u16 = pertisk_config::Dashboard::DEFAULT_COLS;
+pub const DEFAULT_ROWS: u16 = pertisk_config::Dashboard::DEFAULT_ROWS;
 
 /// Push dashboard settings into the process env when the matching
 /// `PERTISK_DASHBOARD_*` variable is unset (cmdline wins).
 ///
-/// Fresh install needs no YAML — theme/border/size/utf8 all get built-ins.
-/// Optional `machine.dashboard` or cmdline env still overrides any field.
+/// Theme/border always get built-ins. Size and UTF-8 are only set when the
+/// operator asked (YAML/env) — otherwise the console probe runs. Pinning a
+/// fixed geometry that does not match the pane blanks Proxmox Serial.
 pub fn apply_config(cfg: Option<&MachineConfig>) {
     let dash = cfg.and_then(|c| c.machine.dashboard.as_ref());
     set_if_unset(
@@ -52,18 +52,18 @@ pub fn apply_config(cfg: Option<&MachineConfig>) {
         dash.and_then(|d| d.border.as_deref())
             .or(Some(DEFAULT_BORDER)),
     );
-    // Always pin size to the install default unless YAML/env overrides.
-    // Proxmox Serial often fails the size probe; without this the TUI boots
-    // at 80×24 and looks "broken" until the operator applies a dashboard YAML.
-    let cols = dash.and_then(|d| d.cols).unwrap_or(DEFAULT_COLS);
-    let rows = dash.and_then(|d| d.rows).unwrap_or(DEFAULT_ROWS);
-    set_if_unset("PERTISK_DASHBOARD_COLS", Some(&cols.to_string()));
-    set_if_unset("PERTISK_DASHBOARD_ROWS", Some(&rows.to_string()));
-    let utf8 = dash.and_then(|d| d.utf8).unwrap_or(DEFAULT_UTF8);
-    set_if_unset(
-        "PERTISK_DASHBOARD_UTF8",
-        Some(if utf8 { "1" } else { "0" }),
-    );
+    if let Some(cols) = dash.and_then(|d| d.cols) {
+        set_if_unset("PERTISK_DASHBOARD_COLS", Some(&cols.to_string()));
+    }
+    if let Some(rows) = dash.and_then(|d| d.rows) {
+        set_if_unset("PERTISK_DASHBOARD_ROWS", Some(&rows.to_string()));
+    }
+    if let Some(utf8) = dash.and_then(|d| d.utf8) {
+        set_if_unset(
+            "PERTISK_DASHBOARD_UTF8",
+            Some(if utf8 { "1" } else { "0" }),
+        );
+    }
 }
 
 fn set_if_unset(key: &str, value: Option<&str>) {
@@ -106,15 +106,10 @@ mod tests {
         apply_config(None);
         assert_eq!(std::env::var("PERTISK_DASHBOARD_THEME").unwrap(), DEFAULT_THEME);
         assert_eq!(std::env::var("PERTISK_DASHBOARD_BORDER").unwrap(), DEFAULT_BORDER);
-        assert_eq!(std::env::var("PERTISK_DASHBOARD_UTF8").unwrap(), "1");
-        assert_eq!(
-            std::env::var("PERTISK_DASHBOARD_COLS").unwrap(),
-            DEFAULT_COLS.to_string()
-        );
-        assert_eq!(
-            std::env::var("PERTISK_DASHBOARD_ROWS").unwrap(),
-            DEFAULT_ROWS.to_string()
-        );
+        // Size / UTF-8 stay unpinned so the console probe can run.
+        assert!(std::env::var_os("PERTISK_DASHBOARD_COLS").is_none());
+        assert!(std::env::var_os("PERTISK_DASHBOARD_ROWS").is_none());
+        assert!(std::env::var_os("PERTISK_DASHBOARD_UTF8").is_none());
         clear_dash_env();
     }
 

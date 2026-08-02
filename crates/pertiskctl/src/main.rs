@@ -75,7 +75,8 @@ enum Commands {
         endpoint: String,
         #[arg(short = 'o', long, default_value = ".")]
         output: PathBuf,
-        #[arg(long, default_value = DEFAULT_K8S_VERSION)]
+        /// Kubernetes version written into machine configs (e.g. v1.36.3).
+        #[arg(short = 'k', long, default_value = DEFAULT_K8S_VERSION)]
         kubernetes_version: String,
         #[arg(long, default_value = DEFAULT_POD_SUBNET)]
         pod_subnet: String,
@@ -127,7 +128,8 @@ enum GenCommands {
         endpoint: String,
         #[arg(short = 'o', long, default_value = ".")]
         output: PathBuf,
-        #[arg(long, default_value = DEFAULT_K8S_VERSION)]
+        /// Kubernetes version written into machine configs (e.g. v1.36.3).
+        #[arg(short = 'k', long, default_value = DEFAULT_K8S_VERSION)]
         kubernetes_version: String,
         #[arg(long, default_value = DEFAULT_POD_SUBNET)]
         pod_subnet: String,

@@ -8,11 +8,11 @@ machine:
         dhcp: true
     nameservers:
       - 1.1.1.1
-  # Optional — omit to use built-in defaults (catppuccin / rounded / 93x25 / utf8).
+  # Optional — omit to use built-in defaults (catppuccin / ascii; size from probe).
   # dashboard:
   #   theme: catppuccin
-  #   border: rounded
-  #   cols: 93
+  #   border: ascii
+  #   cols: 93          # only if probe is wrong — wrong size blanks Serial
   #   rows: 25
   #   utf8: true
 cluster:

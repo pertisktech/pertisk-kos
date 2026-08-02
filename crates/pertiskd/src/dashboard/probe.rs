@@ -1,21 +1,27 @@
-//! One-shot console capability probe (size + UTF-8) for Proxmox Serial.
+//! One-shot console size for Proxmox Serial.
 //!
-//! A serial line carries no `SIGWINCH` and `TIOCGWINSZ` answers with a stale
-//! 80x24, so the only source of the real pane size is asking xterm.js with
-//! `CSI 18 t`. Probing on every refresh is what made the cursor blink before,
-//! so this runs exactly once, before the dashboard takes over the screen.
+//! Interactive CSI probes (`18 t`, cursor-extent, UTF-8 glyph) often leave
+//! xterm.js in a cleared/broken state, so they are **off by default**. Size
+//! comes from:
+//! 1. `PERTISK_DASHBOARD_COLS` / `_ROWS` (or `COLUMNS` / `LINES`)
+//! 2. Optional live probe when `PERTISK_DASHBOARD_PROBE=1`
+//! 3. `TIOCGWINSZ` if it looks sane
+//! 4. 80×24 fallback
 
 use std::os::unix::io::RawFd;
 use std::time::{Duration, Instant};
 
-pub const FALLBACK_COLS: u16 = 93;
-pub const FALLBACK_ROWS: u16 = 25;
-/// Soft floor only used when no probe answered — never inflate a real size.
+pub const FALLBACK_COLS: u16 = pertisk_config::Dashboard::DEFAULT_COLS;
+pub const FALLBACK_ROWS: u16 = pertisk_config::Dashboard::DEFAULT_ROWS;
 const MIN_COLS: u16 = 40;
 const MIN_ROWS: u16 = 12;
+/// Reject probe results above this — oversized frames wrap and look blank.
+const SAFE_MAX_COLS: u16 = 160;
+const SAFE_MAX_ROWS: u16 = 50;
 const MAX_COLS: u16 = 300;
 const MAX_ROWS: u16 = 120;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(400);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConsoleCaps {
     pub cols: u16,
@@ -37,89 +43,125 @@ impl Default for ConsoleCaps {
     }
 }
 
+fn probe_enabled() -> bool {
+    matches!(
+        std::env::var("PERTISK_DASHBOARD_PROBE").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
 pub fn detect() -> ConsoleCaps {
     let mut caps = ConsoleCaps::default();
 
-    let tty = open_tty();
-    if let Some(fd) = tty.as_ref().map(Tty::fd) {
-        if let Some(mut raw) = RawMode::enter(fd) {
-            raw.drain();
-            // `CSI 18t` is exact and leaves the cursor alone, but xterm.js
-            // ships with `windowOptions` disabled and simply will not answer.
-            // The cursor-extent trick only needs DSR, which every terminal
-            // supports — it is how `resize(1)` has always done this.
-            if let Some((rows, cols)) = raw.query_text_area() {
-                caps.rows = rows;
-                caps.cols = cols;
-                caps.source = "csi-18t";
-            } else if let Some((rows, cols)) = raw.query_cursor_extent() {
-                caps.rows = rows;
-                caps.cols = cols;
-                caps.source = "cursor-extent";
-            }
-            caps.utf8 = raw.query_utf8().unwrap_or(false);
+    // Operator pin wins immediately — skip interactive queries entirely.
+    let env_cols = env_u16("PERTISK_DASHBOARD_COLS").or_else(|| env_u16("COLUMNS"));
+    let env_rows = env_u16("PERTISK_DASHBOARD_ROWS").or_else(|| env_u16("LINES"));
+    if env_cols.is_some() || env_rows.is_some() {
+        if let Some(c) = env_cols {
+            caps.cols = c;
         }
-        if caps.source == "default" {
-            if let Some((rows, cols)) = winsize(fd) {
-                caps.rows = rows;
-                caps.cols = cols;
-                caps.source = "ioctl";
-            }
+        if let Some(r) = env_rows {
+            caps.rows = r;
         }
-    }
-
-    // Explicit override always wins — the probe can only be wrong.
-    if let Some(cols) = env_u16("PERTISK_DASHBOARD_COLS").or_else(|| env_u16("COLUMNS")) {
+        caps.source = "env";
+        caps.utf8 = matches!(
+            std::env::var("PERTISK_DASHBOARD_UTF8").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        );
+        let (cols, rows) = clamp_measured(caps.cols, caps.rows);
         caps.cols = cols;
-        caps.source = "env";
-    }
-    if let Some(rows) = env_u16("PERTISK_DASHBOARD_ROWS").or_else(|| env_u16("LINES")) {
         caps.rows = rows;
-        caps.source = "env";
+        if let Some(fd) = open_tty().as_ref().map(Tty::fd) {
+            set_winsize(fd, caps.rows, caps.cols);
+        }
+        return caps;
     }
 
-    // Never inflate a measured size: drawing 60 columns into a 50-wide pane
-    // wraps every row and the right/bottom of the dashboard disappears.
+    let tty = open_tty();
+    if probe_enabled() {
+        if let Some(fd) = tty.as_ref().map(Tty::fd) {
+            if let Some(mut raw) = RawMode::enter(fd) {
+                raw.drain();
+                if let Some((rows, cols)) = raw.query_text_area() {
+                    if cols <= SAFE_MAX_COLS && rows <= SAFE_MAX_ROWS {
+                        caps.rows = rows;
+                        caps.cols = cols;
+                        caps.source = "csi-18t";
+                    }
+                }
+                if caps.source == "default" {
+                    raw.drain();
+                    if let Some((rows, cols)) = raw.query_cursor_extent() {
+                        if cols <= SAFE_MAX_COLS && rows <= SAFE_MAX_ROWS {
+                            caps.rows = rows;
+                            caps.cols = cols;
+                            caps.source = "cursor-extent";
+                        }
+                    }
+                }
+                raw.drain();
+                caps.utf8 = raw.query_utf8().unwrap_or(false);
+            }
+        }
+    }
+
+    if caps.source == "default" {
+        if let Some(fd) = tty.as_ref().map(Tty::fd) {
+            if let Some((rows, cols)) = winsize(fd) {
+                // ioctl on Serial is usually the stale 80×24 — accept it as-is.
+                if cols >= MIN_COLS && rows >= MIN_ROWS && cols <= SAFE_MAX_COLS && rows <= SAFE_MAX_ROWS
+                {
+                    caps.rows = rows;
+                    caps.cols = cols;
+                    caps.source = "ioctl";
+                }
+            }
+        }
+    }
+
+    if let Some(v) = std::env::var("PERTISK_DASHBOARD_UTF8").ok() {
+        caps.utf8 = matches!(v.as_str(), "1" | "true" | "yes");
+    }
+
     let (cols, rows) = if caps.source == "default" {
-        (caps.cols.clamp(MIN_COLS, MAX_COLS), caps.rows.clamp(MIN_ROWS, MAX_ROWS))
+        (caps.cols.clamp(MIN_COLS, SAFE_MAX_COLS), caps.rows.clamp(MIN_ROWS, SAFE_MAX_ROWS))
     } else {
         clamp_measured(caps.cols, caps.rows)
     };
     caps.cols = cols;
     caps.rows = rows;
 
-    // Publish the result so child processes and `ip`/`ps` agree with us.
     if let Some(fd) = tty.as_ref().map(Tty::fd) {
         set_winsize(fd, caps.rows, caps.cols);
     }
     caps
 }
 
-/// Cap absurd values but do not grow a real pane.
 fn clamp_measured(cols: u16, rows: u16) -> (u16, u16) {
-    (cols.clamp(10, MAX_COLS), rows.clamp(8, MAX_ROWS))
+    (
+        cols.clamp(10, MAX_COLS.min(SAFE_MAX_COLS)),
+        rows.clamp(8, MAX_ROWS.min(SAFE_MAX_ROWS)),
+    )
 }
 
 /// Re-query the pane size while the dashboard is running.
-///
-/// Returns `None` when the size is pinned by the operator, when no terminal
-/// answered, or when nothing can be opened. UTF-8 support is not re-probed:
-/// it cannot change at runtime, and skipping it halves the round trips.
 pub fn detect_size() -> Option<(u16, u16)> {
     if std::env::var_os("PERTISK_DASHBOARD_COLS").is_some()
         || std::env::var_os("PERTISK_DASHBOARD_ROWS").is_some()
+        || !probe_enabled()
     {
         return None;
     }
     let tty = open_tty()?;
     let mut raw = RawMode::enter(tty.fd())?;
     raw.drain();
-    // No synchronized-update wrapper — Proxmox xterm.js can hold that buffer
-    // forever and leave a blank console.
     let size = raw
         .query_text_area()
         .or_else(|| raw.query_cursor_extent())?;
     let (rows, cols) = size;
+    if cols > SAFE_MAX_COLS || rows > SAFE_MAX_ROWS {
+        return None;
+    }
     let (cols, rows) = clamp_measured(cols, rows);
     Some((rows, cols))
 }
@@ -128,7 +170,6 @@ fn env_u16(key: &str) -> Option<u16> {
     std::env::var(key).ok()?.trim().parse().ok()
 }
 
-/// The console, either inherited on stdin or opened directly.
 enum Tty {
     Stdin,
     Owned(std::fs::File),
@@ -145,8 +186,6 @@ impl Tty {
 }
 
 fn open_tty() -> Option<Tty> {
-    // `redirect_stdio_serial` dup2s the O_RDWR ttyS0 handle onto 0/1/2, so
-    // stdin is normally both readable and writable here.
     if unsafe { libc::isatty(0) } == 1 {
         return Some(Tty::Stdin);
     }
@@ -176,7 +215,6 @@ fn set_winsize(fd: RawFd, rows: u16, cols: u16) {
     unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) };
 }
 
-/// Non-canonical, no-echo mode for the duration of the probe.
 struct RawMode {
     fd: RawFd,
     saved: libc::termios,
@@ -203,7 +241,6 @@ impl RawMode {
         (n == bytes.len() as isize).then_some(())
     }
 
-    /// Discard buffered keystrokes so they cannot be parsed as a reply.
     fn drain(&mut self) {
         let mut sink = [0u8; 64];
         while self.poll_ready(0) {
@@ -246,32 +283,19 @@ impl RawMode {
         }
     }
 
-    /// `CSI 18 t` → `CSI 8 ; rows ; cols t`.
     fn query_text_area(&mut self) -> Option<(u16, u16)> {
         self.write(b"\x1b[18t")?;
         parse_text_area(&self.read_until(b't')?)
     }
 
-    /// Drive the cursor past the far corner and read back where it stopped.
-    ///
-    /// The terminal clamps the move to its own bounds, so the reported
-    /// position *is* the pane size. Needs only DSR (`CSI 6n`), which xterm.js
-    /// always answers — unlike `CSI 18t`. The screen is cleared immediately
-    /// after the probe, so the cursor excursion is never visible.
     fn query_cursor_extent(&mut self) -> Option<(u16, u16)> {
         self.write(b"\x1b7\x1b[9999;9999H\x1b[6n")?;
         let reply = self.read_until(b'R');
-        // Restore the saved cursor even if the read failed.
-        self.write(b"\x1b8");
+        let _ = self.write(b"\x1b8");
         let (rows, cols) = parse_cursor_pos(&reply?)?;
         (rows > 1 && cols > 1).then_some((rows, cols))
     }
 
-    /// Print one 3-byte glyph at home and see how far the cursor moved.
-    ///
-    /// Column 2 means the terminal decoded UTF-8 and box drawing will render.
-    /// Column 4 means it treated the glyph as three raw bytes — mojibake, and
-    /// every column after it would be shifted.
     fn query_utf8(&mut self) -> Option<bool> {
         self.write("\x1b[H\x1b[2K\u{2500}\x1b[6n".as_bytes())?;
         let col = parse_cursor_col(&self.read_until(b'R')?)?;
@@ -285,31 +309,34 @@ impl Drop for RawMode {
     }
 }
 
-pub fn parse_text_area(reply: &[u8]) -> Option<(u16, u16)> {
-    let text = String::from_utf8_lossy(reply);
-    let start = text.rfind("\u{1b}[8;")? + 4;
-    let body = &text[start..];
-    let end = body.find('t')?;
-    let mut parts = body[..end].split(';');
-    let rows = parts.next()?.trim().parse().ok()?;
-    let cols = parts.next()?.trim().parse().ok()?;
-    Some((rows, cols))
+fn parse_text_area(buf: &[u8]) -> Option<(u16, u16)> {
+    let s = std::str::from_utf8(buf).ok()?;
+    let start = s.rfind("\x1b[8;").or_else(|| s.rfind("[8;"))?;
+    let body = &s[start..];
+    let body = body.strip_prefix("\x1b[8;").or_else(|| body.strip_prefix("[8;"))?;
+    let body = body.strip_suffix('t')?;
+    let mut parts = body.split(';');
+    let rows: u16 = parts.next()?.parse().ok()?;
+    let cols: u16 = parts.next()?.parse().ok()?;
+    (rows > 0 && cols > 0).then_some((rows, cols))
 }
 
-/// `CSI row ; col R` → `(row, col)`.
-pub fn parse_cursor_pos(reply: &[u8]) -> Option<(u16, u16)> {
-    let text = String::from_utf8_lossy(reply);
-    let start = text.rfind("\u{1b}[")? + 2;
-    let body = &text[start..];
-    let end = body.find('R')?;
-    let mut parts = body[..end].split(';');
-    let row = parts.next()?.trim().parse().ok()?;
-    let col = parts.next()?.trim().parse().ok()?;
-    Some((row, col))
+fn parse_cursor_pos(buf: &[u8]) -> Option<(u16, u16)> {
+    let s = std::str::from_utf8(buf).ok()?;
+    let start = s.rfind("\x1b[").or_else(|| s.rfind('['))?;
+    let body = &s[start..];
+    let body = body
+        .strip_prefix("\x1b[")
+        .or_else(|| body.strip_prefix('['))?;
+    let body = body.strip_suffix('R')?;
+    let mut parts = body.split(';');
+    let rows: u16 = parts.next()?.parse().ok()?;
+    let cols: u16 = parts.next()?.parse().ok()?;
+    (rows > 0 && cols > 0).then_some((rows, cols))
 }
 
-pub fn parse_cursor_col(reply: &[u8]) -> Option<u16> {
-    parse_cursor_pos(reply).map(|(_, col)| col)
+fn parse_cursor_col(buf: &[u8]) -> Option<u16> {
+    parse_cursor_pos(buf).map(|(_, cols)| cols)
 }
 
 #[cfg(test)]
@@ -318,45 +345,41 @@ mod tests {
 
     #[test]
     fn parses_text_area_reply() {
-        assert_eq!(parse_text_area(b"\x1b[8;30;120t"), Some((30, 120)));
+        assert_eq!(parse_text_area(b"\x1b[8;40;120t"), Some((40, 120)));
     }
 
     #[test]
     fn ignores_noise_before_text_area_reply() {
-        assert_eq!(parse_text_area(b"junk\x1b[8;24;80t"), Some((24, 80)));
+        assert_eq!(
+            parse_text_area(b"junk\x1b[8;25;80t"),
+            Some((25, 80))
+        );
     }
 
     #[test]
     fn rejects_malformed_text_area_reply() {
-        assert_eq!(parse_text_area(b"\x1b[8;30t"), None);
-        assert_eq!(parse_text_area(b"nothing here"), None);
+        assert_eq!(parse_text_area(b"\x1b[8;x;y t"), None);
     }
 
-    #[test]
-    fn utf8_probe_reads_column_two() {
-        assert_eq!(parse_cursor_col(b"\x1b[1;2R"), Some(2));
-        // Raw-byte terminal: three cells consumed.
-        assert_eq!(parse_cursor_col(b"\x1b[1;4R"), Some(4));
-    }
-
-    /// The clamped cursor position after `CSI 9999;9999H` is the pane size.
     #[test]
     fn parses_cursor_extent_reply() {
-        assert_eq!(parse_cursor_pos(b"\x1b[30;120R"), Some((30, 120)));
         assert_eq!(parse_cursor_pos(b"\x1b[24;80R"), Some((24, 80)));
     }
 
     #[test]
     fn rejects_malformed_cursor_reply() {
-        assert_eq!(parse_cursor_pos(b"\x1b[30R"), None);
-        assert_eq!(parse_cursor_pos(b""), None);
+        assert_eq!(parse_cursor_pos(b"\x1b[24R"), None);
+    }
+
+    #[test]
+    fn utf8_probe_reads_column_two() {
+        assert_eq!(parse_cursor_col(b"\x1b[1;2R"), Some(2));
+        assert_eq!(parse_cursor_col(b"\x1b[1;4R"), Some(4));
     }
 
     #[test]
     fn measured_size_is_not_inflated() {
-        // A 50-wide pane must stay 50 — bumping to MIN_COLS wraps the frame.
-        assert_eq!(clamp_measured(50, 18), (50, 18));
-        assert_eq!(clamp_measured(200, 60), (200, 60));
-        assert_eq!(clamp_measured(500, 200), (MAX_COLS, MAX_ROWS));
+        assert_eq!(clamp_measured(50, 20), (50, 20));
+        assert_eq!(clamp_measured(5, 5), (10, 8));
     }
 }

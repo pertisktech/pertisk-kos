@@ -55,23 +55,47 @@ pub struct Dashboard {
     /// `catppuccin` | `solarized` | `cyberpunk` | `mono`
     ///
     /// Default when omitted: `catppuccin`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
     /// `auto` | `ascii` | `light` | `rounded` | `heavy` | `double`
     ///
-    /// Default when omitted: `rounded`.
-    #[serde(default)]
+    /// Default when omitted: `ascii`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border: Option<String>,
-    /// Force column count. Default when omitted: `93`.
-    #[serde(default)]
+    /// Force column count (skips size probe). Omit to auto-detect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cols: Option<u16>,
-    /// Force row count. Default when omitted: `25`.
-    #[serde(default)]
+    /// Force row count (skips size probe). Omit to auto-detect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rows: Option<u16>,
     /// Force Unicode box-drawing even when the Serial UTF-8 probe fails.
-    /// Default when omitted: `true`.
-    #[serde(default)]
+    /// Omit to follow the probe (safer on Proxmox Serial).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utf8: Option<bool>,
+}
+
+impl Dashboard {
+    pub const DEFAULT_THEME: &'static str = "catppuccin";
+    /// ASCII frames by default — Unicode borders can blank Proxmox Serial
+    /// when the UTF-8 probe is wrong.
+    pub const DEFAULT_BORDER: &'static str = "ascii";
+    /// Probe fallback only — never pinned unless YAML/env sets cols/rows.
+    pub const DEFAULT_COLS: u16 = 80;
+    pub const DEFAULT_ROWS: u16 = 24;
+
+    /// Built-in console look (theme/border only).
+    ///
+    /// Size and UTF-8 are left unset so the console probe can run — pinning
+    /// geometry that does not match the pane blanks Proxmox Serial.
+    pub fn builtin() -> Self {
+        Self {
+            theme: Some(Self::DEFAULT_THEME.into()),
+            border: Some(Self::DEFAULT_BORDER.into()),
+            cols: None,
+            rows: None,
+            utf8: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,6 +194,30 @@ impl MachineConfig {
             return Err(ConfigError::UnsupportedVersion(cfg.version));
         }
         Ok(cfg)
+    }
+
+    /// Keep an existing on-disk dashboard theme/border when the new YAML omits
+    /// the section; clear size/utf8 pins so the console probe can run (a stale
+    /// `cols`/`rows` that does not match the pane blanks Proxmox Serial).
+    /// When nothing exists yet, fill [`Dashboard::builtin`].
+    pub fn resolve_dashboard(&mut self, previous: Option<&MachineConfig>) {
+        if self.machine.dashboard.is_some() {
+            return;
+        }
+        if let Some(mut prev) = previous.and_then(|c| c.machine.dashboard.clone()) {
+            prev.cols = None;
+            prev.rows = None;
+            prev.utf8 = None;
+            if prev.theme.is_none() {
+                prev.theme = Some(Dashboard::DEFAULT_THEME.into());
+            }
+            if prev.border.is_none() {
+                prev.border = Some(Dashboard::DEFAULT_BORDER.into());
+            }
+            self.machine.dashboard = Some(prev);
+        } else {
+            self.machine.dashboard = Some(Dashboard::builtin());
+        }
     }
 
     pub fn example_worker() -> Self {
@@ -331,5 +379,87 @@ machine:
 "#;
         let cfg = MachineConfig::from_yaml(yaml).unwrap();
         assert!(cfg.machine.dashboard.is_none());
+    }
+
+    #[test]
+    fn resolve_dashboard_preserves_previous() {
+        let mut incoming = MachineConfig::from_yaml(
+            r#"
+version: v1alpha1
+machine:
+  type: controlplane
+"#,
+        )
+        .unwrap();
+        let previous = MachineConfig::from_yaml(
+            r#"
+version: v1alpha1
+machine:
+  type: controlplane
+  dashboard:
+    theme: nord
+    border: rounded
+    cols: 93
+    rows: 25
+    utf8: true
+"#,
+        )
+        .unwrap();
+        incoming.resolve_dashboard(Some(&previous));
+        let dash = incoming.machine.dashboard.unwrap();
+        assert_eq!(dash.theme.as_deref(), Some("nord"));
+        assert_eq!(dash.border.as_deref(), Some("rounded"));
+        // Size pins dropped so probe can run after gen-config apply.
+        assert_eq!(dash.cols, None);
+        assert_eq!(dash.rows, None);
+        assert_eq!(dash.utf8, None);
+    }
+
+    #[test]
+    fn resolve_dashboard_fills_builtin_when_absent() {
+        let mut incoming = MachineConfig::from_yaml(
+            r#"
+version: v1alpha1
+machine:
+  type: controlplane
+"#,
+        )
+        .unwrap();
+        incoming.resolve_dashboard(None);
+        let dash = incoming.machine.dashboard.unwrap();
+        assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
+        assert_eq!(dash.border.as_deref(), Some("ascii"));
+        assert_eq!(dash.cols, None);
+        assert_eq!(dash.rows, None);
+        assert_eq!(dash.utf8, None);
+    }
+
+    #[test]
+    fn resolve_dashboard_keeps_explicit() {
+        let mut incoming = MachineConfig::from_yaml(
+            r#"
+version: v1alpha1
+machine:
+  type: controlplane
+  dashboard:
+    theme: wild-cherry
+"#,
+        )
+        .unwrap();
+        let previous = MachineConfig::from_yaml(
+            r#"
+version: v1alpha1
+machine:
+  type: controlplane
+  dashboard:
+    theme: nord
+"#,
+        )
+        .unwrap();
+        incoming.resolve_dashboard(Some(&previous));
+        assert_eq!(
+            incoming.machine.dashboard.unwrap().theme.as_deref(),
+            Some("wild-cherry")
+        );
     }
 }
