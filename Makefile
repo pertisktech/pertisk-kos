@@ -6,6 +6,7 @@
 #   make build EMBED_BOOT=1 EMBED_RUNTIME=1
 #   make build-all VERSION=0.2.0       # amd64 + arm64
 #   make build-host VERSION=0.2.0      # host cargo release bins
+#   make pertiskctl                    # host CLI → out/bin/pertiskctl
 #   make cloud VERSION=0.2.0 ARCH=amd64
 #
 # VERSION embeds into binaries via PERTISK_BUILD_VERSION.
@@ -39,7 +40,7 @@ ifeq ($(filter $(PROFILE),production debug),)
   $(error unsupported PROFILE=$(PROFILE); use production or debug)
 endif
 
-.PHONY: help build build-host build-all initramfs cloud uki \
+.PHONY: help build build-host build-all initramfs pertiskctl cloud uki \
 	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version
 
 help:
@@ -48,6 +49,7 @@ help:
 	@echo "  make build [VERSION=...] [ARCH=amd64|arm64] [PROFILE=production|debug] [EMBED_BOOT=1] [EMBED_RUNTIME=1]"
 	@echo "  make build-all [VERSION=...] [PROFILE=...] [EMBED_BOOT=1] [EMBED_RUNTIME=1]"
 	@echo "  make build-host [VERSION=...]          # cargo release (host)"
+	@echo "  make pertiskctl [VERSION=...]          # host CLI → out/bin/pertiskctl"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
 	@echo "  make uki [VERSION=...] [ARCH=...]     # Unified Kernel Image"
 	@echo "  make test | check-hardening | fmt | clippy | clean"
@@ -85,6 +87,15 @@ build-host:
 	@cp -f "$(ROOT)/target/release/pertiskd" "$(ROOT)/out/bin/pertiskd" 2>/dev/null || true
 	@cp -f "$(ROOT)/target/release/pertiskctl" "$(ROOT)/out/bin/pertiskctl" 2>/dev/null || true
 	@echo "==> host bins in out/bin/ (if built)"
+
+## Host CLI only (management client).
+pertiskctl:
+	@echo "==> build pertiskctl VERSION=$(VERSION)"
+	PERTISK_BUILD_VERSION="$(VERSION)" cargo build --release -p pertiskctl
+	@mkdir -p "$(ROOT)/out/bin"
+	@cp -f "$(ROOT)/target/release/pertiskctl" "$(ROOT)/out/bin/pertiskctl"
+	@ls -lh "$(ROOT)/out/bin/pertiskctl"
+	@echo "==> $(ROOT)/out/bin/pertiskctl"
 
 ## Cloud golden disk (requires prior EMBED_BOOT initramfs for ARCH).
 cloud:

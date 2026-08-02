@@ -18,6 +18,7 @@ make build PROFILE=debug                # recovery image with BusyBox ash
 make build VERSION=0.2.0 ARCH=amd64 EMBED_BOOT=1 EMBED_RUNTIME=1
 make build-all VERSION=0.2.0            # amd64 + arm64
 make build-host VERSION=0.2.0           # host cargo release bins → out/bin/
+make pertiskctl                         # host CLI → out/bin/pertiskctl
 make cloud VERSION=0.2.0 ARCH=amd64     # golden disk image
 make uki ARCH=amd64                     # Unified Kernel Image → out/uki/
 ```
