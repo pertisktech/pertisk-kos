@@ -2,6 +2,8 @@ PERTISK_FORCE_KERNEL=1 make fetch-kernel ARCH=amd64
 make cloud ARCH=amd64
 ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
 
+# After reboot, confirm STATE is Partition (not EphemeralTmpfs):
+#   ./out/bin/pertiskctl -e <CP_IP>:50000 logs pertiskd -n 40 | rg 'STATE volume|EPHEMERAL /var'
 
 ./out/bin/pertiskctl gen config lab-ha https://10.1.1.174:6443 -o ./out/cluster
 ./out/bin/pertiskctl -e 10.1.1.174:50000 apply -f ./out/cluster/controlplane.yaml

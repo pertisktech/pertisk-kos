@@ -77,7 +77,10 @@ mod linux_impl {
         ensure_dir("/tmp")?;
         ensure_dir("/system")?;
         ensure_dir("/system/state")?;
+        ensure_dir("/system/ephemeral")?;
         ensure_dir("/etc")?;
+        ensure_dir("/boot")?;
+        ensure_dir("/boot/efi")?;
 
         // Minimal hosts file — containerd CRI reads /etc/hosts when creating sandboxes.
         ensure_hosts_file()?;

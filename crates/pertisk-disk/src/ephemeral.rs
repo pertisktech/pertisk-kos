@@ -108,18 +108,47 @@ fn mount_ephemeral_partition(
     use nix::mount::{mount, MsFlags};
 
     fs::create_dir_all(mountpoint)?;
-    match mount(
-        Some(dev),
-        mountpoint,
-        Some("ext4"),
-        MsFlags::MS_RELATIME,
-        None::<&str>,
-    ) {
-        Ok(()) => info!(device = %dev.display(), target = %mountpoint.display(), "mounted EPHEMERAL"),
-        Err(nix::errno::Errno::EBUSY) => {
-            info!(target = %mountpoint.display(), "EPHEMERAL already mounted");
+    let mut last_err = None;
+    for attempt in 1..=8 {
+        match mount(
+            Some(dev),
+            mountpoint,
+            Some("ext4"),
+            MsFlags::MS_RELATIME,
+            None::<&str>,
+        ) {
+            Ok(()) => {
+                info!(
+                    device = %dev.display(),
+                    target = %mountpoint.display(),
+                    attempt,
+                    "mounted EPHEMERAL"
+                );
+                last_err = None;
+                break;
+            }
+            Err(nix::errno::Errno::EBUSY) => {
+                info!(target = %mountpoint.display(), "EPHEMERAL already mounted");
+                last_err = None;
+                break;
+            }
+            Err(err) => {
+                last_err = Some(err);
+                warn!(
+                    device = %dev.display(),
+                    target = %mountpoint.display(),
+                    device_exists = dev.exists(),
+                    mountpoint_exists = mountpoint.exists(),
+                    attempt,
+                    error = %err,
+                    "EPHEMERAL mount attempt failed"
+                );
+                std::thread::sleep(Duration::from_millis(250));
+            }
         }
-        Err(err) => return Err(EphemeralError::Mount(err.to_string())),
+    }
+    if let Some(err) = last_err {
+        return Err(EphemeralError::Mount(err.to_string()));
     }
 
     // Ensure expected subdirs exist on the disk before covering /var.

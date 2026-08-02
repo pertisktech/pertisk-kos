@@ -1,7 +1,10 @@
 //! Load essential kernel modules shipped in the image.
 //!
 //! Alpine `linux-virt` builds `virtio_net` (and friends) as modules. Without
-//! them, Proxmox/QEMU virtio NICs never appear (no eth0).
+//! them, Proxmox/QEMU virtio NICs never appear (no eth0). Without `sd_mod` and
+//! its deps (`t10-pi` → `crc64-rocksoft` → `crc64`), virtio-scsi disks never
+//! create `/dev/sd*` nodes — STATE/EPHEMERAL stay ephemeral and reboot wipes
+//! apply/bootstrap.
 
 use tracing::{info, warn};
 
@@ -25,8 +28,10 @@ mod linux_impl {
     use std::path::{Path, PathBuf};
 
     const MODULE_DIR: &str = "/lib/pertisk/modules";
-    /// Dependency order for Alpine linux-virt virtio networking + disk + overlay.
-    /// `sd_mod` is required for `/dev/sd*` nodes behind virtio-scsi (Proxmox).
+    /// Dependency order for Alpine linux-virt virtio networking + disk + fs + overlay.
+    /// `sd_mod` requires `t10-pi` → `crc64-rocksoft` → `crc64` (Proxmox scsi).
+    /// `ext4` requires `jbd2` + `crc16` + `mbcache` (STATE/EPHEMERAL mounts).
+    /// `vfat` requires `fat` (+ nls_*) for the EFI system partition.
     /// `overlay` is required for containerd/runc rootfs mounts.
     const BOOT_MODULES: &[&str] = &[
         "failover",
@@ -34,7 +39,19 @@ mod linux_impl {
         "virtio_net",
         "virtio_scsi",
         "virtio_blk",
+        "crc64",
+        "crc64-rocksoft",
+        "t10-pi",
         "sd_mod",
+        "crc16",
+        "mbcache",
+        "jbd2",
+        "crc32c_generic",
+        "ext4",
+        "fat",
+        "nls_cp437",
+        "nls_iso8859-1",
+        "vfat",
         "overlay",
     ];
 

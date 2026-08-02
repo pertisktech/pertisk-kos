@@ -20,7 +20,7 @@ pub use layout::{
     MountPaths, PartitionRole, PARTLABEL_BOOT_A, PARTLABEL_BOOT_B, PARTLABEL_EFI,
     PARTLABEL_EPHEMERAL, PARTLABEL_META, PARTLABEL_STATE,
 };
-pub use partlabel::{find_by_partlabel, wait_for_partlabel};
+pub use partlabel::{find_by_partlabel, settle_block_devices, wait_for_partlabel};
 pub use plan::{
     default_fixed_partitions, minimum_disk_size, plan_disk, DiskPlan, FsType, PartitionSpec,
     PlanError,

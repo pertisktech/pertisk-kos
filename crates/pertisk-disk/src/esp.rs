@@ -71,13 +71,32 @@ fn mount_efi_partition(dev: &Path, mountpoint: &Path) -> Result<EspVolume, EspEr
         mountpoint,
         Some("vfat"),
         MsFlags::MS_RELATIME,
-        Some("umask=0077"),
+        Some("umask=0077,codepage=437,iocharset=iso8859-1"),
     ) {
         Ok(()) => info!(device = %dev.display(), target = %mountpoint.display(), "mounted EFI"),
         Err(nix::errno::Errno::EBUSY) => {
             info!(target = %mountpoint.display(), "EFI already mounted");
         }
-        Err(err) => return Err(EspError::Mount(err.to_string())),
+        Err(err) => {
+            // Retry without iocharset if nls naming differs across kernels.
+            match mount(
+                Some(dev),
+                mountpoint,
+                Some("vfat"),
+                MsFlags::MS_RELATIME,
+                Some("umask=0077"),
+            ) {
+                Ok(()) => info!(
+                    device = %dev.display(),
+                    target = %mountpoint.display(),
+                    "mounted EFI (basic options)"
+                ),
+                Err(nix::errno::Errno::EBUSY) => {
+                    info!(target = %mountpoint.display(), "EFI already mounted");
+                }
+                Err(err2) => return Err(EspError::Mount(format!("{err}; retry: {err2}"))),
+            }
+        }
     }
     Ok(EspVolume {
         root: mountpoint.to_path_buf(),

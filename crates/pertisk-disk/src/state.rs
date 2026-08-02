@@ -141,19 +141,49 @@ fn mount_state_partition(dev: &Path, mountpoint: &Path) -> Result<StateVolume, S
 
     fs::create_dir_all(mountpoint)?;
 
-    // Prefer ext4; soft-fail messages if already mounted.
-    match mount(
-        Some(dev),
-        mountpoint,
-        Some("ext4"),
-        MsFlags::MS_RELATIME,
-        None::<&str>,
-    ) {
-        Ok(()) => info!(device = %dev.display(), target = %mountpoint.display(), "mounted STATE"),
-        Err(nix::errno::Errno::EBUSY) => {
-            info!(target = %mountpoint.display(), "STATE already mounted");
+    // Prefer ext4; soft-fail messages if already mounted. Retry briefly — after
+    // module load, blockdev lookup can race (ENOENT / "Can't lookup blockdev").
+    let mut last_err = None;
+    for attempt in 1..=8 {
+        match mount(
+            Some(dev),
+            mountpoint,
+            Some("ext4"),
+            MsFlags::MS_RELATIME,
+            None::<&str>,
+        ) {
+            Ok(()) => {
+                info!(
+                    device = %dev.display(),
+                    target = %mountpoint.display(),
+                    attempt,
+                    "mounted STATE"
+                );
+                last_err = None;
+                break;
+            }
+            Err(nix::errno::Errno::EBUSY) => {
+                info!(target = %mountpoint.display(), "STATE already mounted");
+                last_err = None;
+                break;
+            }
+            Err(err) => {
+                last_err = Some(err);
+                tracing::warn!(
+                    device = %dev.display(),
+                    target = %mountpoint.display(),
+                    device_exists = dev.exists(),
+                    mountpoint_exists = mountpoint.exists(),
+                    attempt,
+                    error = %err,
+                    "STATE mount attempt failed"
+                );
+                std::thread::sleep(Duration::from_millis(250));
+            }
         }
-        Err(err) => return Err(StateError::Mount(err.to_string())),
+    }
+    if let Some(err) = last_err {
+        return Err(StateError::Mount(err.to_string()));
     }
 
     let vol = StateVolume {

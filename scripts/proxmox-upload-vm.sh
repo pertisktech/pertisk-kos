@@ -197,7 +197,8 @@ else
       --data-urlencode "bios=ovmf" \
       --data-urlencode "scsihw=virtio-scsi-single" \
       --data-urlencode "net0=virtio,bridge=${BRIDGE}" \
-      --data-urlencode "ostype=l26"
+      --data-urlencode "ostype=l26" \
+      --data-urlencode "onboot=1"
   )"
   echo "${RESP}" | jq -e '.data != null' >/dev/null || {
     echo "create failed: ${RESP}" >&2
@@ -316,6 +317,7 @@ fi
 
 api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
   --data-urlencode "boot=order=scsi0;net0" \
+  --data-urlencode "onboot=1" \
   --data-urlencode "serial0=socket" \
   --data-urlencode "vga=serial0" >/dev/null 2>&1 || true
 

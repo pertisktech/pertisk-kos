@@ -32,7 +32,10 @@ NEED_KERNEL=1
 NEED_MODULES=1
 if [[ "${PERTISK_FORCE_KERNEL:-0}" != "1" ]]; then
   [[ -f "${KERNEL_OUT}" ]] && NEED_KERNEL=0
-  [[ -f "${MODULES_OUT}/virtio_net.ko" && -f "${MODULES_OUT}/sd_mod.ko" && -f "${MODULES_OUT}/overlay.ko" && -f "${MODULES_OUT}/version" ]] && NEED_MODULES=0
+  # sd_mod needs t10-pi → crc64-rocksoft → crc64; require the leaf dep as a
+  # freshness check so older module packs without SCSI deps get refreshed.
+  # SCSI disk nodes need sd_mod deps; STATE/EPHEMERAL mounts need ext4.
+  [[ -f "${MODULES_OUT}/virtio_net.ko" && -f "${MODULES_OUT}/sd_mod.ko" && -f "${MODULES_OUT}/t10-pi.ko" && -f "${MODULES_OUT}/crc64.ko" && -f "${MODULES_OUT}/ext4.ko" && -f "${MODULES_OUT}/jbd2.ko" && -f "${MODULES_OUT}/overlay.ko" && -f "${MODULES_OUT}/version" ]] && NEED_MODULES=0
 fi
 
 # Kernel and modules must come from the same linux-virt package (vermagic).
@@ -69,20 +72,36 @@ docker run --rm --platform "${PLATFORM}" \
   if [ "${NEED_MODULES}" = "1" ]; then
     rm -rf "/out/${MODULES_NAME}"
     mkdir -p "/out/${MODULES_NAME}"
-    # Order matters for loading: failover → net_failover → virtio_net.
-    # Disk: virtio_scsi (Proxmox scsi) / virtio_blk (QEMU) + sd_mod (SCSI disk nodes).
-    # overlay: containerd snapshotter / runc rootfs.
-    for name in failover net_failover virtio_net virtio_scsi virtio_blk sd_mod overlay; do
-      src=$(find "/lib/modules/${KVER}" -name "${name}.ko.gz" -o -name "${name}.ko" | head -1)
+
+    # Recursively copy a module and its depends= chain (modinfo null-records).
+    copy_module() {
+      name="$1"
+      dest="/out/${MODULES_NAME}/${name}.ko"
+      if [ -f "$dest" ]; then
+        return 0
+      fi
+      src=$(find "/lib/modules/${KVER}" \( -name "${name}.ko.gz" -o -name "${name}.ko" \) | head -1)
       if [ -z "$src" ]; then
         echo "WARNING: module ${name} not found" >&2
-        continue
+        return 0
       fi
       case "$src" in
-        *.gz) gzip -dc "$src" > "/out/${MODULES_NAME}/${name}.ko" ;;
-        *) cp "$src" "/out/${MODULES_NAME}/${name}.ko" ;;
+        *.gz) gzip -dc "$src" > "$dest" ;;
+        *) cp "$src" "$dest" ;;
       esac
       echo "module ${name} <- $src"
+      deps=$(tr "\0" "\n" < "$dest" | sed -n "s/^depends=//p" | head -1 | tr "," " ")
+      for dep in $deps; do
+        [ -n "$dep" ] && copy_module "$dep"
+      done
+    }
+
+    # Roots: NIC + SCSI/blk disk (Proxmox virtio-scsi / QEMU virtio-blk)
+    # + ext4/vfat (STATE/EPHEMERAL/EFI mounts; linux-virt builds these as modules)
+    # + overlay (containerd).
+    for name in failover net_failover virtio_net virtio_scsi virtio_blk sd_mod \
+                ext4 crc32c_generic vfat nls_cp437 nls_iso8859-1 overlay; do
+      copy_module "$name"
     done
     printf "%s\n" "$KVER" > "/out/${MODULES_NAME}/version"
   fi

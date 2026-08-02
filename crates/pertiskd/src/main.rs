@@ -22,7 +22,8 @@ use clap::Parser;
 use pertisk_api::{shared, SharedState, TlsPaths, DEFAULT_LISTEN, DEFAULT_METRICS_LISTEN};
 use pertisk_config::MachineConfig;
 use pertisk_disk::{
-    layout_present, prepare_state, try_prepare_ephemeral, try_prepare_esp, StateVolume,
+    layout_present, prepare_state, settle_block_devices, try_prepare_ephemeral, try_prepare_esp,
+    StateVolume,
 };
 #[cfg(target_os = "linux")]
 use pertisk_update::{bootstrap_esp, BootAssets, EspPaths, INSTALLER_BOOT_DIR};
@@ -173,6 +174,11 @@ fn run() -> Result<()> {
         "pertiskd starting"
     );
 
+    if is_pid1 {
+        // After disk modules: rescans so STATE/EPHEMERAL nodes are mountable.
+        settle_block_devices();
+    }
+
     if is_pid1 && pid != 1 {
         // --force-init on a non-PID1 process still needs mounts in some lab setups.
         linux::prepare_filesystem()?;
@@ -238,6 +244,15 @@ fn run() -> Result<()> {
         }
     };
     log_ring().set_state_root(&volume.root);
+    // Early STATE/module lines are buffered before the file sink attaches; emit
+    // a durable summary so `pertiskctl logs` shows whether reboot will persist.
+    info!(
+        path = %volume.root.display(),
+        source = ?volume.source,
+        layout_present = layout_present(),
+        config_exists = volume.config_path().exists(),
+        "STATE volume ready"
+    );
     let _esp = try_prepare_esp();
     let cfg = load_boot_config(&args, &volume)
         .unwrap_or_else(|err| {
@@ -271,7 +286,11 @@ fn run() -> Result<()> {
         warn!(error = %err, "/var prepare failed");
     }
     // Prefer disk-backed /var (container images, etcd, logs) over tmpfs.
-    let _ephemeral = try_prepare_ephemeral();
+    let ephemeral = try_prepare_ephemeral();
+    info!(
+        ephemeral_mounted = ephemeral.is_some(),
+        "EPHEMERAL /var status"
+    );
     // Before kubelet (`protectKernelDefaults: true`).
     sysctl::apply_hardening_sysctls();
 

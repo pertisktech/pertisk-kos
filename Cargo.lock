@@ -1280,6 +1280,7 @@ name = "pertisk-disk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "nix 0.29.0",
  "tempfile",
  "thiserror 2.0.19",
