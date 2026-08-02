@@ -6,6 +6,28 @@
 # lab-ha-wk-1  10.1.1.42
 # lab-ha-wk-2  10.1.1.202
 # lab-ha-wk-3  10.1.1.63
+# All nodes Ready; Flannel currently CrashLoopBackOff on all nodes.
+
+## Done (this lab cycle)
+# - Disk modules: sd_mod deps (t10-pi/crc64*), ext4/vfat → STATE Partition + EPHEMERAL /var
+# - Apply/bootstrap survives VM/Proxmox reboot
+# - CP bootstrap + kubeconfig + worker TLS join (CSR Approved,Issued)
+# - Manual bootstrap-token Secret + node-rbac + CP role label
+
+## Next tasks (priority order)
+# 1. Fix Flannel CrashLoopBackOff (CNI) — nodes Ready but pod networking broken
+#    kubectl -n kube-flannel logs ds/kube-flannel-ds --kubeconfig ./out/cluster/admin.conf
+#    check VXLAN, /run/flannel, CNI bin path, image tags in examples/cni/kube-flannel.yaml
+# 2. Auto-apply join prerequisites during bootstrap (stop manual Secret/RBAC steps)
+#    - create bootstrap-token Secret via API once apiserver is up
+#    - apply examples/bootstrap/node-rbac.yaml (or embed equivalents)
+#    - label CP node-role.kubernetes.io/control-plane=
+#    - optional: pertiskctl join helper that writes unique hostnames + applies workers
+# 3. Smoke: deploy a test Deployment + Service; verify pod↔pod across nodes
+# 4. Reboot endurance: reboot CP + workers; confirm nodes rejoin without re-bootstrap
+# 5. Clean lab topology: only 1 CP + 2 workers (wk-3 may be an extra VM — remove or document)
+# 6. Docs: fold note.txt pitfalls into docs/PROXMOX.md / README Talos-shaped flow
+# 7. Product gaps (later): multi-CP HA, signed A/B updates, measured boot, static IPs / metal
 
 ## Build + deploy VMs
 PERTISK_FORCE_KERNEL=1 make fetch-kernel ARCH=amd64   # if modules missing
@@ -15,33 +37,24 @@ make cloud ARCH=amd64
 ## Boot health (must be Partition or apply/bootstrap die on reboot)
 # ./out/bin/pertiskctl -e <IP>:50000 logs pertiskd -n 40 | rg 'STATE volume|EPHEMERAL /var'
 # expect: source=Partition , ephemeral_mounted=true
-# if EphemeralTmpfs / no EPHEMERAL → disk modules (sd_mod+t10-pi, ext4) not loaded; rebuild image
 
 ## Bootstrap CP
-# Discover CP IP (scan :50000 or Serial), then:
 ./out/bin/pertiskctl gen config lab-ha https://<CP_IP>:6443 -o ./out/cluster
 ./out/bin/pertiskctl -e <CP_IP>:50000 apply -f ./out/cluster/controlplane.yaml
 ./out/bin/pertiskctl -e <CP_IP>:50000 bootstrap
 ./out/bin/pertiskctl -e <CP_IP>:50000 kubeconfig -f ./out/cluster/admin.conf
 ./out/bin/pertiskctl -e <CP_IP>:50000 join-config -f ./out/cluster/worker.yaml
 
-## Join workers (REQUIRED — bootstrap does NOT apply these to the API)
-# 1) Bootstrap token Secret from worker.yaml cluster.token (id = part before '.')
-#    name: bootstrap-token-<id>  ns: kube-system  type: bootstrap.kubernetes.io/token
-#    stringData: token-id, token-secret, usage-bootstrap-authentication/signing=true,
-#                auth-extra-groups: system:bootstrappers:kubeadm:default-node-token
+## Join workers (until #2 is automated)
+# 1) Secret bootstrap-token-<id> from worker.yaml cluster.token
 # 2) kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/bootstrap/node-rbac.yaml
-# 3) kubectl --kubeconfig ./out/cluster/admin.conf label node lab-ha-cp-1 node-role.kubernetes.io/control-plane=
-# 4) Unique hostname per worker, then apply:
-#    ./out/bin/pertiskctl -e <WK_IP>:50000 apply -f ./out/cluster/worker.yaml
-# 5) If CSR Unauthorized / system:anonymous → token/RBAC missing or kubelet hit backoff;
-#    apply Secret+RBAC, then re-apply worker.yaml to restart kubelet
-# 6) CNI: kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/cni/kube-flannel.yaml
-
+# 3) kubectl label node lab-ha-cp-1 node-role.kubernetes.io/control-plane=
+# 4) unique hostname per worker → pertiskctl apply worker.yaml
+# 5) kubectl apply -f examples/cni/kube-flannel.yaml
 kubectl --kubeconfig ./out/cluster/admin.conf get nodes -o wide
 
 ## Pitfalls
-# - After Proxmox/host reboot: without STATE Partition + EPHEMERAL /var, cluster is gone (RAM-only).
-# - kubeconfig "admin kubeconfig missing; bootstrap first" → not bootstrapped on disk STATE.
-# - Workers join fail with Unauthorized → missing bootstrap-token Secret and/or node-rbac.yaml.
-# - Same hostname on two workers → node identity clash; always unique hostnames.
+# - EphemeralTmpfs STATE → reboot wipes cluster (need disk modules + ext4)
+# - "admin kubeconfig missing; bootstrap first" → not on disk STATE
+# - Worker Unauthorized / system:anonymous → missing token Secret and/or node-rbac
+# - Same hostname on two workers → identity clash

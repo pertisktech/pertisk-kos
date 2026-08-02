@@ -234,11 +234,29 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 - `Logs` (pertiskd, containerd, kubelet, dmesg)
 - `Upgrade`
 - Metrics HTTP `/metrics` (Prometheus text)
-**Control plane (Phase A — in progress)**
+**Control plane (Phase A — lab-proven on Proxmox)**
 
-- `Bootstrap` / `Kubeconfig` RPCs
-- `pertiskctl gen config` / `bootstrap` / `kubeconfig` / `join-config`
+Done:
+
+- `Bootstrap` / `Kubeconfig` / `JoinConfig` RPCs
+- `pertiskctl gen config` / `apply` / `bootstrap` / `kubeconfig` / `join-config`
 - Static-pod etcd + apiserver + controller-manager + scheduler (`pertisk-bootstrap`)
+- Worker TLS bootstrap (bootstrap-kubeconfig → CSR → node cert)
+- Persistent STATE + EPHEMERAL on virtio-scsi (ship/load `sd_mod` deps + `ext4`/`vfat`)
+- Cloud qcow2 → Proxmox cluster VMs (`scripts/proxmox-create-cluster-vms.sh`)
+
+Still manual / incomplete:
+
+- Bootstrap token Secret + node-join RBAC must be applied with kubectl (not yet done inside `bootstrap`)
+- Cluster CNI (Flannel example CrashLoopBackOff in lab — pod networking not green)
+- CP `node-role.kubernetes.io/control-plane=` label is operator-applied
+
+**Next (Phase A finish → v0.1)**
+
+1. Fix Flannel (or ship a known-good CNI path) so multi-node pod networking works
+2. Auto-apply bootstrap-token Secret + `examples/bootstrap/node-rbac.yaml` (+ CP role label) during bootstrap
+3. Cross-node smoke (Deployment/Service) + reboot endurance without re-bootstrap
+4. Document Talos-shaped Proxmox flow in [docs/PROXMOX.md](./docs/PROXMOX.md) (fold lab pitfalls from `note.txt`)
 
 **Later (Talos / Omni parity)**
 
@@ -277,14 +295,18 @@ Pertisk is a *sibling* of Talos in design, not a fork or drop-in replacement.
 
 ---
 
-## 10. Suggested first milestones (concrete)
+## 10. Milestones (concrete)
 
-1. **M0:** Workspace + `pertiskd` PID 1 in QEMU (serial hello + zombie reaping).
-2. **M1:** Immutable root + STATE mount + config load.
-3. **M2:** DHCP + containerd start.
-4. **M3:** kubelet → Ready node.
-5. **M4:** gRPC `ApplyConfiguration` + `pertiskctl apply`.
-6. **M5:** A/B upgrade with rollback.
+| ID | Goal | Status |
+|----|------|--------|
+| M0 | Workspace + `pertiskd` PID 1 in QEMU | Done |
+| M1 | STATE/EPHEMERAL mounts + config load (persist across reboot) | Done (Proxmox virtio-scsi + ext4 modules) |
+| M2 | DHCP + containerd start | Done |
+| M3 | kubelet → Ready node | Done (CP + workers) |
+| M4 | gRPC `ApplyConfiguration` + `pertiskctl apply` | Done |
+| M4b | Self-hosted CP bootstrap + worker join | Done (token/RBAC still manual) |
+| M4c | Working cluster CNI + cross-node pods | **Next** |
+| M5 | A/B upgrade with rollback | Not started |
 
 ---
 
@@ -303,8 +325,10 @@ Pertisk is a *sibling* of Talos in design, not a fork or drop-in replacement.
 
 ## 12. What “done” looks like for v0.1
 
-- One command builds a bootable image.
-- QEMU and one bare-metal path documented.
-- Worker joins an existing Kubernetes cluster via `pertiskctl`.
-- Upgrade and reboot only through the API.
-- No SSH in the default image.
+- One command builds a bootable image (`make cloud` / initramfs).
+- QEMU and Proxmox (cloud qcow2) paths documented; bare-metal install path exists.
+- Control plane forms via `pertiskctl bootstrap`; workers join via apply + TLS bootstrap (token/RBAC automatic).
+- Cluster CNI healthy; a sample workload schedules across nodes.
+- Config and etcd data survive host/VM reboot (STATE + EPHEMERAL on disk).
+- Upgrade and reboot only through the API (A/B may still be partial).
+- No SSH in the default (`production`) image.
