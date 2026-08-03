@@ -147,7 +147,8 @@ fn apiserver_pod(
                     "--service-account-key-file=/etc/kubernetes/pki/sa.pub",
                     "--service-account-signing-key-file=/etc/kubernetes/pki/sa.key",
                     "--tls-cert-file=/etc/kubernetes/pki/apiserver.crt",
-                    "--tls-private-key-file=/etc/kubernetes/pki/apiserver.key"
+                    "--tls-private-key-file=/etc/kubernetes/pki/apiserver.key",
+                    "--feature-gates=UserNamespacesSupport=true"
                 ],
                 "volumeMounts": [
                     { "name": "pki", "mountPath": "/etc/kubernetes/pki" }

@@ -68,6 +68,7 @@ mod linux {
             };
             rt.block_on(link::set_link_up(&name))?;
             if iface.dhcp {
+                link::relax_rp_filter(&name);
                 let existing = rt.block_on(link::list_addresses(&name)).unwrap_or_default();
                 // IPv6 SLAAC/link-local often appears before DHCPv4 — only skip when
                 // we already have an IPv4 address.

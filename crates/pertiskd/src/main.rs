@@ -269,14 +269,15 @@ fn run() -> Result<()> {
         Ok(v) => v,
         Err(err) => {
             // Never abort PID 1 for STATE — keep going with a tmp dir.
-            eprintln!("pertiskd: STATE prepare failed: {err:#}");
+            // Use tracing (ring only while dashboard owns Serial) — eprintln
+            // after `\x1b[2J`/paint races leaves a blank Proxmox console.
             warn!(error = %err, "STATE prepare failed; using /tmp/pertisk-state");
             let fallback = PathBuf::from("/tmp/pertisk-state");
             let _ = std::fs::create_dir_all(&fallback);
             match prepare_boot_state(Some(&fallback)) {
                 Ok(v) => v,
                 Err(err2) => {
-                    eprintln!("pertiskd: fallback STATE failed: {err2:#}");
+                    warn!(error = %err2, "fallback STATE failed");
                     return Err(err2);
                 }
             }

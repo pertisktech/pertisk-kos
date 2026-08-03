@@ -19,6 +19,15 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
     use socket2::{Domain, Protocol, Socket, Type};
 
     wait_iface(iface, Duration::from_secs(15))?;
+    // Ensure UP even if caller forgot — DHCPv4 needs carrier; IPv6 LL can
+    // appear while we still have no IPv4.
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| NetError::Msg(e.to_string()))?;
+        let _ = rt.block_on(crate::link::set_link_up(iface));
+    }
     let mac = read_mac(iface)?;
     let mut xid_bytes = [0u8; 4];
     rand::thread_rng().fill_bytes(&mut xid_bytes);
@@ -188,15 +197,41 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
         .build()
         .map_err(|e| NetError::Msg(e.to_string()))?;
     rt.block_on(async {
-        crate::link::flush_addresses(iface).await?;
+        // Best-effort flush: IPv6 EAFNOSUPPORT must not block installing the
+        // IPv4 lease (dashboard otherwise sticks on eth0 `(no ip)`).
+        if let Err(err) = crate::link::flush_addresses(iface).await {
+            tracing::warn!(
+                interface = iface,
+                error = %err,
+                "DHCP flush before bind failed; continuing"
+            );
+        }
         crate::link::add_address(iface, &cidr).await?;
         if let Some(DhcpOption::Router(routers)) = ack.opts().get(OptionCode::Router) {
             for gw in routers {
-                let _ = crate::link::add_default_route(&gw.to_string()).await;
+                if let Err(err) = crate::link::add_default_route(&gw.to_string()).await {
+                    tracing::warn!(gateway = %gw, error = %err, "DHCP default route failed");
+                }
             }
         }
         Ok::<(), NetError>(())
     })?;
+
+    // Verify IPv4 actually landed — IPv6 LL alone must not count as success.
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| NetError::Msg(e.to_string()))?;
+        let addrs = rt
+            .block_on(crate::link::list_addresses(iface))
+            .unwrap_or_default();
+        if !addrs.iter().any(|a| a.contains('.')) {
+            return Err(NetError::Msg(format!(
+                "DHCP ACK {cidr} but no IPv4 on {iface} afterwards (addrs={addrs:?})"
+            )));
+        }
+    }
 
     if let Some(DhcpOption::DomainNameServer(dns)) = ack.opts().get(OptionCode::DomainNameServer) {
         let servers: Vec<String> = dns.iter().map(ToString::to_string).collect();

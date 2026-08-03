@@ -132,8 +132,10 @@ RUN chmod +x ./init ./usr/sbin/* ./usr/lib/pertisk/udhcpc-hook \
     && ln -sf /usr/sbin/mkfs.vfat ./sbin/mkfs.vfat \
     && ln -sf /usr/sbin/partprobe ./sbin/partprobe \
     && ln -sf /usr/sbin/udhcpc ./sbin/udhcpc \
+    && ln -sf /usr/sbin/udhcpc ./usr/sbin/ip \
+    && ln -sf /usr/sbin/udhcpc ./sbin/ip \
     # Kubelet projected volumes / subPath need host mount(8). udhcpc is BusyBox
-    # multi-call — expose mount/umount applets without a shell entrypoint.
+    # multi-call — expose mount/umount/ip applets without a shell entrypoint.
     && ln -sf /usr/sbin/udhcpc ./bin/mount \
     && ln -sf /usr/sbin/udhcpc ./sbin/mount \
     && ln -sf /usr/sbin/udhcpc ./bin/umount \

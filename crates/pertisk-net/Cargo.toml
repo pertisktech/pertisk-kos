@@ -17,6 +17,7 @@ tracing = { workspace = true }
 dhcproto = "0.12"
 futures = "0.3"
 ipnet = "2"
+libc = "0.2"
 netlink-packet-route = "0.19"
 rand = "0.8"
 rtnetlink = "0.14"

@@ -3,8 +3,16 @@
 //! Production images ship `udhcpc` but no `/bin/sh`, so the stock
 //! `/usr/share/udhcpc/default.script` cannot run. This hook is invoked via
 //! `udhcpc -s /usr/lib/pertisk/udhcpc-hook`.
+//!
+//! Address/route install is **ioctl-only** (no tokio/netlink) so a lease still
+//! lands when rtnetlink is unhappy — a common cause of IPv6-LL-only boots.
 
 use crate::apply::NetError;
+
+#[cfg(target_os = "linux")]
+use std::net::Ipv4Addr;
+#[cfg(target_os = "linux")]
+use std::str::FromStr;
 
 /// Entry point for the `pertisk-udhcpc-hook` binary (and tests).
 #[cfg(target_os = "linux")]
@@ -17,30 +25,29 @@ pub fn run_from_env(args: &[String]) -> Result<(), NetError> {
     let iface = std::env::var("interface")
         .map_err(|_| NetError::Msg("udhcpc hook: missing $interface".into()))?;
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| NetError::Msg(e.to_string()))?;
-
     match action {
-        "deconfig" => rt.block_on(crate::link::flush_addresses(&iface)),
+        "deconfig" => {
+            // Best-effort; kernel will replace on the next bound.
+            let _ = crate::link::del_ipv4_ioctl(&iface);
+            Ok(())
+        }
         "bound" | "renew" => {
             let ip = std::env::var("ip")
                 .map_err(|_| NetError::Msg("udhcpc hook: missing $ip".into()))?;
+            let ip = Ipv4Addr::from_str(&ip)
+                .map_err(|e| NetError::Msg(format!("udhcpc bad $ip {ip}: {e}")))?;
             let prefix = lease_prefix_len()?;
-            let cidr = format!("{ip}/{prefix}");
-            tracing::info!(%action, interface = %iface, %cidr, "udhcpc lease");
-            rt.block_on(async {
-                crate::link::flush_addresses(&iface).await?;
-                crate::link::add_address(&iface, &cidr).await?;
-                if let Ok(routers) = std::env::var("router") {
-                    for gw in routers.split_whitespace() {
-                        // Best-effort: replace default route with the lease gateway.
-                        let _ = crate::link::add_default_route(gw).await;
+            eprintln!("pertisk-udhcpc-hook: {action} {iface} {ip}/{prefix}");
+            crate::link::add_ipv4_ioctl(&iface, ip, prefix)?;
+            if let Ok(routers) = std::env::var("router") {
+                for gw in routers.split_whitespace() {
+                    if let Ok(gw_ip) = Ipv4Addr::from_str(gw) {
+                        if let Err(err) = crate::link::add_default_route_v4_ioctl(gw_ip) {
+                            eprintln!("pertisk-udhcpc-hook: route {gw}: {err}");
+                        }
                     }
                 }
-                Ok::<(), NetError>(())
-            })?;
+            }
             if let Ok(dns) = std::env::var("dns") {
                 let servers: Vec<String> = dns
                     .split_whitespace()
@@ -54,7 +61,7 @@ pub fn run_from_env(args: &[String]) -> Result<(), NetError> {
             Ok(())
         }
         "leasefail" | "nak" => {
-            tracing::warn!(interface = %iface, action, "DHCP lease failed");
+            eprintln!("pertisk-udhcpc-hook: {action} on {iface}");
             Ok(())
         }
         other => Err(NetError::Msg(format!(

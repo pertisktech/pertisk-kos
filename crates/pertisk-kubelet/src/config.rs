@@ -63,6 +63,10 @@ staticPodPath: "/etc/kubernetes/manifests"
 # Control-plane: cert kubeconfig from pertiskctl bootstrap (no rotation needed).
 rotateCertificates: {rotate}
 serverTLSBootstrap: false
+# Pods that set spec.hostUsers (Flannel/charts) need this; GA in 1.36 but
+# explicit so a mismatched/older kubelet binary does not reject the field.
+featureGates:
+  UserNamespacesSupport: true
 "#
     );
 
@@ -194,6 +198,7 @@ mod tests {
         assert!(cfg.contains("protectKernelDefaults: true"));
         assert!(cfg.contains("rotateCertificates: true"));
         assert!(cfg.contains("tlsCipherSuites:"));
+        assert!(cfg.contains("UserNamespacesSupport: true"));
     }
 
     fn temp_dir() -> PathBuf {

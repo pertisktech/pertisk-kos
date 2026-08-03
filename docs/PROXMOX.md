@@ -208,10 +208,9 @@ make pertiskctl
 ./out/bin/pertiskctl -e <CP_IP>:50000 kubeconfig -f ./out/cluster/admin.conf
 ./out/bin/pertiskctl -e <CP_IP>:50000 join-config -f ./out/cluster/worker.yaml
 
-# After apiserver is up, create the bootstrap token Secret (written on the CP):
-kubectl --kubeconfig ./out/cluster/admin.conf apply \
-  -f <(ssh …)  # or copy /var/lib/pertisk/kubernetes/bootstrap-token-secret.yaml from the CP
-# Lab: use Console to note the path; apply via kubectl once you can reach :6443
+# Bootstrap finalizes (once apiserver is up): bootstrap-token Secret, node-join
+# RBAC, and labels the CP `node-role.kubernetes.io/control-plane=` (+ NoSchedule
+# taint), same shape as kubeadm. Wait ~1–2 min if the node is still unlabeled.
 
 # Per worker (edit hostname in a copy of worker.yaml):
 ./out/bin/pertiskctl -e <WK_IP>:50000 apply -f ./out/cluster/worker.yaml
@@ -220,7 +219,7 @@ kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/cni/kube-flannel
 kubectl --kubeconfig ./out/cluster/admin.conf get nodes
 ```
 
-**Control-plane images:** static pods pull `registry.k8s.io/pause`, `etcd`, `kube-apiserver`, `kube-controller-manager`, `kube-scheduler` (default tag `v1.32.5`). The guest needs outbound HTTPS to that registry **and** a system CA bundle (`/etc/ssl/certs/ca-certificates.crt` is embedded in the image). Corporate TLS interception requires injecting your proxy CA. See [COMPATIBILITY.md](./COMPATIBILITY.md).
+**Control-plane images:** static pods pull `registry.k8s.io/pause`, `etcd`, `kube-apiserver`, `kube-controller-manager`, `kube-scheduler` (default tag from `pertiskctl gen config -k`, currently `v1.36.3`). The guest needs outbound HTTPS to that registry **and** a system CA bundle (`/etc/ssl/certs/ca-certificates.crt` is embedded in the image). Corporate TLS interception requires injecting your proxy CA. See [COMPATIBILITY.md](./COMPATIBILITY.md). Keep the **embedded kubelet** (`make fetch-runtime`) on the same minor as `-k`.
 
 ### 4c. Worker-only join (existing external CP)
 

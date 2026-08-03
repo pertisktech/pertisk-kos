@@ -78,10 +78,10 @@ impl Dashboard {
     pub const DEFAULT_THEME: &'static str = "catppuccin";
     /// ASCII frames by default — Unicode borders can blank Proxmox Serial
     /// when the UTF-8 probe is wrong.
-    pub const DEFAULT_BORDER: &'static str = "ascii";
+    pub const DEFAULT_BORDER: &'static str = "bordered";
     /// Probe fallback only — never pinned unless YAML/env sets cols/rows.
     pub const DEFAULT_COLS: u16 = 80;
-    pub const DEFAULT_ROWS: u16 = 24;
+    pub const DEFAULT_ROWS: u16 = 22;
 
     /// Built-in console look (theme/border only).
     ///

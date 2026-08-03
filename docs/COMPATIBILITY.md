@@ -15,28 +15,35 @@ Pinned defaults come from [`image/fetch-runtime.sh`](../image/fetch-runtime.sh) 
 
 Host build (dev): macOS / Linux with Rust + Docker (initramfs cross via Zig).
 
-## Runtime versions (default pins)
+## Runtime versions
+
+Defaults resolve to **latest stable** at fetch time (`dl.k8s.io` + GitHub releases).
+Pins are written to `out/runtime/versions.txt`.
 
 | Component | Default | Override |
 |-----------|---------|----------|
-| Kubernetes kubelet | `v1.32.5` | `K8S_VER` |
-| containerd | `2.0.5` | `CONTAINERD_VER` |
-| glibc (loader + libc for containerd/kubelet) | Debian bookworm via `fetch-runtime.sh` | — |
-| runc | `v1.2.6` | `RUNC_VER` |
-| CNI plugins | `v1.6.2` | `CNI_VER` |
+| Kubernetes kubelet | `latest` → `https://dl.k8s.io/release/stable.txt` | `K8S_VER=v1.36.3` |
+| containerd | `latest` GitHub release | `CONTAINERD_VER=2.0.5` (no `v`) |
+| runc | `latest` GitHub release | `RUNC_VER=v1.2.6` |
+| CNI plugins | `latest` GitHub release | `CNI_VER=v1.6.2` |
+| glibc (loader + libc) | Debian bookworm via `fetch-runtime.sh` | — |
 | Kernel (QEMU virt) | Alpine `linux-virt` | via `image/fetch-kernel.sh` |
 | Bootloader | systemd-boot (Debian) | via `image/fetch-bootloader.sh` |
+
+```bash
+make fetch-runtime ARCH=amd64                    # all latest
+K8S_VER=v1.36.3 make fetch-runtime ARCH=amd64    # pin kubelet only
+PERTISK_RUNTIME_LATEST=1 make fetch-runtime      # force latest even if pins set in env
+```
 
 ### Kubernetes control-plane pairing
 
 | Worker kubelet | Expected API server | Notes |
 |----------------|---------------------|-------|
-| v1.32.x (default) | v1.32.x (±1 skew OK) | Follow [version skew policy](https://kubernetes.io/releases/version-skew-policy/) |
+| same minor as `cluster.kubernetesVersion` | match (±1 skew OK) | Follow [version skew policy](https://kubernetes.io/releases/version-skew-policy/) |
 | Custom `K8S_VER` | Matching minor | Rebuild runtime overlay + initramfs |
 
-**In-OS control plane (Phase A):** `machine.type: controlplane` + `pertiskctl bootstrap` writes kubeadm-shaped static pods (etcd + apiserver + controller-manager + scheduler). Images default to `registry.k8s.io/*:v1.32.5` and `registry.k8s.io/etcd:3.5.16-0` — guests must pull from a registry (or mirror). Single-CP first; stacked HA (3 CP) is planned next.
-
-Workers still join with `cluster.endpoint` / `token` / `ca` (`pertiskctl gen config` + `join-config`).
+**In-OS control plane:** `pertiskctl gen config … -k v1.36.3` (default) sets static-pod image tags. Guests must pull `registry.k8s.io/*` (or a mirror). Keep **kubelet** (`fetch-runtime`) and **static-pod tags** on the same minor.
 
 ## CNI choices
 

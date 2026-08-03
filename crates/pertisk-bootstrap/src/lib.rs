@@ -1,5 +1,6 @@
 //! Control-plane bootstrap for Pertisk KOS (Talos-shaped static pods).
 
+mod api;
 mod gen;
 mod kubeconfig;
 mod paths;
@@ -22,7 +23,7 @@ pub use kubeconfig::sanitize_kubeconfig;
 pub use paths::BootstrapPaths;
 pub use token::generate_bootstrap_token;
 
-pub const DEFAULT_K8S_VERSION: &str = "v1.32.5";
+pub const DEFAULT_K8S_VERSION: &str = "v1.36.3";
 pub const DEFAULT_ETCD_IMAGE: &str = "registry.k8s.io/etcd:3.5.16-0";
 pub const DEFAULT_POD_SUBNET: &str = "10.244.0.0/16";
 pub const DEFAULT_SERVICE_SUBNET: &str = "10.96.0.0/12";
@@ -167,17 +168,19 @@ pub fn bootstrap_control_plane(
         format!("bootstrapped at {}\n", chrono_like_now()),
     )?;
 
-    if let Some(token) = cluster.token.as_deref() {
-        // Best-effort: create bootstrap token Secret once API is up.
-        let admin_path = paths.admin_kubeconfig();
-        let token = token.to_string();
-        let ca = pki.ca_crt.clone();
-        thread::spawn(move || {
-            if let Err(err) = ensure_bootstrap_token_when_ready(&admin_path, &token, &ca) {
-                tracing::warn!(error = %err, "bootstrap token Secret not created yet; use join-config after API is up");
-            }
-        });
-    }
+    // Best-effort once apiserver is up: token Secret, node-join RBAC, CP role
+    // label — same defaults operators expect from kubeadm.
+    let admin_path = paths.admin_kubeconfig();
+    let token = cluster.token.clone();
+    let node_name = hostname.clone();
+    thread::spawn(move || {
+        if let Err(err) = finalize_bootstrap_when_ready(&admin_path, token.as_deref(), &node_name) {
+            tracing::warn!(
+                error = %err,
+                "post-bootstrap API finalize incomplete; apply token Secret / node-rbac / CP label manually if needed"
+            );
+        }
+    });
 
     Ok(BootstrapResult {
         already_bootstrapped: false,
@@ -300,34 +303,164 @@ fn apiserver_tcp_ready(timeout: Duration) -> bool {
     TcpStream::connect_timeout(&addr, timeout).is_ok()
 }
 
-fn ensure_bootstrap_token_when_ready(
-    _admin_kubeconfig: &Path,
-    token: &str,
-    _ca_pem: &str,
+/// After apiserver is healthy: bootstrap-token Secret, join RBAC, CP node label.
+fn finalize_bootstrap_when_ready(
+    admin_kubeconfig: &Path,
+    token: Option<&str>,
+    node_name: &str,
 ) -> Result<()> {
-    let Some((id, secret)) = token::split_token(token) else {
-        bail!("invalid bootstrap token format");
-    };
-    // Wait for local apiserver; creating the Secret requires a kube client.
-    // For Phase A we write a well-known file the operator/docs can apply, and
-    // also attempt a minimal HTTPS POST if possible later.
-    let deadline = Instant::now() + Duration::from_secs(180);
+    let deadline = Instant::now() + Duration::from_secs(300);
     while Instant::now() < deadline {
         if apiserver_tcp_ready(Duration::from_secs(2)) {
             break;
         }
         thread::sleep(Duration::from_secs(3));
     }
+    if !apiserver_tcp_ready(Duration::from_secs(2)) {
+        bail!("apiserver not reachable on 127.0.0.1:6443 within timeout");
+    }
 
-    // Persist token material for join-config / manual Secret apply.
-    let dir = Path::new("/var/lib/pertisk/kubernetes");
-    fs::create_dir_all(dir).ok();
-    let body = format!(
-        "apiVersion: v1\nkind: Secret\nmetadata:\n  name: bootstrap-token-{id}\n  namespace: kube-system\ntype: bootstrap.kubernetes.io/token\nstringData:\n  description: pertisk bootstrap token\n  token-id: \"{id}\"\n  token-secret: \"{secret}\"\n  usage-bootstrap-authentication: \"true\"\n  usage-bootstrap-signing: \"true\"\n  auth-extra-groups: system:bootstrappers:kubeadm:default-node-token\n"
-    );
-    fs::write(dir.join("bootstrap-token-secret.yaml"), body)?;
-    info!("wrote bootstrap-token-secret.yaml — apply with: kubectl apply -f /var/lib/pertisk/kubernetes/bootstrap-token-secret.yaml");
+    let kc = fs::read_to_string(admin_kubeconfig).context("read admin kubeconfig")?;
+    let (ca, cert, key) = api::credentials_from_kubeconfig(&kc)?;
+    let client = api::KubeClient::local(&ca, &cert, &key)?;
+
+    // Persist token YAML for debugging / manual re-apply.
+    if let Some(token) = token {
+        let Some((id, secret)) = token::split_token(token) else {
+            bail!("invalid bootstrap token format");
+        };
+        let dir = Path::new("/var/lib/pertisk/kubernetes");
+        fs::create_dir_all(dir).ok();
+        let yaml = format!(
+            "apiVersion: v1\nkind: Secret\nmetadata:\n  name: bootstrap-token-{id}\n  namespace: kube-system\ntype: bootstrap.kubernetes.io/token\nstringData:\n  description: pertisk bootstrap token\n  token-id: \"{id}\"\n  token-secret: \"{secret}\"\n  usage-bootstrap-authentication: \"true\"\n  usage-bootstrap-signing: \"true\"\n  auth-extra-groups: system:bootstrappers:kubeadm:default-node-token\n"
+        );
+        fs::write(dir.join("bootstrap-token-secret.yaml"), &yaml)?;
+
+        let body = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": format!("bootstrap-token-{id}"),
+                "namespace": "kube-system"
+            },
+            "type": "bootstrap.kubernetes.io/token",
+            "stringData": {
+                "description": "pertisk bootstrap token",
+                "token-id": id,
+                "token-secret": secret,
+                "usage-bootstrap-authentication": "true",
+                "usage-bootstrap-signing": "true",
+                "auth-extra-groups": "system:bootstrappers:kubeadm:default-node-token"
+            }
+        });
+        ensure_created(
+            &client,
+            "/api/v1/namespaces/kube-system/secrets",
+            &body.to_string(),
+            &format!("bootstrap-token-{id}"),
+        )?;
+    }
+
+    ensure_node_join_rbac(&client)?;
+    ensure_control_plane_node_role(&client, node_name, deadline)?;
+    info!(node = %node_name, "post-bootstrap API finalize complete");
     Ok(())
+}
+
+fn ensure_created(client: &api::KubeClient, path: &str, body: &str, name: &str) -> Result<()> {
+    let (status, resp) = client.post_json(path, body)?;
+    if status == 201 || status == 200 || status == 409 {
+        info!(name, status, "ensured API object");
+        Ok(())
+    } else {
+        bail!("create {name} failed HTTP {status}: {resp}");
+    }
+}
+
+fn ensure_node_join_rbac(client: &api::KubeClient) -> Result<()> {
+    // Mirrors examples/bootstrap/node-rbac.yaml (kubeadm-shaped).
+    let bindings = [
+        (
+            "pertisk:kubelet-bootstrap",
+            "system:bootstrappers:kubeadm:default-node-token",
+            "system:node-bootstrapper",
+        ),
+        (
+            "pertisk:node-autoapprove-bootstrap",
+            "system:bootstrappers:kubeadm:default-node-token",
+            "system:certificates.k8s.io:certificatesigningrequests:nodeclient",
+        ),
+        (
+            "pertisk:node-autoapprove-certificate-rotation",
+            "system:nodes",
+            "system:certificates.k8s.io:certificatesigningrequests:selfnodeclient",
+        ),
+    ];
+    for (name, subject_group, role) in bindings {
+        let body = serde_json::json!({
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRoleBinding",
+            "metadata": { "name": name },
+            "subjects": [{
+                "kind": "Group",
+                "name": subject_group,
+                "apiGroup": "rbac.authorization.k8s.io"
+            }],
+            "roleRef": {
+                "apiGroup": "rbac.authorization.k8s.io",
+                "kind": "ClusterRole",
+                "name": role
+            }
+        });
+        ensure_created(
+            client,
+            "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings",
+            &body.to_string(),
+            name,
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_control_plane_node_role(
+    client: &api::KubeClient,
+    node_name: &str,
+    deadline: Instant,
+) -> Result<()> {
+    let path = format!("/api/v1/nodes/{node_name}");
+    while Instant::now() < deadline {
+        let (status, _) = client.get(&path)?;
+        if status == 200 {
+            break;
+        }
+        thread::sleep(Duration::from_secs(3));
+    }
+    let (status, _) = client.get(&path)?;
+    if status != 200 {
+        bail!("node {node_name} not registered before timeout (HTTP {status})");
+    }
+
+    // kubeadm-equivalent control-plane identity (label; NoSchedule taint).
+    let patch = serde_json::json!({
+        "metadata": {
+            "labels": {
+                "node-role.kubernetes.io/control-plane": ""
+            }
+        },
+        "spec": {
+            "taints": [{
+                "key": "node-role.kubernetes.io/control-plane",
+                "effect": "NoSchedule"
+            }]
+        }
+    });
+    let (status, resp) = client.patch_strategic(&path, &patch.to_string())?;
+    if status == 200 {
+        info!(node = %node_name, "labeled control-plane (+ NoSchedule taint)");
+        Ok(())
+    } else {
+        bail!("label node {node_name} failed HTTP {status}: {resp}");
+    }
 }
 
 #[cfg(test)]

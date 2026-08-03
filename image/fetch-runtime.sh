@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# Download pinned containerd + kubelet (linux/amd64|arm64) into out/runtime/.
+# Download containerd + kubelet (linux/amd64|arm64) into out/runtime/.
 # Official containerd/kubelet binaries are dynamically linked against glibc; the
 # Pertisk rootfs is musl-based, so we also vendor the glibc loader + shared libs.
+#
+# Versions (override any pin; use `latest` to resolve at fetch time):
+#   K8S_VER=v1.36.3|latest          (default: latest → dl.k8s.io/release/stable.txt)
+#   CONTAINERD_VER=2.0.5|latest     (default: latest GitHub release, strip leading v)
+#   RUNC_VER=v1.2.6|latest
+#   CNI_VER=v1.6.2|latest
+#   PERTISK_RUNTIME_LATEST=1        force all components to latest
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${ROOT}/out/runtime"
 mkdir -p "${OUT}/usr/local/bin" "${OUT}/opt/cni/bin"
 
-CONTAINERD_VER="${CONTAINERD_VER:-2.0.5}"
-K8S_VER="${K8S_VER:-v1.32.5}"
 ARCH="${PERTISK_ARCH:-amd64}"
 
 case "${ARCH}" in
@@ -17,6 +22,75 @@ case "${ARCH}" in
   arm64|aarch64) ARCH=arm64; PLATFORM=linux/arm64 ;;
   *) echo "unsupported PERTISK_ARCH=${ARCH}" >&2; exit 1 ;;
 esac
+
+# Resolve "latest" / empty via public APIs. Fail closed if lookup fails.
+gh_latest_tag() {
+  local repo="$1"
+  curl -fsSL "https://api.github.com/repos/${repo}/releases/latest" \
+    | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | head -1
+}
+
+resolve_k8s() {
+  local v="${1:-}"
+  if [[ -z "${v}" || "${v}" == "latest" ]]; then
+    v="$(curl -fsSL https://dl.k8s.io/release/stable.txt | tr -d '[:space:]')"
+  fi
+  case "${v}" in
+    v*) echo "${v}" ;;
+    *) echo "v${v}" ;;
+  esac
+}
+
+resolve_containerd() {
+  local v="${1:-}"
+  if [[ -z "${v}" || "${v}" == "latest" ]]; then
+    v="$(gh_latest_tag containerd/containerd)"
+  fi
+  # Tarball name uses bare semver (no leading v).
+  echo "${v#v}"
+}
+
+resolve_tag() {
+  local repo="$1"
+  local v="${2:-}"
+  if [[ -z "${v}" || "${v}" == "latest" ]]; then
+    v="$(gh_latest_tag "${repo}")"
+  fi
+  case "${v}" in
+    v*) echo "${v}" ;;
+    *) echo "v${v}" ;;
+  esac
+}
+
+if [[ "${PERTISK_RUNTIME_LATEST:-0}" == "1" ]]; then
+  K8S_VER=latest
+  CONTAINERD_VER=latest
+  RUNC_VER=latest
+  CNI_VER=latest
+fi
+
+# Defaults: latest stable (override with explicit pins for reproducible builds).
+K8S_VER="$(resolve_k8s "${K8S_VER:-latest}")"
+CONTAINERD_VER="$(resolve_containerd "${CONTAINERD_VER:-latest}")"
+RUNC_VER="$(resolve_tag opencontainers/runc "${RUNC_VER:-latest}")"
+CNI_VER="$(resolve_tag containernetworking/plugins "${CNI_VER:-latest}")"
+
+if [[ -z "${K8S_VER}" || -z "${CONTAINERD_VER}" || -z "${RUNC_VER}" || -z "${CNI_VER}" ]]; then
+  echo "failed to resolve one or more runtime versions" >&2
+  echo "  K8S_VER=${K8S_VER:-?} CONTAINERD_VER=${CONTAINERD_VER:-?} RUNC_VER=${RUNC_VER:-?} CNI_VER=${CNI_VER:-?}" >&2
+  exit 1
+fi
+
+echo "==> versions: kubelet=${K8S_VER} containerd=${CONTAINERD_VER} runc=${RUNC_VER} cni=${CNI_VER} arch=${ARCH}"
+{
+  echo "K8S_VER=${K8S_VER}"
+  echo "CONTAINERD_VER=${CONTAINERD_VER}"
+  echo "RUNC_VER=${RUNC_VER}"
+  echo "CNI_VER=${CNI_VER}"
+  echo "ARCH=${ARCH}"
+  echo "FETCHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} > "${OUT}/versions.txt"
 
 echo "==> containerd ${CONTAINERD_VER} (${ARCH})"
 TMP="$(mktemp -d)"
@@ -35,15 +109,13 @@ curl -fsSL \
   -o "${OUT}/usr/local/bin/kubelet"
 chmod +x "${OUT}/usr/local/bin/kubelet"
 
-echo "==> runc"
-RUNC_VER="${RUNC_VER:-v1.2.6}"
+echo "==> runc ${RUNC_VER}"
 curl -fsSL \
   "https://github.com/opencontainers/runc/releases/download/${RUNC_VER}/runc.${ARCH}" \
   -o "${OUT}/usr/local/bin/runc"
 chmod +x "${OUT}/usr/local/bin/runc"
 
-echo "==> CNI plugins (loopback, bridge, host-local, portmap)"
-CNI_VER="${CNI_VER:-v1.6.2}"
+echo "==> CNI plugins ${CNI_VER} (loopback, bridge, host-local, portmap)"
 curl -fsSL \
   "https://github.com/containernetworking/plugins/releases/download/${CNI_VER}/cni-plugins-linux-${ARCH}-${CNI_VER}.tgz" \
   -o "${TMP}/cni.tgz"
@@ -144,6 +216,7 @@ case "${ARCH}" in
 esac
 
 echo "==> runtime tree ready at ${OUT}"
+cat "${OUT}/versions.txt"
 find "${OUT}" -type f | sort
 ls -lh "${OUT}/usr/local/bin/"
 du -sh "${OUT}"

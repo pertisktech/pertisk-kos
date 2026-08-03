@@ -111,11 +111,52 @@ mod linux_impl {
             MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
         )?;
 
+        // Kubernetes / Cilium need shared mount propagation so hostPath binds
+        // (notably /sys/fs/bpf) can be remounted into pods. Without this, Cilium
+        // fails with: path "/sys/fs/bpf" is mounted on "/sys" but it is not a
+        // shared mount.
+        make_rshared("/")?;
+        make_rshared("/sys")?;
+        make_rshared("/run")?;
+        prepare_bpffs()?;
+
         prepare_cgroups()?;
         ensure_os_release()?;
 
         info!("essential filesystems ready");
         Ok(())
+    }
+
+    /// Mount BPF filesystem for Cilium / kube-proxy eBPF.
+    fn prepare_bpffs() -> Result<()> {
+        ensure_dir("/sys/fs/bpf")?;
+        try_mount(
+            "bpffs",
+            "/sys/fs/bpf",
+            "bpf",
+            MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC | MsFlags::MS_NODEV,
+        )?;
+        make_rshared("/sys/fs/bpf")?;
+        Ok(())
+    }
+
+    fn make_rshared(path: &str) -> Result<()> {
+        match mount(
+            None::<&str>,
+            path,
+            None::<&str>,
+            MsFlags::MS_REC | MsFlags::MS_SHARED,
+            None::<&str>,
+        ) {
+            Ok(()) => {
+                info!(path, "mount propagation set to rshared");
+                Ok(())
+            }
+            Err(err) => {
+                tracing::warn!(path, error = %err, "make-rshared failed");
+                Ok(())
+            }
+        }
     }
 
     pub fn ensure_os_release() -> Result<()> {

@@ -25,6 +25,11 @@ use crate::log_ring::LogRing;
 
 const REFRESH_MS: u64 = 2000;
 
+/// How often to force a full Serial repaint even when nothing changed.
+/// Proxmox xterm.js starts blank when you open/switch the console; without a
+/// forced dump the client never sees the last frame (we skip identical paints).
+const FORCE_REPAINT_EVERY: u32 = 1;
+
 /// Hide cursor + disable blink (xterm).
 ///
 /// Do **not** send DECSCUSR (`CSI 2 SP q`) — Proxmox Serial / xterm.js often
@@ -59,15 +64,10 @@ fn run_tui_inner(
     logs: LogRing,
 ) -> Result<(), String> {
     // Safety net: apply built-ins / YAML even if the caller forgot.
-    crate::dashboard::apply_config(cfg.as_ref());
-    let caps = probe::detect();
-    let (width, height) = (caps.cols, caps.rows);
-    let chrome = theme::chrome(caps.utf8);
-    let skin = panels::Skin {
-        theme: theme::active(),
-        chrome,
-        badge: format!("{width}x{height} {}", caps.source),
-    };
+    sync_dashboard_env(cfg.as_ref(), &state, &state_root);
+    let mut caps = probe::detect();
+    let (mut width, mut height) = (caps.cols, caps.rows);
+    let mut skin = build_skin(width, height, caps.source, caps.utf8);
     let mut terminal = Terminal::new(TestBackend::new(width, height))
         .map_err(|e| format!("terminal init: {e}"))?;
 
@@ -80,30 +80,22 @@ fn run_tui_inner(
         border = skin.chrome.name,
         "console TUI started"
     );
-    // Log only — never writeln to the console after we own it.
     info!(
         "console TUI {width}x{height} ({}) theme={} border={}",
         caps.source, skin.theme.name, skin.chrome.name
     );
 
+    // Never `\x1b[2J` — a clear that races boot `eprintln!` / failed paint
+    // leaves Proxmox Serial blank. Full-frame home+\r\n paint overwrites.
     let _ = io::stderr().write_all(UNSYNC.as_bytes());
-    // Visible proof the Serial pipe works — if this shows but panels do not,
-    // the frame encoder is at fault; if neither shows, stdio redirect failed.
-    let _ = writeln!(
-        io::stderr(),
-        "pertiskd dashboard {}x{} ({}) theme={} border={}",
-        width,
-        height,
-        caps.source,
-        skin.theme.name,
-        skin.chrome.name
-    );
-    let _ = io::stderr().write_all(b"\x1b[2J\x1b[H");
     let _ = io::stderr().write_all(CURSOR_OFF.as_bytes());
     let _ = io::stderr().flush();
 
     let mut writer = FrameWriter::default();
-    while !stop.load(Ordering::SeqCst) {
+    let mut last_sig = config_signature(&caps, &skin);
+    let mut ticks: u32 = 0;
+    // Paint immediately so Serial is never left empty after cursor-off.
+    {
         let snap = StatusSnapshot::collect(cfg.as_ref(), &state, &state_root);
         let log_rows = panels::log_inner_height(height).max(2) as usize;
         let recent = logs.tail(panels::log_tail_count(log_rows));
@@ -111,7 +103,9 @@ fn run_tui_inner(
             .draw(|frame| panels::render_themed(frame, &snap, &recent, &skin))
             .map_err(|e| format!("TUI draw: {e}"))?;
         dump_frame(&mut writer, terminal.backend(), skin.chrome.ascii_only)?;
+    }
 
+    while !stop.load(Ordering::SeqCst) {
         let steps = (REFRESH_MS / 100).max(1);
         for _ in 0..steps {
             if stop.load(Ordering::SeqCst) {
@@ -119,11 +113,80 @@ fn run_tui_inner(
             }
             thread::sleep(Duration::from_millis(100));
         }
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+
+        // Pick up `pertiskctl apply` / STATE config written after early start.
+        sync_dashboard_env(cfg.as_ref(), &state, &state_root);
+        caps = probe::detect_refresh(caps);
+        let next_skin = build_skin(caps.cols, caps.rows, caps.source, caps.utf8);
+        let sig = config_signature(&caps, &next_skin);
+        if sig != last_sig {
+            width = caps.cols;
+            height = caps.rows;
+            skin = next_skin;
+            terminal = Terminal::new(TestBackend::new(width, height))
+                .map_err(|e| format!("terminal resize: {e}"))?;
+            writer = FrameWriter::default();
+            last_sig = sig;
+            info!(
+                width,
+                height,
+                theme = skin.theme.name,
+                border = skin.chrome.name,
+                utf8 = caps.utf8,
+                "console TUI reloaded from config"
+            );
+        }
+
+        let snap = StatusSnapshot::collect(cfg.as_ref(), &state, &state_root);
+        let log_rows = panels::log_inner_height(height).max(2) as usize;
+        let recent = logs.tail(panels::log_tail_count(log_rows));
+        terminal
+            .draw(|frame| panels::render_themed(frame, &snap, &recent, &skin))
+            .map_err(|e| format!("TUI draw: {e}"))?;
+        ticks = ticks.wrapping_add(1);
+        // Always re-send periodically so a newly opened Proxmox Serial tab
+        // is not stuck on a blank pane waiting for state to change.
+        if ticks % FORCE_REPAINT_EVERY == 0 {
+            writer.invalidate();
+        }
+        dump_frame(&mut writer, terminal.backend(), skin.chrome.ascii_only)?;
     }
 
     let _ = io::stderr().write_all(b"\x1b[?25h\x1b[?12h");
     let _ = io::stderr().flush();
     Ok(())
+}
+
+fn build_skin(width: u16, height: u16, source: &str, utf8: bool) -> panels::Skin {
+    let chrome = theme::chrome(utf8);
+    panels::Skin {
+        theme: theme::active(),
+        chrome,
+        badge: format!("{width}x{height} {source}"),
+    }
+}
+
+fn config_signature(caps: &probe::ConsoleCaps, skin: &panels::Skin) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        caps.cols, caps.rows, caps.utf8, skin.theme.name, skin.chrome.name
+    )
+}
+
+/// Apply YAML from STATE (preferred) or the boot-time cfg into dashboard env.
+fn sync_dashboard_env(cfg: Option<&MachineConfig>, state: &SharedState, state_root: &PathBuf) {
+    let config_path = if let Ok(st) = state.lock() {
+        st.config_path.clone()
+    } else {
+        state_root.join("config.yaml")
+    };
+    let disk = std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|y| MachineConfig::from_yaml(&y).ok());
+    crate::dashboard::apply_config(disk.as_ref().or(cfg));
 }
 
 fn dump_frame(
@@ -154,6 +217,11 @@ struct FrameWriter {
 }
 
 impl FrameWriter {
+    /// Forget the last frame so the next encode always emits (console reconnect).
+    fn invalidate(&mut self) {
+        self.last.clear();
+    }
+
     fn encode(&mut self, buf: &ratatui::buffer::Buffer, ascii_only: bool) -> Option<String> {
         let area = buf.area();
         let mut out = String::with_capacity((area.width as usize + 8) * area.height as usize);
@@ -420,6 +488,18 @@ mod tests {
         let mut writer = FrameWriter::default();
         assert!(writer.encode(terminal.backend().buffer(), true).is_some());
         assert!(writer.encode(terminal.backend().buffer(), true).is_none());
+    }
+
+    #[test]
+    fn invalidate_forces_repaint_for_console_reconnect() {
+        let terminal = draw_demo(80, 24, theme::ASCII, &demo_logs());
+        let mut writer = FrameWriter::default();
+        assert!(writer.encode(terminal.backend().buffer(), true).is_some());
+        assert!(writer.encode(terminal.backend().buffer(), true).is_none());
+        writer.invalidate();
+        let out = writer.encode(terminal.backend().buffer(), true);
+        assert!(out.is_some(), "reconnect must get a full frame");
+        assert!(out.unwrap().contains("pertisk-node-01"));
     }
 
     #[test]

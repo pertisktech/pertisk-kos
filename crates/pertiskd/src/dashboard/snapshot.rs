@@ -177,9 +177,17 @@ fn read_addresses_ip_br() -> Option<Vec<String>> {
                 continue;
             }
             let state = parts.next().unwrap_or("?");
-            let addrs: Vec<_> = parts.collect();
+            let addrs: Vec<_> = parts
+                .filter(|a| {
+                    // Hide IPv6 link-local so fe80:: does not look like "online".
+                    !(a.starts_with("fe80:") || a.starts_with("fe80::"))
+                })
+                .collect();
+            let has_v4 = addrs.iter().any(|a| a.contains('.'));
             if addrs.is_empty() {
-                rows.push(format!("{iface}  {state}  (no ip)"));
+                rows.push(format!("{iface}  {state}  (no ipv4)"));
+            } else if !has_v4 {
+                rows.push(format!("{iface}  {state}  (no ipv4) {}", addrs.join("  ")));
             } else {
                 rows.push(format!("{iface}  {state}  {}", addrs.join("  ")));
             }
@@ -219,8 +227,16 @@ fn ifaces_to_rows(ifaces: &[IfaceAddrs]) -> Vec<String> {
         .iter()
         .map(|i| {
             let state = operstate(&i.name);
+            let has_v4 = i.addresses.iter().any(|a| a.contains('.'));
             if i.addresses.is_empty() {
-                format!("{}  {}  (no ip)", i.name, state)
+                format!("{}  {}  (no ipv4)", i.name, state)
+            } else if !has_v4 {
+                format!(
+                    "{}  {}  (no ipv4) {}",
+                    i.name,
+                    state,
+                    i.addresses.join("  ")
+                )
             } else {
                 format!("{}  {}  {}", i.name, state, i.addresses.join("  "))
             }
@@ -304,10 +320,12 @@ fn read_addresses_getifaddrs() -> Vec<IfaceAddrs> {
                     Some(format!("{ip}/{prefix}"))
                 }
             } else if family == libc::AF_INET6 {
+                // Skip IPv6 link-local — fe80:: alone looks like "has IP" but
+                // management/API need DHCPv4.
                 let sin6 = &*(entry.ifa_addr as *const libc::sockaddr_in6);
                 let octets = sin6.sin6_addr.s6_addr;
                 let ip = Ipv6Addr::from(octets);
-                if ip.is_unspecified() {
+                if ip.is_unspecified() || ip.is_unicast_link_local() || ip.is_multicast() {
                     None
                 } else {
                     let prefix = if !entry.ifa_netmask.is_null() {

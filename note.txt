@@ -18,11 +18,8 @@
 # 1. Fix Flannel CrashLoopBackOff (CNI) — nodes Ready but pod networking broken
 #    kubectl -n kube-flannel logs ds/kube-flannel-ds --kubeconfig ./out/cluster/admin.conf
 #    check VXLAN, /run/flannel, CNI bin path, image tags in examples/cni/kube-flannel.yaml
-# 2. Auto-apply join prerequisites during bootstrap (stop manual Secret/RBAC steps)
-#    - create bootstrap-token Secret via API once apiserver is up
-#    - apply examples/bootstrap/node-rbac.yaml (or embed equivalents)
-#    - label CP node-role.kubernetes.io/control-plane=
-#    - optional: pertiskctl join helper that writes unique hostnames + applies workers
+# 2. Rebuild image with bootstrap finalize (token Secret + node-rbac + CP label/taint)
+#    then smoke: new cluster should show control-plane role without kubectl label
 # 3. Smoke: deploy a test Deployment + Service; verify pod↔pod across nodes
 # 4. Reboot endurance: reboot CP + workers; confirm nodes rejoin without re-bootstrap
 # 5. Clean lab topology: only 1 CP + 2 workers (wk-3 may be an extra VM — remove or document)
@@ -31,6 +28,8 @@
 
 ## Build + deploy VMs
 PERTISK_FORCE_KERNEL=1 make fetch-kernel ARCH=amd64   # if modules missing
+make fetch-runtime ARCH=amd64   # kubelet/containerd/runc/cni → latest stable
+# pin example: K8S_VER=v1.36.3 CONTAINERD_VER=2.0.5 make fetch-runtime ARCH=amd64
 make cloud ARCH=amd64
 ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
 
@@ -39,23 +38,54 @@ make cloud ARCH=amd64
 # expect: source=Partition , ephemeral_mounted=true
 
 ## Bootstrap CP
-./out/bin/pertiskctl gen config lab-ha https://10.1.1.153:6443 -o ./out/cluster -k v1.36.3
-./out/bin/pertiskctl -e 10.1.1.153:50000 apply -f ./out/cluster/controlplane.yaml
-./out/bin/pertiskctl -e 10.1.1.153:50000 bootstrap
-./out/bin/pertiskctl -e 10.1.1.153:50000 kubeconfig -f ./out/cluster/admin.conf
-./out/bin/pertiskctl -e 10.1.1.153:50000 join-config -f ./out/cluster/worker.yaml
+./out/bin/pertiskctl gen config lab-ha https://10.1.1.79:6443 -o ./out/cluster -k v1.36.3
+./out/bin/pertiskctl -e 10.1.1.79:50000 apply -f ./out/cluster/controlplane.yaml
+./out/bin/pertiskctl -e 10.1.1.79:50000 bootstrap
+./out/bin/pertiskctl -e 10.1.1.79:50000 kubeconfig -f ./out/cluster/admin.conf
+./out/bin/pertiskctl -e 10.1.1.79:50000 join-config -f ./out/cluster/worker.yaml
 
-## Join workers (until #2 is automated)
-# 1) Secret bootstrap-token-<id> from worker.yaml cluster.token
-# 2) kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/bootstrap/node-rbac.yaml
-# 3) kubectl --kubeconfig ./out/cluster/admin.conf label node lab-ha-cp-1 node-role.kubernetes.io/control-plane=
-# 4) unique hostname per worker → pertiskctl apply worker.yaml
-# 5) kubectl apply -f examples/cni/kube-flannel.yaml
+## Join workers (after image with bootstrap finalize)
+# Bootstrap applies token Secret + node-rbac + labels CP (kubeadm-shaped).
+# Then: unique hostname per worker → pertiskctl apply worker.yaml
+# Then: kubectl apply -f examples/cni/kube-flannel.yaml  (or Cilium)
 kubectl --kubeconfig ./out/cluster/admin.conf get nodes -o wide
 
 ## Pitfalls
 # - EphemeralTmpfs STATE → reboot wipes cluster (need disk modules + ext4)
 # - "admin kubeconfig missing; bootstrap first" → not on disk STATE
 # - Worker Unauthorized / system:anonymous → missing token Secret and/or node-rbac
+#   (should be auto after rebuild; else apply note.txt secret + examples/bootstrap/node-rbac.yaml)
 # - Same hostname on two workers → identity clash
-# - containerd=absent with binary in image → glibc loader missing; make fetch-runtime then rebuild cloud
+# - eth0 IPv6-only (fe80::) / no IPv4 → rebuild image. Fixes: ioctl-first lease
+#   install (udhcpc hook, no tokio), rp_filter=2 (strict=1 drops DHCP retries),
+#   BusyBox `ip` applet. Expect `IPv4 added via ioctl` / `udhcpc IPv4 lease`.
+# - "UserNamespacesSupport is disabled: can't set hostUsers" → kernel
+#   user.max_user_namespaces=0 and/or kubelet feature gate; rebuild image
+#   (sysctl 65536 + kubelet/apiserver UserNamespacesSupport=true). Temporary:
+#   kubectl -n kube-flannel patch ds kube-flannel-ds --type=json \
+#     -p='[{"op":"remove","path":"/spec/template/spec/hostUsers"}]'
+#   (only if the DS sets hostUsers)
+# - Cilium "path /sys/fs/bpf ... not a shared mount" → rebuild image (PID 1
+#   now mounts / + /sys + bpffs as rshared). Then restart Cilium pods.
+# - CP without control-plane role → rebuild image (bootstrap finalizes label +
+#   NoSchedule taint). Existing cluster: kubectl label node <cp>
+#   node-role.kubernetes.io/control-plane=
+
+
+kubectl --kubeconfig ./out/cluster/admin.conf -n kube-system apply -f - <<'EOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bootstrap-token-ef1nv9
+  namespace: kube-system
+type: bootstrap.kubernetes.io/token
+stringData:
+  description: pertisk bootstrap token
+  token-id: "ef1nv9"
+  token-secret: "h75l95ik5nv5c514"
+  usage-bootstrap-authentication: "true"
+  usage-bootstrap-signing: "true"
+  auth-extra-groups: system:bootstrappers:kubeadm:default-node-token
+EOF
+
+kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/bootstrap/node-rbac.yaml

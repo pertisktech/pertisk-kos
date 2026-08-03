@@ -64,16 +64,13 @@ pub fn detect() -> ConsoleCaps {
             caps.rows = r;
         }
         caps.source = "env";
-        caps.utf8 = matches!(
-            std::env::var("PERTISK_DASHBOARD_UTF8").as_deref(),
-            Ok("1") | Ok("true") | Ok("yes")
-        );
+        caps.utf8 = utf8_from_env(false);
+        // Never paint wider/taller than the live pane — oversized frames wrap
+        // and look blank on Proxmox Serial.
+        clamp_to_tty(&mut caps);
         let (cols, rows) = clamp_measured(caps.cols, caps.rows);
         caps.cols = cols;
         caps.rows = rows;
-        if let Some(fd) = open_tty().as_ref().map(Tty::fd) {
-            set_winsize(fd, caps.rows, caps.cols);
-        }
         return caps;
     }
 
@@ -122,9 +119,7 @@ pub fn detect() -> ConsoleCaps {
         }
     }
 
-    if let Some(v) = std::env::var("PERTISK_DASHBOARD_UTF8").ok() {
-        caps.utf8 = matches!(v.as_str(), "1" | "true" | "yes");
-    }
+    caps.utf8 = utf8_from_env(caps.utf8);
 
     let (cols, rows) = if caps.source == "default" {
         (
@@ -136,11 +131,57 @@ pub fn detect() -> ConsoleCaps {
     };
     caps.cols = cols;
     caps.rows = rows;
-
-    if let Some(fd) = tty.as_ref().map(Tty::fd) {
-        set_winsize(fd, caps.rows, caps.cols);
-    }
     caps
+}
+
+/// Cheap re-read for the TUI loop: env pins + UTF-8 only (no CSI, no winsize).
+pub fn detect_refresh(previous: ConsoleCaps) -> ConsoleCaps {
+    let env_cols = env_u16("PERTISK_DASHBOARD_COLS").or_else(|| env_u16("COLUMNS"));
+    let env_rows = env_u16("PERTISK_DASHBOARD_ROWS").or_else(|| env_u16("LINES"));
+    if env_cols.is_none() && env_rows.is_none() {
+        let mut caps = previous;
+        caps.utf8 = utf8_from_env(caps.utf8);
+        return caps;
+    }
+    let mut caps = previous;
+    if let Some(c) = env_cols {
+        caps.cols = c;
+    }
+    if let Some(r) = env_rows {
+        caps.rows = r;
+    }
+    caps.source = "env";
+    caps.utf8 = utf8_from_env(caps.utf8);
+    clamp_to_tty(&mut caps);
+    let (cols, rows) = clamp_measured(caps.cols, caps.rows);
+    caps.cols = cols;
+    caps.rows = rows;
+    caps
+}
+
+fn utf8_from_env(fallback: bool) -> bool {
+    match std::env::var("PERTISK_DASHBOARD_UTF8").ok().as_deref() {
+        Some("1" | "true" | "yes") => true,
+        Some("0" | "false" | "no") => false,
+        _ => fallback,
+    }
+}
+
+fn clamp_to_tty(caps: &mut ConsoleCaps) {
+    let Some(fd) = open_tty().as_ref().map(Tty::fd) else {
+        return;
+    };
+    let Some((rows, cols)) = winsize(fd) else {
+        return;
+    };
+    if cols >= MIN_COLS && rows >= MIN_ROWS && cols <= SAFE_MAX_COLS && rows <= SAFE_MAX_ROWS {
+        if caps.cols > cols {
+            caps.cols = cols;
+        }
+        if caps.rows > rows {
+            caps.rows = rows;
+        }
+    }
 }
 
 fn clamp_measured(cols: u16, rows: u16) -> (u16, u16) {
@@ -215,6 +256,7 @@ fn winsize(fd: RawFd) -> Option<(u16, u16)> {
     (ws.ws_col > 0 && ws.ws_row > 0).then_some((ws.ws_row, ws.ws_col))
 }
 
+#[allow(dead_code)]
 fn set_winsize(fd: RawFd, rows: u16, cols: u16) {
     let ws = libc::winsize {
         ws_row: rows,

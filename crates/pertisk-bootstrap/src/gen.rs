@@ -114,7 +114,9 @@ pub fn write_gen_config(out_dir: &Path, gen: &GenConfigOutput) -> Result<()> {
              2) pertiskctl bootstrap -e <cp-ip>:50000\n\
              3) pertiskctl kubeconfig -e <cp-ip>:50000 -f admin.conf\n\
              4) pertiskctl join-config -e <cp-ip>:50000 -f worker.yaml\n\
-             5) Apply worker.yaml to each worker; install CNI (examples/cni/)\n",
+             5) Apply worker.yaml to each worker (unique hostname); install CNI\n\
+             Bootstrap also creates the join token Secret, node-join RBAC, and\n\
+             labels the CP node-role.kubernetes.io/control-plane= (kubeadm-shaped).\n",
             gen.cluster_name, gen.endpoint, gen.token
         ),
     )?;

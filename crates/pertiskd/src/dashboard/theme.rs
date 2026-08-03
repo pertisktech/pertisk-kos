@@ -388,7 +388,7 @@ pub fn chrome(utf8: bool) -> Chrome {
         utf8 || force_utf8
     };
     match requested.trim().to_ascii_lowercase().as_str() {
-        "ascii" | "plain" => ASCII,
+        "ascii" | "plain" | "bordered" => ASCII,
         "light" | "unicode" => {
             if use_unicode {
                 LIGHT

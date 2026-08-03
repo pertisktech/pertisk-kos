@@ -6,8 +6,8 @@
 //! Serial stays readable (no crossterm cursor addressing).
 //!
 //! Size is probed once at startup (see `probe`). Overrides, in order:
-//! 1. Kernel cmdline env (`PERTISK_DASHBOARD_*`)
-//! 2. `machine.dashboard` in config.yaml (optional — omit for built-ins)
+//! 1. `machine.dashboard` in config.yaml (overwrites early built-ins)
+//! 2. Kernel cmdline `PERTISK_DASHBOARD_*` when YAML omits that field
 //! 3. Built-in defaults ([`DEFAULT_THEME`], [`DEFAULT_BORDER`], …)
 
 mod banner;
@@ -34,44 +34,58 @@ pub const DEFAULT_BORDER: &str = pertisk_config::Dashboard::DEFAULT_BORDER;
 pub const DEFAULT_COLS: u16 = pertisk_config::Dashboard::DEFAULT_COLS;
 pub const DEFAULT_ROWS: u16 = pertisk_config::Dashboard::DEFAULT_ROWS;
 
-/// Push dashboard settings into the process env when the matching
-/// `PERTISK_DASHBOARD_*` variable is unset (cmdline wins).
+/// Push dashboard settings into the process env.
 ///
-/// Theme/border always get built-ins. Size and UTF-8 are only set when the
-/// operator asked (YAML/env) — otherwise the console probe runs. Pinning a
-/// fixed geometry that does not match the pane blanks Proxmox Serial.
+/// Early boot (`cfg == None`) only fills theme/border when unset. When YAML
+/// provides `machine.dashboard`, those fields **overwrite** early built-ins so
+/// `pertiskctl apply` + reboot actually changes the console. The TUI also
+/// reloads from STATE each tick (see `tui`).
 pub fn apply_config(cfg: Option<&MachineConfig>) {
-    let dash = cfg.and_then(|c| c.machine.dashboard.as_ref());
-    set_if_unset(
-        "PERTISK_DASHBOARD_THEME",
-        dash.and_then(|d| d.theme.as_deref())
-            .or(Some(DEFAULT_THEME)),
-    );
-    set_if_unset(
-        "PERTISK_DASHBOARD_BORDER",
-        dash.and_then(|d| d.border.as_deref())
-            .or(Some(DEFAULT_BORDER)),
-    );
-    if let Some(cols) = dash.and_then(|d| d.cols) {
-        set_if_unset("PERTISK_DASHBOARD_COLS", Some(&cols.to_string()));
-    }
-    if let Some(rows) = dash.and_then(|d| d.rows) {
-        set_if_unset("PERTISK_DASHBOARD_ROWS", Some(&rows.to_string()));
-    }
-    if let Some(utf8) = dash.and_then(|d| d.utf8) {
-        set_if_unset("PERTISK_DASHBOARD_UTF8", Some(if utf8 { "1" } else { "0" }));
+    match cfg.and_then(|c| c.machine.dashboard.as_ref()) {
+        Some(dash) => {
+            if let Some(theme) = dash.theme.as_deref() {
+                set_var("PERTISK_DASHBOARD_THEME", theme);
+            } else {
+                set_if_unset("PERTISK_DASHBOARD_THEME", DEFAULT_THEME);
+            }
+            if let Some(border) = dash.border.as_deref() {
+                set_var("PERTISK_DASHBOARD_BORDER", border);
+            } else {
+                set_if_unset("PERTISK_DASHBOARD_BORDER", DEFAULT_BORDER);
+            }
+            if let Some(cols) = dash.cols {
+                set_var("PERTISK_DASHBOARD_COLS", &cols.to_string());
+            }
+            if let Some(rows) = dash.rows {
+                set_var("PERTISK_DASHBOARD_ROWS", &rows.to_string());
+            }
+            if let Some(utf8) = dash.utf8 {
+                set_var(
+                    "PERTISK_DASHBOARD_UTF8",
+                    if utf8 { "1" } else { "0" },
+                );
+            }
+        }
+        None => {
+            set_if_unset("PERTISK_DASHBOARD_THEME", DEFAULT_THEME);
+            set_if_unset("PERTISK_DASHBOARD_BORDER", DEFAULT_BORDER);
+        }
     }
 }
 
-fn set_if_unset(key: &str, value: Option<&str>) {
-    let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
-        return;
-    };
+fn set_if_unset(key: &str, value: &str) {
     if std::env::var_os(key).is_none() {
-        // SAFETY: called once from PID 1 before the dashboard thread starts;
-        // no other threads read these keys concurrently yet.
-        unsafe { std::env::set_var(key, value) };
+        set_var(key, value);
     }
+}
+
+fn set_var(key: &str, value: &str) {
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    // SAFETY: PID 1 dashboard env; boot path + TUI tick serialize writers.
+    unsafe { std::env::set_var(key, value) };
 }
 
 #[cfg(test)]
@@ -109,7 +123,6 @@ mod tests {
             std::env::var("PERTISK_DASHBOARD_BORDER").unwrap(),
             DEFAULT_BORDER
         );
-        // Size / UTF-8 stay unpinned so the console probe can run.
         assert!(std::env::var_os("PERTISK_DASHBOARD_COLS").is_none());
         assert!(std::env::var_os("PERTISK_DASHBOARD_ROWS").is_none());
         assert!(std::env::var_os("PERTISK_DASHBOARD_UTF8").is_none());
@@ -117,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn cmdline_env_wins_over_defaults() {
+    fn cmdline_env_wins_over_early_builtins() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_dash_env();
         unsafe {
@@ -131,9 +144,15 @@ mod tests {
     }
 
     #[test]
-    fn yaml_overrides_builtin_defaults() {
+    fn yaml_overwrites_early_builtins() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_dash_env();
+        apply_config(None);
+        assert_eq!(
+            std::env::var("PERTISK_DASHBOARD_THEME").unwrap(),
+            DEFAULT_THEME
+        );
+
         let cfg = MachineConfig {
             version: CONFIG_VERSION.into(),
             machine: Machine {
@@ -149,7 +168,7 @@ mod tests {
                     border: Some("double".into()),
                     cols: Some(120),
                     rows: Some(40),
-                    utf8: Some(false),
+                    utf8: Some(true),
                 }),
             },
             cluster: None,
@@ -162,7 +181,7 @@ mod tests {
         assert_eq!(std::env::var("PERTISK_DASHBOARD_BORDER").unwrap(), "double");
         assert_eq!(std::env::var("PERTISK_DASHBOARD_COLS").unwrap(), "120");
         assert_eq!(std::env::var("PERTISK_DASHBOARD_ROWS").unwrap(), "40");
-        assert_eq!(std::env::var("PERTISK_DASHBOARD_UTF8").unwrap(), "0");
+        assert_eq!(std::env::var("PERTISK_DASHBOARD_UTF8").unwrap(), "1");
         clear_dash_env();
     }
 }

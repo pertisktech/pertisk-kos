@@ -58,6 +58,7 @@ SYSCTL="crates/pertiskd/src/sysctl.rs"
 check "sysctl vm.overcommit_memory" file_has "${SYSCTL}" 'vm/overcommit_memory'
 check "sysctl kernel.panic" file_has "${SYSCTL}" 'kernel/panic'
 check "sysctl ip_forward" file_has "${SYSCTL}" 'net/ipv4/ip_forward'
+check "sysctl max_user_namespaces" file_has "${SYSCTL}" 'user/max_user_namespaces'
 check "sysctl applied before runtime" file_has "crates/pertiskd/src/main.rs" 'apply_hardening_sysctls'
 
 # --- Metrics auth surface ---

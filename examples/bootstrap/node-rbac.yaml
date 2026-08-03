@@ -1,5 +1,6 @@
 # kubeadm-shaped RBAC so bootstrap-token kubelets can TLS-bootstrap.
-# Apply after control-plane API is up (pertiskctl bootstrap + kubeconfig).
+# Applied automatically by `pertiskctl bootstrap` once the API is up.
+# Keep this file for manual repair / documentation.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

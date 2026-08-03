@@ -247,16 +247,15 @@ Done:
 
 Still manual / incomplete:
 
-- Bootstrap token Secret + node-join RBAC must be applied with kubectl (not yet done inside `bootstrap`)
-- Cluster CNI (Flannel example CrashLoopBackOff in lab — pod networking not green)
-- CP `node-role.kubernetes.io/control-plane=` label is operator-applied
+- Cluster CNI (Flannel example / Cilium — need working pod networking)
+- Post-bootstrap token Secret + node-join RBAC + CP role label are applied
+  automatically once apiserver is up (best-effort background finalize)
 
 **Next (Phase A finish → v0.1)**
 
 1. Fix Flannel (or ship a known-good CNI path) so multi-node pod networking works
-2. Auto-apply bootstrap-token Secret + `examples/bootstrap/node-rbac.yaml` (+ CP role label) during bootstrap
-3. Cross-node smoke (Deployment/Service) + reboot endurance without re-bootstrap
-4. Document Talos-shaped Proxmox flow in [docs/PROXMOX.md](./docs/PROXMOX.md) (fold lab pitfalls from `note.txt`)
+2. Cross-node smoke (Deployment/Service) + reboot endurance without re-bootstrap
+3. Document Talos-shaped Proxmox flow in [docs/PROXMOX.md](./docs/PROXMOX.md) (fold lab pitfalls from `note.txt`)
 
 **Later (Talos / Omni parity)**
 
