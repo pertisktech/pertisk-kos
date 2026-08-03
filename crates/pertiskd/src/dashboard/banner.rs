@@ -44,17 +44,24 @@ pub fn run_banner_loop(
         ));
 
         out.push_str("==== network ====\r\n");
-        if snap.net_rows.is_empty() {
-            out.push_str("(no addresses)\r\n");
+        if snap.node_iface.is_empty() && snap.node_ip == "-" {
+            out.push_str("(no node ip)\r\n");
+        } else if snap.node_iface.is_empty() {
+            out.push_str(&format!("node {}\r\n", snap.node_ip));
         } else {
-            for row in &snap.net_rows {
-                out.push_str(row);
-                out.push_str("\r\n");
+            out.push_str(&format!("node {} {}\r\n", snap.node_iface, snap.node_ip));
+        }
+        for row in &snap.net_rows {
+            let name = row.split_whitespace().next().unwrap_or("");
+            if name == snap.node_iface {
+                continue;
             }
+            out.push_str(row);
+            out.push_str("\r\n");
         }
         out.push_str(&format!(
-            "cluster {}  cni {}  pod {}\r\n",
-            snap.cluster_endpoint, snap.cni, snap.pod_cidr
+            "cluster {}\r\nk8s {}  cni {}  pod {}\r\n",
+            snap.cluster_endpoint, snap.kubernetes_version, snap.cni, snap.pod_cidr
         ));
 
         out.push_str("==== mem ====\r\n");

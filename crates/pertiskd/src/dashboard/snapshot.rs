@@ -18,12 +18,18 @@ pub struct StatusSnapshot {
     pub mem_available_kb: u64,
     pub disks: Vec<DiskUsage>,
     pub interfaces: Vec<IfaceAddrs>,
-    /// Display rows like ptkube: `eth0  up  10.1.1.192/24`.
+    /// Host NIC rows only (CNI/veth filtered). Format: `eth0  up  10.1.1.192/24`.
     pub net_rows: Vec<String>,
+    /// Primary host iface name (e.g. `eth0`), or empty.
+    pub node_iface: String,
+    /// First IPv4 CIDR on the primary host iface, or `-`.
+    pub node_ip: String,
     pub machine_type: String,
     pub cluster_endpoint: String,
     pub cni: String,
     pub pod_cidr: String,
+    /// From `cluster.kubernetesVersion`, or `-`.
+    pub kubernetes_version: String,
     pub containerd: String,
     pub containerd_pid: u32,
     pub kubelet: String,
@@ -69,6 +75,7 @@ impl StatusSnapshot {
             .and_then(|y| MachineConfig::from_yaml(&y).ok());
         let effective = disk_cfg.as_ref().or(cfg);
 
+        let mut configured_ifaces: Vec<String> = Vec::new();
         if let Some(cfg) = effective {
             snap.hostname = cfg
                 .machine
@@ -77,25 +84,42 @@ impl StatusSnapshot {
                 .clone()
                 .unwrap_or_else(|| "pertisk".into());
             snap.machine_type = format!("{:?}", cfg.machine.machine_type).to_lowercase();
+            configured_ifaces = cfg
+                .machine
+                .network
+                .interfaces
+                .iter()
+                .map(|i| i.interface.clone())
+                .collect();
             if let Some(ref cluster) = cfg.cluster {
                 snap.cluster_endpoint = cluster.endpoint.clone();
                 snap.cni = cluster.cni.as_str().to_string();
                 snap.pod_cidr = cluster.pod_cidr.clone().unwrap_or_else(|| "-".into());
+                snap.kubernetes_version = cluster
+                    .kubernetes_version
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "-".into());
             } else {
                 snap.cluster_endpoint = "(none)".into();
                 snap.cni = "-".into();
                 snap.pod_cidr = "-".into();
+                snap.kubernetes_version = "-".into();
             }
         } else {
             snap.hostname = read_hostname().unwrap_or_else(|| "pertisk".into());
             snap.machine_type = "-".into();
             snap.cluster_endpoint = "(no config)".into();
+            snap.kubernetes_version = "-".into();
         }
 
-        // Always discover live NICs (config names alone miss ens18 vs eth0).
+        // Always discover live NICs; drop CNI/veth so the panel keeps the host IP.
         let (ifaces, rows) = collect_network();
-        snap.interfaces = ifaces;
-        snap.net_rows = rows;
+        let prioritized = prioritize_host_network(&ifaces, &rows, &configured_ifaces);
+        snap.interfaces = prioritized.interfaces;
+        snap.net_rows = prioritized.net_rows;
+        snap.node_iface = prioritized.node_iface;
+        snap.node_ip = prioritized.node_ip;
 
         let (model, cores) = parse_cpuinfo(&read_to_string("/proc/cpuinfo").unwrap_or_default());
         snap.cpu_model = model;
@@ -380,6 +404,126 @@ fn read_hostname() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// CNI / container virtual interfaces that crowd out the host NIC on the dashboard.
+pub fn is_cni_iface(name: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "cilium",
+        "lxc",
+        "veth",
+        "cali",
+        "flannel",
+        "cni",
+        "weave",
+        "docker",
+        "br-",
+        "tunl",
+        "vxlan",
+        "nodelocaldns",
+        "kube-",
+    ];
+    PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+/// Physical / virtio NICs commonly used as the node management interface.
+pub fn looks_like_host_iface(name: &str) -> bool {
+    name.starts_with("eth")
+        || name.starts_with("ens")
+        || name.starts_with("enp")
+        || name.starts_with("eno")
+}
+
+fn row_iface_name(row: &str) -> &str {
+    row.split_whitespace().next().unwrap_or("")
+}
+
+fn first_ipv4(addresses: &[String]) -> Option<&str> {
+    addresses.iter().find(|a| a.contains('.')).map(|s| s.as_str())
+}
+
+fn row_has_ipv4(row: &str) -> bool {
+    row.split_whitespace().any(|p| p.contains('.') && p.contains('/'))
+}
+
+#[derive(Debug, Default)]
+struct PrioritizedNet {
+    interfaces: Vec<IfaceAddrs>,
+    net_rows: Vec<String>,
+    node_iface: String,
+    node_ip: String,
+}
+
+/// Keep host NICs only; pick primary by config names, then eth/ens/…, then first with IPv4.
+fn prioritize_host_network(
+    ifaces: &[IfaceAddrs],
+    rows: &[String],
+    configured: &[String],
+) -> PrioritizedNet {
+    let host_ifaces: Vec<IfaceAddrs> = ifaces
+        .iter()
+        .filter(|i| !is_cni_iface(&i.name))
+        .cloned()
+        .collect();
+    let mut host_rows: Vec<String> = rows
+        .iter()
+        .filter(|r| !is_cni_iface(row_iface_name(r)))
+        .cloned()
+        .collect();
+
+    // Prefer configured → looks_like_host → has IPv4 → name order.
+    host_rows.sort_by(|a, b| {
+        let an = row_iface_name(a);
+        let bn = row_iface_name(b);
+        host_iface_rank(an, configured, row_has_ipv4(a))
+            .cmp(&host_iface_rank(bn, configured, row_has_ipv4(b)))
+            .then_with(|| an.cmp(bn))
+    });
+
+    let (node_iface, node_ip) = pick_primary_node_ip(&host_ifaces, configured);
+
+    PrioritizedNet {
+        interfaces: host_ifaces,
+        net_rows: host_rows,
+        node_iface,
+        node_ip,
+    }
+}
+
+fn host_iface_rank(name: &str, configured: &[String], has_v4: bool) -> u8 {
+    if configured.iter().any(|c| c == name) {
+        0
+    } else if looks_like_host_iface(name) && has_v4 {
+        1
+    } else if looks_like_host_iface(name) {
+        2
+    } else if has_v4 {
+        3
+    } else {
+        4
+    }
+}
+
+fn pick_primary_node_ip(host_ifaces: &[IfaceAddrs], configured: &[String]) -> (String, String) {
+    let mut ordered: Vec<&IfaceAddrs> = host_ifaces.iter().collect();
+    ordered.sort_by(|a, b| {
+        host_iface_rank(&a.name, configured, first_ipv4(&a.addresses).is_some())
+            .cmp(&host_iface_rank(
+                &b.name,
+                configured,
+                first_ipv4(&b.addresses).is_some(),
+            ))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    for iface in ordered {
+        if let Some(ip) = first_ipv4(&iface.addresses) {
+            return (iface.name.clone(), ip.to_string());
+        }
+    }
+    if let Some(iface) = host_ifaces.first() {
+        return (iface.name.clone(), "-".into());
+    }
+    (String::new(), "-".into())
+}
+
 /// Parse `/proc/cpuinfo` — exposed for unit tests.
 pub fn parse_cpuinfo(text: &str) -> (String, u32) {
     let mut model = String::from("unknown");
@@ -511,5 +655,75 @@ Cached:          2048000 kB
         let (total, avail) = parse_meminfo(sample);
         assert_eq!(total, 16384000);
         assert_eq!(avail, 8192000);
+    }
+
+    #[test]
+    fn cni_iface_detection() {
+        assert!(is_cni_iface("cilium_host"));
+        assert!(is_cni_iface("cilium_vxlan"));
+        assert!(is_cni_iface("lxc123abc"));
+        assert!(is_cni_iface("veth0a1b"));
+        assert!(is_cni_iface("cali123"));
+        assert!(is_cni_iface("flannel.1"));
+        assert!(is_cni_iface("br-abc"));
+        assert!(!is_cni_iface("eth0"));
+        assert!(!is_cni_iface("ens18"));
+        assert!(!is_cni_iface("enp0s3"));
+    }
+
+    #[test]
+    fn prioritize_hides_cilium_keeps_host_ip() {
+        let ifaces = vec![
+            IfaceAddrs {
+                name: "cilium_host".into(),
+                addresses: vec!["10.0.0.1/32".into()],
+            },
+            IfaceAddrs {
+                name: "lxcabc".into(),
+                addresses: vec!["10.244.0.5/24".into()],
+            },
+            IfaceAddrs {
+                name: "eth0".into(),
+                addresses: vec!["10.1.1.198/24".into()],
+            },
+            IfaceAddrs {
+                name: "vethxyz".into(),
+                addresses: vec!["169.254.1.1/32".into()],
+            },
+        ];
+        let rows = vec![
+            "cilium_host  UP  10.0.0.1/32".into(),
+            "lxcabc  UP  10.244.0.5/24".into(),
+            "eth0  UP  10.1.1.198/24".into(),
+            "vethxyz  UP  169.254.1.1/32".into(),
+        ];
+        let p = prioritize_host_network(&ifaces, &rows, &[]);
+        assert_eq!(p.node_iface, "eth0");
+        assert_eq!(p.node_ip, "10.1.1.198/24");
+        assert_eq!(p.net_rows.len(), 1);
+        assert!(p.net_rows[0].starts_with("eth0"));
+        assert!(p.interfaces.iter().all(|i| !is_cni_iface(&i.name)));
+    }
+
+    #[test]
+    fn prioritize_prefers_configured_iface() {
+        let ifaces = vec![
+            IfaceAddrs {
+                name: "eth0".into(),
+                addresses: vec!["10.0.0.1/24".into()],
+            },
+            IfaceAddrs {
+                name: "ens18".into(),
+                addresses: vec!["10.1.1.50/24".into()],
+            },
+        ];
+        let rows = vec![
+            "eth0  UP  10.0.0.1/24".into(),
+            "ens18  UP  10.1.1.50/24".into(),
+        ];
+        let p = prioritize_host_network(&ifaces, &rows, &["ens18".into()]);
+        assert_eq!(p.node_iface, "ens18");
+        assert_eq!(p.node_ip, "10.1.1.50/24");
+        assert_eq!(row_iface_name(&p.net_rows[0]), "ens18");
     }
 }

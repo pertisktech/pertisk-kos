@@ -274,35 +274,63 @@ fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Ski
     let max_h = area.height.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
 
-    if snap.net_rows.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "(no addresses)",
-            theme.warn_style(),
-        )));
+    // Always reserve the last 1–2 rows for cluster + k8s/cni so Cilium noise
+    // (already filtered) cannot push the summary off-screen.
+    let summary_rows = if max_h >= 3 { 2 } else { 1 };
+    let iface_budget = max_h.saturating_sub(summary_rows);
+
+    // Primary node IP line first.
+    let node_line = if snap.node_iface.is_empty() && snap.node_ip == "-" {
+        Line::from(Span::styled("(no node ip)", theme.warn_style()))
     } else {
-        // Leave room for the cluster summary when there is more than one slot.
-        let iface_slots = max_h.saturating_sub(1).max(1);
-        for row in snap.net_rows.iter().take(iface_slots) {
-            lines.push(net_row_line(row, theme));
-        }
-        if snap.net_rows.len() > iface_slots {
-            lines.pop();
-            lines.push(Line::from(Span::styled(
-                format!("… +{} more", snap.net_rows.len() - iface_slots + 1),
-                theme.label_style(),
-            )));
-        }
+        Line::from(vec![
+            label("node ", theme),
+            value(
+                if snap.node_iface.is_empty() {
+                    snap.node_ip.clone()
+                } else {
+                    format!("{} {}", snap.node_iface, snap.node_ip)
+                },
+                theme,
+            ),
+        ])
+    };
+    if iface_budget > 0 {
+        lines.push(node_line);
     }
 
+    // Extra host iface rows (skip the primary if already shown as node line).
+    let extra: Vec<&String> = snap
+        .net_rows
+        .iter()
+        .filter(|r| {
+            let name = r.split_whitespace().next().unwrap_or("");
+            name != snap.node_iface
+        })
+        .collect();
+    let extra_slots = iface_budget.saturating_sub(lines.len());
+    for row in extra.iter().take(extra_slots) {
+        lines.push(net_row_line(row, theme));
+    }
+    if extra.len() > extra_slots && extra_slots > 0 {
+        lines.pop();
+        lines.push(Line::from(Span::styled(
+            format!("… +{} more", extra.len() - extra_slots + 1),
+            theme.label_style(),
+        )));
+    }
+
+    // Cluster summary — always when there is room (budget reserved above).
     if lines.len() < max_h {
-        // Prefer two short lines over one that truncates with '~'.
-        if lines.len() + 2 <= max_h {
+        if summary_rows >= 2 && lines.len() + 2 <= max_h {
             lines.push(Line::from(vec![
                 label("cluster ", theme),
                 value(snap.cluster_endpoint.clone(), theme),
             ]));
             lines.push(Line::from(vec![
-                label("cni ", theme),
+                label("k8s ", theme),
+                value(snap.kubernetes_version.clone(), theme),
+                label("  cni ", theme),
                 value(snap.cni.clone(), theme),
                 label("  pod ", theme),
                 value(snap.pod_cidr.clone(), theme),
@@ -311,10 +339,10 @@ fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Ski
             lines.push(Line::from(vec![
                 label("cluster ", theme),
                 value(snap.cluster_endpoint.clone(), theme),
+                label("  k8s ", theme),
+                value(snap.kubernetes_version.clone(), theme),
                 label("  cni ", theme),
                 value(snap.cni.clone(), theme),
-                label("  pod ", theme),
-                value(snap.pod_cidr.clone(), theme),
             ]));
         }
     }

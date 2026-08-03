@@ -68,6 +68,10 @@ export PROXMOX_INSECURE=1
   --bridge vmbr0
 ```
 
+Defaults: **4096 MB** / **2 vCPUs**. Role overrides: `--cp-memory` / `--cp-cores` / `--worker-memory` / `--worker-cores` and `--cp-disk-gb` / `--worker-disk-gb`.
+
+**Disk sizing:** `--*-disk-gb` sets the **cloud image build** to `max(cp, worker)` (`PERTISK_DISK_GB`) so the GPT **EPHEMERAL** partition fills that size, then also `qm resize`s each VM. A default 8G image + resize alone does **not** grow guest partitions — rebuild without `--skip-build`. With `--skip-vms`, sizing still runs via `qm` when disk-gb flags are set (`PROXMOX_SSH` required). Dashboard **STATE** stays ~1 GiB by layout; usable space for containers is **EPHEMERAL** (`/var`).
+
 The script:
 
 1. Uploads the qcow2 to the datastore as an importable disk
@@ -213,6 +217,15 @@ make cloud ARCH=amd64   # embed boot + runtime as usual
 
 # HA (3 CP + 2 workers): VMIDs 210–212 CP, 213–214 workers
 ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --controlplanes 3 --workers 2 --no-lab-up
+
+# Sizing (passed through to upload):
+./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2 --memory 8192 --cores 4
+# Or different CP vs worker:
+./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2 \
+  --cp-memory 8192 --cp-cores 4 --worker-memory 4096 --worker-cores 2
+# Disk GiB per role (grows scsi0 after import; PROXMOX_SSH recommended):
+./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2 \
+  --cp-disk-gb 50 --worker-disk-gb 75 --no-lab-up
 ```
 
 ### 4a-auto. One-shot lab (build → VMs → IPs → cluster → CNI)
@@ -225,6 +238,11 @@ make lab-up ARCH=amd64
 ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cp-vmid 210 --workers 2 --cni cilium
 # HA (pick a free L2 IP for kube-vip):
 ./scripts/proxmox-lab-up.sh --controlplanes 3 --vip 10.1.1.200 --workers 2 --cni cilium
+# CP vs worker sizing (disk grows after import via qm resize):
+./scripts/proxmox-lab-up.sh \
+  --cp-memory 4096 --cp-cores 2 \
+  --worker-memory 8192 --worker-cores 4 \
+  --cp-disk-gb 50 --worker-disk-gb 75 --cni cilium
 # or: --cni calico | --cni flannel
 # install an example app after CNI:
 APPS=examples/apps/nginx.yaml ./scripts/proxmox-lab-up.sh --skip-build --cni cilium

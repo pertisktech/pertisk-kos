@@ -34,6 +34,16 @@ if [[ -z "${PROXMOX_URL:-}" ]]; then
   load_proxmox_sh "${ROOT}/proxmox.sh"
 fi
 
+# Defaults: shared --memory/--cores/--disk-gb apply to both roles; role-specific flags override.
+MEMORY="${PROXMOX_MEMORY:-4096}"
+CORES="${PROXMOX_CORES:-2}"
+CP_MEMORY="${PROXMOX_CP_MEMORY:-}"
+CP_CORES="${PROXMOX_CP_CORES:-}"
+WORKER_MEMORY="${PROXMOX_WORKER_MEMORY:-}"
+WORKER_CORES="${PROXMOX_WORKER_CORES:-}"
+DISK_GB="${PROXMOX_DISK_GB:-}"
+CP_DISK_GB="${PROXMOX_CP_DISK_GB:-}"
+WORKER_DISK_GB="${PROXMOX_WORKER_DISK_GB:-}"
 CP_VMID="${CP_VMID:-210}"
 CONTROLPLANES="${CONTROLPLANES:-1}"
 WORKERS="${WORKERS:-2}"
@@ -50,6 +60,15 @@ while [[ $# -gt 0 ]]; do
     --workers) WORKERS="$2"; shift 2 ;;
     --prefix) NAME_PREFIX="$2"; shift 2 ;;
     --disk) DISK="$2"; shift 2 ;;
+    --memory) MEMORY="$2"; shift 2 ;;
+    --cores) CORES="$2"; shift 2 ;;
+    --cp-memory) CP_MEMORY="$2"; shift 2 ;;
+    --cp-cores) CP_CORES="$2"; shift 2 ;;
+    --worker-memory) WORKER_MEMORY="$2"; shift 2 ;;
+    --worker-cores) WORKER_CORES="$2"; shift 2 ;;
+    --disk-gb) DISK_GB="$2"; shift 2 ;;
+    --cp-disk-gb) CP_DISK_GB="$2"; shift 2 ;;
+    --worker-disk-gb) WORKER_DISK_GB="$2"; shift 2 ;;
     --lab-up) DO_LAB_UP=1; shift ;;
     --no-lab-up) DO_LAB_UP=0; shift ;;
     --cni)
@@ -66,11 +85,28 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       sed -n '2,16p' "$0"
+      cat <<EOF
+
+Sizing (shared qcow2 import; --*-disk-gb grows scsi0 after import):
+  --memory MB / --cores N              defaults for both roles
+  --cp-memory / --cp-cores             control-plane
+  --worker-memory / --worker-cores     workers
+  --disk-gb N                          default disk GiB for both (env PROXMOX_DISK_GB)
+  --cp-disk-gb N                       control-plane disk GiB (env PROXMOX_CP_DISK_GB)
+  --worker-disk-gb N                   worker disk GiB (env PROXMOX_WORKER_DISK_GB)
+EOF
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
+
+CP_MEMORY="${CP_MEMORY:-$MEMORY}"
+CP_CORES="${CP_CORES:-$CORES}"
+WORKER_MEMORY="${WORKER_MEMORY:-$MEMORY}"
+WORKER_CORES="${WORKER_CORES:-$CORES}"
+CP_DISK_GB="${CP_DISK_GB:-$DISK_GB}"
+WORKER_DISK_GB="${WORKER_DISK_GB:-$DISK_GB}"
 
 if [[ -z "${PROXMOX_URL:-}" ]]; then
   echo "PROXMOX_URL unset. Copy proxmox.sh.example → proxmox.sh and fill token, or export PROXMOX_*." >&2
@@ -92,14 +128,18 @@ fi
 
 for i in $(seq 1 "$CONTROLPLANES"); do
   cvid=$((CP_VMID + i - 1))
-  echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${DISK}"
-  "$UPLOAD" --vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$DISK"
+  echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${DISK} mem=${CP_MEMORY} cores=${CP_CORES} disk-gb=${CP_DISK_GB:-image}"
+  UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$DISK" --memory "$CP_MEMORY" --cores "$CP_CORES")
+  [[ -n "$CP_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$CP_DISK_GB")
+  "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
 
 for i in $(seq 1 "$WORKERS"); do
   wvid=$((CP_VMID + CONTROLPLANES + i - 1))
-  echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i}"
-  "$UPLOAD" --vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$DISK"
+  echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i} mem=${WORKER_MEMORY} cores=${WORKER_CORES} disk-gb=${WORKER_DISK_GB:-image}"
+  UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$DISK" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
+  [[ -n "$WORKER_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$WORKER_DISK_GB")
+  "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
 
 echo "==> VMs created (CP=${CP_VMID}..$((CP_VMID + CONTROLPLANES - 1)), workers=${WORKERS})"
@@ -116,10 +156,18 @@ fi
 
 echo "==> continuing → lab-up (IPs → cluster → CNI)"
 chmod +x "$LAB_UP_SH" 2>/dev/null || true
-exec "$LAB_UP_SH" --skip-build --skip-vms \
-  --cp-vmid "$CP_VMID" \
-  --controlplanes "$CONTROLPLANES" \
-  --workers "$WORKERS" \
-  --prefix "$NAME_PREFIX" \
-  --disk "$DISK" \
-  "${LAB_UP_EXTRA[@]}"
+LAB_ARGS=(
+  --skip-build --skip-vms
+  --cp-vmid "$CP_VMID"
+  --controlplanes "$CONTROLPLANES"
+  --workers "$WORKERS"
+  --prefix "$NAME_PREFIX"
+  --disk "$DISK"
+  --cp-memory "$CP_MEMORY"
+  --cp-cores "$CP_CORES"
+  --worker-memory "$WORKER_MEMORY"
+  --worker-cores "$WORKER_CORES"
+)
+[[ -n "$CP_DISK_GB" ]] && LAB_ARGS+=(--cp-disk-gb "$CP_DISK_GB")
+[[ -n "$WORKER_DISK_GB" ]] && LAB_ARGS+=(--worker-disk-gb "$WORKER_DISK_GB")
+exec "$LAB_UP_SH" "${LAB_ARGS[@]}" "${LAB_UP_EXTRA[@]}"

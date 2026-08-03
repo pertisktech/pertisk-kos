@@ -23,6 +23,15 @@ CTL="${ROOT}/out/bin/pertiskctl"
 CLUSTER_OUT="${ROOT}/out/cluster"
 DISK="${PROXMOX_DISK:-${ROOT}/out/pertisk-cloud-amd64.qcow2}"
 
+MEMORY="${PROXMOX_MEMORY:-4096}"
+CORES="${PROXMOX_CORES:-2}"
+CP_MEMORY="${PROXMOX_CP_MEMORY:-}"
+CP_CORES="${PROXMOX_CP_CORES:-}"
+WORKER_MEMORY="${PROXMOX_WORKER_MEMORY:-}"
+WORKER_CORES="${PROXMOX_WORKER_CORES:-}"
+DISK_GB="${PERTISK_DISK_GB:-}"
+CP_DISK_GB="${PROXMOX_CP_DISK_GB:-}"
+WORKER_DISK_GB="${PROXMOX_WORKER_DISK_GB:-}"
 CP_VMID="${CP_VMID:-210}"
 CONTROLPLANES="${CONTROLPLANES:-1}"
 VIP="${VIP:-}"
@@ -57,6 +66,15 @@ Flags:
   --cni NAME          cilium|calico|flannel|none (default ${CNI})
   --k8s VER           kubernetesVersion for gen config (default ${K8S_VER})
   --disk PATH         cloud qcow2 (default ${DISK})
+  --memory MB         default RAM for CP and workers (default ${MEMORY}; env PROXMOX_MEMORY)
+  --cores N           default vCPUs for CP and workers (default ${CORES}; env PROXMOX_CORES)
+  --cp-memory MB      control-plane RAM (env PROXMOX_CP_MEMORY)
+  --cp-cores N        control-plane vCPUs (env PROXMOX_CP_CORES)
+  --worker-memory MB  worker RAM (env PROXMOX_WORKER_MEMORY)
+  --worker-cores N    worker vCPUs (env PROXMOX_WORKER_CORES)
+  --disk-gb N         default disk GiB for both roles + build floor (env PERTISK_DISK_GB)
+  --cp-disk-gb N      control-plane disk GiB after import (env PROXMOX_CP_DISK_GB)
+  --worker-disk-gb N  worker disk GiB after import (env PROXMOX_WORKER_DISK_GB)
   --skip-build        do not run make cloud
   --skip-vms          do not create/recreate VMs (resolve IPs on existing VMIDs)
   --skip-addons       skip optional reflector (CoreDNS + metrics-server always installed)
@@ -66,6 +84,9 @@ Flags:
 Env: PROXMOX_*, PROXMOX_SSH, APPS (space/comma-separated kubectl apply paths)
      CALICO_VERSION (default ${CALICO_VERSION})
      CONTROLPLANES, VIP
+     PROXMOX_MEMORY / PROXMOX_CORES (defaults for both roles)
+     PROXMOX_CP_MEMORY / PROXMOX_CP_CORES / PROXMOX_WORKER_MEMORY / PROXMOX_WORKER_CORES
+     PROXMOX_CP_DISK_GB / PROXMOX_WORKER_DISK_GB / PERTISK_DISK_GB
 EOF
   exit 0
 }
@@ -81,6 +102,15 @@ while [[ $# -gt 0 ]]; do
     --cni) CNI="$2"; shift 2 ;;
     --k8s) K8S_VER="$2"; shift 2 ;;
     --disk) DISK="$2"; shift 2 ;;
+    --memory) MEMORY="$2"; shift 2 ;;
+    --cores) CORES="$2"; shift 2 ;;
+    --cp-memory) CP_MEMORY="$2"; shift 2 ;;
+    --cp-cores) CP_CORES="$2"; shift 2 ;;
+    --worker-memory) WORKER_MEMORY="$2"; shift 2 ;;
+    --worker-cores) WORKER_CORES="$2"; shift 2 ;;
+    --disk-gb) DISK_GB="$2"; shift 2 ;;
+    --cp-disk-gb) CP_DISK_GB="$2"; shift 2 ;;
+    --worker-disk-gb) WORKER_DISK_GB="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --skip-vms) SKIP_VMS=1; shift ;;
     --skip-addons) SKIP_ADDONS=1; shift ;;
@@ -88,6 +118,24 @@ while [[ $# -gt 0 ]]; do
     -h|--help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
+done
+
+CP_MEMORY="${CP_MEMORY:-$MEMORY}"
+CP_CORES="${CP_CORES:-$CORES}"
+WORKER_MEMORY="${WORKER_MEMORY:-$MEMORY}"
+WORKER_CORES="${WORKER_CORES:-$CORES}"
+CP_DISK_GB="${CP_DISK_GB:-$DISK_GB}"
+WORKER_DISK_GB="${WORKER_DISK_GB:-$DISK_GB}"
+
+# Cloud image partitions EPHEMERAL to fill the disk. Build at the largest role
+# size so guest capacity matches --*-disk-gb (qm resize alone does not grow GPT).
+BUILD_DISK_GB="$DISK_GB"
+for n in "$CP_DISK_GB" "$WORKER_DISK_GB"; do
+  if [[ -n "$n" ]] && [[ "$n" =~ ^[0-9]+$ ]]; then
+    if [[ -z "$BUILD_DISK_GB" ]] || [[ "$n" -gt "$BUILD_DISK_GB" ]]; then
+      BUILD_DISK_GB="$n"
+    fi
+  fi
 done
 
 if [[ "$CONTROLPLANES" -lt 1 ]]; then
@@ -335,7 +383,12 @@ step_build() {
     [[ -f "$DISK" ]] || die "disk missing: $DISK"
     return 0
   fi
-  log "building cloud image (make cloud ARCH=${ARCH})"
+  if [[ -n "$BUILD_DISK_GB" ]]; then
+    export PERTISK_DISK_GB="$BUILD_DISK_GB"
+    log "building cloud image (make cloud ARCH=${ARCH} PERTISK_DISK_GB=${BUILD_DISK_GB})"
+  else
+    log "building cloud image (make cloud ARCH=${ARCH})"
+  fi
   make -C "$ROOT" cloud ARCH="$ARCH"
   [[ -f "$DISK" ]] || die "disk not produced: $DISK"
 }
@@ -343,15 +396,70 @@ step_build() {
 step_vms() {
   if [[ "$SKIP_VMS" == "1" ]]; then
     log "skip VM create (using existing VMIDs from ${CP_VMID})"
+    if [[ -n "${CP_DISK_GB}${WORKER_DISK_GB}" ]]; then
+      step_apply_vm_sizing
+    fi
     return 0
   fi
-  log "creating cluster VMs (controlplanes=${CONTROLPLANES} workers=${WORKERS})"
-  PROXMOX_DISK="$DISK" "$CREATE_VMS" --no-lab-up \
-    --cp-vmid "$CP_VMID" \
-    --controlplanes "$CONTROLPLANES" \
-    --workers "$WORKERS" \
-    --prefix "$NAME_PREFIX" \
+  if [[ -n "$BUILD_DISK_GB" ]]; then
+    log "note: cloud image built at ${BUILD_DISK_GB}G (max of role --*-disk-gb); EPHEMERAL fills the rest"
+  fi
+  log "creating cluster VMs (cp=${CP_MEMORY}MB/${CP_CORES}c/${CP_DISK_GB:-img}G wk=${WORKER_MEMORY}MB/${WORKER_CORES}c/${WORKER_DISK_GB:-img}G)"
+  CREATE_ARGS=(
+    --no-lab-up
+    --cp-vmid "$CP_VMID"
+    --controlplanes "$CONTROLPLANES"
+    --workers "$WORKERS"
+    --prefix "$NAME_PREFIX"
     --disk "$DISK"
+    --cp-memory "$CP_MEMORY"
+    --cp-cores "$CP_CORES"
+    --worker-memory "$WORKER_MEMORY"
+    --worker-cores "$WORKER_CORES"
+  )
+  [[ -n "$CP_DISK_GB" ]] && CREATE_ARGS+=(--cp-disk-gb "$CP_DISK_GB")
+  [[ -n "$WORKER_DISK_GB" ]] && CREATE_ARGS+=(--worker-disk-gb "$WORKER_DISK_GB")
+  PROXMOX_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
+}
+
+# Apply memory/cores/disk-gb to existing VMs (qm set + qm resize).
+step_apply_vm_sizing() {
+  : "${PROXMOX_NODE:?PROXMOX_NODE required for VM sizing}"
+  log "applying VM sizing (cp=${CP_MEMORY}MB/${CP_CORES}c/${CP_DISK_GB:--}G wk=${WORKER_MEMORY}MB/${WORKER_CORES}c/${WORKER_DISK_GB:--}G)"
+  local i vid
+  for i in $(seq 1 "$CONTROLPLANES"); do
+    vid=$((CP_VMID + i - 1))
+    apply_one_vm_sizing "$vid" "$CP_MEMORY" "$CP_CORES" "$CP_DISK_GB"
+  done
+  for i in $(seq 1 "$WORKERS"); do
+    vid=$((CP_VMID + CONTROLPLANES + i - 1))
+    apply_one_vm_sizing "$vid" "$WORKER_MEMORY" "$WORKER_CORES" "$WORKER_DISK_GB"
+  done
+}
+
+apply_one_vm_sizing() {
+  local vmid="$1" mem="$2" cores="$3" disk_gb="${4:-}"
+  log "size VM ${vmid}: memory=${mem} cores=${cores} disk-gb=${disk_gb:-unchanged}"
+  if [[ -z "${PROXMOX_SSH:-}" ]]; then
+    die "PROXMOX_SSH required to resize existing VM disks (e.g. PROXMOX_SSH=root@pve)"
+  fi
+  ssh -o StrictHostKeyChecking=accept-new "${PROXMOX_SSH}" \
+    "qm set ${vmid} --memory ${mem} --cores ${cores}"
+  if [[ -n "$disk_gb" ]]; then
+    ssh -o StrictHostKeyChecking=accept-new "${PROXMOX_SSH}" bash -s <<EOF
+set -euo pipefail
+VMID=${vmid}
+GB=${disk_gb}
+qm stop "\$VMID" >/dev/null 2>&1 || true
+for i in \$(seq 1 45); do
+  qm status "\$VMID" 2>/dev/null | grep -q stopped && break
+  sleep 1
+done
+qm resize "\$VMID" scsi0 "\${GB}G"
+qm config "\$VMID" | grep -E '^(memory|cores|scsi0):' || true
+qm start "\$VMID" >/dev/null 2>&1 || true
+EOF
+  fi
 }
 
 step_resolve_ips() {
@@ -397,9 +505,10 @@ step_cluster() {
   "$CTL" -e "${CP_IP}:50000" bootstrap
 
   # Join additional control planes (stacked etcd + kube-vip).
+  # Use C-style for: macOS `seq 2 1` counts down and would iterate wrongly.
   local i ip host cpyaml etcd_ep
   etcd_ep="https://${CP_IP}:2379"
-  for i in $(seq 2 "$CONTROLPLANES"); do
+  for ((i = 2; i <= CONTROLPLANES; i++)); do
     ip="${CP_IPS[$((i - 1))]}"
     host="${CLUSTER_NAME}-cp-${i}"
     cpyaml="${CLUSTER_OUT}/controlplane-${i}.yaml"

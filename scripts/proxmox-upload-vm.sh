@@ -19,8 +19,9 @@ set -euo pipefail
 VMID=""
 NAME="pertisk-worker"
 DISK=""
-MEMORY=4096
-CORES=2
+MEMORY="${PROXMOX_MEMORY:-4096}"
+CORES="${PROXMOX_CORES:-2}"
+DISK_GB="${PROXMOX_DISK_GB:-}"
 BRIDGE="vmbr0"
 START=1
 STORAGE="${PROXMOX_STORAGE:-local}"
@@ -35,8 +36,9 @@ Options:
   --vmid N          VM id (required)
   --disk PATH       qcow2 path (required)
   --name NAME       VM name (default pertisk-worker)
-  --memory MB       RAM (default 4096)
-  --cores N         vCPUs (default 2)
+  --memory MB       RAM (default 4096; env PROXMOX_MEMORY)
+  --cores N         vCPUs (default 2; env PROXMOX_CORES)
+  --disk-gb N       grow scsi0 to N GiB after import (env PROXMOX_DISK_GB)
   --bridge NAME     bridge (default vmbr0)
   --storage NAME    datastore (default $PROXMOX_STORAGE or local)
   --node NAME       node (default $PROXMOX_NODE)
@@ -52,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --disk) DISK="$2"; shift 2 ;;
     --memory) MEMORY="$2"; shift 2 ;;
     --cores) CORES="$2"; shift 2 ;;
+    --disk-gb) DISK_GB="$2"; shift 2 ;;
     --bridge) BRIDGE="$2"; shift 2 ;;
     --storage) STORAGE="$2"; shift 2 ;;
     --node) NODE="$2"; shift 2 ;;
@@ -196,7 +199,10 @@ echo "==> Proxmox ${PROXMOX_URL} node=${NODE} storage=${STORAGE} vmid=${VMID}"
 # --- Create VM skeleton (UEFI / q35) ---
 EXISTS="$(api_get "/nodes/${NODE}/qemu/${VMID}/status/current" 2>/dev/null || echo '{}')"
 if echo "${EXISTS}" | jq -e '.data != null' >/dev/null 2>&1; then
-  echo "==> VM ${VMID} already exists"
+  echo "==> VM ${VMID} already exists — updating memory=${MEMORY} cores=${CORES}"
+  api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+    --data-urlencode "memory=${MEMORY}" \
+    --data-urlencode "cores=${CORES}" >/dev/null 2>&1 || true
 else
   echo "==> creating VM ${VMID} (${NAME}) bios=ovmf machine=q35 agent=1"
   RESP="$(
@@ -385,6 +391,42 @@ if ! vm_has_scsi0; then
   echo "  PROXMOX_SSH=root@host ./scripts/proxmox-fix-boot.sh ${VMID}" >&2
   echo "  PROXMOX_SSH=root@host ./scripts/proxmox-reattach-disk.sh ${VMID} ${DISK}" >&2
   exit 1
+fi
+
+# Grow guest disk beyond the imported qcow2 size (grow-only).
+# Note: GPT/EPHEMERAL only match if the qcow2 was built with PERTISK_DISK_GB>=N.
+if [[ -n "${DISK_GB}" ]]; then
+  if ! [[ "${DISK_GB}" =~ ^[0-9]+$ ]] || [[ "${DISK_GB}" -lt 1 ]]; then
+    echo "ERROR: --disk-gb must be a positive integer (GiB), got: ${DISK_GB}" >&2
+    exit 1
+  fi
+  echo "==> resizing scsi0 → ${DISK_GB}G"
+  vm_stop 2>/dev/null || true
+  if [[ -n "${PROXMOX_SSH:-}" ]]; then
+    ssh -o StrictHostKeyChecking=accept-new "${PROXMOX_SSH}" \
+      "qm resize ${VMID} scsi0 ${DISK_GB}G && qm config ${VMID} | grep '^scsi0:'" || {
+      echo "qm resize failed" >&2
+      exit 1
+    }
+  else
+    RESZ="$(
+      api_put_form "/nodes/${NODE}/qemu/${VMID}/resize" \
+        --data-urlencode "disk=scsi0" \
+        --data-urlencode "size=${DISK_GB}G"
+    )"
+    if ! api_response_ok "${RESZ}"; then
+      UPID="$(echo "${RESZ}" | jq -r '.data // empty')"
+      if [[ "${UPID}" == UPID:* ]]; then
+        wait_task "${UPID}" "resize" || exit 1
+      else
+        echo "resize failed: ${RESZ}" >&2
+        echo "  Hint: set PROXMOX_SSH=root@node for qm resize" >&2
+        exit 1
+      fi
+    else
+      echo "    API resize ok (verify Hardware → Hard Disk size in Proxmox UI)"
+    fi
+  fi
 fi
 
 if [[ "${START}" == "1" ]]; then
