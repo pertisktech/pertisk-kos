@@ -59,6 +59,18 @@ pub fn ensure_os_release() -> Result<()> {
     }
 }
 
+/// Remount `/proc` if thread-self/diskstats disappeared (Cilium Bidirectional fallout).
+pub fn ensure_proc_readable() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_impl::ensure_proc_readable()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use super::*;
@@ -91,6 +103,7 @@ mod linux_impl {
             "proc",
             MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC | MsFlags::MS_NODEV,
         )?;
+        ensure_proc_readable()?;
         try_mount(
             "sysfs",
             "/sys",
@@ -111,20 +124,62 @@ mod linux_impl {
             MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
         )?;
 
-        // Kubernetes / Cilium need shared mount propagation so hostPath binds
-        // (notably /sys/fs/bpf) can be remounted into pods. Without this, Cilium
-        // fails with: path "/sys/fs/bpf" is mounted on "/sys" but it is not a
-        // shared mount.
-        make_rshared("/")?;
+        // Share only the mounts Cilium/kubelet need. Do NOT make `/` rshared —
+        // Bidirectional hostPath umounts under a shared `/` have been observed to
+        // tear down host `/proc` (runc abort → missing /proc/thread-self), after
+        // which containerd reports "stat /proc/.../ns/pid" and the node goes NotReady.
         make_rshared("/sys")?;
         make_rshared("/run")?;
         prepare_bpffs()?;
 
         prepare_cgroups()?;
         ensure_os_release()?;
+        ensure_proc_readable()?;
 
         info!("essential filesystems ready");
         Ok(())
+    }
+
+    /// Remount procfs if `/proc/thread-self` / `/proc/diskstats` are missing.
+    pub fn ensure_proc_readable() -> Result<()> {
+        if proc_looks_healthy() {
+            return Ok(());
+        }
+        tracing::warn!("/proc incomplete; remounting procfs");
+        // Best-effort detach of a broken/empty mount, then fresh proc.
+        let _ = nix::mount::umount("/proc");
+        match mount(
+            Some("proc"),
+            "/proc",
+            Some("proc"),
+            MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC | MsFlags::MS_NODEV,
+            None::<&str>,
+        ) {
+            Ok(()) => info!("remounted /proc"),
+            Err(nix::errno::Errno::EBUSY) | Err(nix::errno::Errno::EEXIST) => {
+                // Already mounted but incomplete — try remount.
+                let _ = mount(
+                    None::<&str>,
+                    "/proc",
+                    None::<&str>,
+                    MsFlags::MS_REMOUNT | MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC | MsFlags::MS_NODEV,
+                    None::<&str>,
+                );
+            }
+            Err(err) => tracing::warn!(error = %err, "proc remount failed"),
+        }
+        if proc_looks_healthy() {
+            info!("/proc healthy (thread-self + diskstats present)");
+        } else {
+            tracing::warn!("/proc still unhealthy after remount");
+        }
+        Ok(())
+    }
+
+    fn proc_looks_healthy() -> bool {
+        Path::new("/proc/thread-self/mountinfo").is_file()
+            && Path::new("/proc/diskstats").is_file()
+            && Path::new("/proc/1").is_dir()
     }
 
     /// Mount BPF filesystem for Cilium / kube-proxy eBPF.

@@ -84,9 +84,25 @@ impl BootstrapPaths {
                 copy_dir(&src, &dst)?;
             }
         }
-        let admin_live = live.join("admin.conf");
-        fs::copy(self.admin_kubeconfig(), &admin_live)
-            .with_context(|| format!("copy admin.conf → {}", admin_live.display()))?;
+        // Kubeconfigs live on ephemeral /etc — always re-copy from STATE.
+        for name in [
+            "admin.conf",
+            "controller-manager.conf",
+            "scheduler.conf",
+            "kubelet.conf",
+        ] {
+            let src = if name == "admin.conf" {
+                self.admin_kubeconfig()
+            } else {
+                self.kubeconfig_dir().join(name)
+            };
+            if !src.is_file() {
+                continue;
+            }
+            let dst = live.join(name);
+            fs::copy(&src, &dst)
+                .with_context(|| format!("copy {} → {}", src.display(), dst.display()))?;
+        }
         Ok(())
     }
 }

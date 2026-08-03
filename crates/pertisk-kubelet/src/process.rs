@@ -157,22 +157,36 @@ fn prepare_kubelet(
 ) -> Result<(), KubeletError> {
     let is_cp = cfg.machine.machine_type == MachineType::Controlplane;
     let live_cp = Path::new("/etc/kubernetes/kubelet.conf");
-    let tls_bootstrap = !is_cp || !live_cp.exists();
+    // Prefer live CP cert kubeconfig; also accept an already-published
+    // /var/lib/kubelet/kubeconfig (EPHEMERAL) so a late restore still works.
+    let have_cp_creds = live_cp.is_file() || (is_cp && paths.kubeconfig.is_file());
+    let tls_bootstrap = !is_cp || !have_cp_creds;
     write_kubelet_config(
         paths,
         cfg.machine.network.hostname.as_deref(),
         tls_bootstrap,
     )?;
 
-    if is_cp && live_cp.exists() {
-        // Cert kubeconfig from pertiskctl bootstrap — no token bootstrap.
-        fs::copy(live_cp, &paths.kubeconfig)?;
+    if is_cp && have_cp_creds {
+        // Cert kubeconfig from bootstrap / restore — no token bootstrap.
+        if live_cp.is_file() {
+            fs::copy(live_cp, &paths.kubeconfig)?;
+        }
         let _ = fs::remove_file(&paths.bootstrap_kubeconfig);
-    } else {
+    } else if !is_cp {
         // Token → CSR → node cert. Remove any stale token kubeconfig so kubelet
         // is forced through --bootstrap-kubeconfig.
         write_bootstrap_kubeconfig(paths, cluster)?;
         let _ = fs::remove_file(&paths.kubeconfig);
+    } else {
+        // Control-plane without restored credentials: do not delete an existing
+        // kubeconfig; try bootstrap as last resort so apply-before-bootstrap works.
+        write_bootstrap_kubeconfig(paths, cluster)?;
+        if !paths.kubeconfig.is_file() {
+            // Kubelet --kubeconfig must exist even when bootstrapping.
+            fs::copy(&paths.bootstrap_kubeconfig, &paths.kubeconfig)?;
+        }
+        warn!("control-plane starting without /etc/kubernetes/kubelet.conf; restore may be missing");
     }
     let pod_cidr = cluster.pod_cidr.as_deref().unwrap_or(DEFAULT_POD_CIDR);
     ensure_cni_mode(paths, cluster.cni, pod_cidr)?;

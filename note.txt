@@ -38,11 +38,11 @@ make cloud ARCH=amd64
 # expect: source=Partition , ephemeral_mounted=true
 
 ## Bootstrap CP
-./out/bin/pertiskctl gen config lab-ha https://10.1.1.79:6443 -o ./out/cluster -k v1.36.3
-./out/bin/pertiskctl -e 10.1.1.79:50000 apply -f ./out/cluster/controlplane.yaml
-./out/bin/pertiskctl -e 10.1.1.79:50000 bootstrap
-./out/bin/pertiskctl -e 10.1.1.79:50000 kubeconfig -f ./out/cluster/admin.conf
-./out/bin/pertiskctl -e 10.1.1.79:50000 join-config -f ./out/cluster/worker.yaml
+./out/bin/pertiskctl gen config lab-ha https://10.1.1.12:6443 -o ./out/cluster -k v1.36.3
+./out/bin/pertiskctl -e 10.1.1.12:50000 apply -f ./out/cluster/controlplane.yaml
+./out/bin/pertiskctl -e 10.1.1.12:50000 bootstrap
+./out/bin/pertiskctl -e 10.1.1.12:50000 kubeconfig -f ./out/cluster/admin.conf
+./out/bin/pertiskctl -e 10.1.1.12:50000 join-config -f ./out/cluster/worker.yaml
 
 ## Join workers (after image with bootstrap finalize)
 # Bootstrap applies token Secret + node-rbac + labels CP (kubeadm-shaped).
@@ -66,26 +66,40 @@ kubectl --kubeconfig ./out/cluster/admin.conf get nodes -o wide
 #     -p='[{"op":"remove","path":"/spec/template/spec/hostUsers"}]'
 #   (only if the DS sets hostUsers)
 # - Cilium "path /sys/fs/bpf ... not a shared mount" → rebuild image (PID 1
-#   now mounts / + /sys + bpffs as rshared). Then restart Cilium pods.
+#   mounts /sys + bpffs as rshared; do NOT rshared `/`).
+# - Cilium install then nodes NotReady + ktail/kubectl logs 401 → mount-bpf-fs
+#   Bidirectional tore down host /proc. Uninstall Cilium, reboot, reinstall with:
+#     --set bpf.autoMount.enabled=false \
+#     --set cgroup.autoMount.enabled=false \
+#     --set cgroup.hostRoot=/sys/fs/cgroup
+#   (see examples/cni/cilium.md). Rebuild also heals /proc in supervise loop.
 # - CP without control-plane role → rebuild image (bootstrap finalizes label +
 #   NoSchedule taint). Existing cluster: kubectl label node <cp>
 #   node-role.kubernetes.io/control-plane=
+# - Reboot loses API / kubelet absent → fixed: restore /etc/kubernetes +
+#   kubelet certs from STATE before kubelet start. Rebuild + reboot (or
+#   pertiskctl bootstrap on already-bootstrapped CP after new image).
+#   Symptom was: tls_bootstrap=true then "stat .../kubeconfig: no such file".
 
 
 kubectl --kubeconfig ./out/cluster/admin.conf -n kube-system apply -f - <<'EOF'
 apiVersion: v1
 kind: Secret
 metadata:
-  name: bootstrap-token-ef1nv9
+  name: bootstrap-token-oexkav
   namespace: kube-system
 type: bootstrap.kubernetes.io/token
 stringData:
   description: pertisk bootstrap token
-  token-id: "ef1nv9"
-  token-secret: "h75l95ik5nv5c514"
+  token-id: "oexkav"
+  token-secret: "62v1ii5fh307revm"
   usage-bootstrap-authentication: "true"
   usage-bootstrap-signing: "true"
   auth-extra-groups: system:bootstrappers:kubeadm:default-node-token
 EOF
 
 kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/bootstrap/node-rbac.yaml
+
+./out/bin/pertiskctl -e 10.1.1.63:50000 apply -f ./out/cluster/worker.yaml
+
+./out/bin/pertiskctl -e 10.1.1.213:50000 apply -f ./out/cluster/worker.yaml

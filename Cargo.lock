@@ -1380,6 +1380,7 @@ dependencies = [
  "libc",
  "nix 0.29.0",
  "pertisk-api",
+ "pertisk-bootstrap",
  "pertisk-config",
  "pertisk-disk",
  "pertisk-kubelet",

@@ -338,6 +338,13 @@ fn run() -> Result<()> {
         ephemeral_mounted = ephemeral.is_some(),
         "EPHEMERAL /var status"
     );
+    // Re-publish CP static pods + cert kubeconfigs before kubelet starts.
+    // Without this, reboot loses /etc/kubernetes and kubelet exits immediately.
+    match pertisk_bootstrap::restore_control_plane(&volume.root) {
+        Ok(true) => info!("control-plane material restored from STATE"),
+        Ok(false) => {}
+        Err(err) => warn!(error = %err, "control-plane restore failed"),
+    }
     // Before kubelet (`protectKernelDefaults: true`).
     sysctl::apply_hardening_sysctls();
 

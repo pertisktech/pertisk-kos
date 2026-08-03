@@ -51,7 +51,11 @@ pub fn bootstrap_control_plane(
 
     let paths = BootstrapPaths::default_state(state_root);
     if paths.is_bootstrapped() {
-        repair_kubeconfig_files(&paths)?;
+        // Re-publish live paths (reboot / re-bootstrap repair).
+        if let Err(err) = restore_control_plane(state_root) {
+            tracing::warn!(error = %err, "restore after already-bootstrapped failed");
+            repair_kubeconfig_files(&paths)?;
+        }
         let admin = read_admin_kubeconfig(state_root)?;
         let ca = fs::read_to_string(paths.pki().join("ca.crt")).unwrap_or_default();
         return Ok(BootstrapResult {
@@ -249,6 +253,31 @@ pub fn publish_kubelet_credentials(kubelet_conf: &str, ca_crt: &str) -> Result<(
 pub fn read_ca_pem(state_root: &Path) -> Result<String> {
     let paths = BootstrapPaths::default_state(state_root);
     fs::read_to_string(paths.pki().join("ca.crt")).context("ca.crt missing; bootstrap first")
+}
+
+/// Re-publish `/etc/kubernetes` + kubelet cert credentials after reboot.
+///
+/// Root `/etc` is ephemeral; PKI/manifests/kubeconfigs live on STATE. Without
+/// this, CP kubelet starts in bootstrap-token mode, deletes its cert kubeconfig,
+/// and exits immediately.
+pub fn restore_control_plane(state_root: &Path) -> Result<bool> {
+    let paths = BootstrapPaths::default_state(state_root);
+    if !paths.is_bootstrapped() {
+        return Ok(false);
+    }
+    repair_kubeconfig_files(&paths)?;
+    paths.link_live()?;
+    let kubelet_conf = paths.kubeconfig_dir().join("kubelet.conf");
+    let kubelet_conf = fs::read_to_string(&kubelet_conf)
+        .with_context(|| format!("read {}", kubelet_conf.display()))?;
+    let ca = fs::read_to_string(paths.pki().join("ca.crt")).unwrap_or_default();
+    publish_kubelet_credentials(&kubelet_conf, &ca)?;
+    // Static pods also need these under the live path (link_live copies them).
+    info!(
+        state = %paths.root.display(),
+        "restored control-plane /etc/kubernetes + kubelet credentials from STATE"
+    );
+    Ok(true)
 }
 
 fn endpoint_host(endpoint: &str) -> String {

@@ -17,6 +17,7 @@ crossterm = "0.28"
 libc = "0.2"
 nix = { workspace = true }
 pertisk-api = { workspace = true }
+pertisk-bootstrap = { workspace = true }
 pertisk-config = { workspace = true }
 pertisk-disk = { workspace = true }
 pertisk-kubelet = { workspace = true }

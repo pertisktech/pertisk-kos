@@ -56,6 +56,11 @@ impl NodeServices {
     }
 
     pub fn ensure_alive(&mut self, cfg: &MachineConfig) {
+        // Cilium Bidirectional hostPath can tear down host /proc; heal before
+        // restarting runtimes that depend on /proc/<pid>/ns/*.
+        if let Err(err) = crate::linux::ensure_proc_readable() {
+            warn!(error = %err, "ensure /proc failed");
+        }
         if let Some(ref mut cd) = self.containerd {
             if let Err(err) = cd.ensure_alive() {
                 warn!(error = %err, "containerd restart failed");
