@@ -115,3 +115,9 @@ kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/bootstrap/node-r
 ./out/bin/pertiskctl -e 10.1.1.63:50000 apply -f ./out/cluster/worker.yaml
 
 ./out/bin/pertiskctl -e 10.1.1.213:50000 apply -f ./out/cluster/worker.yaml
+
+
+./scripts/proxmox-lab-up.sh \
+  --cp-memory 4096 --cp-cores 2 \
+  --worker-memory 8192 --worker-cores 4 \
+  --cp-disk-gb 50 --worker-disk-gb 75  --controlplanes 3 --vip 10.1.1.200 --workers 3 --cni cilium

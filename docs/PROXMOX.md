@@ -329,3 +329,6 @@ Ensure the worker can reach the API server on `:6443` and that Node/Pod networks
 - Examples: `examples/controlplane.yaml`, `examples/worker-join.yaml`
 - Multi-VM helper: `scripts/proxmox-create-cluster-vms.sh`
 - Compatibility: [COMPATIBILITY.md](./COMPATIBILITY.md)
+
+
+
