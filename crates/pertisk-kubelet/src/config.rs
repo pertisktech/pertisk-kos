@@ -31,6 +31,8 @@ authentication:
     enabled: false
   webhook:
     enabled: true
+  x509:
+    clientCAFile: {ca_file}
 authorization:
   mode: Webhook
 # CIS 4.2.4 — disable legacy read-only port
@@ -67,7 +69,9 @@ serverTLSBootstrap: false
 # explicit so a mismatched/older kubelet binary does not reject the field.
 featureGates:
   UserNamespacesSupport: true
-"#
+"#,
+        ca_file = paths.ca_file.display(),
+        rotate = rotate,
     );
 
     let mut f = fs::File::create(&paths.config)?;
@@ -199,6 +203,8 @@ mod tests {
         assert!(cfg.contains("rotateCertificates: true"));
         assert!(cfg.contains("tlsCipherSuites:"));
         assert!(cfg.contains("UserNamespacesSupport: true"));
+        assert!(cfg.contains("clientCAFile:"));
+        assert!(cfg.contains(&paths.ca_file.display().to_string()));
     }
 
     fn temp_dir() -> PathBuf {

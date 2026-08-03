@@ -397,13 +397,16 @@ step_cni() {
         --set cgroup.autoMount.enabled=false \
         --set cgroup.hostRoot=/sys/fs/cgroup \
         --set bpf.autoMount.enabled=false \
-        --set installIptablesRules=false \
+        --set enableIPv6Masquerade=false \
         --timeout 10m || {
-          echo "WARNING: helm install reported failure; continuing to netns patch" >&2
+          echo "WARNING: helm install reported failure; continuing to netns / iptables patches" >&2
         }
       # Cilium defaults to hostPath /var/run/netns. EPHEMERAL /var is not shared
       # until pertiskd binds /run over /var/run — use /run/netns (already rshared).
       patch_cilium_netns_to_run "$kc"
+      # Cilium image defaults `iptables` → nft; Pertisk host uses iptables-legacy.
+      # Force legacy binaries before cilium-agent starts (L7/Hubble still needs iptables).
+      patch_cilium_iptables_legacy "$kc"
       # Best-effort wait after patch (pods recreate).
       kubectl --kubeconfig "$kc" -n cilium rollout status ds/cilium --timeout=5m 2>/dev/null \
         || echo "WARNING: cilium DS not Ready yet; check: kubectl --kubeconfig $kc -n cilium get pods" >&2
@@ -462,6 +465,73 @@ print(f"patched cilium-netns {cur} → /run/netns", file=sys.stderr)
 PY
   then
     echo "WARNING: netns patch failed — expect CreateContainerError on /var/run/netns" >&2
+  fi
+}
+
+# Cilium's image links `iptables` → nft; Pertisk hosts use iptables-legacy tables.
+# Wrap cilium-agent so each start retargets iptables* to xtables-legacy-multi.
+patch_cilium_iptables_legacy() {
+  local kc="$1"
+  log "patch Cilium agent entrypoint → iptables-legacy"
+  if ! python3 - "$kc" <<'PY'
+import json, subprocess, sys, time
+kc = sys.argv[1]
+d = None
+for _ in range(30):
+    try:
+        d = json.loads(subprocess.check_output(
+            ["kubectl", "--kubeconfig", kc, "-n", "cilium", "get", "ds", "cilium", "-o", "json"],
+            stderr=subprocess.DEVNULL,
+        ))
+        break
+    except Exception:
+        time.sleep(2)
+if not d:
+    raise SystemExit("cilium DaemonSet not found")
+idx = next(i for i, c in enumerate(d["spec"]["template"]["spec"]["containers"]) if c["name"] == "cilium-agent")
+c = d["spec"]["template"]["spec"]["containers"][idx]
+args = c.get("args") or ["--config-dir=/tmp/cilium/config-map"]
+# Drop a previous wrap so re-runs stay idempotent.
+if args and "xtables-legacy-multi" in args[0]:
+    # unwrap: ["wrap script", "--", ...real args]
+    if len(args) >= 2 and args[1] == "--":
+        args = args[2:]
+    else:
+        args = ["--config-dir=/tmp/cilium/config-map"]
+wrap = (
+    'set -e; for p in /usr/sbin /sbin; do '
+    'ln -sfn xtables-legacy-multi $p/iptables; '
+    'ln -sfn xtables-legacy-multi $p/iptables-restore; '
+    'ln -sfn xtables-legacy-multi $p/iptables-save; '
+    'ln -sfn xtables-legacy-multi $p/ip6tables; '
+    'ln -sfn xtables-legacy-multi $p/ip6tables-restore; '
+    'ln -sfn xtables-legacy-multi $p/ip6tables-save; '
+    'done; exec cilium-agent "$@"'
+)
+new_args = [wrap, "--", *args]
+ops = [
+    {"op": "add" if "command" not in c else "replace",
+     "path": f"/spec/template/spec/containers/{idx}/command",
+     "value": ["/bin/sh", "-c"]},
+    {"op": "replace",
+     "path": f"/spec/template/spec/containers/{idx}/args",
+     "value": new_args},
+]
+if "command" not in c:
+    ops[0]["op"] = "add"
+subprocess.check_call(
+    ["kubectl", "--kubeconfig", kc, "-n", "cilium", "patch", "ds", "cilium", "--type=json", "-p", json.dumps(ops)]
+)
+# Quiet ipv6 masquerade noise when ipv6 is disabled (chart default can leave it true).
+subprocess.run(
+    ["kubectl", "--kubeconfig", kc, "-n", "cilium", "patch", "cm", "cilium-config", "--type=merge",
+     "-p", '{"data":{"enable-ipv6-masquerade":"false"}}'],
+    check=False,
+)
+print("patched cilium-agent iptables-legacy wrapper", file=sys.stderr)
+PY
+  then
+    echo "WARNING: iptables-legacy patch failed — expect nft POSTROUTING / Extension errors" >&2
   fi
 }
 

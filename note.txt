@@ -79,6 +79,12 @@ kubectl --kubeconfig ./out/cluster/admin.conf get nodes -o wide
 #     --set cgroup.autoMount.enabled=false \
 #     --set cgroup.hostRoot=/sys/fs/cgroup
 #   (see examples/cni/cilium.md). Rebuild also heals /proc in supervise loop.
+# - kubectl/ktail logs always 401 (pods/log Unauthorized) while list/get work →
+#   kubelet missing authentication.x509.clientCAFile. Fixed in pertisk-kubelet
+#   config (needs image rebuild). Not a ktail bug.
+# - After clientCAFile: Forbidden user=kube-apiserver nodes/proxy → apply
+#   examples/bootstrap/node-rbac.yaml (system:kube-apiserver-to-kubelet).
+#   Now part of bootstrap finalize.
 # - CP without control-plane role → rebuild image (bootstrap finalizes label +
 #   NoSchedule taint). Existing cluster: kubectl label node <cp>
 #   node-role.kubernetes.io/control-plane=

@@ -40,3 +40,18 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: system:certificates.k8s.io:certificatesigningrequests:selfnodeclient
+---
+# Apiserver kubelet-client cert CN is `kube-apiserver`. Required for
+# kubectl/ktail logs, exec, and port-forward (nodes/proxy).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: system:kube-apiserver-to-kubelet
+subjects:
+  - kind: User
+    name: kube-apiserver
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:kubelet-api-admin

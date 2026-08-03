@@ -35,7 +35,7 @@ if [[ "${PERTISK_FORCE_KERNEL:-0}" != "1" ]]; then
   # sd_mod needs t10-pi → crc64-rocksoft → crc64; require the leaf dep as a
   # freshness check so older module packs without SCSI deps get refreshed.
   # SCSI disk nodes need sd_mod deps; STATE/EPHEMERAL mounts need ext4.
-  [[ -f "${MODULES_OUT}/virtio_net.ko" && -f "${MODULES_OUT}/sd_mod.ko" && -f "${MODULES_OUT}/t10-pi.ko" && -f "${MODULES_OUT}/crc64.ko" && -f "${MODULES_OUT}/ext4.ko" && -f "${MODULES_OUT}/jbd2.ko" && -f "${MODULES_OUT}/overlay.ko" && -f "${MODULES_OUT}/vxlan.ko" && -f "${MODULES_OUT}/nf_tables.ko" && -f "${MODULES_OUT}/br_netfilter.ko" && -f "${MODULES_OUT}/xt_tcpudp.ko" && -f "${MODULES_OUT}/xfrm_user.ko" && -f "${MODULES_OUT}/version" ]] && NEED_MODULES=0
+  [[ -f "${MODULES_OUT}/virtio_net.ko" && -f "${MODULES_OUT}/sd_mod.ko" && -f "${MODULES_OUT}/t10-pi.ko" && -f "${MODULES_OUT}/crc64.ko" && -f "${MODULES_OUT}/ext4.ko" && -f "${MODULES_OUT}/jbd2.ko" && -f "${MODULES_OUT}/overlay.ko" && -f "${MODULES_OUT}/vxlan.ko" && -f "${MODULES_OUT}/nf_tables.ko" && -f "${MODULES_OUT}/br_netfilter.ko" && -f "${MODULES_OUT}/x_tables.ko" && -f "${MODULES_OUT}/xt_tcpudp.ko" && -f "${MODULES_OUT}/xt_CT.ko" && -f "${MODULES_OUT}/xfrm_user.ko" && -f "${MODULES_OUT}/version" ]] && NEED_MODULES=0
 fi
 
 # Kernel and modules must come from the same linux-virt package (vermagic).
@@ -111,10 +111,15 @@ docker run --rm --platform "${PLATFORM}" \
                 nfnetlink nf_tables nft_compat \
                 ip_set ip_set_hash_ip ip_set_hash_net xt_set \
                 ip_tables iptable_filter iptable_nat \
-                iptable_mangle iptable_raw xt_mark xt_conntrack \
+                iptable_mangle iptable_raw \
+                ip6_tables ip6table_filter ip6table_nat \
+                ip6table_mangle ip6table_raw \
+                xt_mark xt_conntrack \
                 nf_socket_ipv4 nf_socket_ipv6 xt_socket \
+                x_tables \
                 xt_tcpudp xt_nat xt_statistic xt_multiport xt_MASQUERADE xt_addrtype \
-                xt_comment xt_REDIRECT xt_rpfilter \
+                xt_comment xt_CT xt_TPROXY xt_REDIRECT xt_rpfilter \
+                nf_tproxy_ipv4 nf_tproxy_ipv6 \
                 nf_conntrack nf_nat vxlan geneve \
                 xfrm_algo xfrm_user \
                 inet_diag tcp_diag udp_diag \

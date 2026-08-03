@@ -1,6 +1,7 @@
 //! Spawn and babysit kubelet.
 
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -161,6 +162,11 @@ fn prepare_kubelet(
     // /var/lib/kubelet/kubeconfig (EPHEMERAL) so a late restore still works.
     let have_cp_creds = live_cp.is_file() || (is_cp && paths.kubeconfig.is_file());
     let tls_bootstrap = !is_cp || !have_cp_creds;
+
+    // Apiserver proxies logs/exec with its kubelet-client cert; kubelet must
+    // trust that cert via authentication.x509.clientCAFile or requests are 401.
+    ensure_client_ca(paths, cluster)?;
+
     write_kubelet_config(
         paths,
         cfg.machine.network.hostname.as_deref(),
@@ -191,5 +197,32 @@ fn prepare_kubelet(
     let pod_cidr = cluster.pod_cidr.as_deref().unwrap_or(DEFAULT_POD_CIDR);
     ensure_cni_mode(paths, cluster.cni, pod_cidr)?;
     std::fs::create_dir_all("/etc/kubernetes/manifests").ok();
+    Ok(())
+}
+
+/// Ensure `/var/lib/kubelet/ca.crt` exists for `authentication.x509.clientCAFile`.
+fn ensure_client_ca(paths: &KubeletPaths, cluster: &Cluster) -> Result<(), KubeletError> {
+    paths.ensure_dirs()?;
+    if paths.ca_file.is_file() {
+        return Ok(());
+    }
+    // Prefer live control-plane CA, then cluster config CA blob.
+    let live_ca = Path::new("/etc/kubernetes/pki/ca.crt");
+    if live_ca.is_file() {
+        fs::copy(live_ca, &paths.ca_file)?;
+        return Ok(());
+    }
+    if let Some(ca) = &cluster.ca {
+        let mut f = fs::File::create(&paths.ca_file)?;
+        f.write_all(ca.as_bytes())?;
+        if !ca.ends_with('\n') {
+            f.write_all(b"\n")?;
+        }
+        return Ok(());
+    }
+    warn!(
+        path = %paths.ca_file.display(),
+        "kubelet client CA missing; apiserver log/exec proxy may return 401"
+    );
     Ok(())
 }

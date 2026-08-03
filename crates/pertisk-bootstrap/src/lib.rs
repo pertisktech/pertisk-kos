@@ -463,7 +463,7 @@ fn ensure_kube_system(client: &api::KubeClient, deadline: Instant) -> Result<()>
 
 fn ensure_node_join_rbac(client: &api::KubeClient) -> Result<()> {
     // Mirrors examples/bootstrap/node-rbac.yaml (kubeadm-shaped).
-    let bindings = [
+    let group_bindings = [
         (
             "pertisk:kubelet-bootstrap",
             "system:bootstrappers:kubeadm:default-node-token",
@@ -480,7 +480,7 @@ fn ensure_node_join_rbac(client: &api::KubeClient) -> Result<()> {
             "system:certificates.k8s.io:certificatesigningrequests:selfnodeclient",
         ),
     ];
-    for (name, subject_group, role) in bindings {
+    for (name, subject_group, role) in group_bindings {
         let body = serde_json::json!({
             "apiVersion": "rbac.authorization.k8s.io/v1",
             "kind": "ClusterRoleBinding",
@@ -503,6 +503,31 @@ fn ensure_node_join_rbac(client: &api::KubeClient) -> Result<()> {
             name,
         )?;
     }
+
+    // Apiserver uses /etc/kubernetes/pki/apiserver.crt (CN=kube-apiserver) as the
+    // kubelet client cert. Without this binding, kubectl/ktail logs return
+    // Forbidden on nodes/proxy after x509 auth succeeds.
+    let kubelet_api = serde_json::json!({
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "ClusterRoleBinding",
+        "metadata": { "name": "system:kube-apiserver-to-kubelet" },
+        "subjects": [{
+            "kind": "User",
+            "name": "kube-apiserver",
+            "apiGroup": "rbac.authorization.k8s.io"
+        }],
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "system:kubelet-api-admin"
+        }
+    });
+    ensure_created(
+        client,
+        "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings",
+        &kubelet_api.to_string(),
+        "system:kube-apiserver-to-kubelet",
+    )?;
     Ok(())
 }
 

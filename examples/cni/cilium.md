@@ -18,10 +18,17 @@
 #
 # Kernel: Alpine linux-virt builds nf_tables/vxlan/iptables/xfrm as **modules**.
 # Without `xfrm_user`, Cilium CrashLoops with `protocol not supported` (netlink
-# handle opens NETLINK_XFRM). Without vxlan/nft/xt_*, agents also fail and
-# CoreDNS hits: plugin type="cilium-cni" ... dial unix /var/run/cilium/cilium.sock
-# Rebuild with an updated `image/fetch-kernel.sh` so those `.ko` files are
-# embedded and loaded by pertiskd (`make cloud` then lab-up).
+# handle opens NETLINK_XFRM). Boot must load `x_tables` **before** any `xt_*` /
+# `ip_tables` (otherwise unknown-symbol loads and Cilium spams tunnel iptables
+# errors: Extension udp/comment/CT/socket missing). Also pack `xt_CT`,
+# `xt_TPROXY`, `nf_tproxy_*`. Rebuild: `PERTISK_FORCE_KERNEL=1 ./image/fetch-kernel.sh`
+# then `make cloud` / lab-up.
+#
+# Cilium 1.20 image defaults `iptables` → **nft**, while Pertisk uses
+# **iptables-legacy** on the host. `lab-up` wraps the agent entrypoint to
+# retarget iptables* → xtables-legacy-multi. Do **not** set
+# `installIptablesRules=false` with Hubble/L7 unless you also enable BPF TProxy
+# (`enable-bpf-tproxy`) — agent fatals: L7 proxy requires iptables or BPF TProxy.
 #
 # On the management host:
 #
@@ -53,8 +60,7 @@
 #     --set securityContext.capabilities.cleanCiliumState="{NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}" \
 #     --set cgroup.autoMount.enabled=false \
 #     --set cgroup.hostRoot=/sys/fs/cgroup \
-#     --set bpf.autoMount.enabled=false \
-#     --set installIptablesRules=false
+#     --set bpf.autoMount.enabled=false
 #
 #   # Required until image binds /run over /var/run (lab-up does this):
 #   kubectl -n cilium patch ds cilium --type=json \
@@ -62,6 +68,8 @@
 #          kubectl -n cilium get ds cilium -o json \
 #            | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(i for i,v in enumerate(d["spec"]["template"]["spec"]["volumes"]) if v["name"]=="cilium-netns"))'
 #        )"'/hostPath/path","value":"/run/netns"}]'
+#
+#   # Also required (lab-up does this): wrap cilium-agent so iptables → legacy.
 #
 # Or: ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cni cilium
 #
