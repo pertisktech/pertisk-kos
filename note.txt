@@ -33,6 +33,12 @@ make fetch-runtime ARCH=amd64   # kubelet/containerd/runc/cni → latest stable
 make cloud ARCH=amd64
 ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
 
+# One-shot (build→VMs→MAC/ARP IPs→bootstrap→join→Cilium):
+#   export PROXMOX_SSH=root@<pve>   # recommended for MAC→IP
+#   make lab-up ARCH=amd64
+#   ./scripts/proxmox-lab-up.sh --skip-build --cni cilium --subnet 10.1.1.0/24
+#   APPS=examples/apps/nginx.yaml ./scripts/proxmox-lab-up.sh --skip-build --skip-vms
+
 ## Boot health (must be Partition or apply/bootstrap die on reboot)
 # ./out/bin/pertiskctl -e <IP>:50000 logs pertiskd -n 40 | rg 'STATE volume|EPHEMERAL /var'
 # expect: source=Partition , ephemeral_mounted=true

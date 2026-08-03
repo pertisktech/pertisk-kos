@@ -338,6 +338,17 @@ fn run() -> Result<()> {
         ephemeral_mounted = ephemeral.is_some(),
         "EPHEMERAL /var status"
     );
+    // Cilium hostPath Bidirectional on /var/run/netns requires /var shared.
+    // EPHEMERAL (or tmpfs) is a separate mount from `/`, so rshared(`/sys`) is
+    // not enough — mark /var after it is the final mount.
+    if let Err(err) = linux::make_rshared("/var") {
+        warn!(error = %err, "make-rshared /var failed");
+    }
+    if let Err(err) = linux::ensure_var_run_shared() {
+        warn!(error = %err, "ensure /var/run shared for Cilium netns failed");
+    }
+    let _ = std::fs::create_dir_all("/var/run/netns");
+    let _ = std::fs::create_dir_all("/run/netns");
     // Re-publish CP static pods + cert kubeconfigs before kubelet starts.
     // Without this, reboot loses /etc/kubernetes and kubelet exits immediately.
     match pertisk_bootstrap::restore_control_plane(&volume.root) {

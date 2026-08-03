@@ -6,7 +6,7 @@
 //! create `/dev/sd*` nodes — STATE/EPHEMERAL stay ephemeral and reboot wipes
 //! apply/bootstrap.
 
-use tracing::{info, warn};
+use tracing::info;
 
 /// Load boot-critical modules from `/lib/pertisk/modules` (order matters).
 pub fn load_boot_modules() {
@@ -26,6 +26,7 @@ mod linux_impl {
     use std::fs::File;
     use std::os::fd::AsRawFd;
     use std::path::{Path, PathBuf};
+    use tracing::{info, warn};
 
     const MODULE_DIR: &str = "/lib/pertisk/modules";
     /// Dependency order for Alpine linux-virt virtio networking + disk + fs + overlay.
@@ -33,6 +34,10 @@ mod linux_impl {
     /// `ext4` requires `jbd2` + `crc16` + `mbcache` (STATE/EPHEMERAL mounts).
     /// `vfat` requires `fat` (+ nls_*) for the EFI system partition.
     /// `overlay` is required for containerd/runc rootfs mounts.
+    /// Shared by Flannel / Calico / Cilium (+ kube-proxy when not using eBPF KPR):
+    /// bridge/br_netfilter/veth, Calico IPIP+ipset, kube-proxy xt_*, Cilium vxlan/nft.
+    /// `xfrm_user` is required even without IPSec: Cilium's netlink handle opens
+    /// NETLINK_XFRM (`protocol not supported` without the module).
     const BOOT_MODULES: &[&str] = &[
         "failover",
         "net_failover",
@@ -53,6 +58,61 @@ mod linux_impl {
         "nls_iso8859-1",
         "vfat",
         "overlay",
+        // Bridge / CNI veth (Flannel, Calico)
+        "llc",
+        "stp",
+        "bridge",
+        "br_netfilter",
+        "veth",
+        // Calico IPIP
+        "tunnel4",
+        "ipip",
+        // Netfilter core before ip_set (ip_set needs nfnetlink symbols)
+        "libcrc32c",
+        "nfnetlink",
+        "nf_defrag_ipv4",
+        "nf_defrag_ipv6",
+        "nf_conntrack",
+        "nf_nat",
+        // Calico ipset (after nfnetlink)
+        "ip_set",
+        "ip_set_hash_ip",
+        "ip_set_hash_net",
+        "xt_set",
+        "ip_tables",
+        "iptable_filter",
+        "iptable_nat",
+        "iptable_mangle",
+        "iptable_raw",
+        "nf_tables",
+        "nft_compat",
+        "xt_mark",
+        "xt_conntrack",
+        "nf_socket_ipv4",
+        "nf_socket_ipv6",
+        "xt_socket",
+        "xt_tcpudp",
+        "xt_nat",
+        "xt_statistic",
+        "xt_multiport",
+        "xt_MASQUERADE",
+        "xt_addrtype",
+        "xt_comment",
+        "xt_REDIRECT",
+        "xt_rpfilter",
+        "udp_tunnel",
+        "ip6_udp_tunnel",
+        "vxlan",
+        "geneve",
+        // Cilium: NETLINK_XFRM + sock-diag (socket LB terminate) + tc/bpf qdisc
+        "xfrm_algo",
+        "xfrm_user",
+        "inet_diag",
+        "tcp_diag",
+        "udp_diag",
+        "cls_bpf",
+        "act_bpf",
+        "sch_fq",
     ];
 
     pub fn load_boot_modules() {
@@ -83,6 +143,37 @@ mod linux_impl {
                 }
             }
         }
+        // Prefer iptables-legacy for kube-proxy's iptables-wrapper (CNI uses legacy tables).
+        ensure_iptables_legacy_hint();
+    }
+
+    /// Create `KUBE-IPTABLES-HINT` in the legacy mangle table so kube-proxy's
+    /// `/usr/sbin/iptables-wrapper` selects legacy instead of broken nft on linux-virt.
+    fn ensure_iptables_legacy_hint() {
+        use std::process::Command;
+        let ipt = "/usr/sbin/iptables-legacy";
+        if !Path::new(ipt).is_file() && !Path::new("/usr/sbin/iptables").is_file() {
+            return;
+        }
+        let bin = if Path::new(ipt).is_file() {
+            ipt
+        } else {
+            "/usr/sbin/iptables"
+        };
+        let _ = Command::new(bin)
+            .args(["-t", "mangle", "-N", "KUBE-IPTABLES-HINT"])
+            .status();
+        let _ = Command::new(bin)
+            .args(["-t", "mangle", "-C", "KUBE-IPTABLES-HINT", "-j", "RETURN"])
+            .status()
+            .ok()
+            .filter(|s| s.success())
+            .or_else(|| {
+                Command::new(bin)
+                    .args(["-t", "mangle", "-A", "KUBE-IPTABLES-HINT", "-j", "RETURN"])
+                    .status()
+                    .ok()
+            });
     }
 
     fn load_module(path: &Path) -> Result<(), String> {

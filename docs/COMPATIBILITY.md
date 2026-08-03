@@ -50,10 +50,13 @@ PERTISK_RUNTIME_LATEST=1 make fetch-runtime      # force latest even if pins set
 | Mode | Config | Status | When to use |
 |------|--------|--------|-------------|
 | Bridge + host-local + portmap | `cluster.cni: bridge` + `podCidr` | default | Single-node / lab; unique `/24` per node |
-| Flannel VXLAN | `cluster.cni: none` + `examples/cni/kube-flannel.yaml` | example | Classic overlay; CP must allocate Node PodCIDR |
-| Cilium | `cluster.cni: none` + Helm ([`examples/cni/cilium.md`](../examples/cni/cilium.md)) | example | Policy / Hubble; do not combine with Flannel |
+| Flannel VXLAN | `cluster.cni: none` + `--cni flannel` / [`kube-flannel.yaml`](../examples/cni/kube-flannel.yaml) | lab-up | Classic overlay + kube-proxy |
+| Calico VXLAN | `cluster.cni: none` + `--cni calico` / [`calico.md`](../examples/cni/calico.md) | lab-up | Policy + kube-proxy |
+| Cilium | `cluster.cni: none` + `--cni cilium` / [`cilium.md`](../examples/cni/cilium.md) | lab-up | Policy / Hubble; kubeProxyReplacement (no kube-proxy) |
 
-Built-in bridge and a cluster CNI DaemonSet must not both own `/etc/cni/net.d`.
+Built-in bridge and a cluster CNI DaemonSet must not both own `/etc/cni/net.d`. Install only **one** of Flannel / Calico / Cilium.
+
+Image needs shared kernel modules + host `iptables-legacy` — see [examples/cni/README.md](../examples/cni/README.md).
 
 ## Management / observability
 

@@ -41,7 +41,7 @@ ifeq ($(filter $(PROFILE),production debug),)
 endif
 
 .PHONY: help build build-host build-all initramfs pertiskctl cloud uki \
-	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version
+	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version lab-up
 
 help:
 	@echo "Pertisk KOS make targets"
@@ -52,6 +52,7 @@ help:
 	@echo "  make pertiskctl [VERSION=...]          # host CLI → out/bin/pertiskctl"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
 	@echo "  make uki [VERSION=...] [ARCH=...]     # Unified Kernel Image"
+	@echo "  make lab-up [ARCH=...]                # build→VMs→IPs→cluster→CNI (see script)"
 	@echo "  make test | check-hardening | fmt | clippy | clean"
 	@echo ""
 	@echo "Current: VERSION=$(VERSION) ARCH=$(BUILD_ARCH) PLATFORM=$(PLATFORM) PROFILE=$(PROFILE)"
@@ -114,6 +115,11 @@ fetch-runtime:
 
 fetch-kernel:
 	PERTISK_ARCH="$(BUILD_ARCH)" "$(ROOT)/image/fetch-kernel.sh"
+
+## Full lab: cloud image → Proxmox VMs → DHCP IPs → bootstrap → join → CNI.
+## Extra flags: make lab-up ARGS='--skip-build --cni cilium --workers 2'
+lab-up:
+	ARCH="$(BUILD_ARCH)" "$(ROOT)/scripts/proxmox-lab-up.sh" $(ARGS)
 
 test:
 	cargo test --workspace

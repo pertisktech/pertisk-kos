@@ -116,9 +116,22 @@ api_response_ok() {
 }
 
 vm_has_scsi0() {
-  local conf
-  conf="$(api_get "/nodes/${NODE}/qemu/${VMID}/config")"
-  echo "${conf}" | jq -e '.data.scsi0 != null' >/dev/null 2>&1
+  local conf i
+  for i in 1 2 3 4 5 6; do
+    conf="$(api_get "/nodes/${NODE}/qemu/${VMID}/config" 2>/dev/null || echo '{}')"
+    if echo "${conf}" | jq -e '.data.scsi0 != null and (.data.scsi0|type=="string") and (.data.scsi0|length>0)' >/dev/null 2>&1; then
+      return 0
+    fi
+    # API can lag right after qm importdisk / config PUT.
+    if [[ -n "${PROXMOX_SSH:-}" ]]; then
+      if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "${PROXMOX_SSH}" \
+        "qm config ${VMID} | grep -q '^scsi0:'" >/dev/null 2>&1; then
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 # Upload/import return UPIDs; wait until stopped + exitstatus OK.
@@ -231,24 +244,61 @@ if [[ -n "${PROXMOX_SSH:-}" ]]; then
     echo "==> SCP + qm importdisk via ${PROXMOX_SSH}"
     REMOTE="/var/tmp/pertisk-${VMID}.qcow2"
     scp -o StrictHostKeyChecking=accept-new "${DISK}" "${PROXMOX_SSH}:${REMOTE}"
-    ssh "${PROXMOX_SSH}" "qm importdisk ${VMID} ${REMOTE} ${STORAGE} --format qcow2 && rm -f ${REMOTE}"
-    # Attach unused disk0 if present.
-    CONF="$(api_get "/nodes/${NODE}/qemu/${VMID}/config")"
-    UNUSED="$(echo "${CONF}" | jq -r '.data | to_entries[] | select(.key|startswith("unused")) | "\(.key)=\(.value)"' | head -1 || true)"
-    if [[ -n "${UNUSED}" ]]; then
-      KEY="${UNUSED%%=*}"
-      VAL="${UNUSED#*=}"
-      api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
-        --data-urlencode "scsihw=virtio-scsi-single" \
-        --data-urlencode "scsi0=${VAL}" \
-        --data-urlencode "delete=${KEY}" \
-        --data-urlencode "boot=order=scsi0" >/dev/null
-      echo "==> attached ${VAL} as scsi0"
-    else
-      echo "==> WARNING: no unused disk found after importdisk" >&2
-      echo "    Run: PROXMOX_SSH=${PROXMOX_SSH} ./scripts/proxmox-fix-boot.sh ${VMID}" >&2
+    # Attach on the node with qm — more reliable than API unused→scsi0 for ZFS.
+    ssh -o StrictHostKeyChecking=accept-new "${PROXMOX_SSH}" bash -s <<EOF
+set -euo pipefail
+VMID=${VMID}
+STORAGE=${STORAGE}
+REMOTE=${REMOTE}
+qm importdisk "\${VMID}" "\${REMOTE}" "\${STORAGE}" --format qcow2
+rm -f "\${REMOTE}"
+CONF=\$(qm config "\${VMID}")
+# Prefer the largest unused disk (and highest disk-N on ties). Never attach a
+# leftover 1M stub — that boots PXE / UEFI shell ("image not boot").
+BEST_KEY=""; BEST_VOL=""; BEST_SIZE=0; BEST_N=-1
+while IFS= read -r line; do
+  key=\$(echo "\$line" | sed -n 's/^\\(unused[0-9]*\\):.*/\\1/p')
+  vol=\$(echo "\$line" | sed -n 's/^unused[0-9]*: //p')
+  [[ -n "\$vol" ]] || continue
+  n=\$(echo "\$vol" | sed -n 's/.*-disk-\\([0-9]*\\)\$/\\1/p')
+  n=\${n:--1}
+  size=\$(pvesm list "\${STORAGE}" 2>/dev/null | awk -v v="\$vol" '\$1==v {print \$4; exit}')
+  size=\${size:-0}
+  echo "unused candidate: \$key \$vol size=\$size"
+  if [[ "\$size" -gt "\$BEST_SIZE" || ( "\$size" -eq "\$BEST_SIZE" && "\$n" -gt "\$BEST_N" ) ]]; then
+    BEST_SIZE=\$size; BEST_KEY=\$key; BEST_VOL=\$vol; BEST_N=\$n
+  fi
+done < <(echo "\$CONF" | grep '^unused' || true)
+[[ -n "\$BEST_VOL" ]] || { echo "no unused disk after importdisk" >&2; qm config "\${VMID}"; exit 1; }
+if [[ "\$BEST_SIZE" -gt 0 && "\$BEST_SIZE" -lt 1073741824 ]]; then
+  echo "ERROR: best unused disk is only \${BEST_SIZE} bytes (need >=1GiB OS image)" >&2
+  qm config "\${VMID}"; exit 1
+fi
+echo "==> attaching \$BEST_KEY -> scsi0 (\$BEST_VOL, \${BEST_SIZE} bytes)"
+qm set "\${VMID}" --scsihw virtio-scsi-single
+qm set "\${VMID}" --scsi0 "\${BEST_VOL}"
+qm set "\${VMID}" --delete "\${BEST_KEY}" || true
+qm set "\${VMID}" --boot order=scsi0
+# Drop leftover tiny unused stubs so the next redeploy cannot pick them.
+while IFS= read -r line; do
+  key=\$(echo "\$line" | sed -n 's/^\\(unused[0-9]*\\):.*/\\1/p')
+  vol=\$(echo "\$line" | sed -n 's/^unused[0-9]*: //p')
+  size=\$(pvesm list "\${STORAGE}" 2>/dev/null | awk -v v="\$vol" '\$1==v {print \$4; exit}')
+  size=\${size:-0}
+  if [[ "\$size" -gt 0 && "\$size" -lt 10485760 ]]; then
+    echo "==> deleting tiny unused \$key \$vol (\$size)"
+    qm set "\${VMID}" --delete "\$key" || true
+    pvesm free "\$vol" 2>/dev/null || true
+  fi
+done < <(qm config "\${VMID}" | grep '^unused' || true)
+qm config "\${VMID}" | grep -E '^(scsi0|boot|efidisk0|unused):' || true
+EOF
+    if ! vm_has_scsi0; then
+      echo "ERROR: scsi0 still missing after qm attach" >&2
+      api_get "/nodes/${NODE}/qemu/${VMID}/config" | jq '{scsi0:.data.scsi0,unused0:.data.unused0,boot:.data.boot}' >&2 || true
       exit 1
     fi
+    echo "==> scsi0 attached via ${PROXMOX_SSH}"
   fi
 else
   # PVE 8+: upload only accepts content ∈ {iso, vztmpl, import} on many backends.
@@ -318,20 +368,35 @@ else
 fi
 
 api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
-  --data-urlencode "boot=order=scsi0;net0" \
+  --data-urlencode "boot=order=scsi0" \
   --data-urlencode "onboot=1" \
   --data-urlencode "serial0=socket" \
   --data-urlencode "vga=serial0" \
   --data-urlencode "agent=enabled=1" >/dev/null 2>&1 || true
+
+# Never start a diskless VM — OVMF falls through to "PXE over IPv6" and looks
+# like a network-boot failure when the real problem is missing scsi0.
+if ! vm_has_scsi0; then
+  echo "ERROR: scsi0 missing after upload — VM would only PXE-boot." >&2
+  echo "  Current config snippet:" >&2
+  api_get "/nodes/${NODE}/qemu/${VMID}/config" \
+    | jq '{scsi0:.data.scsi0, unused0:.data.unused0, unused1:.data.unused1, boot:.data.boot, efidisk0:.data.efidisk0}' >&2 || true
+  echo "  Fix:" >&2
+  echo "  PROXMOX_SSH=root@host ./scripts/proxmox-fix-boot.sh ${VMID}" >&2
+  echo "  PROXMOX_SSH=root@host ./scripts/proxmox-reattach-disk.sh ${VMID} ${DISK}" >&2
+  exit 1
+fi
 
 if [[ "${START}" == "1" ]]; then
   echo "==> starting VM ${VMID}"
   api_post_form "/nodes/${NODE}/qemu/${VMID}/status/start" >/dev/null 2>&1 || true
 fi
 
+MAC="$(api_get "/nodes/${NODE}/qemu/${VMID}/config" | jq -r '.data.net0 // empty' | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1 || true)"
 echo "==> done — open Console for ${NAME} (vmid ${VMID})"
+[[ -n "${MAC}" ]] && echo "    MAC=${MAC}"
 echo "    Console uses serial (vga=serial0 / xterm.js). Host: qm terminal ${VMID}"
 echo "    QEMU guest agent enabled on the VM (Options → QEMU Guest Agent)."
 echo "    Guest IP in Summary still needs qemu-guest-agent inside the image."
-echo "    If stuck in UEFI: Options → disable Secure Boot; ensure efidisk pre-enrolled-keys=0."
+echo "    If PXE / UEFI shell: scsi0 missing or Secure Boot — run proxmox-fix-boot.sh"
 echo "    join cluster: docs/PROXMOX.md"

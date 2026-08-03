@@ -91,11 +91,23 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 FROM alpine:3.20 AS tools
 ARG TARGETARCH
 RUN apk add --no-cache sgdisk e2fsprogs dosfstools busybox parted ca-certificates \
-    && mkdir -p /tools/bin /tools/lib /tools/certs \
+    iptables iptables-legacy \
+    && mkdir -p /tools/bin /tools/lib /tools/certs /tools/xtables \
     && cp /usr/bin/sgdisk /usr/sbin/partprobe /sbin/mkfs.ext4 /sbin/mkfs.vfat /bin/busybox /tools/bin/ \
     && cp /etc/ssl/certs/ca-certificates.crt /tools/certs/ \
-    && for bin in /tools/bin/sgdisk /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/partprobe; do \
-         ldd "$bin" | awk '{print $3}' | grep -E '^/' | while read -r lib; do cp -n "$lib" /tools/lib/; done; \
+    # Host iptables for Flannel/Calico CNI + kube-proxy (legacy; nft is incomplete on linux-virt).
+    && (cp -a /sbin/xtables-legacy-multi /tools/bin/ 2>/dev/null \
+        || cp -a /usr/sbin/xtables-legacy-multi /tools/bin/) \
+    && ln -sf xtables-legacy-multi /tools/bin/iptables \
+    && ln -sf xtables-legacy-multi /tools/bin/iptables-legacy \
+    && ln -sf xtables-legacy-multi /tools/bin/iptables-save \
+    && ln -sf xtables-legacy-multi /tools/bin/iptables-restore \
+    && ln -sf xtables-legacy-multi /tools/bin/ip6tables \
+    && ln -sf xtables-legacy-multi /tools/bin/ip6tables-legacy \
+    && cp -a /usr/lib/xtables/. /tools/xtables/ \
+    && for bin in /tools/bin/sgdisk /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/partprobe /tools/bin/xtables-legacy-multi; do \
+         [ -f "$bin" ] || continue; \
+         ldd "$bin" 2>/dev/null | awk '{print $3}' | grep -E '^/' | while read -r lib; do cp -n "$lib" /tools/lib/; done; \
        done \
     && case "${TARGETARCH}" in \
          amd64) cp /lib/ld-musl-x86_64.so.1 /tools/lib/ ;; \
@@ -116,6 +128,9 @@ COPY --from=build /pertiskd ./init
 # DHCP leases apply via /usr/lib/pertisk/udhcpc-hook (Rust; no shell script).
 COPY --from=tools /tools/bin/sgdisk /tools/bin/partprobe /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat ./usr/sbin/
 COPY --from=tools /tools/bin/busybox ./usr/sbin/udhcpc
+# iptables-legacy for Flannel/Calico CNI + kube-proxy (host-path lookups).
+COPY --from=tools /tools/bin/xtables-legacy-multi ./usr/sbin/xtables-legacy-multi
+COPY --from=tools /tools/xtables/ ./usr/lib/xtables/
 # Musl deps for disk tools first; glibc for containerd/kubelet overlays on top.
 COPY --from=tools /tools/lib/ ./lib/
 COPY image/runtime-overlay/ ./
@@ -124,7 +139,16 @@ RUN mkdir -p ./etc/ssl/certs
 COPY --from=tools /tools/certs/ca-certificates.crt ./etc/ssl/certs/ca-certificates.crt
 RUN mkdir -p proc sys dev run tmp var system/state etc/pertisk sbin \
        usr/local/bin usr/bin opt/cni/bin etc/cni/net.d etc/kubernetes/manifests boot/efi \
-       usr/lib/pertisk/boot bin
+       usr/lib/pertisk/boot bin usr/lib/xtables \
+    && chmod +x ./usr/sbin/xtables-legacy-multi \
+    && ln -sf xtables-legacy-multi ./usr/sbin/iptables \
+    && ln -sf xtables-legacy-multi ./usr/sbin/iptables-legacy \
+    && ln -sf xtables-legacy-multi ./usr/sbin/iptables-save \
+    && ln -sf xtables-legacy-multi ./usr/sbin/iptables-restore \
+    && ln -sf xtables-legacy-multi ./usr/sbin/ip6tables \
+    && ln -sf xtables-legacy-multi ./usr/sbin/ip6tables-legacy \
+    && ln -sf /usr/sbin/iptables ./sbin/iptables \
+    && ln -sf /usr/sbin/iptables-legacy ./sbin/iptables-legacy
 COPY --from=build /pertisk-udhcpc-hook ./usr/lib/pertisk/udhcpc-hook
 RUN chmod +x ./init ./usr/sbin/* ./usr/lib/pertisk/udhcpc-hook \
     && ln -sf /usr/sbin/sgdisk ./sbin/sgdisk \

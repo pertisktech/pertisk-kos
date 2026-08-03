@@ -1,33 +1,79 @@
 # Cilium (Helm) — use with Pertisk workers set to `cluster.cni: none`.
 #
-# Pertisk already mounts cgroup2 + bpffs and marks `/sys` + `/sys/fs/bpf` rshared.
-# Install like Talos: do **not** let Cilium remount those (its mount-bpf-fs init
-# with Bidirectional propagation has broken host `/proc` on Pertisk → containerd
-# "stat /proc/.../ns/pid" → nodes NotReady + kubectl logs 401).
+# Pertisk already mounts cgroup2 + bpffs and marks `/sys` + `/sys/fs/bpf` +
+# `/var` rshared (after EPHEMERAL bind). Cilium hostPath Bidirectional on
+# `/var/run/netns` needs that — without a rebuilt image you get:
+#   path "/var/run/netns" is mounted on "/var" but it is not a shared or slave mount
+# Workaround (also applied by `proxmox-lab-up.sh`): patch the DaemonSet volume
+# `cilium-netns` to `/run/netns` (already rshared). Newer images bind `/run`
+# over `/var/run` so the default path works.
+#
+# Install like Talos: do **not** let Cilium remount bpf/cgroup (its mount-bpf-fs
+# init with Bidirectional propagation has broken host `/proc` on Pertisk →
+# containerd "stat /proc/.../ns/pid" → nodes NotReady + kubectl logs 401).
+#
+# Pertisk has no kube-proxy — enable kubeProxyReplacement (+ bpf.masquerade).
+# Also set k8sServiceHost/Port to the real apiserver (ClusterIP unreachable
+# until Cilium is up).
+#
+# Kernel: Alpine linux-virt builds nf_tables/vxlan/iptables/xfrm as **modules**.
+# Without `xfrm_user`, Cilium CrashLoops with `protocol not supported` (netlink
+# handle opens NETLINK_XFRM). Without vxlan/nft/xt_*, agents also fail and
+# CoreDNS hits: plugin type="cilium-cni" ... dial unix /var/run/cilium/cilium.sock
+# Rebuild with an updated `image/fetch-kernel.sh` so those `.ko` files are
+# embedded and loaded by pertiskd (`make cloud` then lab-up).
 #
 # On the management host:
 #
+#   export IP=10.1.1.177   # advertise / node InternalIP
 #   helm repo add cilium https://helm.cilium.io/
-#   helm upgrade --install cilium cilium/cilium --namespace cilium --create-namespace \
+#   helm upgrade --install cilium cilium/cilium \
+#     --kubeconfig ./out/cluster/admin.conf \
+#     --namespace cilium --create-namespace \
+#     --set ipam.mode=cluster-pool \
+#     --set ipv4.enabled=true \
+#     --set ipv6.enabled=false \
+#     --set bpf.masquerade=true \
+#     --set encryption.nodeEncryption=false \
+#     --set k8sServiceHost=$IP \
+#     --set k8sServicePort=6443 \
+#     --set kubeProxyReplacement=true \
 #     --set operator.replicas=1 \
-#     --set ipam.mode=kubernetes \
-#     --set bpf.autoMount.enabled=false \
+#     --set serviceAccounts.cilium.name=cilium \
+#     --set serviceAccounts.operator.name=cilium-operator \
+#     --set hubble.enabled=true \
+#     --set hubble.relay.enabled=true \
+#     --set hubble.ui.enabled=true \
+#     --set prometheus.enabled=true \
+#     --set operator.prometheus.enabled=true \
+#     --set hubble.metrics.enabled="{dns,drop,tcp,flow,port-distribution,icmp,http}" \
+#     --set externalIPs.enabled=true \
+#     --set bgpControlPlane.enabled=true \
+#     --set securityContext.capabilities.ciliumAgent="{CHOWN,KILL,NET_ADMIN,NET_RAW,IPC_LOCK,SYS_ADMIN,SYS_RESOURCE,DAC_OVERRIDE,FOWNER,SETGID,SETUID}" \
+#     --set securityContext.capabilities.cleanCiliumState="{NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}" \
 #     --set cgroup.autoMount.enabled=false \
-#     --set cgroup.hostRoot=/sys/fs/cgroup
+#     --set cgroup.hostRoot=/sys/fs/cgroup \
+#     --set bpf.autoMount.enabled=false \
+#     --set installIptablesRules=false
 #
-# Optional Hubble:
-#     --set hubble.relay.enabled=true --set hubble.ui.enabled=true
+#   # Required until image binds /run over /var/run (lab-up does this):
+#   kubectl -n cilium patch ds cilium --type=json \
+#     -p '[{"op":"replace","path":"/spec/template/spec/volumes/'"$(
+#          kubectl -n cilium get ds cilium -o json \
+#            | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(i for i,v in enumerate(d["spec"]["template"]["spec"]["volumes"]) if v["name"]=="cilium-netns"))'
+#        )"'/hostPath/path","value":"/run/netns"}]'
 #
-# Pertisk node config: same `cluster.cni: none` as Flannel join examples.
+# Or: ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cni cilium
 #
 # Notes:
-# - Do not install Flannel and Cilium together.
+# - Prefer `helm upgrade --install` (not bare `helm install`) so re-runs are idempotent.
+# - Do not install Flannel or Calico together with Cilium.
 # - Built-in bridge CNI (`cluster.cni: bridge`) must stay off so Cilium owns /etc/cni/net.d.
 # - Refresh kubeconfig after DHCP IP changes:
 #     pertiskctl -e <CP_IP>:50000 kubeconfig -f ./out/cluster/admin.conf
-# - If nodes show Ready=False "container runtime is down", rebuild/redeploy the
-#   image (proc heal + no rshared `/`) and reinstall Cilium with the flags above.
 #
 # Check:
 #   kubectl --kubeconfig ./out/cluster/admin.conf get nodes -o wide
 #   kubectl --kubeconfig ./out/cluster/admin.conf -n cilium get pods -o wide
+
+See also: [README.md](./README.md) (CNI matrix), [calico.md](./calico.md), Flannel via `--cni flannel`.

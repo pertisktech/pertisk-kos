@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Create 1 control-plane + N worker VMs on Proxmox from a Pertisk cloud qcow2.
-# Does NOT bootstrap Kubernetes — use pertiskctl gen config / apply / bootstrap.
+# Create 1 control-plane + N worker VMs on Proxmox from a Pertisk cloud qcow2,
+# then by default continue into lab-up (DHCP IPs → bootstrap → join → CNI).
 #
 # Auth: same as proxmox-upload-vm.sh (PROXMOX_URL, PROXMOX_TOKEN_*, …).
 # If PROXMOX_URL is unset, loads assignments from ./proxmox.sh (skips its `exec`).
 #
-# Example:
+# Examples:
 #   ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
+#   ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2 --no-lab-up
+#   CNI=cilium ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPLOAD="${ROOT}/scripts/proxmox-upload-vm.sh"
+LAB_UP_SH="${ROOT}/scripts/proxmox-lab-up.sh"
 
 # Load local credentials without running proxmox.sh's trailing `exec`.
 load_proxmox_sh() {
@@ -35,6 +38,9 @@ CP_VMID="${CP_VMID:-210}"
 WORKERS="${WORKERS:-2}"
 NAME_PREFIX="${NAME_PREFIX:-pertisk}"
 DISK="${PROXMOX_DISK:-${ROOT}/out/pertisk-cloud-amd64.qcow2}"
+# Chain into bootstrap/join/CNI after VMs exist (disable with --no-lab-up).
+DO_LAB_UP=1
+LAB_UP_EXTRA=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,8 +48,18 @@ while [[ $# -gt 0 ]]; do
     --workers) WORKERS="$2"; shift 2 ;;
     --prefix) NAME_PREFIX="$2"; shift 2 ;;
     --disk) DISK="$2"; shift 2 ;;
+    --lab-up) DO_LAB_UP=1; shift ;;
+    --no-lab-up) DO_LAB_UP=0; shift ;;
+    --cni)
+      LAB_UP_EXTRA+=(--cni "$2")
+      shift 2
+      ;;
+    --subnet)
+      LAB_UP_EXTRA+=(--subnet "$2")
+      shift 2
+      ;;
     -h|--help)
-      sed -n '2,14p' "$0"
+      sed -n '2,16p' "$0"
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
@@ -72,22 +88,22 @@ for i in $(seq 1 "$WORKERS"); do
   "$UPLOAD" --vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$DISK"
 done
 
-cat <<EOF
+echo "==> VMs created (CP=${CP_VMID}, workers=${WORKERS})"
 
-VMs created (same cloud image for CP and workers). Next:
+if [[ "$DO_LAB_UP" != "1" ]]; then
+  cat <<EOF
 
-  # Discover CP IP from Serial / DHCP, then:
-  make pertiskctl
-  ./out/bin/pertiskctl gen config lab-ha https://<CP_IP>:6443 -o ./out/cluster
-  # Edit hostnames in YAMLs if needed, then:
-  ./out/bin/pertiskctl -e <CP_IP>:50000 apply -f ./out/cluster/controlplane.yaml
-  ./out/bin/pertiskctl -e <CP_IP>:50000 bootstrap
-  ./out/bin/pertiskctl -e <CP_IP>:50000 kubeconfig -f ./out/cluster/admin.conf
-  ./out/bin/pertiskctl -e <CP_IP>:50000 join-config -f ./out/cluster/worker.yaml
-  # Apply bootstrap token Secret (written on CP) then workers:
-  #   kubectl --kubeconfig ./out/cluster/admin.conf apply -f ...
-  # Apply worker.yaml to each worker :50000
-  # Install CNI: kubectl apply -f examples/cni/kube-flannel.yaml
-
-See docs/PROXMOX.md (Talos-shaped cluster section).
+Stopped after VM create (--no-lab-up). Continue with:
+  ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cp-vmid ${CP_VMID} --workers ${WORKERS}
 EOF
+  exit 0
+fi
+
+echo "==> continuing → lab-up (IPs → cluster → CNI)"
+chmod +x "$LAB_UP_SH" 2>/dev/null || true
+exec "$LAB_UP_SH" --skip-build --skip-vms \
+  --cp-vmid "$CP_VMID" \
+  --workers "$WORKERS" \
+  --prefix "$NAME_PREFIX" \
+  --disk "$DISK" \
+  "${LAB_UP_EXTRA[@]}"

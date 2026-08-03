@@ -1,5 +1,10 @@
 # Flannel VXLAN for clusters that join Pertisk workers with `cluster.cni: none`.
-# Apply on the control plane (not on the Pertisk node):
+# Prefer: ./scripts/proxmox-lab-up.sh --cni flannel
+# (installs kube-proxy first, then this manifest, and points Flannel at the
+# real apiserver IP until ClusterIP works).
+#
+# Manual:
+#   kubectl apply -f examples/cni/kube-proxy.yaml   # substitute CP IP
 #   kubectl apply -f examples/cni/kube-flannel.yaml
 #
 # Prerequisites:
@@ -7,6 +12,7 @@
 # - Pertisk workers use examples/worker-join-flannel.yaml (cni: none)
 # - CNI bin dir on nodes is /opt/cni/bin (Pertisk embeds bridge plugins; Flannel
 #   ships its own binaries via the DaemonSet)
+# - Host iptables-legacy + br_netfilter/vxlan modules (Pertisk image)
 #
 # Based on flannel v0.26.x upstream layout (simplified for documentation).
 ---

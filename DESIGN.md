@@ -187,7 +187,7 @@ pertisk-kos/
 - systemd-boot A/B slot switching when ESP is present
 - Metal EFI first-boot install (`PERTISK_EMBED_BOOT=1`, `run-qemu-uefi.sh`)
 - Bridge CNI (`bridge` / `host-local` / `portmap`) + `cluster.podCidr`
-- Cluster CNI mode `none` + Flannel/Cilium examples (`examples/cni/`)
+- Cluster CNI mode `none` + Flannel / Calico / Cilium (`examples/cni/`)
 - CI (fmt/clippy/test + initramfs) and CycloneDX SBOM (`scripts/generate-sbom.sh`)
 - Observability: `Logs` RPC + Prometheus `/metrics` (`:50001`)
 - Cloud disk images (`image/build-cloud-image.sh` → raw/qcow2; AWS/GCP/Azure notes)
@@ -247,9 +247,9 @@ Done:
 
 Still manual / incomplete:
 
-- Cluster CNI (Flannel example / Cilium — need working pod networking)
-- Post-bootstrap token Secret + node-join RBAC + CP role label are applied
-  automatically once apiserver is up (best-effort background finalize)
+- Post-bootstrap finalize (best-effort once apiserver is up): token Secret,
+  node-join RBAC, CP role label, **CoreDNS + metrics-server** basic addons
+- Cluster CNI: Cilium / Calico / Flannel via `proxmox-lab-up.sh --cni`
 
 **Next (Phase A finish → v0.1)**
 

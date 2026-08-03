@@ -12,7 +12,7 @@ export PROXMOX_NODE="${PROXMOX_NODE:-pve}"
 export PROXMOX_STORAGE="${PROXMOX_STORAGE:-local-zfs}"
 export PROXMOX_UPLOAD_STORAGE="${PROXMOX_UPLOAD_STORAGE:-local}"
 # Most reliable for ZFS:
-# export PROXMOX_SSH="root@10.1.1.197"
+export PROXMOX_SSH="${PROXMOX_SSH:-root@10.1.1.195}"
 
 exec ./scripts/proxmox-upload-vm.sh --vmid "${PROXMOX_VMID:-9100}" --name "${PROXMOX_VM_NAME:-pertisk-worker-1}" \
   --disk "${PROXMOX_DISK:-out/pertisk-cloud-amd64.qcow2}" \

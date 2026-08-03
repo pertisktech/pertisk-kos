@@ -1,0 +1,115 @@
+# kube-proxy (iptables) for Flannel / Calico on Pertisk.
+# Cilium uses kubeProxyReplacement instead — do not install both.
+#
+# lab-up substitutes __KUBERNETES_SERVICE_HOST__ with the control-plane IP
+# (ClusterIP 10.96.0.1 is unreachable until kube-proxy is up).
+#
+# Requires host iptables-legacy + xt_* modules (shipped in the Pertisk image).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-proxy
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-proxy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:node-proxier
+subjects:
+  - kind: ServiceAccount
+    name: kube-proxy
+    namespace: kube-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kube-proxy
+  namespace: kube-system
+data:
+  config.conf: |
+    apiVersion: kubeproxy.config.k8s.io/v1alpha1
+    kind: KubeProxyConfiguration
+    mode: iptables
+    clusterCIDR: 10.244.0.0/16
+    clientConnection:
+      kubeconfig: /var/lib/kube-proxy/kubeconfig.conf
+    iptables:
+      syncPeriod: 30s
+  kubeconfig.conf: |
+    apiVersion: v1
+    kind: Config
+    clusters:
+    - cluster:
+        certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        server: https://__KUBERNETES_SERVICE_HOST__:6443
+      name: default
+    contexts:
+    - context:
+        cluster: default
+        namespace: default
+        user: default
+      name: default
+    current-context: default
+    users:
+    - name: default
+      user:
+        tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-proxy
+  namespace: kube-system
+  labels:
+    k8s-app: kube-proxy
+spec:
+  selector:
+    matchLabels:
+      k8s-app: kube-proxy
+  template:
+    metadata:
+      labels:
+        k8s-app: kube-proxy
+    spec:
+      hostNetwork: true
+      serviceAccountName: kube-proxy
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: kube-proxy
+          image: registry.k8s.io/kube-proxy:v1.36.3
+          command:
+            - /usr/local/bin/kube-proxy
+            - --config=/var/lib/kube-proxy/config.conf
+          env:
+            - name: KUBERNETES_SERVICE_HOST
+              value: "__KUBERNETES_SERVICE_HOST__"
+            - name: KUBERNETES_SERVICE_PORT
+              value: "6443"
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: kube-proxy
+              mountPath: /var/lib/kube-proxy
+            - name: xtables-lock
+              mountPath: /run/xtables.lock
+            - name: modules
+              mountPath: /lib/modules
+              readOnly: true
+      volumes:
+        - name: kube-proxy
+          configMap:
+            name: kube-proxy
+        - name: xtables-lock
+          hostPath:
+            path: /run/xtables.lock
+            type: FileOrCreate
+        - name: modules
+          hostPath:
+            path: /lib/pertisk/modules

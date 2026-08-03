@@ -33,15 +33,33 @@ qm importdisk "\${VMID}" "\${REMOTE}" "\${STORAGE}" --format qcow2
 rm -f "\${REMOTE}"
 
 CONF=\$(qm config "\${VMID}")
-UNUSED=\$(echo "\$CONF" | sed -n 's/^\\(unused[0-9]*\\): \\(.*\\)/\\1|\\2/p' | head -1)
-if [[ -z "\$UNUSED" ]]; then
+# Prefer largest unused (highest disk-N on ties); never attach a 1M stub.
+BEST_KEY=""; BEST_VOL=""; BEST_SIZE=0; BEST_N=-1
+while IFS= read -r line; do
+  key=\$(echo "\$line" | sed -n 's/^\\(unused[0-9]*\\):.*/\\1/p')
+  vol=\$(echo "\$line" | sed -n 's/^unused[0-9]*: //p')
+  [[ -n "\$vol" ]] || continue
+  n=\$(echo "\$vol" | sed -n 's/.*-disk-\\([0-9]*\\)\$/\\1/p')
+  n=\${n:--1}
+  size=\$(pvesm list "\${STORAGE}" 2>/dev/null | awk -v v="\$vol" '\$1==v {print \$4; exit}')
+  size=\${size:-0}
+  echo "unused candidate: \$key \$vol size=\$size"
+  if [[ "\$size" -gt "\$BEST_SIZE" || ( "\$size" -eq "\$BEST_SIZE" && "\$n" -gt "\$BEST_N" ) ]]; then
+    BEST_SIZE=\$size; BEST_KEY=\$key; BEST_VOL=\$vol; BEST_N=\$n
+  fi
+done < <(echo "\$CONF" | grep '^unused' || true)
+if [[ -z "\$BEST_VOL" ]]; then
   echo "ERROR: importdisk did not create unused disk" >&2
   qm config "\${VMID}"
   exit 1
 fi
-UKEY=\${UNUSED%%|*}
-UVAL=\${UNUSED#*|}
-echo "==> \${UKEY} -> scsi0 (\${UVAL})"
+if [[ "\$BEST_SIZE" -gt 0 && "\$BEST_SIZE" -lt 1073741824 ]]; then
+  echo "ERROR: best unused disk is only \${BEST_SIZE} bytes (need >=1GiB)" >&2
+  exit 1
+fi
+UKEY=\$BEST_KEY
+UVAL=\$BEST_VOL
+echo "==> \${UKEY} -> scsi0 (\${UVAL}, \${BEST_SIZE} bytes)"
 
 qm set "\${VMID}" --scsihw virtio-scsi-single
 qm set "\${VMID}" --scsi0 "\${UVAL}"

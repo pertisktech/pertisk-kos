@@ -1,8 +1,11 @@
 //! Control-plane bootstrap for Pertisk KOS (Talos-shaped static pods).
 
+mod addons;
 mod api;
+mod coredns;
 mod gen;
 mod kubeconfig;
+mod manifests;
 mod paths;
 mod pki;
 mod static_pods;
@@ -90,7 +93,8 @@ pub fn bootstrap_control_plane(
         .unwrap_or(DEFAULT_SERVICE_SUBNET);
 
     info!(%advertise, %hostname, %k8s_ver, "generating control-plane PKI");
-    let pki = pki::generate_pki(&advertise, &hostname, &endpoint_host)?;
+    let kubernetes_svc_ip = kubernetes_service_ip(service_subnet);
+    let pki = pki::generate_pki(&advertise, &hostname, &endpoint_host, &kubernetes_svc_ip)?;
     pki::write_pki(&paths.pki(), &paths.etcd_pki(), &pki)?;
 
     let admin = kubeconfig::render_kubeconfig(
@@ -304,6 +308,17 @@ fn detect_advertise_ip() -> Option<String> {
     Some(ip.to_string())
 }
 
+/// First usable address in the service CIDR (kubeadm: `kubernetes` Service ClusterIP).
+fn kubernetes_service_ip(service_cidr: &str) -> String {
+    let cidr = service_cidr.split('/').next().unwrap_or("10.96.0.0");
+    if let Ok(std::net::IpAddr::V4(v4)) = cidr.parse() {
+        let o = v4.octets();
+        // network + 1 → 10.96.0.1 for 10.96.0.0/12
+        return std::net::Ipv4Addr::new(o[0], o[1], o[2], o[3].saturating_add(1)).to_string();
+    }
+    "10.96.0.1".into()
+}
+
 fn chrono_like_now() -> String {
     use std::time::SystemTime;
     match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
@@ -353,6 +368,9 @@ fn finalize_bootstrap_when_ready(
     let (ca, cert, key) = api::credentials_from_kubeconfig(&kc)?;
     let client = api::KubeClient::local(&ca, &cert, &key)?;
 
+    // Apiserver can accept TCP before controller-manager has created kube-system.
+    ensure_kube_system(&client, deadline)?;
+
     // Persist token YAML for debugging / manual re-apply.
     if let Some(token) = token {
         let Some((id, secret)) = token::split_token(token) else {
@@ -392,11 +410,18 @@ fn finalize_bootstrap_when_ready(
 
     ensure_node_join_rbac(&client)?;
     ensure_control_plane_node_role(&client, node_name, deadline)?;
+    // Basic addons: CoreDNS + metrics-server (usable cluster after CNI is up).
+    if let Err(err) = addons::ensure_basic_addons(&client) {
+        tracing::warn!(
+            error = %err,
+            "basic addons incomplete; apply examples/dns/coredns.yaml and examples/addons/metrics-server.yaml"
+        );
+    }
     info!(node = %node_name, "post-bootstrap API finalize complete");
     Ok(())
 }
 
-fn ensure_created(client: &api::KubeClient, path: &str, body: &str, name: &str) -> Result<()> {
+pub(crate) fn ensure_created(client: &api::KubeClient, path: &str, body: &str, name: &str) -> Result<()> {
     let (status, resp) = client.post_json(path, body)?;
     if status == 201 || status == 200 || status == 409 {
         info!(name, status, "ensured API object");
@@ -404,6 +429,36 @@ fn ensure_created(client: &api::KubeClient, path: &str, body: &str, name: &str) 
     } else {
         bail!("create {name} failed HTTP {status}: {resp}");
     }
+}
+
+/// Wait for (or create) `kube-system` so bootstrap-token Secrets can be posted.
+fn ensure_kube_system(client: &api::KubeClient, deadline: Instant) -> Result<()> {
+    let body = serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": { "name": "kube-system" }
+    })
+    .to_string();
+
+    while Instant::now() < deadline {
+        let (status, resp) = client.get("/api/v1/namespaces/kube-system")?;
+        if status == 200 {
+            info!("kube-system namespace ready");
+            return Ok(());
+        }
+        if status == 404 {
+            let (cstatus, cresp) = client.post_json("/api/v1/namespaces", &body)?;
+            if cstatus == 201 || cstatus == 200 || cstatus == 409 {
+                info!(status = cstatus, "ensured kube-system namespace");
+                return Ok(());
+            }
+            tracing::warn!(status = cstatus, body = %cresp, "create kube-system failed; retrying");
+        } else {
+            tracing::warn!(status, body = %resp, "get kube-system failed; retrying");
+        }
+        thread::sleep(Duration::from_secs(2));
+    }
+    bail!("kube-system namespace not available within finalize timeout")
 }
 
 fn ensure_node_join_rbac(client: &api::KubeClient) -> Result<()> {

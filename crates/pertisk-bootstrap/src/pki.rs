@@ -62,7 +62,17 @@ fn mint_ca() -> Result<CaIssuer> {
 }
 
 /// Generate a full PKI tree for the first control plane.
-pub fn generate_pki(advertise_ip: &str, hostname: &str, endpoint_host: &str) -> Result<ClusterPki> {
+///
+/// `kubernetes_svc_ip` is the ClusterIP of the `default/kubernetes` Service
+/// (first usable address in the service CIDR, typically `10.96.0.1`). It must be
+/// on the apiserver cert so in-cluster clients (CoreDNS, metrics-server) can
+/// verify TLS when dialing the Service IP.
+pub fn generate_pki(
+    advertise_ip: &str,
+    hostname: &str,
+    endpoint_host: &str,
+    kubernetes_svc_ip: &str,
+) -> Result<ClusterPki> {
     let ca = mint_ca()?;
     let sa = KeyPair::generate()?;
 
@@ -79,6 +89,7 @@ pub fn generate_pki(advertise_ip: &str, hostname: &str, endpoint_host: &str) -> 
             advertise_ip.to_string(),
             endpoint_host.to_string(),
             "127.0.0.1".into(),
+            kubernetes_svc_ip.to_string(),
         ],
     )?;
 

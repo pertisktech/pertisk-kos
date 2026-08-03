@@ -168,6 +168,20 @@ fn mount_ephemeral_partition(
         Err(err) => return Err(EphemeralError::Mount(format!("bind /var: {err}"))),
     }
 
+    // Cilium hostPath Bidirectional on /var/run/netns requires the /var mount
+    // to be shared/slave. Bind mounts default to private.
+    if let Err(err) = mount(
+        None::<&str>,
+        var,
+        None::<&str>,
+        MsFlags::MS_REC | MsFlags::MS_SHARED,
+        None::<&str>,
+    ) {
+        warn!(target = %var.display(), error = %err, "make-rshared /var after EPHEMERAL bind failed");
+    } else {
+        info!(target = %var.display(), "EPHEMERAL /var mount propagation set to rshared");
+    }
+
     Ok(EphemeralVolume {
         root: var.to_path_buf(),
     })

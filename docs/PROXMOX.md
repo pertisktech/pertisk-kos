@@ -166,22 +166,38 @@ To force a known address, bake static config into the image (`dhcp: false` + `ad
 
 ### If the VM does not boot
 
+**Console shows `Start PXE over IPv6` / `PXE over IPv4`:** UEFI found **no bootable disk** and fell through to network boot. Almost always: missing `scsi0`, **`scsi0` size=1M** while the real 8G import sits under `unusedN`, failed qcow2 import (common on ZFS **without** `PROXMOX_SSH`), or Secure Boot rejecting unsigned systemd-boot.
+
+```bash
+# On the PVE host (or via SSH) — inspect (scsi0 must be ~8G, not 1M):
+qm config <vmid> | grep -E '^(scsi0|unused|efidisk|boot|bios):'
+pvesm list local-zfs | grep vm-<vmid>
+
+# Preferred: set SSH and re-attach the cloud image
+export PROXMOX_SSH=root@10.1.1.195   # your PVE
+./scripts/proxmox-reattach-disk.sh <vmid> out/pertisk-cloud-amd64.qcow2
+./scripts/proxmox-fix-boot.sh <vmid>
+```
+
 **`TASK ERROR: connection timed out`** on Console is often a **VNC proxy** failure — check Serial instead, or SSH: `qm terminal <vmid>`.
 
 If `qm config` shows **no `scsi0`** (only `efidisk0` / `boot: order=net0`), the OS disk was lost — re-attach:
 
 ```bash
-PROXMOX_SSH=root@10.1.1.197 ./scripts/proxmox-reattach-disk.sh 9100 out/pertisk-cloud-amd64.qcow2
+PROXMOX_SSH=root@10.1.1.195 ./scripts/proxmox-reattach-disk.sh 9100 out/pertisk-cloud-amd64.qcow2
 ```
 
 Other boot tips:
 
 | Issue | Fix |
 |-------|-----|
+| PXE over IPv4/IPv6 | Attach/import `scsi0`; boot order `scsi0` only; `proxmox-fix-boot.sh` |
+| `scsi0` size=1M + unused 8G | Upload script picked wrong unused — `fix-boot.sh` or reattach largest unused |
 | Secure Boot / Microsoft keys | `efidisk` with `pre-enrolled-keys=0` (script above recreates it) |
-| Wrong boot disk | Options → Boot Order → `scsi0` first |
+| Wrong boot disk | Options → Boot Order → `scsi0` first (disable Network) |
 | No EFI disk | Hardware → Add EFI Disk |
 | Still UEFI shell | Confirm GPT has ESP; re-import cloud image |
+| ZFS import without SSH | Set `PROXMOX_SSH=root@pve` — API upload to `local-zfs` often leaves no disk |
 
 ## 4. Talos-shaped cluster (1 CP + workers)
 
@@ -196,6 +212,25 @@ make cloud ARCH=amd64   # embed boot + runtime as usual
 # → 210 pertisk-cp-1, 211 pertisk-wk-1, 212 pertisk-wk-2
 ```
 
+### 4a-auto. One-shot lab (build → VMs → IPs → cluster → CNI)
+
+```bash
+# Needs ./proxmox.sh + ideally PROXMOX_SSH=root@<pve> for MAC→ARP IP lookup.
+# Optional: --subnet 10.1.1.0/24 for nmap ping-sweep fallback.
+make lab-up ARCH=amd64
+# or skip rebuild / reuse VMs:
+./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cp-vmid 210 --workers 2 --cni cilium
+# or: --cni calico | --cni flannel
+# install an example app after CNI:
+APPS=examples/apps/nginx.yaml ./scripts/proxmox-lab-up.sh --skip-build --cni cilium
+```
+
+CNI choices (pick one): Cilium (default, kubeProxyReplacement), Calico (VXLAN + kube-proxy), Flannel (VXLAN + kube-proxy). See [examples/cni/README.md](../examples/cni/README.md) and [cilium.md](../examples/cni/cilium.md) / [calico.md](../examples/cni/calico.md).
+
+`lab-up` / bootstrap finalize always install **basic addons**: CoreDNS (`kube-dns` **10.96.0.10**) and [metrics-server](../examples/addons/metrics-server.yaml). Optional reflector is installed by lab-up unless `--skip-addons`. With Cilium, CoreDNS stays Pending while nodes carry `node.cilium.io/agent-not-ready` (until agents are Running).
+
+After DNS/addons, lab-up can install [optional reflector](../examples/addons/README.md). Skip reflector with `--skip-addons` (metrics-server still applied).
+
 ### 4b. gen config → apply → bootstrap → join
 
 ```bash
@@ -209,13 +244,20 @@ make pertiskctl
 ./out/bin/pertiskctl -e <CP_IP>:50000 join-config -f ./out/cluster/worker.yaml
 
 # Bootstrap finalizes (once apiserver is up): bootstrap-token Secret, node-join
-# RBAC, and labels the CP `node-role.kubernetes.io/control-plane=` (+ NoSchedule
-# taint), same shape as kubeadm. Wait ~1–2 min if the node is still unlabeled.
+# RBAC, CP control-plane label/taint, CoreDNS, and metrics-server.
+# Wait ~1–2 min if the node is still unlabeled.
 
 # Per worker (edit hostname in a copy of worker.yaml):
 ./out/bin/pertiskctl -e <WK_IP>:50000 apply -f ./out/cluster/worker.yaml
 
+# CNI — see examples/cni/README.md
 kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/cni/kube-flannel.yaml
+# Basic addons are already applied by bootstrap; re-apply if needed:
+kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/dns/coredns.yaml
+kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/addons/metrics-server.yaml
+# optional reflector:
+kubectl apply --kubeconfig ./out/cluster/admin.conf \
+  -f https://github.com/emberstack/kubernetes-reflector/releases/latest/download/reflector.yaml
 kubectl --kubeconfig ./out/cluster/admin.conf get nodes
 ```
 
@@ -233,7 +275,7 @@ You can still join Pertisk workers to a non-Pertisk control plane with `examples
 | Guest IP | DHCP (default seed) or static in machine config |
 | Management API | `:50000` (mTLS); firewall carefully |
 | Metrics | `:50001` (optional bearer token) |
-| CNI | Prefer `cni: none` + Cilium/Flannel on multi-node Proxmox |
+| CNI | Prefer `cni: none` + Cilium, Calico, or Flannel on multi-node Proxmox |
 | Loopback | `lo` + `127.0.0.1/8` brought up by `pertisk-net` (required for containerd CRI) |
 
 Ensure the worker can reach the API server on `:6443` and that Node/Pod networks are routable as your CNI expects.

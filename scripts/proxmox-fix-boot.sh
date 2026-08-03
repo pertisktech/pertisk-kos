@@ -36,18 +36,40 @@ done
 CONF=\$(qm config \"\${VMID}\")
 echo \"\$CONF\" | sed -n '1,40p'
 
-# Attach first unused disk as scsi0 if scsi0 is missing.
-if ! echo \"\$CONF\" | grep -q '^scsi0:'; then
-  UNUSED=\$(echo \"\$CONF\" | sed -n 's/^unused[0-9]*: //p' | head -1)
-  if [[ -n \"\$UNUSED\" ]]; then
-    echo \"==> attaching unused disk as scsi0: \$UNUSED\"
-    # Find unused key
-    UKEY=\$(echo \"\$CONF\" | sed -n 's/^\\(unused[0-9]*\\):.*/\\1/p' | head -1)
+# Attach largest unused disk as scsi0 if scsi0 is missing OR scsi0 is tiny (<1GiB).
+SCSI0=\$(echo \"\$CONF\" | sed -n 's/^scsi0: \\([^,]*\\).*/\\1/p')
+SCSI0_SIZE=0
+if [[ -n \"\$SCSI0\" ]]; then
+  SCSI0_SIZE=\$(pvesm list \"\${STORAGE}\" 2>/dev/null | awk -v v=\"\$SCSI0\" '\$1==v {print \$4; exit}')
+  SCSI0_SIZE=\${SCSI0_SIZE:-0}
+fi
+NEED_ATTACH=0
+if [[ -z \"\$SCSI0\" ]]; then
+  NEED_ATTACH=1
+elif [[ \"\$SCSI0_SIZE\" -gt 0 && \"\$SCSI0_SIZE\" -lt 1073741824 ]]; then
+  echo \"==> scsi0 is only \${SCSI0_SIZE} bytes — reattach real OS disk\"
+  NEED_ATTACH=1
+fi
+if [[ \"\$NEED_ATTACH\" == \"1\" ]]; then
+  BEST=\"\"; BEST_SIZE=0; BEST_KEY=\"\"; BEST_N=-1
+  while IFS= read -r line; do
+    key=\$(echo \"\$line\" | sed -n 's/^\\(unused[0-9]*\\):.*/\\1/p')
+    vol=\$(echo \"\$line\" | sed -n 's/^unused[0-9]*: //p')
+    n=\$(echo \"\$vol\" | sed -n 's/.*-disk-\\([0-9]*\\)\$/\\1/p')
+    n=\${n:--1}
+    size=\$(pvesm list \"\${STORAGE}\" 2>/dev/null | awk -v v=\"\$vol\" '\$1==v {print \$4; exit}')
+    size=\${size:-0}
+    if [[ \"\$size\" -gt \"\$BEST_SIZE\" || ( \"\$size\" -eq \"\$BEST_SIZE\" && \"\$n\" -gt \"\$BEST_N\" ) ]]; then
+      BEST=\$vol; BEST_SIZE=\$size; BEST_KEY=\$key; BEST_N=\$n
+    fi
+  done < <(echo \"\$CONF\" | grep '^unused' || true)
+  if [[ -n \"\$BEST\" && \"\$BEST_SIZE\" -ge 1073741824 ]]; then
+    echo \"==> attaching unused disk as scsi0: \$BEST (\$BEST_SIZE bytes)\"
     qm set \"\${VMID}\" --scsihw virtio-scsi-single
-    qm set \"\${VMID}\" --scsi0 \"\${UNUSED}\"
-    qm set \"\${VMID}\" --delete \"\${UKEY}\" || true
+    qm set \"\${VMID}\" --scsi0 \"\${BEST}\"
+    qm set \"\${VMID}\" --delete \"\${BEST_KEY}\" || true
   else
-    echo \"ERROR: no scsi0 and no unused disk — re-import the qcow2\" >&2
+    echo \"ERROR: no usable unused OS disk (>=1GiB) — re-import the qcow2\" >&2
     qm config \"\${VMID}\"
     exit 1
   fi

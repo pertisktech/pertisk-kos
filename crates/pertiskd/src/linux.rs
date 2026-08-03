@@ -71,6 +71,36 @@ pub fn ensure_proc_readable() -> Result<()> {
     }
 }
 
+/// Mark a mount rshared (Cilium hostPath Bidirectional needs this on `/var`).
+pub fn make_rshared(path: &str) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_impl::make_rshared(path)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+/// Ensure `/var/run/netns` lives on a shared mount for Cilium Bidirectional hostPath.
+///
+/// EPHEMERAL bind-mounts `/var` as private by default; even after `make-rshared`,
+/// some containerd versions still reject `/var/run/netns`. Binding `/run` (already
+/// rshared) over `/var/run` makes the netns path share `/run`'s propagation —
+/// same shape as Debian/FHS (`/var/run` → `/run`).
+pub fn ensure_var_run_shared() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_impl::ensure_var_run_shared()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use super::*;
@@ -195,7 +225,7 @@ mod linux_impl {
         Ok(())
     }
 
-    fn make_rshared(path: &str) -> Result<()> {
+    pub fn make_rshared(path: &str) -> Result<()> {
         match mount(
             None::<&str>,
             path,
@@ -212,6 +242,84 @@ mod linux_impl {
                 Ok(())
             }
         }
+    }
+
+    pub fn ensure_var_run_shared() -> Result<()> {
+        ensure_dir("/run")?;
+        ensure_dir("/run/netns")?;
+        ensure_dir("/var")?;
+        ensure_dir("/var/run")?;
+
+        // Self-bind then rshared — some kernels ignore make-rshared on a
+        // non-root mount without an explicit bind first.
+        let _ = mount(
+            Some("/var"),
+            "/var",
+            None::<&str>,
+            MsFlags::MS_BIND | MsFlags::MS_REC,
+            None::<&str>,
+        );
+        make_rshared("/var")?;
+
+        // Cover /var/run with /run (already rshared from prepare()). Cilium's
+        // default hostPath is /var/run/netns; containerd requires that path's
+        // covering mount to be shared/slave.
+        let var_run_is_mount = fs::read_to_string("/proc/self/mountinfo")
+            .map(|s| {
+                s.lines().any(|l| {
+                    l.split_whitespace()
+                        .nth(4)
+                        .is_some_and(|tgt| tgt == "/var/run")
+                })
+            })
+            .unwrap_or(false);
+        if !var_run_is_mount {
+            match mount(
+                Some("/run"),
+                "/var/run",
+                None::<&str>,
+                MsFlags::MS_BIND | MsFlags::MS_REC,
+                None::<&str>,
+            ) {
+                Ok(()) => info!("bound /run → /var/run for shared netns"),
+                Err(nix::errno::Errno::EBUSY) => {
+                    info!("/var/run already a mountpoint");
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "bind /run → /var/run failed");
+                }
+            }
+        }
+        make_rshared("/var/run")?;
+        ensure_dir("/var/run/netns")?;
+
+        if let Some(line) = covering_mountinfo_line("/var/run/netns") {
+            let shared = line.contains("shared:") || line.contains("master:");
+            if shared {
+                info!(%line, "/var/run/netns covering mount is shared/slave");
+            } else {
+                tracing::warn!(
+                    %line,
+                    "/var/run/netns covering mount is NOT shared/slave — Cilium Bidirectional hostPath will fail"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn covering_mountinfo_line(path: &str) -> Option<String> {
+        let info = fs::read_to_string("/proc/self/mountinfo").ok()?;
+        let mut best: Option<(usize, String)> = None;
+        for line in info.lines() {
+            let tgt = line.split_whitespace().nth(4)?;
+            if path == tgt || path.starts_with(&format!("{tgt}/")) {
+                let rank = tgt.len();
+                if best.as_ref().map(|(r, _)| rank >= *r).unwrap_or(true) {
+                    best = Some((rank, line.to_string()));
+                }
+            }
+        }
+        best.map(|(_, l)| l)
     }
 
     pub fn ensure_os_release() -> Result<()> {
