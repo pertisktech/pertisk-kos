@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create 1 control-plane + N worker VMs on Proxmox from a Pertisk cloud qcow2,
+# Create N control-plane + M worker VMs on Proxmox from a Pertisk cloud qcow2,
 # then by default continue into lab-up (DHCP IPs → bootstrap → join → CNI).
 #
 # Auth: same as proxmox-upload-vm.sh (PROXMOX_URL, PROXMOX_TOKEN_*, …).
@@ -7,7 +7,7 @@
 #
 # Examples:
 #   ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
-#   ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2 --no-lab-up
+#   ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --controlplanes 3 --workers 2 --no-lab-up
 #   CNI=cilium ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
 set -euo pipefail
 
@@ -35,6 +35,7 @@ if [[ -z "${PROXMOX_URL:-}" ]]; then
 fi
 
 CP_VMID="${CP_VMID:-210}"
+CONTROLPLANES="${CONTROLPLANES:-1}"
 WORKERS="${WORKERS:-2}"
 NAME_PREFIX="${NAME_PREFIX:-pertisk}"
 DISK="${PROXMOX_DISK:-${ROOT}/out/pertisk-cloud-amd64.qcow2}"
@@ -45,6 +46,7 @@ LAB_UP_EXTRA=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cp-vmid) CP_VMID="$2"; shift 2 ;;
+    --controlplanes) CONTROLPLANES="$2"; shift 2 ;;
     --workers) WORKERS="$2"; shift 2 ;;
     --prefix) NAME_PREFIX="$2"; shift 2 ;;
     --disk) DISK="$2"; shift 2 ;;
@@ -52,6 +54,10 @@ while [[ $# -gt 0 ]]; do
     --no-lab-up) DO_LAB_UP=0; shift ;;
     --cni)
       LAB_UP_EXTRA+=(--cni "$2")
+      shift 2
+      ;;
+    --vip)
+      LAB_UP_EXTRA+=(--vip "$2")
       shift 2
       ;;
     --subnet)
@@ -79,22 +85,31 @@ if [[ ! -x "$UPLOAD" ]]; then
   chmod +x "$UPLOAD" || true
 fi
 
-echo "==> control-plane VMID=${CP_VMID} name=${NAME_PREFIX}-cp-1 disk=${DISK}"
-"$UPLOAD" --vmid "$CP_VMID" --name "${NAME_PREFIX}-cp-1" --disk "$DISK"
+if [[ "$CONTROLPLANES" -lt 1 ]]; then
+  echo "ERROR: --controlplanes must be >= 1" >&2
+  exit 1
+fi
+
+for i in $(seq 1 "$CONTROLPLANES"); do
+  cvid=$((CP_VMID + i - 1))
+  echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${DISK}"
+  "$UPLOAD" --vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$DISK"
+done
 
 for i in $(seq 1 "$WORKERS"); do
-  wvid=$((CP_VMID + i))
+  wvid=$((CP_VMID + CONTROLPLANES + i - 1))
   echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i}"
   "$UPLOAD" --vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$DISK"
 done
 
-echo "==> VMs created (CP=${CP_VMID}, workers=${WORKERS})"
+echo "==> VMs created (CP=${CP_VMID}..$((CP_VMID + CONTROLPLANES - 1)), workers=${WORKERS})"
 
 if [[ "$DO_LAB_UP" != "1" ]]; then
   cat <<EOF
 
 Stopped after VM create (--no-lab-up). Continue with:
-  ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cp-vmid ${CP_VMID} --workers ${WORKERS}
+  ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cp-vmid ${CP_VMID} \\
+    --controlplanes ${CONTROLPLANES} --workers ${WORKERS}
 EOF
   exit 0
 fi
@@ -103,6 +118,7 @@ echo "==> continuing → lab-up (IPs → cluster → CNI)"
 chmod +x "$LAB_UP_SH" 2>/dev/null || true
 exec "$LAB_UP_SH" --skip-build --skip-vms \
   --cp-vmid "$CP_VMID" \
+  --controlplanes "$CONTROLPLANES" \
   --workers "$WORKERS" \
   --prefix "$NAME_PREFIX" \
   --disk "$DISK" \

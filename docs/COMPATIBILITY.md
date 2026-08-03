@@ -80,7 +80,16 @@ Image needs shared kernel modules + host `iptables-legacy` — see [examples/cni
 ## Explicitly out of scope (v0.1)
 
 - Talos API wire compatibility
-- Stacked etcd HA / multi-CP join (Phase B)
 - Omni-like web fleet manager (Phase D)
 - Secure Boot / UKI enrollment (tracked as hardening gap)
 - Windows / non-Linux hosts as nodes
+
+## Multi-CP HA (lab)
+
+Stacked etcd + kube-vip ARP is supported via:
+
+```bash
+./scripts/proxmox-lab-up.sh --controlplanes 3 --vip 10.1.1.200 --workers 2 --cni cilium
+```
+
+`--vip` must be a free L2 address on the guest network. Workers and CNI use the VIP as `cluster.endpoint` / `k8sServiceHost`.

@@ -5,14 +5,14 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pertisk_bootstrap::{
-    gen_config, patch_worker_ca, sanitize_kubeconfig, write_gen_config, DEFAULT_K8S_VERSION,
-    DEFAULT_POD_SUBNET, DEFAULT_SERVICE_SUBNET,
+    gen_config, gen_config_ha, patch_worker_ca, sanitize_kubeconfig, write_gen_config,
+    write_gen_config_ha, DEFAULT_K8S_VERSION, DEFAULT_POD_SUBNET, DEFAULT_SERVICE_SUBNET,
 };
 use pertisk_proto::machine_service_client::MachineServiceClient;
 use pertisk_proto::{
-    ApplyConfigurationRequest, BootstrapRequest, HealthRequest, KubeconfigRequest, LogsRequest,
-    MarkBootGoodRequest, RebootRequest, ServiceListRequest, ShutdownRequest, UpgradeRequest,
-    UpgradeStatusRequest, VersionRequest,
+    ApplyConfigurationRequest, BootstrapRequest, GetJoinConfigRequest, HealthRequest,
+    JoinControlPlaneRequest, KubeconfigRequest, LogsRequest, MarkBootGoodRequest, RebootRequest,
+    ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest, VersionRequest,
 };
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
@@ -85,12 +85,24 @@ enum Commands {
         pod_subnet: String,
         #[arg(long, default_value = DEFAULT_SERVICE_SUBNET)]
         service_subnet: String,
+        /// Number of control-plane YAMLs to emit (HA). Default 1.
+        #[arg(long, default_value_t = 1)]
+        controlplanes: u32,
     },
     /// Bootstrap the first control-plane (PKI + static pods).
     Bootstrap {
         /// Optional advertise address (node IPv4).
         #[arg(long)]
         advertise_address: Option<String>,
+    },
+    /// Join this node as an additional stacked control plane.
+    JoinControlplane {
+        /// Optional advertise address (node IPv4).
+        #[arg(long)]
+        advertise_address: Option<String>,
+        /// Existing etcd member client URL(s), e.g. https://10.1.1.10:2379
+        #[arg(long = "etcd-endpoints", required = true)]
+        etcd_endpoints: Vec<String>,
     },
     /// Fetch admin kubeconfig from a bootstrapped control-plane.
     Kubeconfig {
@@ -102,6 +114,24 @@ enum Commands {
         /// Worker machine config to patch (must already contain token + endpoint).
         #[arg(short = 'f', long)]
         file: PathBuf,
+    },
+    /// Fetch join configs (worker and/or controlplane with shared secrets).
+    GetJoinConfig {
+        /// Also emit controlplane-join YAML with caKey/saKey.
+        #[arg(long)]
+        controlplane: bool,
+        /// CP index for hostname (default 2 when --controlplane).
+        #[arg(long, default_value_t = 0)]
+        controlplane_index: u32,
+        /// Cluster name prefix (default: strip -cp-N from applied hostname).
+        #[arg(long, default_value = "")]
+        cluster_name: String,
+        /// Write worker YAML here (optional).
+        #[arg(long)]
+        worker_out: Option<PathBuf>,
+        /// Write controlplane-join YAML here (requires --controlplane).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
     },
     Reboot,
     Shutdown,
@@ -138,6 +168,9 @@ enum GenCommands {
         pod_subnet: String,
         #[arg(long, default_value = DEFAULT_SERVICE_SUBNET)]
         service_subnet: String,
+        /// Number of control-plane YAMLs to emit (HA). Default 1.
+        #[arg(long, default_value_t = 1)]
+        controlplanes: u32,
     },
 }
 
@@ -223,6 +256,7 @@ async fn main() -> Result<()> {
                     ref kubernetes_version,
                     ref pod_subnet,
                     ref service_subnet,
+                    controlplanes,
                 },
         }
         | Commands::GenConfig {
@@ -232,20 +266,39 @@ async fn main() -> Result<()> {
             ref kubernetes_version,
             ref pod_subnet,
             ref service_subnet,
+            controlplanes,
         } => {
-            let gen = gen_config(
-                cluster_name,
-                endpoint,
-                kubernetes_version,
-                pod_subnet,
-                service_subnet,
-            )?;
-            write_gen_config(output, &gen)?;
-            println!(
-                "wrote {}/controlplane.yaml + worker.yaml (token {})",
-                output.display(),
-                gen.token
-            );
+            if controlplanes <= 1 {
+                let gen = gen_config(
+                    cluster_name,
+                    endpoint,
+                    kubernetes_version,
+                    pod_subnet,
+                    service_subnet,
+                )?;
+                write_gen_config(output, &gen)?;
+                println!(
+                    "wrote {}/controlplane.yaml + worker.yaml (token {})",
+                    output.display(),
+                    gen.token
+                );
+            } else {
+                let gen = gen_config_ha(
+                    cluster_name,
+                    endpoint,
+                    controlplanes,
+                    kubernetes_version,
+                    pod_subnet,
+                    service_subnet,
+                )?;
+                write_gen_config_ha(output, &gen)?;
+                println!(
+                    "wrote {} control-plane YAMLs + worker.yaml (token {}) endpoint {}",
+                    gen.controlplane_yamls.len(),
+                    gen.token,
+                    gen.endpoint
+                );
+            }
         }
         Commands::Bootstrap {
             ref advertise_address,
@@ -266,6 +319,27 @@ async fn main() -> Result<()> {
                 anyhow::bail!("{}", resp.message);
             }
         }
+        Commands::JoinControlplane {
+            ref advertise_address,
+            ref etcd_endpoints,
+        } => {
+            let mut client = connect(&cli).await?;
+            let resp = client
+                .join_control_plane(JoinControlPlaneRequest {
+                    advertise_address: advertise_address.clone().unwrap_or_default(),
+                    etcd_endpoints: etcd_endpoints.clone(),
+                })
+                .await?
+                .into_inner();
+            if resp.ok {
+                println!(
+                    "join-controlplane ok already={} — {}",
+                    resp.already_joined, resp.message
+                );
+            } else {
+                anyhow::bail!("{}", resp.message);
+            }
+        }
         Commands::Kubeconfig { ref file } => {
             let mut client = connect(&cli).await?;
             let resp = client.kubeconfig(KubeconfigRequest {}).await?.into_inner();
@@ -277,8 +351,6 @@ async fn main() -> Result<()> {
             let mut client = connect(&cli).await?;
             let resp = client.kubeconfig(KubeconfigRequest {}).await?.into_inner();
             let kc = sanitize_kubeconfig(&resp.kubeconfig);
-            // Prefer ca.crt from node STATE via a second call path: parse from kubeconfig CA data
-            // or use BootstrapResult — here decode certificate-authority-data if present.
             let ca = extract_ca_from_kubeconfig(&kc)
                 .context("CA missing from kubeconfig; is the CP bootstrapped?")?;
             let yaml = std::fs::read_to_string(file)
@@ -286,6 +358,42 @@ async fn main() -> Result<()> {
             let patched = patch_worker_ca(&yaml, &ca)?;
             std::fs::write(file, patched).with_context(|| format!("write {}", file.display()))?;
             println!("patched CA into {}", file.display());
+        }
+        Commands::GetJoinConfig {
+            controlplane,
+            controlplane_index,
+            ref cluster_name,
+            ref worker_out,
+            ref output,
+        } => {
+            let mut client = connect(&cli).await?;
+            let resp = client
+                .get_join_config(GetJoinConfigRequest {
+                    controlplane,
+                    controlplane_index,
+                    cluster_name: cluster_name.clone(),
+                })
+                .await?
+                .into_inner();
+            if !resp.ok {
+                anyhow::bail!("{}", resp.message);
+            }
+            if let Some(path) = worker_out {
+                std::fs::write(path, &resp.worker_yaml)
+                    .with_context(|| format!("write {}", path.display()))?;
+                println!("wrote worker {}", path.display());
+            }
+            if controlplane {
+                let path = output
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("controlplane-join.yaml"));
+                std::fs::write(&path, &resp.controlplane_yaml)
+                    .with_context(|| format!("write {}", path.display()))?;
+                println!("wrote controlplane {}", path.display());
+            }
+            if !resp.etcd_endpoints.is_empty() {
+                println!("etcd_endpoints={}", resp.etcd_endpoints.join(","));
+            }
         }
         Commands::Reboot => {
             let mut client = connect(&cli).await?;

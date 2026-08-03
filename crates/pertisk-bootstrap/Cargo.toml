@@ -11,7 +11,9 @@ anyhow = { workspace = true }
 base64 = "0.22"
 pertisk-config = { workspace = true }
 rand = "0.8"
-rcgen = "0.13"
+etcd-client = { version = "0.14", default-features = false, features = ["tls"] }
+rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
+tokio = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
 serde = { workspace = true }

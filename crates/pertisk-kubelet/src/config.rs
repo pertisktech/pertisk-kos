@@ -189,6 +189,7 @@ mod tests {
             kubernetes_version: None,
             pod_cidr: Some("10.244.0.0/24".into()),
             cni: Default::default(),
+            cert_sans: vec![],
         };
         write_kubeconfig(&paths, &cluster).unwrap();
         write_kubelet_config(&paths, Some("node-1"), true).unwrap();

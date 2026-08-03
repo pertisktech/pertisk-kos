@@ -165,6 +165,9 @@ pub struct Cluster {
     /// Pod networking mode: `bridge` (built-in) or `none` (Flannel/Cilium/etc.).
     #[serde(default)]
     pub cni: CniMode,
+    /// Extra apiserver (and etcd) certificate SANs — VIP, extra DNS names, CP IPs.
+    #[serde(default, rename = "certSANs")]
+    pub cert_sans: Vec<String>,
 }
 
 /// How pod networking is provided on the node.

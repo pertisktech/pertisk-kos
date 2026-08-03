@@ -19,6 +19,60 @@ pub struct GenConfigOutput {
     pub worker_yaml: String,
 }
 
+pub struct GenConfigHaOutput {
+    pub cluster_name: String,
+    pub endpoint: String,
+    pub token: String,
+    pub controlplane_yamls: Vec<(String, String)>, // (filename, yaml)
+    pub worker_yaml: String,
+}
+
+fn normalize_endpoint(endpoint: &str) -> String {
+    let e = endpoint.trim();
+    if e.starts_with("https://") || e.starts_with("http://") {
+        e.to_string()
+    } else {
+        format!("https://{e}")
+    }
+}
+
+fn endpoint_host(endpoint: &str) -> String {
+    endpoint
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or(endpoint)
+        .split(':')
+        .next()
+        .unwrap_or(endpoint)
+        .to_string()
+}
+
+fn base_cluster(
+    endpoint: String,
+    token: String,
+    pod_subnet: &str,
+    service_subnet: &str,
+    kubernetes_version: &str,
+    cert_sans: Vec<String>,
+) -> Cluster {
+    Cluster {
+        endpoint,
+        token: Some(token),
+        ca: None,
+        ca_key: None,
+        sa_key: None,
+        pod_subnet: Some(pod_subnet.into()),
+        service_subnet: Some(service_subnet.into()),
+        kubernetes_version: Some(kubernetes_version.into()),
+        pod_cidr: None,
+        cni: CniMode::None,
+        cert_sans,
+    }
+}
+
 /// Generate controlplane + worker machine configs (CA filled after bootstrap).
 pub fn gen_config(
     cluster_name: &str,
@@ -29,6 +83,12 @@ pub fn gen_config(
 ) -> Result<GenConfigOutput> {
     let token = generate_bootstrap_token();
     let endpoint = normalize_endpoint(endpoint);
+    let host = endpoint_host(&endpoint);
+    let cert_sans = if host.parse::<std::net::IpAddr>().is_ok() {
+        vec![host]
+    } else {
+        vec![]
+    };
 
     let cp = MachineConfig {
         version: CONFIG_VERSION.into(),
@@ -47,18 +107,14 @@ pub fn gen_config(
             install: None,
             dashboard: Some(Dashboard::builtin()),
         },
-        cluster: Some(Cluster {
-            endpoint: endpoint.clone(),
-            token: Some(token.clone()),
-            ca: None,
-            ca_key: None,
-            sa_key: None,
-            pod_subnet: Some(pod_subnet.into()),
-            service_subnet: Some(service_subnet.into()),
-            kubernetes_version: Some(kubernetes_version.into()),
-            pod_cidr: None,
-            cni: CniMode::None,
-        }),
+        cluster: Some(base_cluster(
+            endpoint.clone(),
+            token.clone(),
+            pod_subnet,
+            service_subnet,
+            kubernetes_version,
+            cert_sans.clone(),
+        )),
     };
 
     let worker = MachineConfig {
@@ -78,18 +134,14 @@ pub fn gen_config(
             install: None,
             dashboard: Some(Dashboard::builtin()),
         },
-        cluster: Some(Cluster {
-            endpoint: endpoint.clone(),
-            token: Some(token.clone()),
-            ca: None, // fill via `pertiskctl join-config` after bootstrap
-            ca_key: None,
-            sa_key: None,
-            pod_subnet: Some(pod_subnet.into()),
-            service_subnet: Some(service_subnet.into()),
-            kubernetes_version: Some(kubernetes_version.into()),
-            pod_cidr: None,
-            cni: CniMode::None,
-        }),
+        cluster: Some(base_cluster(
+            endpoint.clone(),
+            token.clone(),
+            pod_subnet,
+            service_subnet,
+            kubernetes_version,
+            cert_sans,
+        )),
     };
 
     Ok(GenConfigOutput {
@@ -97,6 +149,98 @@ pub fn gen_config(
         endpoint,
         token,
         controlplane_yaml: serde_yaml::to_string(&cp)?,
+        worker_yaml: serde_yaml::to_string(&worker)?,
+    })
+}
+
+/// Generate N control-plane YAMLs + one worker template for HA labs.
+pub fn gen_config_ha(
+    cluster_name: &str,
+    endpoint: &str,
+    controlplanes: u32,
+    kubernetes_version: &str,
+    pod_subnet: &str,
+    service_subnet: &str,
+) -> Result<GenConfigHaOutput> {
+    if controlplanes == 0 {
+        anyhow::bail!("controlplanes must be >= 1");
+    }
+    let token = generate_bootstrap_token();
+    let endpoint = normalize_endpoint(endpoint);
+    let host = endpoint_host(&endpoint);
+    let mut cert_sans = Vec::new();
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        cert_sans.push(host);
+    }
+
+    let mut controlplane_yamls = Vec::new();
+    for i in 1..=controlplanes {
+        let cp = MachineConfig {
+            version: CONFIG_VERSION.into(),
+            machine: Machine {
+                machine_type: MachineType::Controlplane,
+                network: Network {
+                    hostname: Some(format!("{cluster_name}-cp-{i}")),
+                    interfaces: vec![Interface {
+                        interface: "eth0".into(),
+                        dhcp: true,
+                        addresses: vec![],
+                        gateway: None,
+                    }],
+                    nameservers: vec!["1.1.1.1".into()],
+                },
+                install: None,
+                dashboard: Some(Dashboard::builtin()),
+            },
+            cluster: Some(base_cluster(
+                endpoint.clone(),
+                token.clone(),
+                pod_subnet,
+                service_subnet,
+                kubernetes_version,
+                cert_sans.clone(),
+            )),
+        };
+        let name = if i == 1 {
+            "controlplane.yaml".into()
+        } else {
+            format!("controlplane-{i}.yaml")
+        };
+        controlplane_yamls.push((name, serde_yaml::to_string(&cp)?));
+    }
+
+    let worker = MachineConfig {
+        version: CONFIG_VERSION.into(),
+        machine: Machine {
+            machine_type: MachineType::Worker,
+            network: Network {
+                hostname: Some(format!("{cluster_name}-wk-1")),
+                interfaces: vec![Interface {
+                    interface: "eth0".into(),
+                    dhcp: true,
+                    addresses: vec![],
+                    gateway: None,
+                }],
+                nameservers: vec!["1.1.1.1".into()],
+            },
+            install: None,
+            dashboard: Some(Dashboard::builtin()),
+        },
+        cluster: Some(base_cluster(
+            endpoint.clone(),
+            token.clone(),
+            pod_subnet,
+            service_subnet,
+            kubernetes_version,
+            cert_sans,
+        )),
+    };
+
+    Ok(GenConfigHaOutput {
+        cluster_name: cluster_name.into(),
+        endpoint,
+        token,
+        controlplane_yamls,
         worker_yaml: serde_yaml::to_string(&worker)?,
     })
 }
@@ -123,22 +267,53 @@ pub fn write_gen_config(out_dir: &Path, gen: &GenConfigOutput) -> Result<()> {
     Ok(())
 }
 
-fn normalize_endpoint(endpoint: &str) -> String {
-    let e = endpoint.trim();
-    if e.starts_with("https://") || e.starts_with("http://") {
-        e.to_string()
-    } else {
-        format!("https://{e}")
+pub fn write_gen_config_ha(out_dir: &Path, gen: &GenConfigHaOutput) -> Result<()> {
+    fs::create_dir_all(out_dir)?;
+    for (name, yaml) in &gen.controlplane_yamls {
+        fs::write(out_dir.join(name), yaml).with_context(|| format!("write {name}"))?;
     }
+    fs::write(out_dir.join("worker.yaml"), &gen.worker_yaml).context("write worker.yaml")?;
+    fs::write(
+        out_dir.join("README.txt"),
+        format!(
+            "cluster: {}\nendpoint: {}\ntoken: {}\ncontrolplanes: {}\n\n\
+             HA (stacked etcd + kube-vip when endpoint VIP ≠ node IP):\n\
+             1) Apply controlplane.yaml to CP1; pertiskctl bootstrap -e <cp1>:50000\n\
+             2) pertiskctl get-join-config -e <cp1>:50000 --controlplane -o controlplane-join.yaml\n\
+             3) For each extra CP: set hostname, apply YAML, join-controlplane --etcd-endpoints https://<cp1>:2379\n\
+             4) join-config workers; install CNI with k8sServiceHost=<VIP>\n",
+            gen.cluster_name,
+            gen.endpoint,
+            gen.token,
+            gen.controlplane_yamls.len()
+        ),
+    )?;
+    Ok(())
 }
 
 /// Patch worker YAML with CA PEM from bootstrap (keeps existing token).
-/// Fills built-in dashboard when the file omits it (same as apply).
 pub fn patch_worker_ca(worker_yaml: &str, ca_pem: &str) -> Result<String> {
     let mut cfg = MachineConfig::from_yaml(worker_yaml)?;
     cfg.resolve_dashboard(None);
     if let Some(ref mut c) = cfg.cluster {
         c.ca = Some(ca_pem.trim().to_string());
+    }
+    Ok(serde_yaml::to_string(&cfg)?)
+}
+
+/// Fill ca/caKey/saKey (+ optional ca-only for workers) into a controlplane join YAML.
+pub fn patch_controlplane_secrets(
+    cp_yaml: &str,
+    ca_pem: &str,
+    ca_key_pem: &str,
+    sa_key_pem: &str,
+) -> Result<String> {
+    let mut cfg = MachineConfig::from_yaml(cp_yaml)?;
+    cfg.resolve_dashboard(None);
+    if let Some(ref mut c) = cfg.cluster {
+        c.ca = Some(ca_pem.trim().to_string());
+        c.ca_key = Some(ca_key_pem.trim().to_string());
+        c.sa_key = Some(sa_key_pem.trim().to_string());
     }
     Ok(serde_yaml::to_string(&cfg)?)
 }

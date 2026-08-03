@@ -4,6 +4,8 @@ mod addons;
 mod api;
 mod coredns;
 mod gen;
+mod join;
+mod kube_vip;
 mod kubeconfig;
 mod manifests;
 mod paths;
@@ -21,7 +23,11 @@ use anyhow::{bail, Context, Result};
 use pertisk_config::{MachineConfig, MachineType};
 use tracing::info;
 
-pub use gen::{gen_config, patch_worker_ca, write_gen_config, GenConfigOutput};
+pub use gen::{
+    gen_config, gen_config_ha, patch_controlplane_secrets, patch_worker_ca, write_gen_config,
+    write_gen_config_ha, GenConfigHaOutput, GenConfigOutput,
+};
+pub use join::{get_join_config, join_control_plane, JoinConfigResult, JoinControlPlaneResult};
 pub use kubeconfig::sanitize_kubeconfig;
 pub use paths::BootstrapPaths;
 pub use token::generate_bootstrap_token;
@@ -94,7 +100,16 @@ pub fn bootstrap_control_plane(
 
     info!(%advertise, %hostname, %k8s_ver, "generating control-plane PKI");
     let kubernetes_svc_ip = kubernetes_service_ip(service_subnet);
-    let pki = pki::generate_pki(&advertise, &hostname, &endpoint_host, &kubernetes_svc_ip)?;
+    let pki = pki::generate_pki_with_optional_existing(
+        &advertise,
+        &hostname,
+        &endpoint_host,
+        &kubernetes_svc_ip,
+        &cluster.cert_sans,
+        cluster.ca.as_deref(),
+        cluster.ca_key.as_deref(),
+        cluster.sa_key.as_deref(),
+    )?;
     pki::write_pki(&paths.pki(), &paths.etcd_pki(), &pki)?;
 
     let admin = kubeconfig::render_kubeconfig(
@@ -134,6 +149,7 @@ pub fn bootstrap_control_plane(
     );
 
     fs::write(paths.admin_kubeconfig(), &admin)?;
+    fs::write(paths.admin_local_kubeconfig(), &local_admin)?;
     fs::write(
         paths.kubeconfig_dir().join("controller-manager.conf"),
         &cm_conf,
@@ -153,16 +169,27 @@ pub fn bootstrap_control_plane(
     publish_kubelet_credentials(&kubelet_conf, &pki.ca_crt)?;
 
     let pki_live = live.join("pki");
+    let etcd_initial_cluster = format!("{hostname}=https://{advertise}:2380");
     static_pods::write_static_pods(
         &paths.manifests(),
         &static_pods::StaticPodParams {
             advertise_ip: &advertise,
+            hostname: &hostname,
             kubernetes_version: k8s_ver,
             etcd_image: DEFAULT_ETCD_IMAGE,
             service_cidr: service_subnet,
             pod_subnet,
             pki_host_path: "/etc/kubernetes/pki",
+            etcd_initial_cluster: &etcd_initial_cluster,
+            etcd_initial_cluster_state: "new",
         },
+    )?;
+    let vip = kube_vip::vip_from_endpoint_host(&endpoint_host);
+    let _ = kube_vip::maybe_write_kube_vip(
+        &paths.manifests(),
+        vip,
+        &advertise,
+        kube_vip::DEFAULT_KUBE_VIP_INTERFACE,
     )?;
     paths.link_live()?;
     // Ensure pki is present at live path (symlink or copy).
@@ -284,7 +311,7 @@ pub fn restore_control_plane(state_root: &Path) -> Result<bool> {
     Ok(true)
 }
 
-fn endpoint_host(endpoint: &str) -> String {
+pub(crate) fn endpoint_host(endpoint: &str) -> String {
     endpoint
         .trim()
         .trim_start_matches("https://")
@@ -298,7 +325,7 @@ fn endpoint_host(endpoint: &str) -> String {
         .to_string()
 }
 
-fn detect_advertise_ip() -> Option<String> {
+pub(crate) fn detect_advertise_ip() -> Option<String> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
     sock.connect("1.1.1.1:80").ok()?;
     let ip = sock.local_addr().ok()?.ip();
@@ -309,7 +336,7 @@ fn detect_advertise_ip() -> Option<String> {
 }
 
 /// First usable address in the service CIDR (kubeadm: `kubernetes` Service ClusterIP).
-fn kubernetes_service_ip(service_cidr: &str) -> String {
+pub(crate) fn kubernetes_service_ip(service_cidr: &str) -> String {
     let cidr = service_cidr.split('/').next().unwrap_or("10.96.0.0");
     if let Ok(std::net::IpAddr::V4(v4)) = cidr.parse() {
         let o = v4.octets();
@@ -319,7 +346,7 @@ fn kubernetes_service_ip(service_cidr: &str) -> String {
     "10.96.0.1".into()
 }
 
-fn chrono_like_now() -> String {
+pub(crate) fn chrono_like_now() -> String {
     use std::time::SystemTime;
     match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
         Ok(d) => format!("{}s", d.as_secs()),
@@ -327,7 +354,7 @@ fn chrono_like_now() -> String {
     }
 }
 
-fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+pub(crate) fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
@@ -348,7 +375,7 @@ fn apiserver_tcp_ready(timeout: Duration) -> bool {
 }
 
 /// After apiserver is healthy: bootstrap-token Secret, join RBAC, CP node label.
-fn finalize_bootstrap_when_ready(
+pub(crate) fn finalize_bootstrap_when_ready(
     admin_kubeconfig: &Path,
     token: Option<&str>,
     node_name: &str,

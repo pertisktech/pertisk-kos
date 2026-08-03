@@ -14,7 +14,8 @@
 #
 # Pertisk has no kube-proxy — enable kubeProxyReplacement (+ bpf.masquerade).
 # Also set k8sServiceHost/Port to the real apiserver (ClusterIP unreachable
-# until Cilium is up).
+# until Cilium is up). For HA labs use the kube-vip address, not a single CP IP:
+#   --set k8sServiceHost=$VIP
 #
 # Kernel: Alpine linux-virt builds nf_tables/vxlan/iptables/xfrm as **modules**.
 # Without `xfrm_user`, Cilium CrashLoops with `protocol not supported` (netlink

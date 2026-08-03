@@ -22,6 +22,10 @@ service MachineService {
   rpc Bootstrap(BootstrapRequest) returns (BootstrapResponse);
   // Fetch admin kubeconfig after bootstrap (control-plane only).
   rpc Kubeconfig(KubeconfigRequest) returns (KubeconfigResponse);
+  // Join this node as an additional stacked control plane (shared CA in config).
+  rpc JoinControlPlane(JoinControlPlaneRequest) returns (JoinControlPlaneResponse);
+  // Export worker + controlplane-join YAML (includes caKey/saKey) from a bootstrapped CP.
+  rpc GetJoinConfig(GetJoinConfigRequest) returns (GetJoinConfigResponse);
 }
 
 message VersionRequest {}
@@ -152,4 +156,35 @@ message KubeconfigRequest {}
 message KubeconfigResponse {
   // admin.conf YAML
   string kubeconfig = 1;
+}
+
+message JoinControlPlaneRequest {
+  // Optional advertise IP (defaults to first non-loopback IPv4 on the node).
+  string advertise_address = 1;
+  // Existing etcd member client URLs, e.g. https://10.1.1.10:2379
+  repeated string etcd_endpoints = 2;
+}
+
+message JoinControlPlaneResponse {
+  bool ok = 1;
+  string message = 2;
+  bool already_joined = 3;
+}
+
+message GetJoinConfigRequest {
+  // When true, include controlplane-join YAML with caKey/saKey.
+  bool controlplane = 1;
+  // Hostname index for generated CP YAML (e.g. 2 → <cluster>-cp-2). 0 = generic.
+  uint32 controlplane_index = 2;
+  // Cluster name prefix for hostnames (default from applied hostname prefix).
+  string cluster_name = 3;
+}
+
+message GetJoinConfigResponse {
+  bool ok = 1;
+  string message = 2;
+  string worker_yaml = 3;
+  string controlplane_yaml = 4;
+  repeated string etcd_endpoints = 5;
+  string ca_pem = 6;
 }

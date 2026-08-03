@@ -259,13 +259,17 @@ Still manual / incomplete:
 
 **Later (Talos / Omni parity)**
 
-- Stacked etcd HA (3 CP)
-- etcd snapshot
+- etcd snapshot / restore
 - Proxmox provider automation + Omni-like web
 - container/CRI introspection
 - net / disk inspect
 - reset / wipe
 - dashboard events stream
+
+**Done (HA)**
+
+- Stacked etcd HA (3 CP) + kube-vip ARP VIP + `pertiskctl join-controlplane` / `get-join-config`
+- Lab: `proxmox-lab-up.sh --controlplanes 3 --vip <IP>`
 
 ---
 

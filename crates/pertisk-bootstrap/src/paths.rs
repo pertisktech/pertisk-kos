@@ -35,6 +35,11 @@ impl BootstrapPaths {
     pub fn admin_kubeconfig(&self) -> PathBuf {
         self.kubeconfig_dir().join("admin.conf")
     }
+    /// Loopback admin kubeconfig for on-node consumers (kube-vip, static pods).
+    /// Distinct from [`Self::admin_kubeconfig`], which may point at the VIP.
+    pub fn admin_local_kubeconfig(&self) -> PathBuf {
+        self.kubeconfig_dir().join("admin.local.conf")
+    }
     pub fn marker(&self) -> PathBuf {
         self.root.join("BOOTSTRAPPED")
     }
@@ -85,17 +90,21 @@ impl BootstrapPaths {
             }
         }
         // Kubeconfigs live on ephemeral /etc — always re-copy from STATE.
-        for name in [
-            "admin.conf",
-            "controller-manager.conf",
-            "scheduler.conf",
-            "kubelet.conf",
+        // Live admin.conf must be loopback so kube-vip can elect before the VIP exists.
+        let admin_src = if self.admin_local_kubeconfig().is_file() {
+            self.admin_local_kubeconfig()
+        } else {
+            self.admin_kubeconfig()
+        };
+        for (src, name) in [
+            (admin_src, "admin.conf"),
+            (
+                self.kubeconfig_dir().join("controller-manager.conf"),
+                "controller-manager.conf",
+            ),
+            (self.kubeconfig_dir().join("scheduler.conf"), "scheduler.conf"),
+            (self.kubeconfig_dir().join("kubelet.conf"), "kubelet.conf"),
         ] {
-            let src = if name == "admin.conf" {
-                self.admin_kubeconfig()
-            } else {
-                self.kubeconfig_dir().join(name)
-            };
             if !src.is_file() {
                 continue;
             }

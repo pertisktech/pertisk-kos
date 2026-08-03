@@ -5,15 +5,18 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::MutexGuard;
 
-use pertisk_bootstrap::{bootstrap_control_plane, read_admin_kubeconfig};
+use pertisk_bootstrap::{
+    bootstrap_control_plane, get_join_config, join_control_plane, read_admin_kubeconfig,
+};
 use pertisk_config::MachineConfig;
 use pertisk_proto::machine_service_server::{MachineService, MachineServiceServer};
 use pertisk_proto::{
     ApplyConfigurationRequest, ApplyConfigurationResponse, BootstrapRequest, BootstrapResponse,
-    HealthRequest, HealthResponse, KubeconfigRequest, KubeconfigResponse, LogsRequest,
-    LogsResponse, MarkBootGoodRequest, MarkBootGoodResponse, RebootRequest, RebootResponse,
-    ServiceListRequest, ServiceListResponse, ServiceStatus, ShutdownRequest, ShutdownResponse,
-    UpgradeRequest, UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse,
+    GetJoinConfigRequest, GetJoinConfigResponse, HealthRequest, HealthResponse,
+    JoinControlPlaneRequest, JoinControlPlaneResponse, KubeconfigRequest, KubeconfigResponse,
+    LogsRequest, LogsResponse, MarkBootGoodRequest, MarkBootGoodResponse, RebootRequest,
+    RebootResponse, ServiceListRequest, ServiceListResponse, ServiceStatus, ShutdownRequest,
+    ShutdownResponse, UpgradeRequest, UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse,
     ValidateConfigurationResponse, VersionRequest, VersionResponse,
 };
 use pertisk_update::{apply_bundle, mark_boot_good, BootMeta, SlotLayout};
@@ -334,6 +337,105 @@ impl MachineService for MachineSvc {
         let kubeconfig = read_admin_kubeconfig(&state_root)
             .map_err(|e| Status::failed_precondition(e.to_string()))?;
         Ok(Response::new(KubeconfigResponse { kubeconfig }))
+    }
+
+    async fn join_control_plane(
+        &self,
+        request: Request<JoinControlPlaneRequest>,
+    ) -> Result<Response<JoinControlPlaneResponse>, Status> {
+        let req = request.into_inner();
+        let (state_root, config_path) = {
+            let st = lock(&self.state)?;
+            (st.state_root.clone(), st.config_path.clone())
+        };
+        let yaml = fs::read_to_string(&config_path).map_err(|e| {
+            Status::failed_precondition(format!(
+                "read config {}: {e}; apply a controlplane join config first",
+                config_path.display()
+            ))
+        })?;
+        let cfg =
+            MachineConfig::from_yaml(&yaml).map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let adv = if req.advertise_address.is_empty() {
+            None
+        } else {
+            Some(req.advertise_address.as_str())
+        };
+        let result = join_control_plane(&state_root, &cfg, adv, &req.etcd_endpoints)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        {
+            let mut st = lock(&self.state)?;
+            st.message = result.message.clone();
+            st.kubelet_reload = true;
+        }
+        Ok(Response::new(JoinControlPlaneResponse {
+            ok: true,
+            message: result.message,
+            already_joined: result.already_joined,
+        }))
+    }
+
+    async fn get_join_config(
+        &self,
+        request: Request<GetJoinConfigRequest>,
+    ) -> Result<Response<GetJoinConfigResponse>, Status> {
+        let req = request.into_inner();
+        let (state_root, config_path) = {
+            let st = lock(&self.state)?;
+            (st.state_root.clone(), st.config_path.clone())
+        };
+        let yaml = fs::read_to_string(&config_path).map_err(|e| {
+            Status::failed_precondition(format!("read config {}: {e}", config_path.display()))
+        })?;
+        let cfg =
+            MachineConfig::from_yaml(&yaml).map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let cluster_name = if req.cluster_name.is_empty() {
+            let host = cfg
+                .machine
+                .network
+                .hostname
+                .as_deref()
+                .unwrap_or("pertisk");
+            strip_cp_suffix(host)
+        } else {
+            req.cluster_name.clone()
+        };
+        let idx = if req.controlplane {
+            if req.controlplane_index == 0 {
+                2
+            } else {
+                req.controlplane_index
+            }
+        } else {
+            0
+        };
+        let result = get_join_config(&state_root, &cfg, &cluster_name, idx)
+            .map_err(|e| Status::failed_precondition(e.to_string()))?;
+        let controlplane_yaml = if req.controlplane {
+            result.controlplane_yaml
+        } else {
+            String::new()
+        };
+        Ok(Response::new(GetJoinConfigResponse {
+            ok: true,
+            message: "ok".into(),
+            worker_yaml: result.worker_yaml,
+            controlplane_yaml,
+            etcd_endpoints: result.etcd_endpoints,
+            ca_pem: result.ca_pem,
+        }))
+    }
+}
+
+fn strip_cp_suffix(name: &str) -> String {
+    // lab-ha-cp-1 → lab-ha
+    if let Some(idx) = name.rfind("-cp-") {
+        name[..idx].to_string()
+    } else if let Some(stripped) = name.strip_suffix("-cp") {
+        stripped.to_string()
+    } else {
+        name.to_string()
     }
 }
 

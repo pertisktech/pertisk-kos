@@ -8,26 +8,29 @@ use serde_json::json;
 
 pub struct StaticPodParams<'a> {
     pub advertise_ip: &'a str,
+    pub hostname: &'a str,
     pub kubernetes_version: &'a str,
     pub etcd_image: &'a str,
     pub service_cidr: &'a str,
     pub pod_subnet: &'a str,
     pub pki_host_path: &'a str,
+    /// e.g. `cp-1=https://10.0.0.1:2380` or multi-member CSV for joiners.
+    pub etcd_initial_cluster: &'a str,
+    /// `new` (first CP) or `existing` (joined CP).
+    pub etcd_initial_cluster_state: &'a str,
 }
 
 pub fn write_static_pods(manifests_dir: &Path, p: &StaticPodParams<'_>) -> Result<()> {
     fs::create_dir_all(manifests_dir)?;
-    let k8s_ver = p.kubernetes_version.trim_start_matches('v');
     let ver = if p.kubernetes_version.starts_with('v') {
         p.kubernetes_version.to_string()
     } else {
         format!("v{}", p.kubernetes_version)
     };
-    let _ = k8s_ver;
 
     write_yaml(
         &manifests_dir.join("etcd.yaml"),
-        &etcd_pod(p.advertise_ip, p.etcd_image, p.pki_host_path),
+        &etcd_pod(p),
     )?;
     write_yaml(
         &manifests_dir.join("kube-apiserver.yaml"),
@@ -50,7 +53,9 @@ fn write_yaml(path: &Path, value: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-fn etcd_pod(advertise_ip: &str, image: &str, pki: &str) -> serde_json::Value {
+fn etcd_pod(p: &StaticPodParams<'_>) -> serde_json::Value {
+    let advertise_ip = p.advertise_ip;
+    let name = p.hostname;
     json!({
         "apiVersion": "v1",
         "kind": "Pod",
@@ -64,19 +69,20 @@ fn etcd_pod(advertise_ip: &str, image: &str, pki: &str) -> serde_json::Value {
             "priorityClassName": "system-node-critical",
             "containers": [{
                 "name": "etcd",
-                "image": image,
+                "image": p.etcd_image,
                 "command": [
                     "etcd",
-                    "--advertise-client-urls=https://127.0.0.1:2379",
+                    format!("--advertise-client-urls=https://{advertise_ip}:2379,https://127.0.0.1:2379"),
                     "--cert-file=/etc/kubernetes/pki/etcd/server.crt",
                     "--client-cert-auth=true",
                     "--data-dir=/var/lib/etcd",
-                    "--initial-advertise-peer-urls=https://127.0.0.1:2380",
-                    "--initial-cluster=etcd=https://127.0.0.1:2380",
+                    format!("--initial-advertise-peer-urls=https://{advertise_ip}:2380"),
+                    format!("--initial-cluster={}", p.etcd_initial_cluster),
+                    format!("--initial-cluster-state={}", p.etcd_initial_cluster_state),
                     format!("--listen-client-urls=https://127.0.0.1:2379,https://{advertise_ip}:2379"),
                     "--listen-metrics-urls=http://127.0.0.1:2381",
-                    "--listen-peer-urls=https://127.0.0.1:2380",
-                    "--name=etcd",
+                    format!("--listen-peer-urls=https://0.0.0.0:2380"),
+                    format!("--name={name}"),
                     "--peer-cert-file=/etc/kubernetes/pki/etcd/peer.crt",
                     "--peer-client-cert-auth=true",
                     "--peer-key-file=/etc/kubernetes/pki/etcd/peer.key",
@@ -92,7 +98,7 @@ fn etcd_pod(advertise_ip: &str, image: &str, pki: &str) -> serde_json::Value {
             }],
             "volumes": [
                 { "name": "etcd-data", "hostPath": { "path": "/var/lib/etcd", "type": "DirectoryOrCreate" } },
-                { "name": "pki", "hostPath": { "path": pki, "type": "Directory" } }
+                { "name": "pki", "hostPath": { "path": p.pki_host_path, "type": "Directory" } }
             ]
         }
     })
@@ -203,8 +209,6 @@ fn controller_manager_pod(
                 ],
                 "volumeMounts": [
                     { "name": "pki", "mountPath": "/etc/kubernetes/pki" },
-                    // File hostPath — avoids subPath (needs `mount`) and dir
-                    // mounts that expose broken absolute PKI symlinks.
                     {
                         "name": "kubeconfig",
                         "mountPath": "/etc/kubernetes/controller-manager.conf"
@@ -263,4 +267,35 @@ fn scheduler_pod(ver: &str, _pki: &str) -> serde_json::Value {
             }]
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn etcd_pod_uses_node_peer_urls() {
+        let dir = tempdir().unwrap();
+        write_static_pods(
+            dir.path(),
+            &StaticPodParams {
+                advertise_ip: "10.1.1.10",
+                hostname: "lab-cp-1",
+                kubernetes_version: "v1.36.3",
+                etcd_image: "registry.k8s.io/etcd:3.5.16-0",
+                service_cidr: "10.96.0.0/12",
+                pod_subnet: "10.244.0.0/16",
+                pki_host_path: "/etc/kubernetes/pki",
+                etcd_initial_cluster: "lab-cp-1=https://10.1.1.10:2380",
+                etcd_initial_cluster_state: "new",
+            },
+        )
+        .unwrap();
+        let etcd = fs::read_to_string(dir.path().join("etcd.yaml")).unwrap();
+        assert!(etcd.contains("--name=lab-cp-1"));
+        assert!(etcd.contains("https://10.1.1.10:2380"));
+        assert!(etcd.contains("--initial-cluster-state=new"));
+        assert!(etcd.contains("0.0.0.0:2380"));
+    }
 }

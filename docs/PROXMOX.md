@@ -199,7 +199,7 @@ Other boot tips:
 | Still UEFI shell | Confirm GPT has ESP; re-import cloud image |
 | ZFS import without SSH | Set `PROXMOX_SSH=root@pve` — API upload to `local-zfs` often leaves no disk |
 
-## 4. Talos-shaped cluster (1 CP + workers)
+## 4. Talos-shaped cluster (1 CP or HA)
 
 Same qcow2 for control-plane and workers. Prefer VMIDs **210+** so lab VM 200 is untouched.
 
@@ -210,6 +210,9 @@ make cloud ARCH=amd64   # embed boot + runtime as usual
 # Uses ./proxmox.sh for PROXMOX_* if not already exported (does not run its exec).
 ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
 # → 210 pertisk-cp-1, 211 pertisk-wk-1, 212 pertisk-wk-2
+
+# HA (3 CP + 2 workers): VMIDs 210–212 CP, 213–214 workers
+./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --controlplanes 3 --workers 2 --no-lab-up
 ```
 
 ### 4a-auto. One-shot lab (build → VMs → IPs → cluster → CNI)
@@ -220,6 +223,8 @@ make cloud ARCH=amd64   # embed boot + runtime as usual
 make lab-up ARCH=amd64
 # or skip rebuild / reuse VMs:
 ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cp-vmid 210 --workers 2 --cni cilium
+# HA (pick a free L2 IP for kube-vip):
+./scripts/proxmox-lab-up.sh --controlplanes 3 --vip 10.1.1.200 --workers 2 --cni cilium
 # or: --cni calico | --cni flannel
 # install an example app after CNI:
 APPS=examples/apps/nginx.yaml ./scripts/proxmox-lab-up.sh --skip-build --cni cilium
@@ -235,13 +240,24 @@ After DNS/addons, lab-up can install [optional reflector](../examples/addons/REA
 
 ```bash
 make pertiskctl
-# Use the CP guest IP (Serial / DHCP), not the VIP until HA exists:
+# Single CP: use the CP guest IP (Serial / DHCP):
 ./out/bin/pertiskctl gen config lab-ha https://<CP_IP>:6443 -o ./out/cluster
 
 ./out/bin/pertiskctl -e <CP_IP>:50000 apply -f ./out/cluster/controlplane.yaml
 ./out/bin/pertiskctl -e <CP_IP>:50000 bootstrap
 ./out/bin/pertiskctl -e <CP_IP>:50000 kubeconfig -f ./out/cluster/admin.conf
 ./out/bin/pertiskctl -e <CP_IP>:50000 join-config -f ./out/cluster/worker.yaml
+
+# HA: endpoint = VIP; bootstrap CP1, then join CP2/CP3:
+./out/bin/pertiskctl gen config lab-ha https://<VIP>:6443 -o ./out/cluster --controlplanes 3
+./out/bin/pertiskctl -e <CP1>:50000 apply -f ./out/cluster/controlplane.yaml
+./out/bin/pertiskctl -e <CP1>:50000 bootstrap
+./out/bin/pertiskctl -e <CP1>:50000 get-join-config --controlplane --controlplane-index 2 \
+  -o ./out/cluster/controlplane-2.yaml
+# edit hostname → lab-ha-cp-2, then:
+./out/bin/pertiskctl -e <CP2>:50000 apply -f ./out/cluster/controlplane-2.yaml
+./out/bin/pertiskctl -e <CP2>:50000 join-controlplane --etcd-endpoints https://<CP1>:2379
+# (repeat for CP3; kube-vip static pod owns the VIP)
 
 # Bootstrap finalizes (once apiserver is up): bootstrap-token Secret, node-join
 # RBAC, CP control-plane label/taint, CoreDNS, and metrics-server.
@@ -250,7 +266,7 @@ make pertiskctl
 # Per worker (edit hostname in a copy of worker.yaml):
 ./out/bin/pertiskctl -e <WK_IP>:50000 apply -f ./out/cluster/worker.yaml
 
-# CNI — see examples/cni/README.md
+# CNI — see examples/cni/README.md (use VIP as k8sServiceHost when HA)
 kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/cni/kube-flannel.yaml
 # Basic addons are already applied by bootstrap; re-apply if needed:
 kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/dns/coredns.yaml
@@ -261,7 +277,7 @@ kubectl apply --kubeconfig ./out/cluster/admin.conf \
 kubectl --kubeconfig ./out/cluster/admin.conf get nodes
 ```
 
-**Control-plane images:** static pods pull `registry.k8s.io/pause`, `etcd`, `kube-apiserver`, `kube-controller-manager`, `kube-scheduler` (default tag from `pertiskctl gen config -k`, currently `v1.36.3`). The guest needs outbound HTTPS to that registry **and** a system CA bundle (`/etc/ssl/certs/ca-certificates.crt` is embedded in the image). Corporate TLS interception requires injecting your proxy CA. See [COMPATIBILITY.md](./COMPATIBILITY.md). Keep the **embedded kubelet** (`make fetch-runtime`) on the same minor as `-k`.
+**Control-plane images:** static pods pull `registry.k8s.io/pause`, `etcd`, `kube-apiserver`, `kube-controller-manager`, `kube-scheduler` (default tag from `pertiskctl gen config -k`, currently `v1.36.3`). HA also pulls `ghcr.io/kube-vip/kube-vip` when `cluster.endpoint` is a VIP. The guest needs outbound HTTPS to that registry **and** a system CA bundle (`/etc/ssl/certs/ca-certificates.crt` is embedded in the image). Corporate TLS interception requires injecting your proxy CA. See [COMPATIBILITY.md](./COMPATIBILITY.md). Keep the **embedded kubelet** (`make fetch-runtime`) on the same minor as `-k`.
 
 ### 4c. Worker-only join (existing external CP)
 

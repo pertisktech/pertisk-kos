@@ -8,6 +8,7 @@
 # Examples:
 #   ./scripts/proxmox-lab-up.sh
 #   ./scripts/proxmox-lab-up.sh --skip-build --cni cilium --workers 2
+#   ./scripts/proxmox-lab-up.sh --controlplanes 3 --vip 10.1.1.200 --workers 2 --cni cilium
 #   ./scripts/proxmox-lab-up.sh --skip-build --cni calico
 #   ./scripts/proxmox-lab-up.sh --skip-build --cni flannel
 #   ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cp-vmid 210   # reuse VMs
@@ -23,6 +24,8 @@ CLUSTER_OUT="${ROOT}/out/cluster"
 DISK="${PROXMOX_DISK:-${ROOT}/out/pertisk-cloud-amd64.qcow2}"
 
 CP_VMID="${CP_VMID:-210}"
+CONTROLPLANES="${CONTROLPLANES:-1}"
+VIP="${VIP:-}"
 WORKERS="${WORKERS:-2}"
 NAME_PREFIX="${NAME_PREFIX:-pertisk}"
 CLUSTER_NAME="${CLUSTER_NAME:-lab-ha}"
@@ -45,21 +48,24 @@ usage() {
   cat <<EOF
 
 Flags:
-  --cp-vmid N       control-plane VMID (default ${CP_VMID})
-  --workers N       worker count (default ${WORKERS})
-  --prefix NAME     Proxmox VM name prefix (default ${NAME_PREFIX})
-  --cluster NAME    Kubernetes / hostname prefix (default ${CLUSTER_NAME})
-  --cni NAME        cilium|calico|flannel|none (default ${CNI})
-  --k8s VER         kubernetesVersion for gen config (default ${K8S_VER})
-  --disk PATH       cloud qcow2 (default ${DISK})
-  --skip-build      do not run make cloud
-  --skip-vms        do not create/recreate VMs (resolve IPs on existing VMIDs)
-  --skip-addons     skip optional reflector (CoreDNS + metrics-server always installed)
-  --subnet CIDR     ping-sweep fallback when ARP miss (e.g. 10.1.1.0/24)
+  --cp-vmid N         first control-plane VMID (default ${CP_VMID})
+  --controlplanes N   stacked CP count (default ${CONTROLPLANES}; >1 needs --vip)
+  --vip IP            kube-vip ARP address (required when --controlplanes > 1)
+  --workers N         worker count (default ${WORKERS})
+  --prefix NAME       Proxmox VM name prefix (default ${NAME_PREFIX})
+  --cluster NAME      Kubernetes / hostname prefix (default ${CLUSTER_NAME})
+  --cni NAME          cilium|calico|flannel|none (default ${CNI})
+  --k8s VER           kubernetesVersion for gen config (default ${K8S_VER})
+  --disk PATH         cloud qcow2 (default ${DISK})
+  --skip-build        do not run make cloud
+  --skip-vms          do not create/recreate VMs (resolve IPs on existing VMIDs)
+  --skip-addons       skip optional reflector (CoreDNS + metrics-server always installed)
+  --subnet CIDR       ping-sweep fallback when ARP miss (e.g. 10.1.1.0/24)
   -h, --help
 
 Env: PROXMOX_*, PROXMOX_SSH, APPS (space/comma-separated kubectl apply paths)
      CALICO_VERSION (default ${CALICO_VERSION})
+     CONTROLPLANES, VIP
 EOF
   exit 0
 }
@@ -67,6 +73,8 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cp-vmid) CP_VMID="$2"; shift 2 ;;
+    --controlplanes) CONTROLPLANES="$2"; shift 2 ;;
+    --vip) VIP="$2"; shift 2 ;;
     --workers) WORKERS="$2"; shift 2 ;;
     --prefix) NAME_PREFIX="$2"; shift 2 ;;
     --cluster) CLUSTER_NAME="$2"; shift 2 ;;
@@ -81,6 +89,15 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
 done
+
+if [[ "$CONTROLPLANES" -lt 1 ]]; then
+  echo "ERROR: --controlplanes must be >= 1" >&2
+  exit 1
+fi
+if [[ "$CONTROLPLANES" -gt 1 && -z "$VIP" ]]; then
+  echo "ERROR: --vip IP is required when --controlplanes > 1" >&2
+  exit 1
+fi
 
 # --- Proxmox env ---
 load_proxmox_sh() {
@@ -237,6 +254,69 @@ wait_api() {
   die "pertiskctl API not ready at ${ip}:50000"
 }
 
+# Rewrite kubeconfig server URL (portable; works on macOS/Linux).
+rewrite_kubeconfig_server() {
+  local kc="$1" url="$2"
+  python3 - "$kc" "$url" <<'PY'
+import sys
+path, url = sys.argv[1], sys.argv[2]
+text = open(path).read()
+out = []
+for line in text.splitlines(True):
+    if line.lstrip().startswith("server:"):
+        pad = line[: len(line) - len(line.lstrip())]
+        out.append(f"{pad}server: {url}\n")
+    else:
+        out.append(line)
+open(path, "w").write("".join(out))
+PY
+}
+
+# Wait for apiserver: always via a CP node IP first; then VIP when HA.
+wait_apiserver_ready() {
+  local kc="$1" cp_ip="$2" endpoint="$3"
+  local deadline tmpkc
+
+  # 1) Direct CP (kube-vip may still be pulling / electing).
+  tmpkc="${kc}.direct"
+  cp "$kc" "$tmpkc"
+  rewrite_kubeconfig_server "$tmpkc" "https://${cp_ip}:6443"
+  log "waiting for apiserver on CP ${cp_ip}:6443"
+  deadline=$((SECONDS + BOOTSTRAP_TIMEOUT))
+  until kubectl --kubeconfig "$tmpkc" get --raw=/readyz >/dev/null 2>&1; do
+    (( SECONDS < deadline )) || { rm -f "$tmpkc"; die "apiserver not ready on ${cp_ip}:6443"; }
+    sleep 3
+  done
+  log "apiserver ready on ${cp_ip}"
+
+  if [[ "$endpoint" == "$cp_ip" ]]; then
+    rm -f "$tmpkc"
+    return 0
+  fi
+
+  # 2) VIP (kube-vip ARP). Allow extra time for image pull + lease.
+  log "waiting for kube-vip ${endpoint}:6443"
+  deadline=$((SECONDS + BOOTSTRAP_TIMEOUT + 180))
+  until curl -sk --connect-timeout 2 "https://${endpoint}:6443/readyz" >/dev/null 2>&1; do
+    if (( SECONDS >= deadline )); then
+      log "WARNING: VIP ${endpoint} not up — falling back kubeconfig to ${cp_ip} (check kube-vip static pod)"
+      rewrite_kubeconfig_server "$kc" "https://${cp_ip}:6443"
+      API_ENDPOINT="$cp_ip"
+      rm -f "$tmpkc"
+      return 0
+    fi
+    sleep 5
+  done
+  log "apiserver ready on VIP ${endpoint}"
+  # Confirm kubectl via VIP kubeconfig
+  deadline=$((SECONDS + 60))
+  until kubectl --kubeconfig "$kc" get --raw=/readyz >/dev/null 2>&1; do
+    (( SECONDS < deadline )) || die "kubectl via VIP kubeconfig failed"
+    sleep 2
+  done
+  rm -f "$tmpkc"
+}
+
 set_hostname_yaml() {
   local src="$1" dest="$2" host="$3"
   # portable: replace first hostname: line under network
@@ -265,19 +345,35 @@ step_vms() {
     log "skip VM create (using existing VMIDs from ${CP_VMID})"
     return 0
   fi
-  log "creating cluster VMs"
-  PROXMOX_DISK="$DISK" "$CREATE_VMS" --no-lab-up --cp-vmid "$CP_VMID" --workers "$WORKERS" --prefix "$NAME_PREFIX" --disk "$DISK"
+  log "creating cluster VMs (controlplanes=${CONTROLPLANES} workers=${WORKERS})"
+  PROXMOX_DISK="$DISK" "$CREATE_VMS" --no-lab-up \
+    --cp-vmid "$CP_VMID" \
+    --controlplanes "$CONTROLPLANES" \
+    --workers "$WORKERS" \
+    --prefix "$NAME_PREFIX" \
+    --disk "$DISK"
 }
 
 step_resolve_ips() {
-  CP_IP="$(wait_ip "$CP_VMID" "${CLUSTER_NAME}-cp-1")"
+  CP_IPS=()
+  local i cvid
+  for i in $(seq 1 "$CONTROLPLANES"); do
+    cvid=$((CP_VMID + i - 1))
+    CP_IPS+=("$(wait_ip "$cvid" "${CLUSTER_NAME}-cp-${i}")")
+  done
+  CP_IP="${CP_IPS[0]}"
   WORKER_IPS=()
-  local i wvid
+  local wvid
   for i in $(seq 1 "$WORKERS"); do
-    wvid=$((CP_VMID + i))
+    wvid=$((CP_VMID + CONTROLPLANES + i - 1))
     WORKER_IPS+=("$(wait_ip "$wvid" "${CLUSTER_NAME}-wk-${i}")")
   done
-  log "CP=${CP_IP} workers=${WORKER_IPS[*]:-}"
+  if [[ "$CONTROLPLANES" -gt 1 ]]; then
+    API_ENDPOINT="$VIP"
+  else
+    API_ENDPOINT="$CP_IP"
+  fi
+  log "CPs=${CP_IPS[*]} VIP=${VIP:-none} API_ENDPOINT=${API_ENDPOINT} workers=${WORKER_IPS[*]:-}"
 }
 
 step_cluster() {
@@ -285,10 +381,11 @@ step_cluster() {
   [[ -x "$CTL" ]] || die "pertiskctl missing"
 
   mkdir -p "$CLUSTER_OUT"
-  log "gen config ${CLUSTER_NAME} https://${CP_IP}:6443"
-  "$CTL" gen config "$CLUSTER_NAME" "https://${CP_IP}:6443" -o "$CLUSTER_OUT" -k "$K8S_VER"
+  log "gen config ${CLUSTER_NAME} https://${API_ENDPOINT}:6443 (controlplanes=${CONTROLPLANES})"
+  "$CTL" gen config "$CLUSTER_NAME" "https://${API_ENDPOINT}:6443" \
+    -o "$CLUSTER_OUT" -k "$K8S_VER" --controlplanes "$CONTROLPLANES"
 
-  # Ensure CP hostname matches lab convention
+  # Ensure CP1 hostname matches lab convention
   set_hostname_yaml "$CLUSTER_OUT/controlplane.yaml" "$CLUSTER_OUT/controlplane.yaml.tmp" "${CLUSTER_NAME}-cp-1"
   mv "$CLUSTER_OUT/controlplane.yaml.tmp" "$CLUSTER_OUT/controlplane.yaml"
 
@@ -296,25 +393,49 @@ step_cluster() {
   log "apply controlplane → ${CP_IP}"
   "$CTL" -e "${CP_IP}:50000" apply -f "$CLUSTER_OUT/controlplane.yaml"
 
-  log "bootstrap"
+  log "bootstrap CP1"
   "$CTL" -e "${CP_IP}:50000" bootstrap
 
-  log "kubeconfig"
+  # Join additional control planes (stacked etcd + kube-vip).
+  local i ip host cpyaml etcd_ep
+  etcd_ep="https://${CP_IP}:2379"
+  for i in $(seq 2 "$CONTROLPLANES"); do
+    ip="${CP_IPS[$((i - 1))]}"
+    host="${CLUSTER_NAME}-cp-${i}"
+    cpyaml="${CLUSTER_OUT}/controlplane-${i}.yaml"
+    log "get-join-config for ${host}"
+    "$CTL" -e "${CP_IP}:50000" get-join-config \
+      --controlplane --controlplane-index "$i" --cluster-name "$CLUSTER_NAME" \
+      -o "$cpyaml"
+    set_hostname_yaml "$cpyaml" "${cpyaml}.tmp" "$host"
+    mv "${cpyaml}.tmp" "$cpyaml"
+    wait_api "$ip"
+    log "apply + join-controlplane ${host} @ ${ip}"
+    "$CTL" -e "${ip}:50000" apply -f "$cpyaml"
+    # apply reloads runtime; give Machine API a moment before the long join RPC
+    sleep 5
+    wait_api "$ip"
+    log "waiting for CP1 etcd ${etcd_ep} (join retries inside agent)"
+    local join_try=0
+    until "$CTL" -e "${ip}:50000" join-controlplane --etcd-endpoints "$etcd_ep"; do
+      join_try=$((join_try + 1))
+      (( join_try < 5 )) || die "join-controlplane failed for ${host} after ${join_try} attempts"
+      log "join-controlplane retry ${join_try}/5 for ${host}…"
+      sleep 10
+      wait_api "$ip"
+    done
+  done
+
+  log "kubeconfig (endpoint https://${API_ENDPOINT}:6443)"
   "$CTL" -e "${CP_IP}:50000" kubeconfig -f "$CLUSTER_OUT/admin.conf"
 
   log "join-config (fill CA)"
   "$CTL" -e "${CP_IP}:50000" join-config -f "$CLUSTER_OUT/worker.yaml"
 
-  # Wait for apiserver
-  local deadline
-  deadline=$((SECONDS + BOOTSTRAP_TIMEOUT))
-  until kubectl --kubeconfig "$CLUSTER_OUT/admin.conf" get --raw=/readyz >/dev/null 2>&1; do
-    (( SECONDS < deadline )) || die "apiserver not ready"
-    sleep 3
-  done
-  log "apiserver ready"
+  # Wait for apiserver on a CP node IP first (VIP needs kube-vip leader election).
+  wait_apiserver_ready "$CLUSTER_OUT/admin.conf" "$CP_IP" "$API_ENDPOINT"
 
-  local i ip host wyaml
+  local wyaml
   for i in $(seq 1 "$WORKERS"); do
     ip="${WORKER_IPS[$((i - 1))]}"
     host="${CLUSTER_NAME}-wk-${i}"
@@ -339,7 +460,7 @@ step_cni() {
       kubectl --kubeconfig "$kc" apply -f "${ROOT}/examples/cni/kube-flannel.yaml"
       # Reach apiserver before ClusterIP works (kube-proxy may still be syncing).
       kubectl --kubeconfig "$kc" -n kube-flannel set env ds/kube-flannel-ds \
-        KUBERNETES_SERVICE_HOST="${CP_IP}" \
+        KUBERNETES_SERVICE_HOST="${API_ENDPOINT}" \
         KUBERNETES_SERVICE_PORT=6443
       kubectl --kubeconfig "$kc" -n kube-flannel rollout status ds/kube-flannel-ds --timeout=5m 2>/dev/null \
         || echo "WARNING: flannel DS not Ready yet; check: kubectl --kubeconfig $kc -n kube-flannel get pods" >&2
@@ -356,7 +477,7 @@ step_cni() {
         CALICO_IPV4POOL_CIDR=10.244.0.0/16 \
         CALICO_IPV4POOL_IPIP=Never \
         CALICO_IPV4POOL_VXLAN=Always \
-        KUBERNETES_SERVICE_HOST="${CP_IP}" \
+        KUBERNETES_SERVICE_HOST="${API_ENDPOINT}" \
         KUBERNETES_SERVICE_PORT=6443
       kubectl --kubeconfig "$kc" -n kube-system rollout status ds/calico-node --timeout=5m 2>/dev/null \
         || echo "WARNING: calico-node not Ready yet; check: kubectl --kubeconfig $kc -n kube-system get pods -l k8s-app=calico-node" >&2
@@ -378,7 +499,7 @@ step_cni() {
         --set ipv6.enabled=false \
         --set bpf.masquerade=true \
         --set encryption.nodeEncryption=false \
-        --set k8sServiceHost="${CP_IP}" \
+        --set k8sServiceHost="${API_ENDPOINT}" \
         --set k8sServicePort=6443 \
         --set kubeProxyReplacement=true \
         --set operator.replicas=1 \
@@ -422,10 +543,10 @@ install_kube_proxy() {
   local kc="$1"
   local src="${ROOT}/examples/cni/kube-proxy.yaml"
   [[ -f "$src" ]] || die "missing $src"
-  log "install kube-proxy (apiserver ${CP_IP}:6443)"
+  log "install kube-proxy (apiserver ${API_ENDPOINT}:6443)"
   # Drop any leftover Cilium agent-not-ready taints if switching CNIs.
   kubectl --kubeconfig "$kc" taint nodes --all node.cilium.io/agent-not-ready- 2>/dev/null || true
-  sed "s/__KUBERNETES_SERVICE_HOST__/${CP_IP}/g" "$src" \
+  sed "s/__KUBERNETES_SERVICE_HOST__/${API_ENDPOINT}/g" "$src" \
     | sed "s|registry.k8s.io/kube-proxy:v1.36.3|registry.k8s.io/kube-proxy:${K8S_VER}|g" \
     | kubectl --kubeconfig "$kc" apply -f -
   kubectl --kubeconfig "$kc" -n kube-system rollout status ds/kube-proxy --timeout=3m 2>/dev/null \
@@ -580,10 +701,12 @@ step_summary() {
   cat <<EOF
 
 ======== lab-up complete ========
-CP:      ${CP_IP}:50000  (API)  /  https://${CP_IP}:6443
+CPs:     ${CP_IPS[*]:-$CP_IP}  (Machine API :50000)
+API:     https://${API_ENDPOINT}:6443${VIP:+ (kube-vip)}
 Workers: ${WORKER_IPS[*]:-}
 kubeconfig: ${kc}
 CNI: ${CNI}
+controlplanes: ${CONTROLPLANES}
 
   kubectl --kubeconfig ${kc} get nodes -o wide
   kubectl --kubeconfig ${kc} get pods -A
@@ -594,7 +717,7 @@ EOF
 }
 
 # --- run ---
-log "lab-up cluster=${CLUSTER_NAME} cp-vmid=${CP_VMID} workers=${WORKERS} cni=${CNI}"
+log "lab-up cluster=${CLUSTER_NAME} cp-vmid=${CP_VMID} controlplanes=${CONTROLPLANES} workers=${WORKERS} cni=${CNI} vip=${VIP:-none}"
 step_build
 step_vms
 step_resolve_ips
