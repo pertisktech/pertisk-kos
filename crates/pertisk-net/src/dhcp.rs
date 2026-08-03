@@ -60,13 +60,12 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
             .insert(DhcpOption::MessageType(MessageType::Discover));
         msg.opts_mut()
             .insert(DhcpOption::ClientIdentifier(client_id.clone()));
-        msg.opts_mut()
-            .insert(DhcpOption::ParameterRequestList(vec![
-                OptionCode::SubnetMask,
-                OptionCode::Router,
-                OptionCode::DomainNameServer,
-                OptionCode::DomainName,
-            ]));
+        msg.opts_mut().insert(DhcpOption::ParameterRequestList(vec![
+            OptionCode::SubnetMask,
+            OptionCode::Router,
+            OptionCode::DomainNameServer,
+            OptionCode::DomainName,
+        ]));
         let mut buf = Vec::new();
         msg.encode(&mut Encoder::new(&mut buf))
             .map_err(|e| NetError::Msg(format!("dhcp encode discover: {e}")))?;
@@ -138,13 +137,12 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
             .insert(DhcpOption::RequestedIpAddress(yiaddr));
         msg.opts_mut()
             .insert(DhcpOption::ServerIdentifier(server_ip));
-        msg.opts_mut()
-            .insert(DhcpOption::ParameterRequestList(vec![
-                OptionCode::SubnetMask,
-                OptionCode::Router,
-                OptionCode::DomainNameServer,
-                OptionCode::DomainName,
-            ]));
+        msg.opts_mut().insert(DhcpOption::ParameterRequestList(vec![
+            OptionCode::SubnetMask,
+            OptionCode::Router,
+            OptionCode::DomainNameServer,
+            OptionCode::DomainName,
+        ]));
         let mut buf = Vec::new();
         msg.encode(&mut Encoder::new(&mut buf))
             .map_err(|e| NetError::Msg(format!("dhcp encode request: {e}")))?;
@@ -253,8 +251,7 @@ fn ipv4_mask_to_prefix(mask: std::net::Ipv4Addr) -> Result<u8, NetError> {
     }
     let prefix = bits.count_ones() as u8;
     // Contiguous ones from the MSB.
-    if bits.leading_ones() != u32::from(prefix) || bits.trailing_zeros() != 32 - u32::from(prefix)
-    {
+    if bits.leading_ones() != u32::from(prefix) || bits.trailing_zeros() != 32 - u32::from(prefix) {
         return Err(NetError::Msg(format!("non-contiguous DHCP mask {mask}")));
     }
     Ok(prefix)

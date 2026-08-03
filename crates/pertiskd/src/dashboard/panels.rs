@@ -69,10 +69,7 @@ fn panel<'a>(title: &'a str, skin: &Skin) -> Block<'a> {
         .borders(Borders::ALL)
         .border_set(skin.chrome.set)
         .border_style(skin.theme.border_style())
-        .title(Span::styled(
-            format!(" {title} "),
-            skin.theme.title_style(),
-        ))
+        .title(Span::styled(format!(" {title} "), skin.theme.title_style()))
 }
 
 /// Printable ASCII only — one byte per terminal cell, so byte length equals
@@ -142,7 +139,11 @@ pub fn wrap_line(text: &str, width: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut cur = String::new();
     for word in text.split_whitespace() {
-        let budget = if out.is_empty() { width } else { width - indent };
+        let budget = if out.is_empty() {
+            width
+        } else {
+            width - indent
+        };
         if !cur.is_empty() {
             if cur.len() + 1 + word.len() <= budget {
                 cur.push(' ');
@@ -153,7 +154,11 @@ pub fn wrap_line(text: &str, width: usize) -> Vec<String> {
         }
         let mut rest = word;
         loop {
-            let budget = if out.is_empty() { width } else { width - indent };
+            let budget = if out.is_empty() {
+                width
+            } else {
+                width - indent
+            };
             if rest.len() <= budget {
                 break;
             }
@@ -200,7 +205,10 @@ fn meter_spans(percent: u16, width: usize, skin: &Skin) -> Vec<Span<'static>> {
     let filled = ((percent as usize).saturating_mul(bar_w) / 100).min(bar_w);
     vec![
         Span::styled("[", theme.meter_track_style()),
-        Span::styled(skin.chrome.meter_fill.repeat(filled), theme.meter_style(percent)),
+        Span::styled(
+            skin.chrome.meter_fill.repeat(filled),
+            theme.meter_style(percent),
+        ),
         Span::styled(
             skin.chrome.meter_track.repeat(bar_w - filled),
             theme.meter_track_style(),

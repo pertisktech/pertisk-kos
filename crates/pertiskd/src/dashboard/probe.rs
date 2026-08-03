@@ -109,7 +109,10 @@ pub fn detect() -> ConsoleCaps {
         if let Some(fd) = tty.as_ref().map(Tty::fd) {
             if let Some((rows, cols)) = winsize(fd) {
                 // ioctl on Serial is usually the stale 80×24 — accept it as-is.
-                if cols >= MIN_COLS && rows >= MIN_ROWS && cols <= SAFE_MAX_COLS && rows <= SAFE_MAX_ROWS
+                if cols >= MIN_COLS
+                    && rows >= MIN_ROWS
+                    && cols <= SAFE_MAX_COLS
+                    && rows <= SAFE_MAX_ROWS
                 {
                     caps.rows = rows;
                     caps.cols = cols;
@@ -124,7 +127,10 @@ pub fn detect() -> ConsoleCaps {
     }
 
     let (cols, rows) = if caps.source == "default" {
-        (caps.cols.clamp(MIN_COLS, SAFE_MAX_COLS), caps.rows.clamp(MIN_ROWS, SAFE_MAX_ROWS))
+        (
+            caps.cols.clamp(MIN_COLS, SAFE_MAX_COLS),
+            caps.rows.clamp(MIN_ROWS, SAFE_MAX_ROWS),
+        )
     } else {
         clamp_measured(caps.cols, caps.rows)
     };
@@ -190,7 +196,11 @@ fn open_tty() -> Option<Tty> {
         return Some(Tty::Stdin);
     }
     for path in ["/dev/ttyS0", "/dev/console"] {
-        if let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(path) {
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+        {
             return Some(Tty::Owned(file));
         }
     }
@@ -313,7 +323,9 @@ fn parse_text_area(buf: &[u8]) -> Option<(u16, u16)> {
     let s = std::str::from_utf8(buf).ok()?;
     let start = s.rfind("\x1b[8;").or_else(|| s.rfind("[8;"))?;
     let body = &s[start..];
-    let body = body.strip_prefix("\x1b[8;").or_else(|| body.strip_prefix("[8;"))?;
+    let body = body
+        .strip_prefix("\x1b[8;")
+        .or_else(|| body.strip_prefix("[8;"))?;
     let body = body.strip_suffix('t')?;
     let mut parts = body.split(';');
     let rows: u16 = parts.next()?.parse().ok()?;
@@ -350,10 +362,7 @@ mod tests {
 
     #[test]
     fn ignores_noise_before_text_area_reply() {
-        assert_eq!(
-            parse_text_area(b"junk\x1b[8;25;80t"),
-            Some((25, 80))
-        );
+        assert_eq!(parse_text_area(b"junk\x1b[8;25;80t"), Some((25, 80)));
     }
 
     #[test]

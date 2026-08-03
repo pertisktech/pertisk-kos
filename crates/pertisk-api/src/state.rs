@@ -70,6 +70,17 @@ impl NodeState {
         self.message = format!("containerd={} kubelet={}", self.containerd, self.kubelet);
         self.ready = self.power == PowerAction::None;
     }
+
+    /// Point shared state at the real STATE volume once it is mounted.
+    pub fn bind_state(&mut self, state_root: PathBuf, trust_public_key: PathBuf) {
+        self.config_path = state_root.join(DEFAULT_CONFIG_NAME);
+        self.state_root = state_root;
+        self.trust_public_key = trust_public_key;
+    }
+
+    pub fn set_message(&mut self, message: impl Into<String>) {
+        self.message = message.into();
+    }
 }
 
 pub type SharedState = Arc<Mutex<NodeState>>;

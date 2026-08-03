@@ -47,14 +47,10 @@ pub struct IfaceAddrs {
 }
 
 impl StatusSnapshot {
-    pub fn collect(
-        cfg: Option<&MachineConfig>,
-        state: &SharedState,
-        state_root: &Path,
-    ) -> Self {
+    pub fn collect(cfg: Option<&MachineConfig>, state: &SharedState, state_root: &Path) -> Self {
         let mut snap = Self::default();
 
-        if let Ok(st) = state.lock() {
+        let (root, config_path) = if let Ok(st) = state.lock() {
             snap.version = st.version.clone();
             snap.ready = st.ready;
             snap.message = st.message.clone();
@@ -62,9 +58,18 @@ impl StatusSnapshot {
             snap.containerd_pid = st.containerd_pid;
             snap.kubelet = st.kubelet.clone();
             snap.kubelet_pid = st.kubelet_pid;
-        }
+            (st.state_root.clone(), st.config_path.clone())
+        } else {
+            (state_root.to_path_buf(), state_root.join("config.yaml"))
+        };
 
-        if let Some(cfg) = cfg {
+        // Prefer live STATE config so an early-started dashboard picks up apply/bootstrap.
+        let disk_cfg = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|y| MachineConfig::from_yaml(&y).ok());
+        let effective = disk_cfg.as_ref().or(cfg);
+
+        if let Some(cfg) = effective {
             snap.hostname = cfg
                 .machine
                 .network
@@ -75,10 +80,7 @@ impl StatusSnapshot {
             if let Some(ref cluster) = cfg.cluster {
                 snap.cluster_endpoint = cluster.endpoint.clone();
                 snap.cni = cluster.cni.as_str().to_string();
-                snap.pod_cidr = cluster
-                    .pod_cidr
-                    .clone()
-                    .unwrap_or_else(|| "-".into());
+                snap.pod_cidr = cluster.pod_cidr.clone().unwrap_or_else(|| "-".into());
             } else {
                 snap.cluster_endpoint = "(none)".into();
                 snap.cni = "-".into();
@@ -103,7 +105,7 @@ impl StatusSnapshot {
         snap.mem_total_kb = total;
         snap.mem_available_kb = avail;
 
-        if let Some(d) = disk_usage("STATE", state_root) {
+        if let Some(d) = disk_usage("STATE", &root) {
             snap.disks.push(d);
         }
         if let Some(d) = disk_usage("root", Path::new("/")) {
@@ -117,7 +119,7 @@ impl StatusSnapshot {
             }
         }
 
-        if let Ok(meta) = BootMeta::load(state_root) {
+        if let Ok(meta) = BootMeta::load(&root) {
             snap.boot_slot = meta.active.to_string();
             snap.boot_ok = meta.boot_ok;
             snap.boot_attempts = meta.boot_attempts;
@@ -310,7 +312,11 @@ fn read_addresses_getifaddrs() -> Vec<IfaceAddrs> {
                 } else {
                     let prefix = if !entry.ifa_netmask.is_null() {
                         let mask = &*(entry.ifa_netmask as *const libc::sockaddr_in6);
-                        mask.sin6_addr.s6_addr.iter().map(|b| b.count_ones()).sum::<u32>() as u8
+                        mask.sin6_addr
+                            .s6_addr
+                            .iter()
+                            .map(|b| b.count_ones())
+                            .sum::<u32>() as u8
                     } else {
                         128
                     };

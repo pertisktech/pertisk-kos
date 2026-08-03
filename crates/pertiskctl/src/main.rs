@@ -17,7 +17,10 @@ use pertisk_proto::{
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 #[derive(Parser)]
-#[command(name = "pertiskctl", about = "Pertisk KOS management CLI (Talos-shaped)")]
+#[command(
+    name = "pertiskctl",
+    about = "Pertisk KOS management CLI (Talos-shaped)"
+)]
 struct Cli {
     /// gRPC endpoint (host:port).
     #[arg(

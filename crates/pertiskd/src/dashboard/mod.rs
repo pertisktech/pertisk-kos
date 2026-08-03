@@ -59,10 +59,7 @@ pub fn apply_config(cfg: Option<&MachineConfig>) {
         set_if_unset("PERTISK_DASHBOARD_ROWS", Some(&rows.to_string()));
     }
     if let Some(utf8) = dash.and_then(|d| d.utf8) {
-        set_if_unset(
-            "PERTISK_DASHBOARD_UTF8",
-            Some(if utf8 { "1" } else { "0" }),
-        );
+        set_if_unset("PERTISK_DASHBOARD_UTF8", Some(if utf8 { "1" } else { "0" }));
     }
 }
 
@@ -104,8 +101,14 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_dash_env();
         apply_config(None);
-        assert_eq!(std::env::var("PERTISK_DASHBOARD_THEME").unwrap(), DEFAULT_THEME);
-        assert_eq!(std::env::var("PERTISK_DASHBOARD_BORDER").unwrap(), DEFAULT_BORDER);
+        assert_eq!(
+            std::env::var("PERTISK_DASHBOARD_THEME").unwrap(),
+            DEFAULT_THEME
+        );
+        assert_eq!(
+            std::env::var("PERTISK_DASHBOARD_BORDER").unwrap(),
+            DEFAULT_BORDER
+        );
         // Size / UTF-8 stay unpinned so the console probe can run.
         assert!(std::env::var_os("PERTISK_DASHBOARD_COLS").is_none());
         assert!(std::env::var_os("PERTISK_DASHBOARD_ROWS").is_none());
@@ -152,7 +155,10 @@ mod tests {
             cluster: None,
         };
         apply_config(Some(&cfg));
-        assert_eq!(std::env::var("PERTISK_DASHBOARD_THEME").unwrap(), "wild-cherry");
+        assert_eq!(
+            std::env::var("PERTISK_DASHBOARD_THEME").unwrap(),
+            "wild-cherry"
+        );
         assert_eq!(std::env::var("PERTISK_DASHBOARD_BORDER").unwrap(), "double");
         assert_eq!(std::env::var("PERTISK_DASHBOARD_COLS").unwrap(), "120");
         assert_eq!(std::env::var("PERTISK_DASHBOARD_ROWS").unwrap(), "40");

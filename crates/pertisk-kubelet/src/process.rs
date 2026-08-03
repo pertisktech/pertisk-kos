@@ -110,8 +110,7 @@ pub fn start_kubelet_with_sink(
         .stderr(Stdio::piped());
 
     // Workers: exchange bootstrap token for a node client cert.
-    if cfg.machine.machine_type != MachineType::Controlplane
-        && paths.bootstrap_kubeconfig.is_file()
+    if cfg.machine.machine_type != MachineType::Controlplane && paths.bootstrap_kubeconfig.is_file()
     {
         cmd.arg(format!(
             "--bootstrap-kubeconfig={}",
@@ -159,7 +158,11 @@ fn prepare_kubelet(
     let is_cp = cfg.machine.machine_type == MachineType::Controlplane;
     let live_cp = Path::new("/etc/kubernetes/kubelet.conf");
     let tls_bootstrap = !is_cp || !live_cp.exists();
-    write_kubelet_config(paths, cfg.machine.network.hostname.as_deref(), tls_bootstrap)?;
+    write_kubelet_config(
+        paths,
+        cfg.machine.network.hostname.as_deref(),
+        tls_bootstrap,
+    )?;
 
     if is_cp && live_cp.exists() {
         // Cert kubeconfig from pertiskctl bootstrap — no token bootstrap.

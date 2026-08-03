@@ -515,7 +515,10 @@ mod tests {
         assert_eq!(t.status_style("CrashLoopBackOff").fg, Some(Color::Red));
         assert_eq!(t.status_style("starting").fg, Some(Color::Yellow));
         // No bold — Serial-safe SGR shape matches labels.
-        assert!(!t.status_style("absent").add_modifier.contains(Modifier::BOLD));
+        assert!(!t
+            .status_style("absent")
+            .add_modifier
+            .contains(Modifier::BOLD));
     }
 
     #[test]

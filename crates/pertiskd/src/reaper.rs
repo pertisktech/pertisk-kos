@@ -127,19 +127,18 @@ mod unix_impl {
                                 info!("DHCP retry succeeded");
                             } else {
                                 warn!("DHCP retry produced no address; will try again");
-                                dhcp_retry_at = std::time::Instant::now()
-                                    + std::time::Duration::from_secs(15);
+                                dhcp_retry_at =
+                                    std::time::Instant::now() + std::time::Duration::from_secs(15);
                             }
                         }
                         Err(err) => {
                             warn!(error = %err, "DHCP retry failed");
-                            dhcp_retry_at = std::time::Instant::now()
-                                + std::time::Duration::from_secs(15);
+                            dhcp_retry_at =
+                                std::time::Instant::now() + std::time::Duration::from_secs(15);
                         }
                     }
                 } else {
-                    dhcp_retry_at =
-                        std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    dhcp_retry_at = std::time::Instant::now() + std::time::Duration::from_secs(30);
                 }
             }
 

@@ -172,9 +172,7 @@ impl LogRing {
 
     /// Writer factory for `tracing_subscriber::fmt`.
     pub fn make_writer(&self) -> LogRingWriter {
-        LogRingWriter {
-            ring: self.clone(),
-        }
+        LogRingWriter { ring: self.clone() }
     }
 }
 

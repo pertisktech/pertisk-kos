@@ -84,7 +84,7 @@ Cloud images set systemd-boot `timeout 0` so there is **no countdown menu**. Wit
 
 Proxmox VMs created by `proxmox-upload-vm.sh` enable **QEMU Guest Agent** (`agent=enabled=1`). The guest image does not yet ship `qemu-guest-agent`, so Summary IP may still be empty — use the Serial dashboard **network** panel, or add the agent package to the image later.
 
-After boot, `pertiskd` shows a Serial TUI: **node** → **network** → **mem**|**services** → **logs**. Cursor is hidden; ~2s refresh.
+After boot, `pertiskd` shows a Serial TUI **as soon as Serial is ready** (before DHCP / STATE / containerd finish). Status line cycles `booting` → `network` → `mounting STATE` → `starting runtime`. Cursor is hidden; ~2s refresh.
 
 Nothing else may write to the console while the dashboard owns it: tracing stays in the ring, and `udhcpc` / module load no longer `eprintln!` onto Serial.
 

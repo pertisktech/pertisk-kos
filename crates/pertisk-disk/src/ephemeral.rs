@@ -88,15 +88,10 @@ fn find_ephemeral_device() -> Option<PathBuf> {
 /// Fallback nodes (cloud layout: EFI=1 … STATE=5, EPHEMERAL=6).
 #[cfg(target_os = "linux")]
 fn guess_ephemeral_nodes() -> impl Iterator<Item = PathBuf> {
-    [
-        "/dev/vda6",
-        "/dev/sda6",
-        "/dev/nvme0n1p6",
-        "/dev/xvda6",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .filter(|p| p.exists())
+    ["/dev/vda6", "/dev/sda6", "/dev/nvme0n1p6", "/dev/xvda6"]
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
 }
 
 #[cfg(target_os = "linux")]
@@ -164,7 +159,9 @@ fn mount_ephemeral_partition(
         MsFlags::MS_BIND,
         None::<&str>,
     ) {
-        Ok(()) => info!(from = %mountpoint.display(), to = %var.display(), "bound EPHEMERAL → /var"),
+        Ok(()) => {
+            info!(from = %mountpoint.display(), to = %var.display(), "bound EPHEMERAL → /var")
+        }
         Err(nix::errno::Errno::EBUSY) => {
             info!(target = %var.display(), "/var already bound from EPHEMERAL");
         }

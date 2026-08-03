@@ -243,7 +243,10 @@ pub fn wait_carrier(iface: &str, timeout: std::time::Duration) -> Result<(), Net
             }
         }
         if Instant::now() >= deadline {
-            tracing::warn!(interface = iface, "carrier wait timed out; trying DHCP anyway");
+            tracing::warn!(
+                interface = iface,
+                "carrier wait timed out; trying DHCP anyway"
+            );
             return Ok(());
         }
         thread::sleep(Duration::from_millis(200));

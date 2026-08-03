@@ -83,9 +83,7 @@ fn run_tui_inner(
     // Log only — never writeln to the console after we own it.
     info!(
         "console TUI {width}x{height} ({}) theme={} border={}",
-        caps.source,
-        skin.theme.name,
-        skin.chrome.name
+        caps.source, skin.theme.name, skin.chrome.name
     );
 
     let _ = io::stderr().write_all(UNSYNC.as_bytes());
@@ -141,7 +139,9 @@ fn dump_frame(
     io::stderr()
         .write_all(out.as_bytes())
         .map_err(|e| format!("TUI write: {e}"))?;
-    io::stderr().flush().map_err(|e| format!("TUI flush: {e}"))?;
+    io::stderr()
+        .flush()
+        .map_err(|e| format!("TUI flush: {e}"))?;
     Ok(())
 }
 
@@ -213,8 +213,8 @@ fn ascii_fallback(ch: char) -> char {
         '│' | '┃' | '║' => '|',
         '█' | '▓' | '▒' => '|',
         '░' => '-',
-        '┌' | '┐' | '└' | '┘' | '┏' | '┓' | '┗' | '┛' | '╔' | '╗' | '╚' | '╝' | '╭' | '╮'
-        | '╯' | '╰' => '+',
+        '┌' | '┐' | '└' | '┘' | '┏' | '┓' | '┗' | '┛' | '╔' | '╗' | '╚' | '╝' | '╭' | '╮' | '╯'
+        | '╰' => '+',
         '├' | '┤' | '┬' | '┴' | '┼' => '+',
         _ => ' ',
     }
@@ -363,7 +363,10 @@ mod tests {
     fn status_colors_reach_the_wire() {
         let out = render_demo(80, 24, theme::ASCII);
         // Base ANSI (no bold/bright) — same SGR shape as Magenta labels.
-        assert!(out.contains("\x1b[0;32m[up]"), "missing green [up]: {out:?}");
+        assert!(
+            out.contains("\x1b[0;32m[up]"),
+            "missing green [up]: {out:?}"
+        );
         assert!(
             out.contains("\x1b[0;31m[failed]"),
             "missing red [failed]: {out:?}"
@@ -415,12 +418,8 @@ mod tests {
     fn identical_frame_emits_nothing() {
         let terminal = draw_demo(80, 24, theme::ASCII, &demo_logs());
         let mut writer = FrameWriter::default();
-        assert!(writer
-            .encode(terminal.backend().buffer(), true)
-            .is_some());
-        assert!(writer
-            .encode(terminal.backend().buffer(), true)
-            .is_none());
+        assert!(writer.encode(terminal.backend().buffer(), true).is_some());
+        assert!(writer.encode(terminal.backend().buffer(), true).is_none());
     }
 
     #[test]

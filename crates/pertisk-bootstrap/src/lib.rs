@@ -78,10 +78,7 @@ pub fn bootstrap_control_plane(
         .kubernetes_version
         .as_deref()
         .unwrap_or(DEFAULT_K8S_VERSION);
-    let pod_subnet = cluster
-        .pod_subnet
-        .as_deref()
-        .unwrap_or(DEFAULT_POD_SUBNET);
+    let pod_subnet = cluster.pod_subnet.as_deref().unwrap_or(DEFAULT_POD_SUBNET);
     let service_subnet = cluster
         .service_subnet
         .as_deref()
@@ -128,7 +125,10 @@ pub fn bootstrap_control_plane(
     );
 
     fs::write(paths.admin_kubeconfig(), &admin)?;
-    fs::write(paths.kubeconfig_dir().join("controller-manager.conf"), &cm_conf)?;
+    fs::write(
+        paths.kubeconfig_dir().join("controller-manager.conf"),
+        &cm_conf,
+    )?;
     fs::write(paths.kubeconfig_dir().join("scheduler.conf"), &sched_conf)?;
     fs::write(paths.kubeconfig_dir().join("kubelet.conf"), &kubelet_conf)?;
 
@@ -191,8 +191,8 @@ pub fn bootstrap_control_plane(
 
 pub fn read_admin_kubeconfig(state_root: &Path) -> Result<String> {
     let paths = BootstrapPaths::default_state(state_root);
-    let raw =
-        fs::read_to_string(paths.admin_kubeconfig()).context("admin kubeconfig missing; bootstrap first")?;
+    let raw = fs::read_to_string(paths.admin_kubeconfig())
+        .context("admin kubeconfig missing; bootstrap first")?;
     Ok(kubeconfig::sanitize_kubeconfig(&raw))
 }
 
@@ -294,7 +294,6 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-
 fn apiserver_tcp_ready(timeout: Duration) -> bool {
     use std::net::{SocketAddr, TcpStream};
     let addr: SocketAddr = "127.0.0.1:6443".parse().expect("valid addr");
@@ -366,8 +365,11 @@ cluster:
   endpoint: https://10.1.1.10:6443
   token: a.b
 "#;
-        let out = patch_worker_ca(yaml, "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----")
-            .unwrap();
+        let out = patch_worker_ca(
+            yaml,
+            "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----",
+        )
+        .unwrap();
         assert!(out.contains("dashboard"));
         assert!(out.contains("catppuccin"));
         assert!(out.contains("BEGIN CERTIFICATE"));

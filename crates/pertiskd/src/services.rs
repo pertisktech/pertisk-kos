@@ -35,11 +35,8 @@ impl NodeServices {
         }
 
         if services.containerd.is_some() && cfg.cluster.is_some() {
-            match start_kubelet_with_sink(
-                &KubeletPaths::default(),
-                cfg,
-                Some(logs.sink("kubelet")),
-            ) {
+            match start_kubelet_with_sink(&KubeletPaths::default(), cfg, Some(logs.sink("kubelet")))
+            {
                 Ok(handle) => {
                     info!(pid = handle.pid(), "kubelet running");
                     services.kubelet = Some(handle);
@@ -86,11 +83,8 @@ impl NodeServices {
             }
         }
         if self.kubelet.is_none() && self.containerd.is_some() && cfg.cluster.is_some() {
-            match start_kubelet_with_sink(
-                &KubeletPaths::default(),
-                cfg,
-                Some(logs.sink("kubelet")),
-            ) {
+            match start_kubelet_with_sink(&KubeletPaths::default(), cfg, Some(logs.sink("kubelet")))
+            {
                 Ok(handle) => {
                     info!(pid = handle.pid(), "kubelet started after config reload");
                     self.kubelet = Some(handle);
@@ -116,11 +110,7 @@ impl NodeServices {
             warn!("kubelet restart skipped; no cluster config");
             return;
         }
-        match start_kubelet_with_sink(
-            &KubeletPaths::default(),
-            cfg,
-            Some(logs.sink("kubelet")),
-        ) {
+        match start_kubelet_with_sink(&KubeletPaths::default(), cfg, Some(logs.sink("kubelet"))) {
             Ok(handle) => {
                 info!(pid = handle.pid(), "kubelet restarted after bootstrap");
                 self.kubelet = Some(handle);

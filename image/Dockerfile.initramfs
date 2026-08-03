@@ -109,7 +109,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /rootfs
 COPY image/rootfs/ ./
-COPY image/runtime-overlay/ ./
 COPY image/boot-overlay/ ./
 COPY --from=build /pertiskd ./init
 # Disk/net helpers (required). BusyBox multi-call binary is only shipped as udhcpc
@@ -117,7 +116,9 @@ COPY --from=build /pertiskd ./init
 # DHCP leases apply via /usr/lib/pertisk/udhcpc-hook (Rust; no shell script).
 COPY --from=tools /tools/bin/sgdisk /tools/bin/partprobe /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat ./usr/sbin/
 COPY --from=tools /tools/bin/busybox ./usr/sbin/udhcpc
+# Musl deps for disk tools first; glibc for containerd/kubelet overlays on top.
 COPY --from=tools /tools/lib/ ./lib/
+COPY image/runtime-overlay/ ./
 # System CA bundle for containerd/kubelet image pulls (registry.k8s.io TLS).
 RUN mkdir -p ./etc/ssl/certs
 COPY --from=tools /tools/certs/ca-certificates.crt ./etc/ssl/certs/ca-certificates.crt

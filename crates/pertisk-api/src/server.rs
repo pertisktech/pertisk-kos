@@ -10,11 +10,11 @@ use pertisk_config::MachineConfig;
 use pertisk_proto::machine_service_server::{MachineService, MachineServiceServer};
 use pertisk_proto::{
     ApplyConfigurationRequest, ApplyConfigurationResponse, BootstrapRequest, BootstrapResponse,
-    HealthRequest, HealthResponse, KubeconfigRequest, KubeconfigResponse, LogsRequest, LogsResponse,
-    MarkBootGoodRequest, MarkBootGoodResponse, RebootRequest, RebootResponse, ServiceListRequest,
-    ServiceListResponse, ServiceStatus, ShutdownRequest, ShutdownResponse, UpgradeRequest,
-    UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse, ValidateConfigurationResponse,
-    VersionRequest, VersionResponse,
+    HealthRequest, HealthResponse, KubeconfigRequest, KubeconfigResponse, LogsRequest,
+    LogsResponse, MarkBootGoodRequest, MarkBootGoodResponse, RebootRequest, RebootResponse,
+    ServiceListRequest, ServiceListResponse, ServiceStatus, ShutdownRequest, ShutdownResponse,
+    UpgradeRequest, UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse,
+    ValidateConfigurationResponse, VersionRequest, VersionResponse,
 };
 use pertisk_update::{apply_bundle, mark_boot_good, BootMeta, SlotLayout};
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
@@ -300,8 +300,8 @@ impl MachineService for MachineSvc {
                 config_path.display()
             ))
         })?;
-        let cfg = MachineConfig::from_yaml(&yaml)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let cfg =
+            MachineConfig::from_yaml(&yaml).map_err(|e| Status::invalid_argument(e.to_string()))?;
         let adv = if advertise.is_empty() {
             None
         } else {

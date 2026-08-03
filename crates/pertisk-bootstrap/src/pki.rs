@@ -62,11 +62,7 @@ fn mint_ca() -> Result<CaIssuer> {
 }
 
 /// Generate a full PKI tree for the first control plane.
-pub fn generate_pki(
-    advertise_ip: &str,
-    hostname: &str,
-    endpoint_host: &str,
-) -> Result<ClusterPki> {
+pub fn generate_pki(advertise_ip: &str, hostname: &str, endpoint_host: &str) -> Result<ClusterPki> {
     let ca = mint_ca()?;
     let sa = KeyPair::generate()?;
 
@@ -100,11 +96,7 @@ pub fn generate_pki(
     let admin = issue_client(&ca, "kubernetes-admin", &["system:masters"])?;
     let cm = issue_client(&ca, "system:kube-controller-manager", &[])?;
     let sched = issue_client(&ca, "system:kube-scheduler", &[])?;
-    let kubelet = issue_client(
-        &ca,
-        &format!("system:node:{hostname}"),
-        &["system:nodes"],
-    )?;
+    let kubelet = issue_client(&ca, &format!("system:node:{hostname}"), &["system:nodes"])?;
 
     Ok(ClusterPki {
         ca_crt: ca.ca_crt,
@@ -162,9 +154,7 @@ fn issue_client(ca: &CaIssuer, cn: &str, orgs: &[&str]) -> Result<(String, Strin
     let mut params = CertificateParams::new(Vec::new())?;
     params.distinguished_name.push(DnType::CommonName, cn);
     for o in orgs {
-        params
-            .distinguished_name
-            .push(DnType::OrganizationName, *o);
+        params.distinguished_name.push(DnType::OrganizationName, *o);
     }
     params.key_usages = vec![
         KeyUsagePurpose::DigitalSignature,

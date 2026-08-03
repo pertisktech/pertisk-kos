@@ -100,6 +100,7 @@ pertiskctl:
 ## Cloud golden disk (kernel + systemd-boot + containerd/kubelet in initramfs).
 cloud:
 	@echo "==> cloud image VERSION=$(VERSION) ARCH=$(BUILD_ARCH)"
+	$(MAKE) fetch-runtime ARCH="$(BUILD_ARCH)"
 	$(MAKE) build VERSION="$(VERSION)" ARCH="$(BUILD_ARCH)" EMBED_BOOT=1 EMBED_RUNTIME=1
 	PERTISK_VERSION="$(VERSION)" PERTISK_ARCH="$(BUILD_ARCH)" "$(ROOT)/image/build-cloud-image.sh"
 

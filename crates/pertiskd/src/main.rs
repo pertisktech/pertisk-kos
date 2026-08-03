@@ -174,8 +174,41 @@ fn run() -> Result<()> {
         "pertiskd starting"
     );
 
+    // Start the Serial dashboard ASAP — DHCP / STATE / containerd can take
+    // minutes and previously blocked the TUI until everything finished.
+    let provisional_root = PathBuf::from("/system/state");
+    let provisional_trust = args.trust_key.clone();
+    let api_state = shared(provisional_root.clone(), provisional_trust);
+    if let Ok(mut st) = api_state.lock() {
+        st.set_message("booting");
+        st.ready = false;
+    }
+    let _dashboard = if should_enable_dashboard(args.no_dashboard, args.smoke) {
+        dashboard::apply_config(None);
+        match start_dashboard(
+            None,
+            api_state.clone(),
+            provisional_root,
+            log_ring().clone(),
+        ) {
+            Some(handle) => {
+                info!("console dashboard started (early)");
+                Some(handle)
+            }
+            None => {
+                warn!("console dashboard failed to start");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     if is_pid1 {
         // After disk modules: rescans so STATE/EPHEMERAL nodes are mountable.
+        if let Ok(mut st) = api_state.lock() {
+            st.set_message("settling disks");
+        }
         settle_block_devices();
     }
 
@@ -194,6 +227,9 @@ fn run() -> Result<()> {
 
     // Bring up DHCP before install — install can warn/fail on cloud (/dev/vda
     // vs scsi) and must not delay addressing.
+    if let Ok(mut st) = api_state.lock() {
+        st.set_message("network");
+    }
     if let Some(ref cfg) = early_cfg {
         if let Some(name) = cfg.machine.network.hostname.as_deref() {
             if let Err(err) = hostname::set_hostname(name) {
@@ -226,6 +262,9 @@ fn run() -> Result<()> {
         }
     }
 
+    if let Ok(mut st) = api_state.lock() {
+        st.set_message("mounting STATE");
+    }
     let volume = match prepare_boot_state(args.state_dir.as_deref()) {
         Ok(v) => v,
         Err(err) => {
@@ -244,6 +283,11 @@ fn run() -> Result<()> {
         }
     };
     log_ring().set_state_root(&volume.root);
+    let trust_key = resolve_trust_key(&args, &volume);
+    if let Ok(mut st) = api_state.lock() {
+        st.bind_state(volume.root.clone(), trust_key.clone());
+        st.set_message("STATE ready");
+    }
     // Early STATE/module lines are buffered before the file sink attaches; emit
     // a durable summary so `pertiskctl logs` shows whether reboot will persist.
     info!(
@@ -278,6 +322,8 @@ fn run() -> Result<()> {
             hostname = ?cfg.machine.network.hostname,
             "machine config applied"
         );
+        // Theme/border from YAML — env only fills unset keys (early start used built-ins).
+        dashboard::apply_config(Some(cfg));
     } else {
         warn!("no machine config found; continuing without");
     }
@@ -295,7 +341,7 @@ fn run() -> Result<()> {
     sysctl::apply_hardening_sysctls();
 
     // Track A/B boot attempts / auto-rollback before starting workloads.
-    let boot_layout = SlotLayout::new(volume.root.clone(), resolve_trust_key(&args, &volume));
+    let boot_layout = SlotLayout::new(volume.root.clone(), trust_key.clone());
     match record_boot_attempt_with_layout(&volume.root, Some(&boot_layout)) {
         Ok(meta) => info!(
             active = %meta.active,
@@ -307,6 +353,9 @@ fn run() -> Result<()> {
         Err(err) => warn!(error = %err, "boot meta update failed"),
     }
 
+    if let Ok(mut st) = api_state.lock() {
+        st.set_message("starting runtime");
+    }
     let mut services = if args.skip_runtime {
         NodeServices {
             containerd: None,
@@ -330,13 +379,10 @@ fn run() -> Result<()> {
         }
     };
 
-    let trust_key = resolve_trust_key(&args, &volume);
-    let api_state = shared(volume.root.clone(), trust_key);
     {
         let (cd, kl, cd_pid, kl_pid) = services.status_parts();
         if let Ok(mut st) = api_state.lock() {
             st.set_runtime_status(cd, kl, cd_pid, kl_pid);
-            st.message = "running".into();
         }
     }
 
@@ -386,29 +432,11 @@ fn run() -> Result<()> {
     }
 
     info!("running as init");
-    let _dashboard = if should_enable_dashboard(args.no_dashboard, args.smoke) {
-        dashboard::apply_config(cfg.as_ref());
-        match start_dashboard(
-            cfg.clone(),
-            api_state.clone(),
-            volume.root.clone(),
-            log_ring().clone(),
-        ) {
-            Some(handle) => {
-                info!("console dashboard started");
-                Some(handle)
-            }
-            None => {
-                warn!("console dashboard failed to start");
-                None
-            }
-        }
-    } else {
-        None
-    };
     if let Err(err) = reaper::supervise(cfg, services, api_state) {
         warn!(error = %err, "supervise loop exited");
     }
+    // Keep dashboard thread alive for the process lifetime.
+    drop(_dashboard);
     Ok(())
 }
 

@@ -118,6 +118,31 @@ if [[ -e /lib/ld-linux-aarch64.so.1 ]]; then
 fi
 '
 
+# Fail loudly if glibc loader is missing — without it, containerd shows as
+# "absent" on the node (dynamic linker can't exec the binary).
+case "${ARCH}" in
+  amd64)
+    if [[ ! -e "${OUT}/lib64/ld-linux-x86-64.so.2" ]]; then
+      echo "ERROR: missing ${OUT}/lib64/ld-linux-x86-64.so.2 after glibc vendor" >&2
+      exit 1
+    fi
+    if [[ ! -e "${OUT}/lib/x86_64-linux-gnu/libc.so.6" ]]; then
+      echo "ERROR: missing glibc libc.so.6 under ${OUT}/lib/x86_64-linux-gnu/" >&2
+      exit 1
+    fi
+    ;;
+  arm64)
+    if [[ ! -e "${OUT}/lib/ld-linux-aarch64.so.1" ]]; then
+      echo "ERROR: missing ${OUT}/lib/ld-linux-aarch64.so.1 after glibc vendor" >&2
+      exit 1
+    fi
+    if [[ ! -e "${OUT}/lib/aarch64-linux-gnu/libc.so.6" ]]; then
+      echo "ERROR: missing glibc libc.so.6 under ${OUT}/lib/aarch64-linux-gnu/" >&2
+      exit 1
+    fi
+    ;;
+esac
+
 echo "==> runtime tree ready at ${OUT}"
 find "${OUT}" -type f | sort
 ls -lh "${OUT}/usr/local/bin/"

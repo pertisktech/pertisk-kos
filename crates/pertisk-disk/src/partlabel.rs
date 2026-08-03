@@ -172,15 +172,10 @@ fn block_node_matches(_path: &Path, _major: u64, _minor: u64) -> bool {
 
 /// Fallback nodes when PARTNAME is unavailable (legacy / broken sysfs).
 pub fn guess_state_nodes() -> impl Iterator<Item = PathBuf> {
-    [
-        "/dev/vda5",
-        "/dev/sda5",
-        "/dev/nvme0n1p5",
-        "/dev/xvda5",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .filter(|p| p.exists())
+    ["/dev/vda5", "/dev/sda5", "/dev/nvme0n1p5", "/dev/xvda5"]
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
 }
 
 #[cfg(test)]

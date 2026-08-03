@@ -37,7 +37,23 @@ if [[ "${PERTISK_EMBED_RUNTIME:-0}" == "1" ]]; then
     echo "PERTISK_EMBED_RUNTIME=1 but out/runtime missing; run ./image/fetch-runtime.sh" >&2
     exit 1
   fi
-  echo "==> embedding runtime binaries into initramfs"
+  # containerd/kubelet are glibc-linked; without the loader they never start
+  # and the dashboard reports containerd=absent.
+  case "${PERTISK_ARCH:-amd64}" in
+    amd64|x86_64)
+      if [[ ! -e "${OUT}/runtime/lib64/ld-linux-x86-64.so.2" ]]; then
+        echo "PERTISK_EMBED_RUNTIME=1 but glibc loader missing; re-run: make fetch-runtime ARCH=amd64" >&2
+        exit 1
+      fi
+      ;;
+    arm64|aarch64)
+      if [[ ! -e "${OUT}/runtime/lib/ld-linux-aarch64.so.1" ]]; then
+        echo "PERTISK_EMBED_RUNTIME=1 but glibc loader missing; re-run: make fetch-runtime ARCH=arm64" >&2
+        exit 1
+      fi
+      ;;
+  esac
+  echo "==> embedding runtime binaries + glibc into initramfs"
   cp -a "${OUT}/runtime/." "${OVERLAY}/"
 fi
 

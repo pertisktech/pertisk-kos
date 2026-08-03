@@ -92,10 +92,7 @@ pub fn start_containerd_with_sink(
         .arg("--config")
         .arg(&paths.config)
         .env("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
-        .env(
-            "PATH",
-            "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        )
+        .env("PATH", "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -114,7 +111,12 @@ pub fn start_containerd_with_sink(
 
     if let Some(stderr) = child.stderr.take() {
         // Caller sink (e.g. LogRing) should apply its own prefix.
-        spawn_stderr_tee(stderr, containerd_log_path(), "containerd", log_sink.clone());
+        spawn_stderr_tee(
+            stderr,
+            containerd_log_path(),
+            "containerd",
+            log_sink.clone(),
+        );
     }
 
     let mut handle = ContainerdHandle {
