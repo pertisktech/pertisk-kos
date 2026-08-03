@@ -1,4 +1,4 @@
-//! Plain-text fallback mirroring node / network / mem / services / logs.
+//! Plain-text fallback mirroring node / network / resources / services / logs.
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -35,12 +35,11 @@ pub fn run_banner_loop(
 
         out.push_str("==== node ====\r\n");
         out.push_str(&format!(
-            "{}  v{}  {}  {}  cpu {}c\r\n",
+            "{}  v{}  {}  {}\r\n",
             snap.hostname,
             snap.version,
             snap.machine_type,
             if snap.ready { "ready" } else { "not-ready" },
-            snap.cpu_cores
         ));
 
         out.push_str("==== network ====\r\n");
@@ -60,24 +59,31 @@ pub fn run_banner_loop(
             out.push_str("\r\n");
         }
         out.push_str(&format!(
-            "cluster {}\r\nk8s {}  cni {}  pod {}\r\n",
+            "cluster {}\r\nKubernetes {}  cni {}  pod {}\r\n",
             snap.cluster_endpoint, snap.kubernetes_version, snap.cni, snap.pod_cidr
         ));
 
-        out.push_str("==== mem ====\r\n");
+        out.push_str("==== resources ====\r\n");
+        out.push_str(&format!(
+            "cpu     [{}%]  {}c  load {:.2}\r\n",
+            snap.cpu_usage_pct, snap.cpu_cores, snap.load_1m
+        ));
         let mem_pct = pct(snap.mem_used_kb(), snap.mem_total_kb);
         out.push_str(&format!(
-            "mem [{}%] {}/{}\r\n",
+            "memory  [{}%]  {}/{}\r\n",
             mem_pct,
             format_kib(snap.mem_used_kb()),
             format_kib(snap.mem_total_kb)
         ));
-        for d in &snap.disks {
+        for (i, d) in snap.disks.iter().enumerate() {
+            let name = if i == 0 { "disk" } else { d.label.as_str() };
             out.push_str(&format!(
-                "{} {}/{}\r\n",
-                d.label,
+                "{:<8}[{}%]  {}/{}  {}\r\n",
+                name,
+                pct(d.used_bytes, d.total_bytes),
                 format_bytes(d.used_bytes),
-                format_bytes(d.total_bytes)
+                format_bytes(d.total_bytes),
+                d.label
             ));
         }
 

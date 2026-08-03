@@ -308,6 +308,8 @@ mod tests {
             version: "0.1.0".into(),
             ready: true,
             cpu_cores: 4,
+            cpu_usage_pct: 37,
+            load_1m: 0.42,
             mem_total_kb: 8 * 1024 * 1024,
             mem_available_kb: 3 * 1024 * 1024,
             disks: vec![DiskUsage {
@@ -547,9 +549,17 @@ mod tests {
         for chrome in [theme::ASCII, theme::LIGHT, theme::DOUBLE, theme::ROUNDED] {
             let rows = demo_rows(100, 26, chrome);
             let out = rows.join("\n");
-            for title in [" node ", " network ", " mem ", " services ", " logs "] {
+            for title in [" node ", " network ", " resources ", " services ", " logs "] {
                 assert!(out.contains(title), "missing panel {title}");
             }
+            assert!(
+                out.contains("cpu") && out.contains("memory") && out.contains("disk"),
+                "resources panel missing cpu/memory/disk: {out}"
+            );
+            assert!(
+                out.contains("Kubernetes"),
+                "expected Kubernetes label: {out}"
+            );
         }
     }
 

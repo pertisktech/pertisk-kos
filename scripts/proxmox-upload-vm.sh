@@ -395,11 +395,35 @@ fi
 
 # Grow guest disk beyond the imported qcow2 size (grow-only).
 # Note: GPT/EPHEMERAL only match if the qcow2 was built with PERTISK_DISK_GB>=N.
+# Prefer importing a role-sized qcow2 (lab-up writes out/*-Ng.qcow2) instead of shrinking.
 if [[ -n "${DISK_GB}" ]]; then
   if ! [[ "${DISK_GB}" =~ ^[0-9]+$ ]] || [[ "${DISK_GB}" -lt 1 ]]; then
     echo "ERROR: --disk-gb must be a positive integer (GiB), got: ${DISK_GB}" >&2
     exit 1
   fi
+  IMG_BYTES=0
+  if command -v qemu-img >/dev/null 2>&1; then
+    IMG_BYTES="$(qemu-img info --output=json "${DISK}" 2>/dev/null | jq -r '.["virtual-size"] // 0' || echo 0)"
+  elif command -v docker >/dev/null 2>&1; then
+    IMG_BYTES="$(
+      docker run --rm -v "$(cd "$(dirname "${DISK}")" && pwd):/d:ro" alpine:3.20 \
+        sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img info --output=json /d/$(basename "${DISK}")" \
+        2>/dev/null | jq -r '.["virtual-size"] // 0' || echo 0
+    )"
+  fi
+  TARGET_BYTES=$((DISK_GB * 1024 * 1024 * 1024))
+  if [[ "${IMG_BYTES}" =~ ^[0-9]+$ ]] && [[ "${IMG_BYTES}" -gt 0 ]]; then
+    if [[ "${TARGET_BYTES}" -lt "${IMG_BYTES}" ]]; then
+      echo "WARN: --disk-gb ${DISK_GB}G < imported image (~$((IMG_BYTES / 1024 / 1024 / 1024))G); qm resize cannot shrink — keeping image size" >&2
+      echo "      Rebuild with lab-up (no --skip-build) so CP/worker get separate *-Ng.qcow2 images." >&2
+      DISK_GB=""
+    elif [[ "${TARGET_BYTES}" -eq "${IMG_BYTES}" ]] || [[ "${TARGET_BYTES}" -le $((IMG_BYTES + 64 * 1024 * 1024)) ]]; then
+      echo "==> scsi0 already ~${DISK_GB}G (image virtual size) — skip resize"
+      DISK_GB=""
+    fi
+  fi
+fi
+if [[ -n "${DISK_GB}" ]]; then
   echo "==> resizing scsi0 → ${DISK_GB}G"
   vm_stop 2>/dev/null || true
   if [[ -n "${PROXMOX_SSH:-}" ]]; then

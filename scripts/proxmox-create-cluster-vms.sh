@@ -49,6 +49,8 @@ CONTROLPLANES="${CONTROLPLANES:-1}"
 WORKERS="${WORKERS:-2}"
 NAME_PREFIX="${NAME_PREFIX:-pertisk}"
 DISK="${PROXMOX_DISK:-${ROOT}/out/pertisk-cloud-amd64.qcow2}"
+CP_DISK="${PROXMOX_CP_DISK:-}"
+WORKER_DISK="${PROXMOX_WORKER_DISK:-}"
 # Chain into bootstrap/join/CNI after VMs exist (disable with --no-lab-up).
 DO_LAB_UP=1
 LAB_UP_EXTRA=()
@@ -60,6 +62,8 @@ while [[ $# -gt 0 ]]; do
     --workers) WORKERS="$2"; shift 2 ;;
     --prefix) NAME_PREFIX="$2"; shift 2 ;;
     --disk) DISK="$2"; shift 2 ;;
+    --cp-disk) CP_DISK="$2"; shift 2 ;;
+    --worker-disk) WORKER_DISK="$2"; shift 2 ;;
     --memory) MEMORY="$2"; shift 2 ;;
     --cores) CORES="$2"; shift 2 ;;
     --cp-memory) CP_MEMORY="$2"; shift 2 ;;
@@ -87,13 +91,15 @@ while [[ $# -gt 0 ]]; do
       sed -n '2,16p' "$0"
       cat <<EOF
 
-Sizing (shared qcow2 import; --*-disk-gb grows scsi0 after import):
+Sizing (prefer role-sized qcow2 via --cp-disk/--worker-disk; --*-disk-gb only grows):
   --memory MB / --cores N              defaults for both roles
   --cp-memory / --cp-cores             control-plane
   --worker-memory / --worker-cores     workers
-  --disk-gb N                          default disk GiB for both (env PROXMOX_DISK_GB)
-  --cp-disk-gb N                       control-plane disk GiB (env PROXMOX_CP_DISK_GB)
-  --worker-disk-gb N                   worker disk GiB (env PROXMOX_WORKER_DISK_GB)
+  --disk PATH                          default qcow2 for both roles
+  --cp-disk / --worker-disk PATH       per-role qcow2 (lab-up builds *-Ng.qcow2)
+  --disk-gb N                          grow scsi0 after import (env PROXMOX_DISK_GB)
+  --cp-disk-gb N                       control-plane grow GiB (env PROXMOX_CP_DISK_GB)
+  --worker-disk-gb N                   worker grow GiB (env PROXMOX_WORKER_DISK_GB)
 EOF
       exit 0
       ;;
@@ -107,14 +113,20 @@ WORKER_MEMORY="${WORKER_MEMORY:-$MEMORY}"
 WORKER_CORES="${WORKER_CORES:-$CORES}"
 CP_DISK_GB="${CP_DISK_GB:-$DISK_GB}"
 WORKER_DISK_GB="${WORKER_DISK_GB:-$DISK_GB}"
+CP_DISK="${CP_DISK:-$DISK}"
+WORKER_DISK="${WORKER_DISK:-$DISK}"
 
 if [[ -z "${PROXMOX_URL:-}" ]]; then
   echo "PROXMOX_URL unset. Copy proxmox.sh.example → proxmox.sh and fill token, or export PROXMOX_*." >&2
   exit 1
 fi
 
-if [[ ! -f "$DISK" ]]; then
-  echo "disk not found: $DISK (build with: make cloud ARCH=amd64)" >&2
+if [[ ! -f "$CP_DISK" ]]; then
+  echo "CP disk not found: $CP_DISK (build with: make cloud ARCH=amd64 / lab-up without --skip-build)" >&2
+  exit 1
+fi
+if [[ ! -f "$WORKER_DISK" ]]; then
+  echo "worker disk not found: $WORKER_DISK (build with: make cloud ARCH=amd64 / lab-up without --skip-build)" >&2
   exit 1
 fi
 if [[ ! -x "$UPLOAD" ]]; then
@@ -128,16 +140,16 @@ fi
 
 for i in $(seq 1 "$CONTROLPLANES"); do
   cvid=$((CP_VMID + i - 1))
-  echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${DISK} mem=${CP_MEMORY} cores=${CP_CORES} disk-gb=${CP_DISK_GB:-image}"
-  UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$DISK" --memory "$CP_MEMORY" --cores "$CP_CORES")
+  echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${CP_DISK} mem=${CP_MEMORY} cores=${CP_CORES} disk-gb=${CP_DISK_GB:-image}"
+  UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$CP_DISK" --memory "$CP_MEMORY" --cores "$CP_CORES")
   [[ -n "$CP_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$CP_DISK_GB")
   "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
 
 for i in $(seq 1 "$WORKERS"); do
   wvid=$((CP_VMID + CONTROLPLANES + i - 1))
-  echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i} mem=${WORKER_MEMORY} cores=${WORKER_CORES} disk-gb=${WORKER_DISK_GB:-image}"
-  UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$DISK" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
+  echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i} disk=${WORKER_DISK} mem=${WORKER_MEMORY} cores=${WORKER_CORES} disk-gb=${WORKER_DISK_GB:-image}"
+  UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$WORKER_DISK" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
   [[ -n "$WORKER_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$WORKER_DISK_GB")
   "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done

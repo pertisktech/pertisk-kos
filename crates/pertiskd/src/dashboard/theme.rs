@@ -24,7 +24,7 @@ pub struct Theme {
     pub border: Color,
     /// Panel title text.
     pub title: Color,
-    /// Field names (`cpu`, `mem`).
+    /// Field names (`cpu`, `memory`, `disk`).
     pub label: Color,
     /// Field values (hostname, IPs, sizes).
     pub value: Color,

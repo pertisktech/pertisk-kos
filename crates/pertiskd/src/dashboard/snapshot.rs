@@ -14,6 +14,10 @@ pub struct StatusSnapshot {
     pub message: String,
     pub cpu_model: String,
     pub cpu_cores: u32,
+    /// 0–100 from `/proc/stat` idle delta between collects; 0 until second sample.
+    pub cpu_usage_pct: u16,
+    /// 1-minute load average from `/proc/loadavg`.
+    pub load_1m: f32,
     pub mem_total_kb: u64,
     pub mem_available_kb: u64,
     pub disks: Vec<DiskUsage>,
@@ -124,24 +128,17 @@ impl StatusSnapshot {
         let (model, cores) = parse_cpuinfo(&read_to_string("/proc/cpuinfo").unwrap_or_default());
         snap.cpu_model = model;
         snap.cpu_cores = cores;
+        snap.cpu_usage_pct = sample_cpu_usage_pct();
+        snap.load_1m = parse_loadavg(&read_to_string("/proc/loadavg").unwrap_or_default());
 
         let (total, avail) = parse_meminfo(&read_to_string("/proc/meminfo").unwrap_or_default());
         snap.mem_total_kb = total;
         snap.mem_available_kb = avail;
 
-        if let Some(d) = disk_usage("STATE", &root) {
-            snap.disks.push(d);
-        }
-        if let Some(d) = disk_usage("root", Path::new("/")) {
-            if snap
-                .disks
-                .first()
-                .map(|x| x.total_bytes != d.total_bytes || x.used_bytes != d.used_bytes)
-                .unwrap_or(true)
-            {
-                snap.disks.push(d);
-            }
-        }
+        push_disk_unique(&mut snap.disks, disk_usage("STATE", &root));
+        // EPHEMERAL is bound over /var after boot — show usable container space.
+        push_disk_unique(&mut snap.disks, disk_usage("EPHEMERAL", Path::new("/var")));
+        push_disk_unique(&mut snap.disks, disk_usage("root", Path::new("/")));
 
         if let Ok(meta) = BootMeta::load(&root) {
             snap.boot_slot = meta.active.to_string();
@@ -524,6 +521,85 @@ fn pick_primary_node_ip(host_ifaces: &[IfaceAddrs], configured: &[String]) -> (S
     (String::new(), "-".into())
 }
 
+fn push_disk_unique(disks: &mut Vec<DiskUsage>, next: Option<DiskUsage>) {
+    let Some(d) = next else {
+        return;
+    };
+    let dup = disks.iter().any(|x| {
+        x.total_bytes == d.total_bytes && x.used_bytes == d.used_bytes
+    });
+    if !dup {
+        disks.push(d);
+    }
+}
+
+/// Parse `/proc/loadavg` — returns the 1-minute average (0.0 if missing).
+pub fn parse_loadavg(text: &str) -> f32 {
+    text.split_whitespace()
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0)
+}
+
+/// Aggregate CPU ticks from the first `cpu ` line of `/proc/stat`.
+/// Returns `(idle_all, total)` where idle_all includes iowait.
+pub fn parse_proc_stat_cpu(text: &str) -> Option<(u64, u64)> {
+    for line in text.lines() {
+        let rest = line.strip_prefix("cpu ")?;
+        let mut vals = rest.split_whitespace().filter_map(|v| v.parse::<u64>().ok());
+        // user nice system idle iowait irq softirq steal …
+        let user = vals.next()?;
+        let nice = vals.next()?;
+        let system = vals.next()?;
+        let idle = vals.next()?;
+        let iowait = vals.next().unwrap_or(0);
+        let irq = vals.next().unwrap_or(0);
+        let softirq = vals.next().unwrap_or(0);
+        let steal = vals.next().unwrap_or(0);
+        let idle_all = idle.saturating_add(iowait);
+        let total = user
+            .saturating_add(nice)
+            .saturating_add(system)
+            .saturating_add(idle)
+            .saturating_add(iowait)
+            .saturating_add(irq)
+            .saturating_add(softirq)
+            .saturating_add(steal);
+        return Some((idle_all, total));
+    }
+    None
+}
+
+/// Busy % since the previous call (0 on the first sample).
+fn sample_cpu_usage_pct() -> u16 {
+    use std::sync::Mutex;
+    static PREV: Mutex<Option<(u64, u64)>> = Mutex::new(None);
+
+    let Some(text) = read_to_string("/proc/stat") else {
+        return 0;
+    };
+    let Some((idle, total)) = parse_proc_stat_cpu(&text) else {
+        return 0;
+    };
+    let Ok(mut guard) = PREV.lock() else {
+        return 0;
+    };
+    let pct = if let Some((prev_idle, prev_total)) = *guard {
+        let di = idle.saturating_sub(prev_idle);
+        let dt = total.saturating_sub(prev_total);
+        if dt == 0 {
+            0
+        } else {
+            let busy = dt.saturating_sub(di);
+            ((busy.saturating_mul(100)) / dt).min(100) as u16
+        }
+    } else {
+        0
+    };
+    *guard = Some((idle, total));
+    pct
+}
+
 /// Parse `/proc/cpuinfo` — exposed for unit tests.
 pub fn parse_cpuinfo(text: &str) -> (String, u32) {
     let mut model = String::from("unknown");
@@ -655,6 +731,20 @@ Cached:          2048000 kB
         let (total, avail) = parse_meminfo(sample);
         assert_eq!(total, 16384000);
         assert_eq!(avail, 8192000);
+    }
+
+    #[test]
+    fn loadavg_parses_first_field() {
+        assert!((parse_loadavg("0.42 0.35 0.28 1/234 99") - 0.42).abs() < f32::EPSILON);
+        assert_eq!(parse_loadavg(""), 0.0);
+    }
+
+    #[test]
+    fn proc_stat_cpu_sums_ticks() {
+        let sample = "cpu  100 20 30 400 10 1 2 3 0 0\ncpu0 50 10 15 200 5 0 1 1 0 0\n";
+        let (idle_all, total) = parse_proc_stat_cpu(sample).unwrap();
+        assert_eq!(idle_all, 410); // idle + iowait
+        assert_eq!(total, 100 + 20 + 30 + 400 + 10 + 1 + 2 + 3);
     }
 
     #[test]

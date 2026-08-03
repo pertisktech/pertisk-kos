@@ -72,9 +72,9 @@ Flags:
   --cp-cores N        control-plane vCPUs (env PROXMOX_CP_CORES)
   --worker-memory MB  worker RAM (env PROXMOX_WORKER_MEMORY)
   --worker-cores N    worker vCPUs (env PROXMOX_WORKER_CORES)
-  --disk-gb N         default disk GiB for both roles + build floor (env PERTISK_DISK_GB)
-  --cp-disk-gb N      control-plane disk GiB after import (env PROXMOX_CP_DISK_GB)
-  --worker-disk-gb N  worker disk GiB after import (env PROXMOX_WORKER_DISK_GB)
+  --disk-gb N         default disk GiB for both roles (env PERTISK_DISK_GB)
+  --cp-disk-gb N      control-plane image + scsi0 GiB (env PROXMOX_CP_DISK_GB)
+  --worker-disk-gb N  worker image + scsi0 GiB (env PROXMOX_WORKER_DISK_GB)
   --skip-build        do not run make cloud
   --skip-vms          do not create/recreate VMs (resolve IPs on existing VMIDs)
   --skip-addons       skip optional reflector (CoreDNS + metrics-server always installed)
@@ -127,16 +127,22 @@ WORKER_CORES="${WORKER_CORES:-$CORES}"
 CP_DISK_GB="${CP_DISK_GB:-$DISK_GB}"
 WORKER_DISK_GB="${WORKER_DISK_GB:-$DISK_GB}"
 
-# Cloud image partitions EPHEMERAL to fill the disk. Build at the largest role
-# size so guest capacity matches --*-disk-gb (qm resize alone does not grow GPT).
-BUILD_DISK_GB="$DISK_GB"
-for n in "$CP_DISK_GB" "$WORKER_DISK_GB"; do
-  if [[ -n "$n" ]] && [[ "$n" =~ ^[0-9]+$ ]]; then
-    if [[ -z "$BUILD_DISK_GB" ]] || [[ "$n" -gt "$BUILD_DISK_GB" ]]; then
-      BUILD_DISK_GB="$n"
-    fi
-  fi
-done
+# EPHEMERAL fills the qcow2 at build time; qm resize is grow-only and does not
+# rewrite GPT. Build a sized image per distinct --*-disk-gb so Proxmox scsi0
+# matches the role (e.g. CP 50G + worker 75G → two qcow2s, not max→shrink).
+sized_qcow() {
+  local gb="$1"
+  echo "${ROOT}/out/pertisk-cloud-${ARCH}-${gb}g.qcow2"
+}
+
+CP_DISK="$DISK"
+WORKER_DISK="$DISK"
+if [[ -n "$CP_DISK_GB" ]]; then
+  CP_DISK="$(sized_qcow "$CP_DISK_GB")"
+fi
+if [[ -n "$WORKER_DISK_GB" ]]; then
+  WORKER_DISK="$(sized_qcow "$WORKER_DISK_GB")"
+fi
 
 if [[ "$CONTROLPLANES" -lt 1 ]]; then
   echo "ERROR: --controlplanes must be >= 1" >&2
@@ -377,20 +383,69 @@ set_hostname_yaml() {
 }
 
 # --- steps ---
+# Produce default out/pertisk-cloud-${ARCH}.qcow2 at SIZE_GB (empty = image default),
+# then copy to a stable sized path when SIZE_GB is set.
+build_cloud_at_gb() {
+  local size_gb="${1:-}" dest="${2:-}"
+  if [[ -n "$size_gb" ]]; then
+    export PERTISK_DISK_GB="$size_gb"
+    log "building cloud image at ${size_gb}G → ${dest:-$DISK}"
+  else
+    unset PERTISK_DISK_GB || true
+    log "building cloud image (default size) → ${DISK}"
+  fi
+  if [[ "${CLOUD_BUILT:-0}" == "1" ]]; then
+    # Binaries already built; only re-partition/populate the disk.
+    PERTISK_ARCH="$ARCH" "$ROOT/image/build-cloud-image.sh"
+  else
+    make -C "$ROOT" cloud ARCH="$ARCH"
+    CLOUD_BUILT=1
+  fi
+  [[ -f "$DISK" ]] || die "disk not produced: $DISK"
+  if [[ -n "$dest" && "$dest" != "$DISK" ]]; then
+    cp -f "$DISK" "$dest"
+    log "sized image ready: $dest"
+  fi
+}
+
 step_build() {
   if [[ "$SKIP_BUILD" == "1" ]]; then
     log "skip build"
-    [[ -f "$DISK" ]] || die "disk missing: $DISK"
+    if [[ -n "$CP_DISK_GB" && ! -f "$CP_DISK" ]]; then
+      [[ -f "$DISK" ]] || die "disk missing: $CP_DISK (and fallback $DISK)"
+      log "warn: missing sized CP image $CP_DISK — using $DISK (Proxmox size follows that qcow2; qm cannot shrink)"
+      CP_DISK="$DISK"
+    fi
+    if [[ -n "$WORKER_DISK_GB" && ! -f "$WORKER_DISK" ]]; then
+      [[ -f "$DISK" ]] || die "disk missing: $WORKER_DISK (and fallback $DISK)"
+      log "warn: missing sized worker image $WORKER_DISK — using $DISK (Proxmox size follows that qcow2; qm cannot shrink)"
+      WORKER_DISK="$DISK"
+    fi
+    [[ -f "$CP_DISK" ]] || die "disk missing: $CP_DISK"
+    [[ -f "$WORKER_DISK" ]] || die "disk missing: $WORKER_DISK"
     return 0
   fi
-  if [[ -n "$BUILD_DISK_GB" ]]; then
-    export PERTISK_DISK_GB="$BUILD_DISK_GB"
-    log "building cloud image (make cloud ARCH=${ARCH} PERTISK_DISK_GB=${BUILD_DISK_GB})"
+
+  CLOUD_BUILT=0
+  local sizes="" n
+  for n in "$CP_DISK_GB" "$WORKER_DISK_GB"; do
+    if [[ -n "$n" ]] && [[ "$n" =~ ^[0-9]+$ ]]; then
+      case " ${sizes} " in
+        *" ${n} "*) ;;
+        *) sizes="${sizes}${sizes:+ }${n}" ;;
+      esac
+    fi
+  done
+
+  if [[ -z "$sizes" ]]; then
+    build_cloud_at_gb ""
   else
-    log "building cloud image (make cloud ARCH=${ARCH})"
+    for n in $sizes; do
+      build_cloud_at_gb "$n" "$(sized_qcow "$n")"
+    done
   fi
-  make -C "$ROOT" cloud ARCH="$ARCH"
-  [[ -f "$DISK" ]] || die "disk not produced: $DISK"
+  [[ -f "$CP_DISK" ]] || die "CP disk missing after build: $CP_DISK"
+  [[ -f "$WORKER_DISK" ]] || die "worker disk missing after build: $WORKER_DISK"
 }
 
 step_vms() {
@@ -401,8 +456,8 @@ step_vms() {
     fi
     return 0
   fi
-  if [[ -n "$BUILD_DISK_GB" ]]; then
-    log "note: cloud image built at ${BUILD_DISK_GB}G (max of role --*-disk-gb); EPHEMERAL fills the rest"
+  if [[ -n "$CP_DISK_GB" || -n "$WORKER_DISK_GB" ]]; then
+    log "note: importing role-sized qcow2 (cp=${CP_DISK_GB:-default}G wk=${WORKER_DISK_GB:-default}G); EPHEMERAL matches build size"
   fi
   log "creating cluster VMs (cp=${CP_MEMORY}MB/${CP_CORES}c/${CP_DISK_GB:-img}G wk=${WORKER_MEMORY}MB/${WORKER_CORES}c/${WORKER_DISK_GB:-img}G)"
   CREATE_ARGS=(
@@ -412,13 +467,14 @@ step_vms() {
     --workers "$WORKERS"
     --prefix "$NAME_PREFIX"
     --disk "$DISK"
+    --cp-disk "$CP_DISK"
+    --worker-disk "$WORKER_DISK"
     --cp-memory "$CP_MEMORY"
     --cp-cores "$CP_CORES"
     --worker-memory "$WORKER_MEMORY"
     --worker-cores "$WORKER_CORES"
   )
-  [[ -n "$CP_DISK_GB" ]] && CREATE_ARGS+=(--cp-disk-gb "$CP_DISK_GB")
-  [[ -n "$WORKER_DISK_GB" ]] && CREATE_ARGS+=(--worker-disk-gb "$WORKER_DISK_GB")
+  # Image already built at role size — do not pass --*-disk-gb (qm resize cannot shrink).
   PROXMOX_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
 }
 
@@ -455,7 +511,10 @@ for i in \$(seq 1 45); do
   qm status "\$VMID" 2>/dev/null | grep -q stopped && break
   sleep 1
 done
-qm resize "\$VMID" scsi0 "\${GB}G"
+# qm resize is grow-only. Shrinking is rejected; recreate VMs from a sized qcow2 instead.
+if ! qm resize "\$VMID" scsi0 "\${GB}G"; then
+  echo "WARN: qm resize \${VMID} scsi0 → \${GB}G failed (cannot shrink). Recreate without --skip-build/--skip-vms." >&2
+fi
 qm config "\$VMID" | grep -E '^(memory|cores|scsi0):' || true
 qm start "\$VMID" >/dev/null 2>&1 || true
 EOF

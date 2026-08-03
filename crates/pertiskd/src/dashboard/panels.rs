@@ -31,13 +31,14 @@ pub fn top_box_heights(frame_h: u16) -> (u16, u16, u16) {
     let node = 3u16;
     // Reserve at least 6 rows for the logs frame (2 borders + 4 body).
     let budget = frame_h.saturating_sub(node + 6);
+    // cpu + memory + ≥1 disk need mid body ≥3 → panel height ≥5.
     let mid = match frame_h {
-        0..=24 => 5,
-        25..=36 => 6,
-        _ => 8,
+        0..=24 => 6,
+        25..=36 => 7,
+        _ => 9,
     }
     .min(budget)
-    .max(4);
+    .max(5);
     let net = match frame_h {
         0..=24 => 5,
         25..=30 => 6,
@@ -261,8 +262,6 @@ fn draw_node(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) 
         value(snap.machine_type.clone(), theme),
         label("  ", theme),
         Span::styled(ready.to_string(), theme.ready_style(snap.ready)),
-        label("  cpu ", theme),
-        value(format!("{}c", snap.cpu_cores), theme),
         label("  ", theme),
         Span::styled(skin.badge.clone(), theme.label_style()),
     ])];
@@ -274,8 +273,8 @@ fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Ski
     let max_h = area.height.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
 
-    // Always reserve the last 1–2 rows for cluster + k8s/cni so Cilium noise
-    // (already filtered) cannot push the summary off-screen.
+    // Always reserve the last 1–2 rows for cluster + Kubernetes/cni so Cilium
+    // noise (already filtered) cannot push the summary off-screen.
     let summary_rows = if max_h >= 3 { 2 } else { 1 };
     let iface_budget = max_h.saturating_sub(summary_rows);
 
@@ -328,7 +327,7 @@ fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Ski
                 value(snap.cluster_endpoint.clone(), theme),
             ]));
             lines.push(Line::from(vec![
-                label("k8s ", theme),
+                label("Kubernetes ", theme),
                 value(snap.kubernetes_version.clone(), theme),
                 label("  cni ", theme),
                 value(snap.cni.clone(), theme),
@@ -339,7 +338,7 @@ fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Ski
             lines.push(Line::from(vec![
                 label("cluster ", theme),
                 value(snap.cluster_endpoint.clone(), theme),
-                label("  k8s ", theme),
+                label("  Kubernetes ", theme),
                 value(snap.kubernetes_version.clone(), theme),
                 label("  cni ", theme),
                 value(snap.cni.clone(), theme),
@@ -373,8 +372,22 @@ fn draw_mid(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
     // Scale the meter with the pane so GiB values are not cut to `~`.
     let meter_w = (inner_w / 4).clamp(8, 24);
 
+    let mut resources: Vec<Line> = Vec::new();
+
+    // cpu  [████░░░░]  42%  4c  load 0.35
+    let mut cpu_spans = vec![label("cpu     ", theme)];
+    cpu_spans.extend(meter_spans(snap.cpu_usage_pct, meter_w, skin));
+    cpu_spans.push(label(" ", theme));
+    cpu_spans.push(value(format!("{}c", snap.cpu_cores), theme));
+    if snap.load_1m > 0.0 || snap.cpu_cores > 0 {
+        cpu_spans.push(label("  load ", theme));
+        cpu_spans.push(value(format!("{:.2}", snap.load_1m), theme));
+    }
+    resources.push(Line::from(cpu_spans));
+
+    // memory  [██████░░]  62%  5.0/8.0 GiB
     let mem_pct = pct(snap.mem_used_kb(), snap.mem_total_kb);
-    let mut mem_spans = vec![label("mem ", theme)];
+    let mut mem_spans = vec![label("memory  ", theme)];
     mem_spans.extend(meter_spans(mem_pct, meter_w, skin));
     mem_spans.push(label(" ", theme));
     mem_spans.push(value(
@@ -385,12 +398,18 @@ fn draw_mid(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
         ),
         theme,
     ));
-    let mut mem = vec![Line::from(mem_spans)];
+    resources.push(Line::from(mem_spans));
 
-    let disk_slots = inner_h.saturating_sub(1).max(1);
-    for d in snap.disks.iter().take(disk_slots) {
+    // disk rows — first line labeled "disk"; extras use the volume name.
+    let disk_slots = inner_h.saturating_sub(resources.len()).max(1);
+    for (i, d) in snap.disks.iter().take(disk_slots).enumerate() {
         let dp = pct(d.used_bytes, d.total_bytes);
-        let mut spans = vec![label(&format!("{} ", d.label), theme)];
+        let row_label = if i == 0 {
+            "disk    ".to_string()
+        } else {
+            format!("{:<8}", truncate_label(&d.label, 8))
+        };
+        let mut spans = vec![label(&row_label, theme)];
         spans.extend(meter_spans(dp, meter_w, skin));
         spans.push(label(" ", theme));
         spans.push(value(
@@ -401,15 +420,19 @@ fn draw_mid(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
             ),
             theme,
         ));
-        mem.push(Line::from(spans));
+        if i == 0 {
+            spans.push(label("  ", theme));
+            spans.push(value(d.label.clone(), theme));
+        }
+        resources.push(Line::from(spans));
     }
     if snap.disks.len() > disk_slots {
-        mem.push(Line::from(Span::styled(
+        resources.push(Line::from(Span::styled(
             format!("… +{} disks", snap.disks.len() - disk_slots),
             theme.label_style(),
         )));
     }
-    render_into(frame, cols[0], "mem", mem, skin);
+    render_into(frame, cols[0], "resources", resources, skin);
 
     let mut svc = vec![
         service_line("containerd ", &snap.containerd, snap.containerd_pid, theme),
@@ -426,6 +449,14 @@ fn draw_mid(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
         ]));
     }
     render_into(frame, cols[1], "services", svc, skin);
+}
+
+fn truncate_label(s: &str, max: usize) -> String {
+    let cleaned = cell_clean(s);
+    if cleaned.chars().count() <= max {
+        return cleaned;
+    }
+    cleaned.chars().take(max).collect()
 }
 
 fn service_line(name: &str, status: &str, pid: u32, theme: &Theme) -> Line<'static> {
@@ -534,7 +565,7 @@ fn draw_logs(frame: &mut Frame, area: Rect, recent: &[String], skin: &Skin) {
     }
 }
 
-/// Render node → network (IPs) → mem|services → logs.
+/// Render node → network (IPs) → resources|services → logs.
 pub fn render_themed(frame: &mut Frame, snap: &StatusSnapshot, recent: &[String], skin: &Skin) {
     let area = frame.area();
     let (node_h, net_h, mid_h) = top_box_heights(area.height);
@@ -565,6 +596,7 @@ mod tests {
         assert_eq!(n50, 3);
         assert!(net50 > net24, "network should grow: {net50} vs {net24}");
         assert!(mid50 >= mid24);
+        assert!(mid24 >= 5, "mid needs room for cpu/memory/disk");
         // Most of a tall pane still goes to logs.
         assert!(log_inner_height(50) >= 20);
     }
