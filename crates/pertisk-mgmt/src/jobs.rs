@@ -309,13 +309,36 @@ async fn run_create_cluster(
         ),
     )?;
 
+    // Persist planned base VMID so seed + UI show correct IDs during create.
+    {
+        let now = db::now_rfc3339();
+        let _ = sqlx::query("UPDATE clusters SET cp_vmid = ?, updated_at = ? WHERE id = ?")
+            .bind(cp_vmid)
+            .bind(&now)
+            .bind(cid)
+            .execute(state.pool())
+            .await;
+    }
+    let mut cluster = cluster;
+    cluster.cp_vmid = Some(cp_vmid);
+
+    // Show node list immediately (provisioning) while Proxmox VMs are created.
+    seed_stub_nodes(state, &cluster, "provisioning").await?;
+    append_log(
+        log_path,
+        &format!(
+            "seeded {} CP + {} worker node rows (status=provisioning)\n",
+            cluster.controlplanes, cluster.workers
+        ),
+    )?;
+
     // If lab-up script missing, simulate for UI/dev
     if !state.cfg().lab_up.exists() {
         append_log(
             log_path,
             "WARNING: lab-up script not found; marking cluster ready (dev stub)\n",
         )?;
-        seed_stub_nodes(state, &cluster).await?;
+        seed_stub_nodes(state, &cluster, "ready").await?;
         let now = db::now_rfc3339();
         let endpoint = cluster
             .vip
@@ -341,12 +364,19 @@ async fn run_create_cluster(
     let stderr = child.stderr.take();
     let log_path_out = log_path.to_string();
     let log_path_err = log_path.to_string();
+    let pool_out = state.pool().clone();
+    let pool_err = state.pool().clone();
+    let cid_out = cid.to_string();
+    let cid_err = cid.to_string();
+    let cluster_name_out = cluster.name.clone();
+    let cluster_name_err = cluster.name.clone();
 
     let out_task = tokio::spawn(async move {
         if let Some(out) = stdout {
             let mut lines = BufReader::new(out).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let _ = append_log(&log_path_out, &format!("{line}\n"));
+                let _ = apply_create_log_progress(&pool_out, &cid_out, &cluster_name_out, &line).await;
             }
         }
     });
@@ -355,6 +385,7 @@ async fn run_create_cluster(
             let mut lines = BufReader::new(err).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let _ = append_log(&log_path_err, &format!("{line}\n"));
+                let _ = apply_create_log_progress(&pool_err, &cid_err, &cluster_name_err, &line).await;
             }
         }
     });
@@ -364,6 +395,8 @@ async fn run_create_cluster(
     let _ = err_task.await;
 
     if !status.success() {
+        let _ = mark_nodes_status(state.pool(), cid, "provisioning", "error").await;
+        let _ = mark_nodes_status(state.pool(), cid, "pending", "error").await;
         anyhow::bail!("lab-up exited with {status}");
     }
 
@@ -385,8 +418,8 @@ async fn run_create_cluster(
     .execute(state.pool())
     .await?;
 
-    // Upsert node placeholders from counts
-    seed_stub_nodes(state, &cluster).await?;
+    // Mark all planned nodes ready, then sync IPs / versions from kubectl.
+    seed_stub_nodes(state, &cluster, "ready").await?;
     let _ = crate::node_sync::sync_cluster_nodes(
         state.pool(),
         cid,
@@ -448,7 +481,11 @@ fn rewrite_stored_kubeconfig(path: &std::path::Path, cluster_name: &str) -> anyh
     Ok(())
 }
 
-async fn seed_stub_nodes(state: &AppState, cluster: &ClusterRow) -> anyhow::Result<()> {
+async fn seed_stub_nodes(
+    state: &AppState,
+    cluster: &ClusterRow,
+    status: &str,
+) -> anyhow::Result<()> {
     let now = db::now_rfc3339();
     for i in 1..=cluster.controlplanes {
         let name = format!("{}-cp-{}", cluster.name, i);
@@ -456,14 +493,14 @@ async fn seed_stub_nodes(state: &AppState, cluster: &ClusterRow) -> anyhow::Resu
         let vmid = cluster.cp_vmid.map(|v| v + i - 1);
         let _ = sqlx::query(
             r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, k8s_version, memory, cores, disk_gb, status, created_at, updated_at)
-               VALUES (?, ?, ?, 'controlplane', ?, ?, ?, ?, ?, 'ready', ?, ?)
+               VALUES (?, ?, ?, 'controlplane', ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(cluster_id, name) DO UPDATE SET
                  vmid = COALESCE(excluded.vmid, nodes.vmid),
                  k8s_version = COALESCE(nodes.k8s_version, excluded.k8s_version),
                  memory = COALESCE(nodes.memory, excluded.memory),
                  cores = COALESCE(nodes.cores, excluded.cores),
                  disk_gb = COALESCE(nodes.disk_gb, excluded.disk_gb),
-                 status = 'ready',
+                 status = excluded.status,
                  updated_at = excluded.updated_at"#,
         )
         .bind(&id)
@@ -474,6 +511,7 @@ async fn seed_stub_nodes(state: &AppState, cluster: &ClusterRow) -> anyhow::Resu
         .bind(cluster.cp_memory)
         .bind(cluster.cp_cores)
         .bind(cluster.cp_disk_gb)
+        .bind(status)
         .bind(&now)
         .bind(&now)
         .execute(state.pool())
@@ -486,14 +524,14 @@ async fn seed_stub_nodes(state: &AppState, cluster: &ClusterRow) -> anyhow::Resu
         let vmid = worker_base + i - 1;
         let _ = sqlx::query(
             r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, k8s_version, memory, cores, disk_gb, status, created_at, updated_at)
-               VALUES (?, ?, ?, 'worker', ?, ?, ?, ?, ?, 'ready', ?, ?)
+               VALUES (?, ?, ?, 'worker', ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(cluster_id, name) DO UPDATE SET
                  vmid = COALESCE(excluded.vmid, nodes.vmid),
                  k8s_version = COALESCE(nodes.k8s_version, excluded.k8s_version),
                  memory = COALESCE(nodes.memory, excluded.memory),
                  cores = COALESCE(nodes.cores, excluded.cores),
                  disk_gb = COALESCE(nodes.disk_gb, excluded.disk_gb),
-                 status = 'ready',
+                 status = excluded.status,
                  updated_at = excluded.updated_at"#,
         )
         .bind(&id)
@@ -504,9 +542,292 @@ async fn seed_stub_nodes(state: &AppState, cluster: &ClusterRow) -> anyhow::Resu
         .bind(cluster.worker_memory)
         .bind(cluster.worker_cores)
         .bind(cluster.worker_disk_gb)
+        .bind(status)
         .bind(&now)
         .bind(&now)
         .execute(state.pool())
+        .await;
+    }
+    Ok(())
+}
+
+async fn mark_nodes_status(
+    pool: &sqlx::SqlitePool,
+    cluster_id: &str,
+    from: &str,
+    to: &str,
+) -> anyhow::Result<()> {
+    let now = db::now_rfc3339();
+    sqlx::query(
+        "UPDATE nodes SET status = ?, updated_at = ? WHERE cluster_id = ? AND status = ?",
+    )
+    .bind(to)
+    .bind(&now)
+    .bind(cluster_id)
+    .bind(from)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Update node rows from lab-up / upload-vm log lines while create is running.
+async fn apply_create_log_progress(
+    pool: &sqlx::SqlitePool,
+    cluster_id: &str,
+    cluster_name: &str,
+    line: &str,
+) -> anyhow::Result<()> {
+    let raw = line.trim().trim_start_matches("==> ").trim();
+    if raw.is_empty() {
+        return Ok(());
+    }
+    let now = db::now_rfc3339();
+
+    // control-plane VMID=210 name=lab-cp-1 …
+    // worker VMID=213 name=lab-wk-1 …
+    if let Some((role, rest)) = raw
+        .strip_prefix("control-plane ")
+        .map(|r| ("controlplane", r))
+        .or_else(|| raw.strip_prefix("worker ").map(|r| ("worker", r)))
+    {
+        if let (Some(vmid), Some(name)) = (extract_kv(rest, "VMID"), extract_kv(rest, "name")) {
+            if let Ok(vmid_n) = vmid.parse::<i64>() {
+                touch_node_progress(pool, cluster_id, &name, role, Some(vmid_n), None, "provisioning", &now)
+                    .await?;
+            }
+        }
+        return Ok(());
+    }
+
+    // creating VM 210 (lab-cp-1) …
+    if let Some(rest) = raw.strip_prefix("creating VM ") {
+        if let Some((vmid_s, name_part)) = rest.split_once(' ') {
+            if let Ok(vmid_n) = vmid_s.parse::<i64>() {
+                let name = name_part
+                    .trim_start_matches('(')
+                    .split(')')
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if !name.is_empty() {
+                    let role = if name.contains("-cp-") {
+                        "controlplane"
+                    } else {
+                        "worker"
+                    };
+                    touch_node_progress(
+                        pool,
+                        cluster_id,
+                        name,
+                        role,
+                        Some(vmid_n),
+                        None,
+                        "provisioning",
+                        &now,
+                    )
+                    .await?;
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // done — open Console for lab-cp-1 (vmid 210)
+    if let Some(rest) = raw
+        .strip_prefix("done — open Console for ")
+        .or_else(|| raw.strip_prefix("done - open Console for "))
+    {
+        let name = rest.split_whitespace().next().unwrap_or("").trim();
+        if !name.is_empty() {
+            let role = if name.contains("-cp-") {
+                "controlplane"
+            } else {
+                "worker"
+            };
+            touch_node_progress(pool, cluster_id, name, role, None, None, "provisioning", &now)
+                .await?;
+        }
+        return Ok(());
+    }
+
+    // VM 210 → 10.1.1.50 (API :50000 up)
+    if let Some(rest) = raw.strip_prefix("VM ") {
+        if let Some((vmid_s, after)) = rest.split_once('→').or_else(|| rest.split_once("->")) {
+            let vmid_s = vmid_s.trim();
+            let ip = after
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_matches(|c: char| c == '(' || c == ')');
+            if let Ok(vmid_n) = vmid_s.parse::<i64>() {
+                if !ip.is_empty() && ip.contains('.') {
+                    let _ = sqlx::query(
+                        r#"UPDATE nodes SET ip = ?, status = 'provisioning', updated_at = ?
+                           WHERE cluster_id = ? AND vmid = ?"#,
+                    )
+                    .bind(ip)
+                    .bind(&now)
+                    .bind(cluster_id)
+                    .bind(vmid_n)
+                    .execute(pool)
+                    .await;
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // apply controlplane → 10.1.1.50  (first CP)
+    if let Some(rest) = raw
+        .strip_prefix("apply controlplane → ")
+        .or_else(|| raw.strip_prefix("apply controlplane -> "))
+    {
+        let ip = rest.split_whitespace().next().unwrap_or("").trim();
+        let name = format!("{cluster_name}-cp-1");
+        if !ip.is_empty() {
+            touch_node_progress(
+                pool,
+                cluster_id,
+                &name,
+                "controlplane",
+                None,
+                Some(ip),
+                "provisioning",
+                &now,
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+
+    // bootstrap CP1
+    if raw.starts_with("bootstrap CP1") || raw == "bootstrap CP1" {
+        let name = format!("{cluster_name}-cp-1");
+        touch_node_progress(
+            pool,
+            cluster_id,
+            &name,
+            "controlplane",
+            None,
+            None,
+            "ready",
+            &now,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // apply + join-controlplane lab-cp-2 @ 10.1.1.51
+    if let Some(rest) = raw.strip_prefix("apply + join-controlplane ") {
+        if let Some((name, ip_part)) = rest.split_once(" @ ") {
+            let name = name.trim();
+            let ip = ip_part.split_whitespace().next().unwrap_or("").trim();
+            touch_node_progress(
+                pool,
+                cluster_id,
+                name,
+                "controlplane",
+                None,
+                if ip.is_empty() { None } else { Some(ip) },
+                "ready",
+                &now,
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+
+    // join worker lab-wk-1 @ 10.1.1.52
+    if let Some(rest) = raw.strip_prefix("join worker ") {
+        if let Some((name, ip_part)) = rest.split_once(" @ ") {
+            let name = name.trim();
+            let ip = ip_part.split_whitespace().next().unwrap_or("").trim();
+            touch_node_progress(
+                pool,
+                cluster_id,
+                name,
+                "worker",
+                None,
+                if ip.is_empty() { None } else { Some(ip) },
+                "ready",
+                &now,
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+
+    Ok(())
+}
+
+fn extract_kv<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("{key}=");
+    let start = s.find(&needle)? + needle.len();
+    let rest = &s[start..];
+    let end = rest
+        .find(char::is_whitespace)
+        .unwrap_or(rest.len());
+    let v = rest[..end].trim();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+async fn touch_node_progress(
+    pool: &sqlx::SqlitePool,
+    cluster_id: &str,
+    name: &str,
+    role: &str,
+    vmid: Option<i64>,
+    ip: Option<&str>,
+    status: &str,
+    now: &str,
+) -> anyhow::Result<()> {
+    // Prefer update by name; insert if missing (race with seed).
+    let updated = sqlx::query(
+        r#"UPDATE nodes SET
+             role = ?,
+             vmid = COALESCE(?, vmid),
+             ip = COALESCE(?, ip),
+             status = ?,
+             updated_at = ?
+           WHERE cluster_id = ? AND name = ?"#,
+    )
+    .bind(role)
+    .bind(vmid)
+    .bind(ip)
+    .bind(status)
+    .bind(now)
+    .bind(cluster_id)
+    .bind(name)
+    .execute(pool)
+    .await?
+    .rows_affected();
+
+    if updated == 0 {
+        let id = Uuid::new_v4().to_string();
+        let _ = sqlx::query(
+            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, ip, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(cluster_id, name) DO UPDATE SET
+                 vmid = COALESCE(excluded.vmid, nodes.vmid),
+                 ip = COALESCE(excluded.ip, nodes.ip),
+                 status = excluded.status,
+                 updated_at = excluded.updated_at"#,
+        )
+        .bind(&id)
+        .bind(cluster_id)
+        .bind(name)
+        .bind(role)
+        .bind(vmid)
+        .bind(ip)
+        .bind(status)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
         .await;
     }
     Ok(())

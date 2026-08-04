@@ -371,6 +371,122 @@ fn parse_percent(s: &str) -> Option<f64> {
     s.trim_end_matches('%').parse().ok()
 }
 
+#[derive(Debug, Serialize)]
+pub struct NodeLogsOut {
+    pub service: String,
+    pub source: Option<String>,
+    pub lines: Vec<String>,
+    pub error: Option<String>,
+}
+
+const ALLOWED_LOG_SERVICES: &[&str] = &["pertiskd", "containerd", "kubelet", "dmesg"];
+
+/// Tail guest logs via `pertiskctl logs`.
+pub async fn fetch_logs(
+    state: &AppState,
+    node: &NodeOut,
+    service: &str,
+    tail: u32,
+) -> NodeLogsOut {
+    let service = service.trim().to_ascii_lowercase();
+    if !ALLOWED_LOG_SERVICES.contains(&service.as_str()) {
+        return NodeLogsOut {
+            service,
+            source: None,
+            lines: vec![],
+            error: Some(format!(
+                "unknown service (want {})",
+                ALLOWED_LOG_SERVICES.join("|")
+            )),
+        };
+    }
+    let tail = tail.clamp(1, 2000);
+    let Some(ip) = node.ip.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return NodeLogsOut {
+            service,
+            source: None,
+            lines: vec![],
+            error: Some("node has no IPv4 address yet".into()),
+        };
+    };
+    let cfg = state.cfg();
+    if !cfg.pertiskctl.exists() {
+        return NodeLogsOut {
+            service,
+            source: None,
+            lines: vec![],
+            error: Some(format!(
+                "pertiskctl not found at {}",
+                cfg.pertiskctl.display()
+            )),
+        };
+    }
+
+    let out = Command::new(&cfg.pertiskctl)
+        .args([
+            "-e",
+            &format!("{ip}:50000"),
+            "logs",
+            &service,
+            "-n",
+            &tail.to_string(),
+        ])
+        .output()
+        .await;
+
+    match out {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if !o.status.success() {
+                let msg = stderr.trim();
+                return NodeLogsOut {
+                    service,
+                    source: None,
+                    lines: vec![],
+                    error: Some(if msg.is_empty() {
+                        format!("pertiskctl logs failed (exit {})", o.status)
+                    } else {
+                        msg.to_string()
+                    }),
+                };
+            }
+            // stderr has "# service from source"; stdout is the lines.
+            let source = stderr
+                .lines()
+                .find_map(|l| {
+                    let t = l.trim().trim_start_matches('#').trim();
+                    t.strip_prefix(&format!("{service} from "))
+                        .map(|s| s.trim().to_string())
+                        .or_else(|| {
+                            if t.contains(" from ") {
+                                Some(t.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                });
+            let lines: Vec<String> = stdout
+                .lines()
+                .map(|l| l.to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            NodeLogsOut {
+                service,
+                source,
+                lines,
+                error: None,
+            }
+        }
+        Err(e) => NodeLogsOut {
+            service,
+            source: None,
+            lines: vec![],
+            error: Some(format!("pertiskctl: {e}")),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,7 @@ pub fn routes() -> Router<AppState> {
             get(get_one).delete(remove),
         )
         .route("/clusters/{cid}/nodes/{nid}/status", get(status))
+        .route("/clusters/{cid}/nodes/{nid}/logs", get(logs))
         .route("/clusters/{cid}/nodes/{nid}/reboot", post(reboot))
         .route(
             "/clusters/{cid}/nodes/{nid}/hardware",
@@ -138,6 +139,43 @@ async fn status(
     };
     let out = crate::node_status::gather(&state, node, &cid).await;
     Ok(Json(out))
+}
+
+#[derive(Debug, Deserialize)]
+struct LogsQuery {
+    #[serde(default = "default_log_service")]
+    service: String,
+    #[serde(default = "default_log_tail")]
+    tail: u32,
+}
+
+fn default_log_service() -> String {
+    "pertiskd".into()
+}
+
+fn default_log_tail() -> u32 {
+    200
+}
+
+async fn logs(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path((cid, nid)): Path<(String, String)>,
+    Query(q): Query<LogsQuery>,
+) -> ApiResult<Json<crate::node_status::NodeLogsOut>> {
+    let row = sqlx::query_as::<_, NodeOut>(&format!(
+        "{NODE_SELECT} WHERE id = ? AND cluster_id = ?"
+    ))
+    .bind(&nid)
+    .bind(&cid)
+    .fetch_optional(state.pool())
+    .await?;
+    let Some(node) = row else {
+        return Err(AppError::NotFound);
+    };
+    Ok(Json(
+        crate::node_status::fetch_logs(&state, &node, &q.service, q.tail).await,
+    ))
 }
 
 async fn add(

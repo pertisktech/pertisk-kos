@@ -1166,6 +1166,32 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
 .chart-wrap { width: 100%; min-height: 220px; }
 .chart-error { margin: 0 0 0.5rem; color: var(--warning); }
 .chart-footnote { margin: 0.5rem 0 0; font-size: 0.8rem; }
+.node-logs-card {
+  margin-top: 1rem;
+}
+.node-logs-card .log-head {
+  align-items: center;
+  margin-bottom: 0.65rem;
+}
+.node-log-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+.log-service-select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+}
+.node-log-box {
+  max-height: 360px;
+  min-height: 180px;
+  margin: 0.35rem 0 0;
+}
 
 @media (max-width: 900px) {
   .overview-grid { grid-template-columns: 1fr; }

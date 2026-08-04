@@ -254,9 +254,14 @@ machine:
 
   useEffect(() => {
     load()
-    const t = setInterval(load, 4000)
+    const busy =
+      c?.status === 'provisioning' ||
+      c?.status === 'pending' ||
+      c?.status === 'upgrading' ||
+      c?.status === 'deleting'
+    const t = setInterval(load, busy ? 2000 : 4000)
     return () => clearInterval(t)
-  }, [load])
+  }, [load, c?.status])
 
   useEffect(() => {
     if (!followLog || !logRef.current) return
@@ -722,7 +727,27 @@ machine:
               <div className="section-head">
                 <div>
                   <h3 className="section-label">Nodes</h3>
-                  <p className="muted">{cps.length} control plane · {wks.length} worker</p>
+                  <p className="muted">
+                    {cps.length} control plane · {wks.length} worker
+                    {nodes.length > 0 && (
+                      <>
+                        {' · '}
+                        <span className="badge ready">{nodes.filter((n) => n.status === 'ready').length} ready</span>
+                        {' '}
+                        <span className="badge provisioning">
+                          {nodes.filter((n) => n.status === 'provisioning' || n.status === 'pending').length} provisioning
+                        </span>
+                        {nodes.some((n) => n.status === 'error') && (
+                          <>
+                            {' '}
+                            <span className="badge error">
+                              {nodes.filter((n) => n.status === 'error').length} error
+                            </span>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </p>
                 </div>
                 <div className="row-actions">
                   {selCount > 0 && (
@@ -765,7 +790,16 @@ machine:
                 onReboot={rebootNode}
               />
               {nodes.length === 0 && (
-                <p className="muted empty-hint">Nodes appear after the create job finishes.</p>
+                <p className="muted empty-hint">
+                  {c.status === 'pending' || c.status === 'provisioning'
+                    ? 'Waiting for create job to seed nodes…'
+                    : 'No nodes yet.'}
+                </p>
+              )}
+              {nodes.some((n) => n.status === 'provisioning' || n.status === 'pending') && (
+                <p className="muted empty-hint">
+                  Live status updates as Proxmox creates VMs and nodes join — also watch the Jobs tab.
+                </p>
               )}
             </div>
           )}

@@ -16,7 +16,10 @@ import { api } from '../api'
 import { Icon } from '../components/Icons'
 
 const POLL_MS = 4000
+const LOG_POLL_MS = 3000
 const MAX_POINTS = 60
+const LOG_SERVICES = ['pertiskd', 'containerd', 'kubelet', 'dmesg']
+const LOG_TAIL = 200
 
 function formatHw(node) {
   if (!node) return '—'
@@ -70,6 +73,13 @@ export default function NodeDetail() {
   const [err, setErr] = useState(null)
   const [series, setSeries] = useState([])
   const lastApi = useRef({ total: null, sum: null, count: null })
+
+  const [logService, setLogService] = useState('pertiskd')
+  const [logText, setLogText] = useState('')
+  const [logSource, setLogSource] = useState('')
+  const [logError, setLogError] = useState(null)
+  const [followLog, setFollowLog] = useState(true)
+  const logRef = useRef(null)
 
   const load = useCallback(async () => {
     try {
@@ -131,6 +141,46 @@ export default function NodeDetail() {
     const t = setInterval(load, POLL_MS)
     return () => clearInterval(t)
   }, [load])
+
+  const loadLogs = useCallback(async () => {
+    try {
+      const res = await api(
+        `/clusters/${clusterId}/nodes/${nid}/logs?service=${encodeURIComponent(logService)}&tail=${LOG_TAIL}`,
+      )
+      if (res.error) {
+        setLogError(res.error)
+        setLogText('')
+        setLogSource('')
+        return
+      }
+      setLogError(null)
+      setLogSource(res.source || '')
+      setLogText((res.lines || []).join('\n'))
+    } catch (e) {
+      setLogError(e.message || String(e))
+    }
+  }, [clusterId, nid, logService])
+
+  useEffect(() => {
+    setLogText('')
+    setLogError(null)
+    loadLogs()
+    const t = setInterval(loadLogs, LOG_POLL_MS)
+    return () => clearInterval(t)
+  }, [loadLogs])
+
+  useEffect(() => {
+    if (!followLog || !logRef.current) return
+    logRef.current.scrollTop = logRef.current.scrollHeight
+  }, [logText, followLog])
+
+  function onLogScroll() {
+    const el = logRef.current
+    if (!el) return
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+    if (atBottom && !followLog) setFollowLog(true)
+    if (!atBottom && followLog) setFollowLog(false)
+  }
 
   const node = status?.node
   const health = status?.health
@@ -288,6 +338,63 @@ export default function NodeDetail() {
       <p className="muted" style={{ marginTop: '0.5rem' }}>
         Charts keep ~{MAX_POINTS} samples in this browser session (poll every {POLL_MS / 1000}s). Refresh clears history.
       </p>
+
+      <div className="card node-logs-card">
+        <div className="section-head log-head">
+          <h2 className="card-title" style={{ margin: 0 }}>
+            <Icon name="providers" size={18} /> Logs
+          </h2>
+          <div className="row-actions node-log-actions">
+            <select
+              className="log-service-select"
+              value={logService}
+              onChange={(e) => setLogService(e.target.value)}
+              aria-label="Log service"
+            >
+              {LOG_SERVICES.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="secondary btn-icon"
+              onClick={() => loadLogs()}
+              title="Refresh now"
+            >
+              Refresh
+            </button>
+            <button
+              type="button"
+              className={`secondary btn-icon ${followLog ? 'follow-on' : ''}`}
+              onClick={() => {
+                setFollowLog(true)
+                requestAnimationFrame(() => {
+                  if (logRef.current) {
+                    logRef.current.scrollTop = logRef.current.scrollHeight
+                  }
+                })
+              }}
+              title="Follow latest output"
+            >
+              {followLog ? 'Following' : 'Follow'}
+            </button>
+          </div>
+        </div>
+        {logSource && !logError && (
+          <p className="muted chart-footnote">{logService} · {logSource}</p>
+        )}
+        {logError ? (
+          <p className="muted chart-error">{logError}</p>
+        ) : (
+          <pre
+            ref={logRef}
+            className="log-box mono node-log-box"
+            onScroll={onLogScroll}
+          >
+            {logText || '—'}
+          </pre>
+        )}
+      </div>
     </div>
   )
 }

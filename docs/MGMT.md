@@ -53,6 +53,8 @@ The page shows inventory (VMID, IPs, K8s, hardware), live Machine Health, and ch
 
 Charts poll every ~4s and keep ~60 samples **in the browser** only — refresh clears history. Soft errors (unreachable guest, missing metrics-server) show under each section without failing the page.
 
+A **Logs** panel at the bottom tails `pertiskd` / `containerd` / `kubelet` / `dmesg` via `pertiskctl logs` (`GET /api/clusters/:id/nodes/:nid/logs`).
+
 ## Proxmox provider
 
 UI → Providers → add URL, API token, node, storage (same fields as [PROXMOX.md](./PROXMOX.md)).
@@ -70,6 +72,8 @@ Create with **M control planes** + **N workers**. When `M > 1`, **VIP** is requi
 Use a **free** L2 IPv4 for `--vip` (not already answering ping). Guest images need the `af_packet` module for kube-vip ARP (`make fetch-kernel` + rebuild cloud image).
 
 Jobs shell `MGMT_LAB_UP` (default `./scripts/proxmox-lab-up.sh`) with provider credentials.
+
+While create runs, the **Nodes** tab lists planned CP/worker rows as `provisioning` immediately; status (and IP when known) updates from lab-up logs as Proxmox VMs are created and nodes join. Failed creates mark unfinished nodes as `error`.
 
 ## Docker
 

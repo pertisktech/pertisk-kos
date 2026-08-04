@@ -82,7 +82,7 @@ export default function ClusterNew() {
     setSaving(true)
     try {
       const res = await api('/clusters', { method: 'POST', body })
-      nav(`/clusters/${res.id}`)
+      nav(`/clusters/${res.id}?tab=nodes`)
     } catch (err) {
       setError(err.message)
     } finally {
