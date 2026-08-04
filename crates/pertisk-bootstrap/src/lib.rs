@@ -24,8 +24,9 @@ use pertisk_config::{MachineConfig, MachineType};
 use tracing::info;
 
 pub use gen::{
-    gen_config, gen_config_ha, patch_controlplane_secrets, patch_worker_ca, write_gen_config,
-    write_gen_config_ha, GenConfigHaOutput, GenConfigOutput,
+    gen_config, gen_config_ha, gen_config_ha_with_network, gen_config_with_network,
+    patch_controlplane_secrets, patch_worker_ca, write_gen_config, write_gen_config_ha,
+    GenConfigHaOutput, GenConfigOutput, GenNetworkOpts,
 };
 pub use join::{get_join_config, join_control_plane, JoinConfigResult, JoinControlPlaneResult};
 pub use kubeconfig::sanitize_kubeconfig;
@@ -92,11 +93,13 @@ pub fn bootstrap_control_plane(
         .kubernetes_version
         .as_deref()
         .unwrap_or(DEFAULT_K8S_VERSION);
-    let pod_subnet = cluster.pod_subnet.as_deref().unwrap_or(DEFAULT_POD_SUBNET);
     let service_subnet = cluster
         .service_subnet
         .as_deref()
         .unwrap_or(DEFAULT_SERVICE_SUBNET);
+    let service_cidr = cluster.service_cluster_ip_range();
+    let cluster_cidr = cluster.cluster_cidr();
+    let sans = cluster.pki_extra_sans();
 
     info!(%advertise, %hostname, %k8s_ver, "generating control-plane PKI");
     let kubernetes_svc_ip = kubernetes_service_ip(service_subnet);
@@ -105,7 +108,7 @@ pub fn bootstrap_control_plane(
         &hostname,
         &endpoint_host,
         &kubernetes_svc_ip,
-        &cluster.cert_sans,
+        &sans,
         cluster.ca.as_deref(),
         cluster.ca_key.as_deref(),
         cluster.sa_key.as_deref(),
@@ -177,8 +180,8 @@ pub fn bootstrap_control_plane(
             hostname: &hostname,
             kubernetes_version: k8s_ver,
             etcd_image: DEFAULT_ETCD_IMAGE,
-            service_cidr: service_subnet,
-            pod_subnet,
+            service_cidr: &service_cidr,
+            pod_subnet: &cluster_cidr,
             pki_host_path: "/etc/kubernetes/pki",
             etcd_initial_cluster: &etcd_initial_cluster,
             etcd_initial_cluster_state: "new",
@@ -188,6 +191,7 @@ pub fn bootstrap_control_plane(
     let _ = kube_vip::maybe_write_kube_vip(
         &paths.manifests(),
         vip,
+        cluster.vip6.as_deref(),
         &advertise,
         kube_vip::DEFAULT_KUBE_VIP_INTERFACE,
     )?;
@@ -336,8 +340,15 @@ pub(crate) fn detect_advertise_ip() -> Option<String> {
 }
 
 /// First usable address in the service CIDR (kubeadm: `kubernetes` Service ClusterIP).
+/// When `service_cidr` is dual-stack (`v4,v6`), uses the IPv4 range only.
 pub(crate) fn kubernetes_service_ip(service_cidr: &str) -> String {
-    let cidr = service_cidr.split('/').next().unwrap_or("10.96.0.0");
+    let cidr = service_cidr
+        .split(',')
+        .next()
+        .unwrap_or(service_cidr)
+        .split('/')
+        .next()
+        .unwrap_or("10.96.0.0");
     if let Ok(std::net::IpAddr::V4(v4)) = cidr.parse() {
         let o = v4.octets();
         // network + 1 → 10.96.0.1 for 10.96.0.0/12

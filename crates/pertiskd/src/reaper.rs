@@ -81,12 +81,26 @@ mod unix_impl {
                             has_cluster = new_cfg.cluster.is_some(),
                             "reloading machine config after apply"
                         );
+                        let dual = new_cfg
+                            .cluster
+                            .as_ref()
+                            .map(|c| c.is_dual_stack())
+                            .unwrap_or(false);
+                        crate::sysctl::apply_ipv6_policy(dual);
                         if let Some(name) = new_cfg.machine.network.hostname.as_deref() {
                             if let Err(err) = crate::hostname::set_hostname(name) {
                                 warn!(error = %err, "hostname apply on reload failed");
                             }
                         }
+                        if let Err(err) = pertisk_net::apply_network(&new_cfg.machine.network) {
+                            warn!(error = %err, "network apply on config reload failed");
+                        }
                         services.on_config_reload(&new_cfg, crate::log_ring());
+                        // Dual-stack needs kubelet --node-ip=v4,v6 after ULA/SLAAC lands.
+                        if dual && new_cfg.cluster.is_some() {
+                            info!("restarting kubelet after dual-stack network apply");
+                            services.restart_kubelet(&new_cfg, crate::log_ring());
+                        }
                         cfg = Some(new_cfg);
                     }
                     None => warn!(path = %path.display(), "config reload failed to parse"),

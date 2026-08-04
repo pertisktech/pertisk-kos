@@ -5,9 +5,11 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pertisk_bootstrap::{
-    gen_config, gen_config_ha, patch_worker_ca, sanitize_kubeconfig, write_gen_config,
-    write_gen_config_ha, DEFAULT_K8S_VERSION, DEFAULT_POD_SUBNET, DEFAULT_SERVICE_SUBNET,
+    gen_config_ha_with_network, gen_config_with_network, patch_worker_ca, sanitize_kubeconfig,
+    write_gen_config, write_gen_config_ha, GenNetworkOpts, DEFAULT_K8S_VERSION, DEFAULT_POD_SUBNET,
+    DEFAULT_SERVICE_SUBNET,
 };
+use pertisk_config::Cluster;
 use pertisk_proto::machine_service_client::MachineServiceClient;
 use pertisk_proto::{
     ApplyConfigurationRequest, BootstrapRequest, GetJoinConfigRequest, HealthRequest,
@@ -88,6 +90,18 @@ enum Commands {
         /// Number of control-plane YAMLs to emit (HA). Default 1.
         #[arg(long, default_value_t = 1)]
         controlplanes: u32,
+        /// Opt-in dual-stack (IPv4+IPv6) networking.
+        #[arg(long, default_value_t = false)]
+        dual_stack: bool,
+        /// IPv6 pod CIDR when `--dual-stack` (default 2001:db8:10:0::/56).
+        #[arg(long)]
+        pod_cidr_ipv6: Option<String>,
+        /// IPv6 service CIDR when `--dual-stack` (default 2001:db8:96:1::/112).
+        #[arg(long)]
+        service_cidr_ipv6: Option<String>,
+        /// Optional IPv6 API VIP (HA dual-stack); added to certSANs.
+        #[arg(long)]
+        vip6: Option<String>,
     },
     /// Bootstrap the first control-plane (PKI + static pods).
     Bootstrap {
@@ -171,6 +185,18 @@ enum GenCommands {
         /// Number of control-plane YAMLs to emit (HA). Default 1.
         #[arg(long, default_value_t = 1)]
         controlplanes: u32,
+        /// Opt-in dual-stack (IPv4+IPv6) networking.
+        #[arg(long, default_value_t = false)]
+        dual_stack: bool,
+        /// IPv6 pod CIDR when `--dual-stack` (default 2001:db8:10:0::/56).
+        #[arg(long)]
+        pod_cidr_ipv6: Option<String>,
+        /// IPv6 service CIDR when `--dual-stack` (default 2001:db8:96:1::/112).
+        #[arg(long)]
+        service_cidr_ipv6: Option<String>,
+        /// Optional IPv6 API VIP (HA dual-stack); added to certSANs.
+        #[arg(long)]
+        vip6: Option<String>,
     },
 }
 
@@ -257,6 +283,10 @@ async fn main() -> Result<()> {
                     ref pod_subnet,
                     ref service_subnet,
                     controlplanes,
+                    dual_stack,
+                    ref pod_cidr_ipv6,
+                    ref service_cidr_ipv6,
+                    ref vip6,
                 },
         }
         | Commands::GenConfig {
@@ -267,36 +297,54 @@ async fn main() -> Result<()> {
             ref pod_subnet,
             ref service_subnet,
             controlplanes,
+            dual_stack,
+            ref pod_cidr_ipv6,
+            ref service_cidr_ipv6,
+            ref vip6,
         } => {
+            let net = GenNetworkOpts {
+                dual_stack,
+                pod_cidr_ipv6: pod_cidr_ipv6.clone().or_else(|| {
+                    dual_stack.then(|| Cluster::DEFAULT_POD_CIDR_IPV6.into())
+                }),
+                service_cidr_ipv6: service_cidr_ipv6.clone().or_else(|| {
+                    dual_stack.then(|| Cluster::DEFAULT_SERVICE_CIDR_IPV6.into())
+                }),
+                vip6: vip6.clone(),
+            };
             if controlplanes <= 1 {
-                let gen = gen_config(
+                let gen = gen_config_with_network(
                     cluster_name,
                     endpoint,
                     kubernetes_version,
                     pod_subnet,
                     service_subnet,
+                    &net,
                 )?;
                 write_gen_config(output, &gen)?;
                 println!(
-                    "wrote {}/controlplane.yaml + worker.yaml (token {})",
+                    "wrote {}/controlplane.yaml + worker.yaml (token {}){}",
                     output.display(),
-                    gen.token
+                    gen.token,
+                    if dual_stack { " [dual-stack]" } else { "" }
                 );
             } else {
-                let gen = gen_config_ha(
+                let gen = gen_config_ha_with_network(
                     cluster_name,
                     endpoint,
                     controlplanes,
                     kubernetes_version,
                     pod_subnet,
                     service_subnet,
+                    &net,
                 )?;
                 write_gen_config_ha(output, &gen)?;
                 println!(
-                    "wrote {} control-plane YAMLs + worker.yaml (token {}) endpoint {}",
+                    "wrote {} control-plane YAMLs + worker.yaml (token {}) endpoint {}{}",
                     gen.controlplane_yamls.len(),
                     gen.token,
-                    gen.endpoint
+                    gen.endpoint,
+                    if dual_stack { " [dual-stack]" } else { "" }
                 );
             }
         }

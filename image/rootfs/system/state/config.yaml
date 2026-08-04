@@ -3,8 +3,9 @@ machine:
   type: worker
   # No install block: cloud/golden images are pre-partitioned.
   # Metal first-boot install uses examples/worker-install.yaml (or PERTISK_CONFIG).
+  # Hostname overwritten at image populate (GUID-wk / GUID-cp).
   network:
-    hostname: pertisk-cp-1
+    hostname: seed-wk
     interfaces:
       - interface: eth0
         dhcp: true

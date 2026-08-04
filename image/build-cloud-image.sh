@@ -1,23 +1,58 @@
 #!/usr/bin/env bash
 # Build a pre-installed cloud/QEMU disk image (raw + qcow2).
 #
+# Fast path: populate a small base disk (default 4G), convert to qcow2, then
+# `qemu-img resize` to PERTISK_DISK_GB. EPHEMERAL is grown on first guest boot.
+# This avoids mkfs/convert of 50–75G images (which hang Docker Desktop on macOS).
+#
 # Prerequisites: Docker, and boot assets (kernel + initramfs + EFI):
 #   PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
-#   # or: fetch-kernel + fetch-bootloader + stage, then copy initramfs
 #
 # Usage:
 #   ./image/build-cloud-image.sh
-#   PERTISK_DISK_GB=20 PERTISK_ARCH=amd64 ./image/build-cloud-image.sh
+#   PERTISK_DISK_GB=75 PERTISK_ARCH=amd64 ./image/build-cloud-image.sh
+#   PERTISK_BUILD_DISK_GB=4 PERTISK_DISK_GB=50 ./image/build-cloud-image.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${ROOT}/out"
 ASSETS="${OUT}/cloud-boot"
-SIZE_GB="${PERTISK_DISK_GB:-8}"
+TARGET_GB="${PERTISK_DISK_GB:-8}"
+# Populate+convert this many GiB only (must fit ESP+BOOT_A/B+META+STATE ≈ 3.1GiB).
+BUILD_GB="${PERTISK_BUILD_DISK_GB:-4}"
+if [[ "$TARGET_GB" -lt "$BUILD_GB" ]]; then
+  BUILD_GB="$TARGET_GB"
+fi
 ARCH="${PERTISK_ARCH:-amd64}"
 SEED="${PERTISK_SEED_CONFIG:-${ROOT}/examples/worker-cloud.yaml}"
-# Guest hostname (defaults to Proxmox VM name convention).
-HOSTNAME_SEED="${PERTISK_HOSTNAME:-${PROXMOX_VM_NAME:-pertisk-cp-1}}"
+# Guest hostname: explicit env wins; else short GUID + role (cp|wk) from seed type.
+short_host_id() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-' | cut -c1-6
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 3
+  else
+    echo "$(date +%s)$(echo $$)" | cksum | awk '{printf "%06x", $1 % 0x1000000}'
+  fi
+}
+seed_host_role() {
+  if [[ -n "${PERTISK_HOSTNAME_ROLE:-}" ]]; then
+    echo "${PERTISK_HOSTNAME_ROLE}"
+    return
+  fi
+  if [[ -f "${SEED}" ]] && grep -Eq '^[[:space:]]*type:[[:space:]]*controlplane[[:space:]]*$' "${SEED}"; then
+    echo cp
+  else
+    echo wk
+  fi
+}
+if [[ -n "${PERTISK_HOSTNAME:-}" ]]; then
+  HOSTNAME_SEED="${PERTISK_HOSTNAME}"
+elif [[ -n "${PROXMOX_VM_NAME:-}" ]]; then
+  HOSTNAME_SEED="${PROXMOX_VM_NAME}"
+else
+  HOSTNAME_SEED="$(short_host_id)-$(seed_host_role)"
+fi
 RAW="${OUT}/pertisk-cloud-${ARCH}.raw"
 QCOW="${OUT}/pertisk-cloud-${ARCH}.qcow2"
 
@@ -70,9 +105,9 @@ cp "${KERNEL_SRC}" "${ASSETS}/kernel"
 cp "${INITRD_SRC}" "${ASSETS}/initramfs"
 cp "${OUT}/bootloader/${EFI_NAME}" "${ASSETS}/${EFI_NAME}"
 
-echo "==> creating sparse raw disk ${RAW} (${SIZE_GB}G)"
+echo "==> creating sparse raw disk ${RAW} (${BUILD_GB}G populate; target ${TARGET_GB}G)"
 rm -f "${RAW}" "${QCOW}"
-dd if=/dev/zero of="${RAW}" bs=1m count=0 seek=$((SIZE_GB * 1024)) status=none
+dd if=/dev/zero of="${RAW}" bs=1m count=0 seek=$((BUILD_GB * 1024)) status=none
 
 echo "==> populating GPT / ESP / STATE (Docker privileged), hostname=${HOSTNAME_SEED}"
 docker run --rm --privileged \
@@ -89,16 +124,44 @@ docker run --rm --privileged \
   alpine:3.20 \
   sh -c 'apk add --no-cache sgdisk e2fsprogs dosfstools util-linux multipath-tools parted >/dev/null && sh /work/populate-disk.sh'
 
-echo "==> converting qcow2"
-docker run --rm --platform "${PLATFORM}" \
-  -v "${OUT}:/out" \
-  alpine:3.20 \
-  sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img convert -f raw -O qcow2 /out/$(basename "${RAW}") /out/$(basename "${QCOW}") && qemu-img info /out/$(basename "${QCOW}")"
+echo "==> converting qcow2 (${BUILD_GB}G)"
+RAW_BASE="$(basename "${RAW}")"
+QCOW_BASE="$(basename "${QCOW}")"
+if command -v qemu-img >/dev/null 2>&1; then
+  qemu-img convert -p -f raw -O qcow2 "${RAW}" "${QCOW}"
+else
+  docker run --rm --platform "${PLATFORM}" \
+    -v "${OUT}:/out" \
+    alpine:3.20 \
+    sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img convert -p -f raw -O qcow2 /out/${RAW_BASE} /out/${QCOW_BASE}"
+fi
+if [[ "${PERTISK_KEEP_RAW:-0}" != "1" ]]; then
+  rm -f "${RAW}"
+  echo "    removed ${RAW} (set PERTISK_KEEP_RAW=1 to retain)"
+fi
 
-ls -lh "${RAW}" "${QCOW}"
+if [[ "$TARGET_GB" -gt "$BUILD_GB" ]]; then
+  echo "==> resizing qcow2 ${BUILD_GB}G → ${TARGET_GB}G (EPHEMERAL grows on first boot)"
+  if command -v qemu-img >/dev/null 2>&1; then
+    qemu-img resize "${QCOW}" "${TARGET_GB}G"
+    qemu-img info "${QCOW}"
+  else
+    docker run --rm --platform "${PLATFORM}" \
+      -v "${OUT}:/out" \
+      alpine:3.20 \
+      sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img resize /out/${QCOW_BASE} ${TARGET_GB}G && qemu-img info /out/${QCOW_BASE}"
+  fi
+else
+  if command -v qemu-img >/dev/null 2>&1; then
+    qemu-img info "${QCOW}"
+  fi
+fi
+
+ls -lh "${QCOW}"
+[[ -f "${RAW}" ]] && ls -lh "${RAW}" || true
 echo "==> cloud image ready"
-echo "    raw:  ${RAW}"
-echo "    qcow: ${QCOW}"
-echo "Boot (UEFI): PERTISK_DISK=${RAW} ./image/run-qemu-uefi.sh  # or point script at this disk"
+echo "    qcow: ${QCOW} (virtual ${TARGET_GB}G; populated ${BUILD_GB}G)"
+[[ -f "${RAW}" ]] && echo "    raw:  ${RAW}"
+echo "Boot (UEFI): PERTISK_DISK=${QCOW} ./image/run-qemu-uefi.sh  # or keep raw via PERTISK_KEEP_RAW=1"
 echo "AWS: upload raw/qcow → import as AMI (uefi boot mode)"
 echo "GCP: create image from raw tar; Azure: vhd convert from raw"

@@ -6,9 +6,43 @@ use crate::apply::NetError;
 #[cfg(target_os = "linux")]
 use futures::stream::TryStreamExt;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static ALLOW_IPV6: AtomicBool = AtomicBool::new(false);
+
+/// When true, skip per-iface IPv6 disable (dual-stack / SLAAC).
+pub fn set_ipv6_enabled(enabled: bool) {
+    ALLOW_IPV6.store(enabled, Ordering::Relaxed);
+}
+
+pub fn ipv6_enabled() -> bool {
+    ALLOW_IPV6.load(Ordering::Relaxed)
+}
+
+/// Affirmatively allow SLAAC/RA on an interface (dual-stack).
+#[cfg(target_os = "linux")]
+pub fn enable_iface_ipv6(iface: &str) {
+    let base = format!("/proc/sys/net/ipv6/conf/{iface}");
+    for (key, val) in [
+        ("disable_ipv6", "0"),
+        ("accept_ra", "1"),
+        ("autoconf", "1"),
+    ] {
+        let path = format!("{base}/{key}");
+        let _ = std::fs::write(&path, val);
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub async fn set_link_up(iface: &str) -> Result<(), NetError> {
     use rtnetlink::new_connection;
+
+    if ipv6_enabled() {
+        enable_iface_ipv6(iface);
+    } else {
+        // Prefer IPv4-only before carrier comes up (SLAAC races otherwise).
+        disable_iface_ipv6(iface);
+    }
 
     let (connection, handle, _) = new_connection().map_err(|e| NetError::Msg(e.to_string()))?;
     tokio::spawn(connection);
@@ -28,8 +62,31 @@ pub async fn set_link_up(iface: &str) -> Result<(), NetError> {
         .await
         .map_err(|e| NetError::Msg(e.to_string()))?;
 
+    if ipv6_enabled() {
+        enable_iface_ipv6(iface);
+    } else {
+        disable_iface_ipv6(iface);
+    }
+
     tracing::info!(interface = iface, "link up");
     Ok(())
+}
+
+/// Best-effort: turn off IPv6 / RA / autoconf on one interface (IPv4-only mode).
+#[cfg(target_os = "linux")]
+fn disable_iface_ipv6(iface: &str) {
+    if ipv6_enabled() {
+        return;
+    }
+    let base = format!("/proc/sys/net/ipv6/conf/{iface}");
+    for (key, val) in [
+        ("disable_ipv6", "1"),
+        ("accept_ra", "0"),
+        ("autoconf", "0"),
+    ] {
+        let path = format!("{base}/{key}");
+        let _ = std::fs::write(&path, val);
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -382,8 +439,13 @@ pub async fn list_addresses(iface: &str) -> Result<Vec<String>, NetError> {
             if let AddressAttribute::Address(ip) = attr {
                 let keep = match ip {
                     IpAddr::V4(v4) => !v4.is_link_local() && !v4.is_unspecified(),
-                    // IPv4-only inventory — AF_INET6 is optional on this image.
-                    IpAddr::V6(_) => false,
+                    // Global/ULA IPv6 only — hide link-local so fe80 alone ≠ "up".
+                    IpAddr::V6(v6) => {
+                        !v6.is_unicast_link_local()
+                            && !v6.is_loopback()
+                            && !v6.is_multicast()
+                            && !v6.is_unspecified()
+                    }
                 };
                 if keep {
                     out.push(format!("{ip}/{}", addr.header.prefix_len));
@@ -392,6 +454,201 @@ pub async fn list_addresses(iface: &str) -> Result<Vec<String>, NetError> {
         }
     }
     Ok(out)
+}
+
+/// Prefer a public/global IPv6 (SLAAC GUA) over synthetic ULA (`fd00::/8`).
+/// Returns the address **without** a `/prefix` when present in `cidr` form.
+pub fn prefer_global_ipv6<'a, I>(addrs: I) -> Option<&'a str>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut ula: Option<&str> = None;
+    for a in addrs {
+        let ip = a.split('/').next().unwrap_or(a);
+        if !is_usable_global_ipv6(ip) {
+            continue;
+        }
+        if is_ula_ipv6(ip) {
+            if ula.is_none() {
+                ula = Some(ip);
+            }
+        } else {
+            // GUA / non-ULA global wins immediately.
+            return Some(ip);
+        }
+    }
+    ula
+}
+
+/// True for non-link-local, non-loopback, non-multicast IPv6.
+pub fn is_usable_global_ipv6(ip: &str) -> bool {
+    ip.contains(':')
+        && !ip.starts_with("fe80:")
+        && !ip.eq_ignore_ascii_case("::1")
+        && !ip.to_ascii_lowercase().starts_with("ff")
+}
+
+/// Unique-local `fc00::/7` (typically `fd00::/8` in labs).
+pub fn is_ula_ipv6(ip: &str) -> bool {
+    let lower = ip.to_ascii_lowercase();
+    lower.starts_with("fc") || lower.starts_with("fd")
+}
+
+/// Stable ULA derived from IPv4 (`10.1.1.173` → `fd00:a:1:1::ad/64`).
+pub fn ula_cidr_from_ipv4(v4: std::net::Ipv4Addr) -> String {
+    let o = v4.octets();
+    format!("fd00:{:x}:{:x}:{:x}::{:x}/64", o[0], o[1], o[2], o[3])
+}
+
+/// If dual-stack is on and the iface has IPv4 but no global/ULA IPv6, add a
+/// stable ULA derived from the IPv4. Prefer SLAAC GUA (`2405:…`) when the LAN
+/// sends RAs — wait briefly before synthesizing ULA so kubelet `--node-ip`
+/// matches the real eth0 address. When a GUA is present, drop the synthetic ULA.
+#[cfg(target_os = "linux")]
+pub async fn ensure_stable_ula(iface: &str) -> Result<(), NetError> {
+    if !ipv6_enabled() {
+        return Ok(());
+    }
+    enable_iface_ipv6(iface);
+
+    // Give SLAAC a short window (Proxmox bridges often RA within ~1–3s).
+    let mut addrs = list_addresses(iface).await?;
+    for _ in 0..16 {
+        if addrs.iter().any(|a| {
+            let ip = a.split('/').next().unwrap_or(a.as_str());
+            is_usable_global_ipv6(ip) && !is_ula_ipv6(ip)
+        }) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        addrs = list_addresses(iface).await?;
+    }
+
+    let v4 = addrs.iter().find_map(|a| {
+        let ip = a.split('/').next().unwrap_or(a.as_str());
+        if ip.contains('.') {
+            ip.parse::<std::net::Ipv4Addr>().ok()
+        } else {
+            None
+        }
+    });
+
+    let has_gua = addrs.iter().any(|a| {
+        let ip = a.split('/').next().unwrap_or(a.as_str());
+        is_usable_global_ipv6(ip) && !is_ula_ipv6(ip)
+    });
+    if has_gua {
+        if let Some(v4) = v4 {
+            let synthetic = ula_cidr_from_ipv4(v4);
+            let syn_ip = synthetic.split('/').next().unwrap_or(synthetic.as_str());
+            let still_present = addrs.iter().any(|a| {
+                a.split('/').next().unwrap_or(a.as_str()) == syn_ip
+            });
+            if still_present {
+                match del_address(iface, &synthetic).await {
+                    Ok(()) => tracing::info!(
+                        interface = iface,
+                        ula = %synthetic,
+                        "removed synthetic ULA (GUA present)"
+                    ),
+                    Err(err) => tracing::warn!(
+                        interface = iface,
+                        ula = %synthetic,
+                        error = %err,
+                        "failed to remove synthetic ULA"
+                    ),
+                }
+            }
+        }
+        if let Some(gua) = prefer_global_ipv6(addrs.iter().map(|s| s.as_str())) {
+            tracing::info!(interface = iface, ipv6 = %gua, "dual-stack using SLAAC GUA");
+        }
+        return Ok(());
+    }
+
+    let has_global_v6 = addrs.iter().any(|a| {
+        let ip = a.split('/').next().unwrap_or(a.as_str());
+        is_usable_global_ipv6(ip)
+    });
+    if has_global_v6 {
+        return Ok(());
+    }
+    let Some(v4) = v4 else {
+        return Ok(());
+    };
+    let ula = ula_cidr_from_ipv4(v4);
+    match add_address(iface, &ula).await {
+        Ok(()) => {
+            tracing::info!(interface = iface, ula = %ula, "dual-stack ULA assigned (no RA)");
+            Ok(())
+        }
+        Err(err) => {
+            tracing::warn!(interface = iface, ula = %ula, error = %err, "ULA assign failed");
+            // Soft-fail — DHCP/API still work on IPv4.
+            Ok(())
+        }
+    }
+}
+
+/// Best-effort delete of an address CIDR on an interface.
+#[cfg(target_os = "linux")]
+pub async fn del_address(iface: &str, cidr: &str) -> Result<(), NetError> {
+    use std::process::Command;
+    use std::str::FromStr;
+
+    use ipnet::IpNet;
+    use netlink_packet_route::address::AddressAttribute;
+    use rtnetlink::new_connection;
+
+    // BusyBox `ip` is available as the udhcpc multi-call binary.
+    for bin in ["/sbin/ip", "/usr/sbin/ip", "ip"] {
+        let status = Command::new(bin)
+            .args(["addr", "del", cidr, "dev", iface])
+            .status();
+        if matches!(status, Ok(s) if s.success()) {
+            return Ok(());
+        }
+    }
+
+    let net = IpNet::from_str(cidr).map_err(|e| NetError::Msg(format!("bad CIDR {cidr}: {e}")))?;
+    let want = net.addr();
+    let (connection, handle, _) = new_connection().map_err(|e| NetError::Msg(e.to_string()))?;
+    tokio::spawn(connection);
+    let mut links = handle.link().get().match_name(iface.to_string()).execute();
+    let link = links
+        .try_next()
+        .await
+        .map_err(|e| NetError::Msg(e.to_string()))?
+        .ok_or_else(|| NetError::Msg(format!("interface {iface} not found")))?;
+    let index = link.header.index;
+
+    let mut addrs = handle
+        .address()
+        .get()
+        .set_link_index_filter(index)
+        .execute();
+    while let Some(addr) = addrs
+        .try_next()
+        .await
+        .map_err(|e| NetError::Msg(e.to_string()))?
+    {
+        let matches = addr.attributes.iter().any(|attr| {
+            matches!(attr, AddressAttribute::Address(ip) if *ip == want)
+        });
+        if !matches {
+            continue;
+        }
+        handle
+            .address()
+            .del(addr)
+            .execute()
+            .await
+            .map_err(|e| NetError::Msg(e.to_string()))?;
+        return Ok(());
+    }
+    Err(NetError::Msg(format!(
+        "address {cidr} not found on {iface}"
+    )))
 }
 
 #[cfg(target_os = "linux")]

@@ -41,6 +41,17 @@
 #     --set ipam.mode=cluster-pool \
 #     --set ipv4.enabled=true \
 #     --set ipv6.enabled=false \
+#
+# Dual-stack (with pertiskctl --dual-stack / lab --dual-stack).
+# Aligned with Talos Omni cilium-install (ipv6 + pool masks + L2 announcements);
+# Pertisk keeps cluster-pool IPAM (Talos uses kubernetes) and bpf.autoMount=false.
+#     --set ipv6.enabled=true \
+#     --set enableIPv6Masquerade=true \
+#     --set ipam.operator.clusterPoolIPv4PodCIDRList="{10.244.0.0/16}" \
+#     --set ipam.operator.clusterPoolIPv6PodCIDRList="{2001:db8:10:0::/56}" \
+#     --set ipam.operator.clusterPoolIPv4MaskSize=24 \
+#     --set ipam.operator.clusterPoolIPv6MaskSize=112 \
+#     --set l2announcements.enabled=true \
 #     --set bpf.masquerade=true \
 #     --set encryption.nodeEncryption=false \
 #     --set k8sServiceHost=$IP \
@@ -73,11 +84,14 @@
 #   # Also required (lab-up does this): wrap cilium-agent so iptables → legacy.
 #
 # Or: ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cni cilium
+# Dual-stack: ./scripts/proxmox-lab-up.sh --dual-stack --cni cilium [--vip6 fd00:1::210]
 #
 # Notes:
 # - Prefer `helm upgrade --install` (not bare `helm install`) so re-runs are idempotent.
 # - Do not install Flannel or Calico together with Cilium.
 # - Built-in bridge CNI (`cluster.cni: bridge`) must stay off so Cilium owns /etc/cni/net.d.
+# - Default labs keep `ipv6.enabled=false`. Use `--dual-stack` (or the Helm sets above)
+#   with `pertiskctl gen config --dual-stack` so apiserver service CIDRs match Cilium.
 # - Refresh kubeconfig after DHCP IP changes:
 #     pertiskctl -e <CP_IP>:50000 kubeconfig -f ./out/cluster/admin.conf
 #

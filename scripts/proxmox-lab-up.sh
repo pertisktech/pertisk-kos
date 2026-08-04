@@ -9,9 +9,10 @@
 #   ./scripts/proxmox-lab-up.sh
 #   ./scripts/proxmox-lab-up.sh --skip-build --cni cilium --workers 2
 #   ./scripts/proxmox-lab-up.sh --controlplanes 3 --vip 10.1.1.200 --workers 2 --cni cilium
+#   ./scripts/proxmox-lab-up.sh --dual-stack --vip 10.1.1.210 --vip6 fd00:1::210 --cni cilium
 #   ./scripts/proxmox-lab-up.sh --skip-build --cni calico
 #   ./scripts/proxmox-lab-up.sh --skip-build --cni flannel
-#   ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cp-vmid 210   # reuse VMs
+#   ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cp-vmid 210   # reuse VMs / resume HA
 #   CNI=flannel APPS="examples/apps/nginx.yaml" ./scripts/proxmox-lab-up.sh --skip-build
 #   ./scripts/proxmox-lab-up.sh --skip-addons   # skip optional reflector (CoreDNS + metrics-server always)
 set -euo pipefail
@@ -35,6 +36,8 @@ WORKER_DISK_GB="${PROXMOX_WORKER_DISK_GB:-}"
 CP_VMID="${CP_VMID:-210}"
 CONTROLPLANES="${CONTROLPLANES:-1}"
 VIP="${VIP:-}"
+VIP6="${VIP6:-}"
+DUAL_STACK="${DUAL_STACK:-0}"
 WORKERS="${WORKERS:-2}"
 NAME_PREFIX="${NAME_PREFIX:-pertisk}"
 CLUSTER_NAME="${CLUSTER_NAME:-lab-ha}"
@@ -60,6 +63,8 @@ Flags:
   --cp-vmid N         first control-plane VMID (default ${CP_VMID})
   --controlplanes N   stacked CP count (default ${CONTROLPLANES}; >1 needs --vip)
   --vip IP            kube-vip ARP address (required when --controlplanes > 1)
+  --vip6 ADDR         optional IPv6 API VIP (with --dual-stack)
+  --dual-stack        opt-in IPv4+IPv6 (networkMode, Cilium ipv6, pod/service CIDRs)
   --workers N         worker count (default ${WORKERS})
   --prefix NAME       Proxmox VM name prefix (default ${NAME_PREFIX})
   --cluster NAME      Kubernetes / hostname prefix (default ${CLUSTER_NAME})
@@ -83,7 +88,7 @@ Flags:
 
 Env: PROXMOX_*, PROXMOX_SSH, APPS (space/comma-separated kubectl apply paths)
      CALICO_VERSION (default ${CALICO_VERSION})
-     CONTROLPLANES, VIP
+     CONTROLPLANES, VIP, VIP6, DUAL_STACK=1
      PROXMOX_MEMORY / PROXMOX_CORES (defaults for both roles)
      PROXMOX_CP_MEMORY / PROXMOX_CP_CORES / PROXMOX_WORKER_MEMORY / PROXMOX_WORKER_CORES
      PROXMOX_CP_DISK_GB / PROXMOX_WORKER_DISK_GB / PERTISK_DISK_GB
@@ -96,6 +101,8 @@ while [[ $# -gt 0 ]]; do
     --cp-vmid) CP_VMID="$2"; shift 2 ;;
     --controlplanes) CONTROLPLANES="$2"; shift 2 ;;
     --vip) VIP="$2"; shift 2 ;;
+    --vip6) VIP6="$2"; shift 2 ;;
+    --dual-stack) DUAL_STACK=1; shift ;;
     --workers) WORKERS="$2"; shift 2 ;;
     --prefix) NAME_PREFIX="$2"; shift 2 ;;
     --cluster) CLUSTER_NAME="$2"; shift 2 ;;
@@ -127,9 +134,8 @@ WORKER_CORES="${WORKER_CORES:-$CORES}"
 CP_DISK_GB="${CP_DISK_GB:-$DISK_GB}"
 WORKER_DISK_GB="${WORKER_DISK_GB:-$DISK_GB}"
 
-# EPHEMERAL fills the qcow2 at build time; qm resize is grow-only and does not
-# rewrite GPT. Build a sized image per distinct --*-disk-gb so Proxmox scsi0
-# matches the role (e.g. CP 50G + worker 75G → two qcow2s, not max→shrink).
+# Fast build: populate ~4G, then qemu-img resize per role. Guest grows GPT +
+# EPHEMERAL on first boot. Distinct --*-disk-gb → separate sized qcow2s.
 sized_qcow() {
   local gb="$1"
   echo "${ROOT}/out/pertisk-cloud-${ARCH}-${gb}g.qcow2"
@@ -289,7 +295,7 @@ wait_ip() {
       return 0
     fi
     if [[ -n "$ip" ]]; then
-      log "VM ${vmid} ARP=${ip} but :50000 not ready yet…"
+      log "VM ${vmid} ARP=${ip} but :50000 not ready yet..."
     fi
     sleep 3
   done
@@ -383,29 +389,39 @@ set_hostname_yaml() {
 }
 
 # --- steps ---
-# Produce default out/pertisk-cloud-${ARCH}.qcow2 at SIZE_GB (empty = image default),
-# then copy to a stable sized path when SIZE_GB is set.
-build_cloud_at_gb() {
-  local size_gb="${1:-}" dest="${2:-}"
-  if [[ -n "$size_gb" ]]; then
-    export PERTISK_DISK_GB="$size_gb"
-    log "building cloud image at ${size_gb}G → ${dest:-$DISK}"
+# Fast cloud build: populate ~4G, convert, qemu-img resize to role size.
+# EPHEMERAL filesystem is expanded on first guest boot (pertisk-disk).
+resize_qcow_to_gb() {
+  local qcow="$1" gb="$2"
+  [[ -f "$qcow" ]] || die "missing $qcow"
+  [[ "$gb" =~ ^[0-9]+$ ]] || die "bad disk gb: $gb"
+  log "qemu-img resize $(basename "$qcow") → ${gb}G"
+  if command -v qemu-img >/dev/null 2>&1; then
+    qemu-img resize "$qcow" "${gb}G"
   else
-    unset PERTISK_DISK_GB || true
-    log "building cloud image (default size) → ${DISK}"
+    local out_dir base
+    out_dir="$(cd "$(dirname "$qcow")" && pwd)"
+    base="$(basename "$qcow")"
+    docker run --rm -v "${out_dir}:/work" alpine:3.20 \
+      sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img resize /work/${base} ${gb}G"
   fi
+}
+
+build_cloud_base() {
+  local role="${1:-wk}"
+  export PERTISK_BUILD_DISK_GB="${PERTISK_BUILD_DISK_GB:-4}"
+  # Virtual size after resize comes from PERTISK_DISK_GB; default = build size.
+  export PERTISK_DISK_GB="${PERTISK_DISK_GB:-$PERTISK_BUILD_DISK_GB}"
+  export PERTISK_HOSTNAME_ROLE="$role"
+  unset PERTISK_HOSTNAME || true
+  log "building cloud base (populate ${PERTISK_BUILD_DISK_GB}G, virtual ${PERTISK_DISK_GB}G)"
   if [[ "${CLOUD_BUILT:-0}" == "1" ]]; then
-    # Binaries already built; only re-partition/populate the disk.
     PERTISK_ARCH="$ARCH" "$ROOT/image/build-cloud-image.sh"
   else
     make -C "$ROOT" cloud ARCH="$ARCH"
     CLOUD_BUILT=1
   fi
   [[ -f "$DISK" ]] || die "disk not produced: $DISK"
-  if [[ -n "$dest" && "$dest" != "$DISK" ]]; then
-    cp -f "$DISK" "$dest"
-    log "sized image ready: $dest"
-  fi
 }
 
 step_build() {
@@ -413,12 +429,12 @@ step_build() {
     log "skip build"
     if [[ -n "$CP_DISK_GB" && ! -f "$CP_DISK" ]]; then
       [[ -f "$DISK" ]] || die "disk missing: $CP_DISK (and fallback $DISK)"
-      log "warn: missing sized CP image $CP_DISK — using $DISK (Proxmox size follows that qcow2; qm cannot shrink)"
+      log "warn: missing sized CP image $CP_DISK — using $DISK"
       CP_DISK="$DISK"
     fi
     if [[ -n "$WORKER_DISK_GB" && ! -f "$WORKER_DISK" ]]; then
       [[ -f "$DISK" ]] || die "disk missing: $WORKER_DISK (and fallback $DISK)"
-      log "warn: missing sized worker image $WORKER_DISK — using $DISK (Proxmox size follows that qcow2; qm cannot shrink)"
+      log "warn: missing sized worker image $WORKER_DISK — using $DISK"
       WORKER_DISK="$DISK"
     fi
     [[ -f "$CP_DISK" ]] || die "disk missing: $CP_DISK"
@@ -427,23 +443,33 @@ step_build() {
   fi
 
   CLOUD_BUILT=0
-  local sizes="" n
-  for n in "$CP_DISK_GB" "$WORKER_DISK_GB"; do
-    if [[ -n "$n" ]] && [[ "$n" =~ ^[0-9]+$ ]]; then
-      case " ${sizes} " in
-        *" ${n} "*) ;;
-        *) sizes="${sizes}${sizes:+ }${n}" ;;
-      esac
-    fi
-  done
-
-  if [[ -z "$sizes" ]]; then
-    build_cloud_at_gb ""
-  else
-    for n in $sizes; do
-      build_cloud_at_gb "$n" "$(sized_qcow "$n")"
-    done
+  # One populate+convert; clone and resize for CP/worker virtual sizes.
+  local min_gb="${PERTISK_BUILD_DISK_GB:-4}"
+  if [[ -n "$CP_DISK_GB" && "$CP_DISK_GB" -lt "$min_gb" ]]; then
+    min_gb="$CP_DISK_GB"
   fi
+  if [[ -n "$WORKER_DISK_GB" && "$WORKER_DISK_GB" -lt "$min_gb" ]]; then
+    min_gb="$WORKER_DISK_GB"
+  fi
+  export PERTISK_BUILD_DISK_GB="${PERTISK_BUILD_DISK_GB:-4}"
+  export PERTISK_DISK_GB="$min_gb"
+  build_cloud_base wk
+
+  if [[ -n "$CP_DISK_GB" || -n "$WORKER_DISK_GB" ]]; then
+    if [[ -n "$CP_DISK_GB" ]]; then
+      cp -f "$DISK" "$CP_DISK"
+      resize_qcow_to_gb "$CP_DISK" "$CP_DISK_GB"
+    fi
+    if [[ -n "$WORKER_DISK_GB" ]]; then
+      if [[ -n "$CP_DISK_GB" && "$CP_DISK_GB" == "$WORKER_DISK_GB" ]]; then
+        cp -f "$CP_DISK" "$WORKER_DISK"
+      else
+        cp -f "$DISK" "$WORKER_DISK"
+        resize_qcow_to_gb "$WORKER_DISK" "$WORKER_DISK_GB"
+      fi
+    fi
+  fi
+
   [[ -f "$CP_DISK" ]] || die "CP disk missing after build: $CP_DISK"
   [[ -f "$WORKER_DISK" ]] || die "worker disk missing after build: $WORKER_DISK"
 }
@@ -457,7 +483,7 @@ step_vms() {
     return 0
   fi
   if [[ -n "$CP_DISK_GB" || -n "$WORKER_DISK_GB" ]]; then
-    log "note: importing role-sized qcow2 (cp=${CP_DISK_GB:-default}G wk=${WORKER_DISK_GB:-default}G); EPHEMERAL matches build size"
+    log "note: importing role-sized qcow2 (cp=${CP_DISK_GB:-default}G wk=${WORKER_DISK_GB:-default}G); EPHEMERAL grows on first boot"
   fi
   log "creating cluster VMs (cp=${CP_MEMORY}MB/${CP_CORES}c/${CP_DISK_GB:-img}G wk=${WORKER_MEMORY}MB/${WORKER_CORES}c/${WORKER_DISK_GB:-img}G)"
   CREATE_ARGS=(
@@ -475,6 +501,9 @@ step_vms() {
     --worker-cores "$WORKER_CORES"
   )
   # Image already built at role size — do not pass --*-disk-gb (qm resize cannot shrink).
+  if [[ "$DUAL_STACK" == "1" ]]; then
+    export DUAL_STACK=1 PERTISK_DUAL_STACK=1
+  fi
   PROXMOX_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
 }
 
@@ -548,9 +577,16 @@ step_cluster() {
   [[ -x "$CTL" ]] || die "pertiskctl missing"
 
   mkdir -p "$CLUSTER_OUT"
-  log "gen config ${CLUSTER_NAME} https://${API_ENDPOINT}:6443 (controlplanes=${CONTROLPLANES})"
-  "$CTL" gen config "$CLUSTER_NAME" "https://${API_ENDPOINT}:6443" \
+  log "gen config ${CLUSTER_NAME} https://${API_ENDPOINT}:6443 (controlplanes=${CONTROLPLANES} dual-stack=${DUAL_STACK})"
+  local gen_args=(
+    gen config "$CLUSTER_NAME" "https://${API_ENDPOINT}:6443"
     -o "$CLUSTER_OUT" -k "$K8S_VER" --controlplanes "$CONTROLPLANES"
+  )
+  if [[ "$DUAL_STACK" == "1" ]]; then
+    gen_args+=(--dual-stack)
+    [[ -n "$VIP6" ]] && gen_args+=(--vip6 "$VIP6")
+  fi
+  "$CTL" "${gen_args[@]}"
 
   # Ensure CP1 hostname matches lab convention
   set_hostname_yaml "$CLUSTER_OUT/controlplane.yaml" "$CLUSTER_OUT/controlplane.yaml.tmp" "${CLUSTER_NAME}-cp-1"
@@ -588,7 +624,7 @@ step_cluster() {
     until "$CTL" -e "${ip}:50000" join-controlplane --etcd-endpoints "$etcd_ep"; do
       join_try=$((join_try + 1))
       (( join_try < 5 )) || die "join-controlplane failed for ${host} after ${join_try} attempts"
-      log "join-controlplane retry ${join_try}/5 for ${host}…"
+      log "join-controlplane retry ${join_try}/5 for ${host}..."
       sleep 10
       wait_api "$ip"
     done
@@ -653,18 +689,34 @@ step_cni() {
     cilium)
       command -v helm >/dev/null || die "helm required for CNI=cilium"
       command -v kubectl >/dev/null || die "kubectl required"
-      log "install Cilium (kubeProxyReplacement + Hubble; Talos-shaped bpf/cgroup mounts)"
+      log "install Cilium (kubeProxyReplacement + Hubble; Talos-shaped bpf/cgroup mounts; dual-stack=${DUAL_STACK})"
       helm repo add cilium https://helm.cilium.io/ >/dev/null 2>&1 || true
       helm repo update cilium >/dev/null 2>&1 || true
       export KUBECONFIG="$kc"
-      # User-facing defaults match a full lab chart (Hubble/Prometheus/BGP/externalIPs).
-      # Pertisk-required: bpf/cgroup autoMount off + cgroup.hostRoot (host already mounts).
+      local cilium_extra=()
+      if [[ "$DUAL_STACK" == "1" ]]; then
+        # Match Talos Omni cilium-install dual-stack (ipv6 + pool masks).
+        # Keep ipam.mode=cluster-pool (Pertisk); Talos uses kubernetes IPAM + Node.PodCIDR.
+        cilium_extra+=(
+          --set ipv6.enabled=true
+          --set enableIPv6Masquerade=true
+          --set ipam.operator.clusterPoolIPv4PodCIDRList="{10.244.0.0/16}"
+          --set ipam.operator.clusterPoolIPv6PodCIDRList="{2001:db8:10:0::/56}"
+          --set ipam.operator.clusterPoolIPv4MaskSize=24
+          --set ipam.operator.clusterPoolIPv6MaskSize=112
+          --set l2announcements.enabled=true
+        )
+      else
+        cilium_extra+=(--set ipv6.enabled=false --set enableIPv6Masquerade=false)
+      fi
+      # Shared with Talos cilium-install: kubeProxyReplacement, bpf.masquerade,
+      # cgroup autoMount off + hostRoot, Hubble/Prometheus, agent capabilities.
+      # Pertisk-only: bpf.autoMount off (host mounts bpffs), k8sServiceHost=VIP/API.
       helm upgrade --install cilium cilium/cilium \
         --kubeconfig "$kc" \
         --namespace cilium --create-namespace \
         --set ipam.mode=cluster-pool \
         --set ipv4.enabled=true \
-        --set ipv6.enabled=false \
         --set bpf.masquerade=true \
         --set encryption.nodeEncryption=false \
         --set k8sServiceHost="${API_ENDPOINT}" \
@@ -686,7 +738,7 @@ step_cni() {
         --set cgroup.autoMount.enabled=false \
         --set cgroup.hostRoot=/sys/fs/cgroup \
         --set bpf.autoMount.enabled=false \
-        --set enableIPv6Masquerade=false \
+        "${cilium_extra[@]}" \
         --timeout 10m || {
           echo "WARNING: helm install reported failure; continuing to netns / iptables patches" >&2
         }
@@ -870,10 +922,11 @@ step_summary() {
 
 ======== lab-up complete ========
 CPs:     ${CP_IPS[*]:-$CP_IP}  (Machine API :50000)
-API:     https://${API_ENDPOINT}:6443${VIP:+ (kube-vip)}
+API:     https://${API_ENDPOINT}:6443${VIP:+ (kube-vip ${VIP})}
 Workers: ${WORKER_IPS[*]:-}
 kubeconfig: ${kc}
 CNI: ${CNI}
+dual-stack: ${DUAL_STACK}
 controlplanes: ${CONTROLPLANES}
 
   kubectl --kubeconfig ${kc} get nodes -o wide

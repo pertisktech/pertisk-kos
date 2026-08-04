@@ -125,6 +125,15 @@ pub fn start_kubelet_with_sink(
             cmd.arg(format!("--hostname-override={name}"));
         }
     }
+    // Dual-stack requires explicit --node-ip=v4,v6 or kubelet stays IPv4-only.
+    if cluster.is_dual_stack() {
+        if let Some(node_ip) = dual_stack_node_ip_for(cfg) {
+            info!(%node_ip, "kubelet dual-stack --node-ip");
+            cmd.arg(format!("--node-ip={node_ip}"));
+        } else {
+            warn!("dual-stack enabled but no v4+v6 on primary iface; kubelet may stay IPv4-only");
+        }
+    }
     // Bridge mode needs an explicit pod CIDR; cluster CNI assigns via Node.Spec.PodCIDR.
     if cluster.cni == pertisk_config::CniMode::Bridge {
         let pod_cidr = cluster.pod_cidr.as_deref().unwrap_or(DEFAULT_POD_CIDR);
@@ -198,6 +207,30 @@ fn prepare_kubelet(
     ensure_cni_mode(paths, cluster.cni, pod_cidr)?;
     std::fs::create_dir_all("/etc/kubernetes/manifests").ok();
     Ok(())
+}
+
+fn dual_stack_node_ip_for(cfg: &MachineConfig) -> Option<String> {
+    let iface = cfg
+        .machine
+        .network
+        .interfaces
+        .iter()
+        .map(|i| i.interface.as_str())
+        .find(|n| !n.is_empty() && *n != "lo")
+        .unwrap_or("eth0");
+    pertisk_net::dual_stack_node_ip(iface).or_else(|| {
+        // Fall back to any non-loopback iface that already has v4+v6 (ULA).
+        let ifaces = pertisk_net::list_interfaces().ok()?;
+        for name in ifaces {
+            if name == "lo" {
+                continue;
+            }
+            if let Some(ip) = pertisk_net::dual_stack_node_ip(&name) {
+                return Some(ip);
+            }
+        }
+        None
+    })
 }
 
 /// Ensure `/var/lib/kubelet/ca.crt` exists for `authentication.x509.clientCAFile`.

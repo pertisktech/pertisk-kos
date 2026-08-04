@@ -41,13 +41,14 @@ sgdisk -n 6:0:0 -t 6:8300 -c 6:EPHEMERAL "${DISK}" >/dev/null
 sgdisk -p "${DISK}" || true
 
 # Fail early if boot assets cannot fit on ESP (vfat usable ≈ partition size).
-asset_bytes() { wc -c <"$1" | tr -d ' '; }
+# Use [ ] not (( )) — Alpine/busybox ash treats ((var)) poorly ("NEED_BYTES: not found").
+asset_bytes() { wc -c <"$1" | tr -d ' \n'; }
 NEED_BYTES=$(( $(asset_bytes "${BOOT_ASSETS}/kernel") \
   + $(asset_bytes "${BOOT_ASSETS}/initramfs") \
   + $(asset_bytes "${BOOT_ASSETS}/${EFI_NAME}") \
   + 2 * 1024 * 1024 ))
 ESP_BYTES=$((ESP_MIB * 1024 * 1024))
-if (( NEED_BYTES > ESP_BYTES )); then
+if [ "${NEED_BYTES}" -gt "${ESP_BYTES}" ]; then
   echo "boot assets (~$((NEED_BYTES / 1024 / 1024))MiB) exceed ESP (${ESP_MIB}MiB); set PERTISK_ESP_MIB=..." >&2
   exit 1
 fi
@@ -56,7 +57,7 @@ fi
 LOOP="$(losetup --find --show -P "${DISK}")"
 cleanup() {
   sync || true
-  for d in /mnt/pertisk-efi /mnt/pertisk-state /mnt/pertisk-boot-a /mnt/pertisk-meta /mnt/pertisk-eph; do
+  for d in /mnt/pertisk-efi /mnt/pertisk-state /mnt/pertisk-boot-a /mnt/pertisk-meta; do
     umount "$d" 2>/dev/null || true
   done
   # Detach any kpartx mappings first.
@@ -97,20 +98,23 @@ P5="$(part_dev 5)"
 P6="$(part_dev 6)"
 
 echo "==> formatting"
+# Small partitions: quiet + nodiscard (avoids thrashing sparse bind-mounts on Docker Desktop).
 mkfs.vfat -F 32 -n EFI "${P1}"
-mkfs.ext4 -F -L BOOT_A "${P2}"
-mkfs.ext4 -F -L BOOT_B "${P3}"
-mkfs.ext4 -F -L META "${P4}"
-mkfs.ext4 -F -L STATE "${P5}"
-mkfs.ext4 -F -L EPHEMERAL "${P6}"
+mkfs.ext4 -F -q -L BOOT_A -E nodiscard "${P2}"
+mkfs.ext4 -F -q -L BOOT_B -E nodiscard "${P3}"
+mkfs.ext4 -F -q -L META -E nodiscard "${P4}"
+mkfs.ext4 -F -q -L STATE -E nodiscard "${P5}"
+# Leave EPHEMERAL unformatted. Fast cloud builds populate a small disk then
+# `qemu-img resize`; first guest boot grows GPT and mkfs.ext4 at final size
+# (resize2fs after largefile4 keeps too few inodes → ENOSPC on image pulls).
+echo "    EPHEMERAL (unformatted; mkfs on first boot after grow)"
 
-mkdir -p /mnt/pertisk-efi /mnt/pertisk-state /mnt/pertisk-boot-a /mnt/pertisk-meta /mnt/pertisk-eph
+mkdir -p /mnt/pertisk-efi /mnt/pertisk-state /mnt/pertisk-boot-a /mnt/pertisk-meta
 mount "${P1}" /mnt/pertisk-efi
 mount "${P5}" /mnt/pertisk-state
 mount "${P2}" /mnt/pertisk-boot-a
 mount "${P4}" /mnt/pertisk-meta
-mount "${P6}" /mnt/pertisk-eph
-
+# Do not mount EPHEMERAL during populate — nothing is seeded there.
 echo "==> ESP systemd-boot + slot A"
 mkdir -p /mnt/pertisk-efi/EFI/BOOT /mnt/pertisk-efi/EFI/systemd \
   /mnt/pertisk-efi/loader/entries /mnt/pertisk-efi/pertisk/A
@@ -126,6 +130,7 @@ cp "${BOOT_ASSETS}/kernel" /mnt/pertisk-boot-a/kernel
 cp "${BOOT_ASSETS}/initramfs" /mnt/pertisk-boot-a/initramfs
 
 # Last console= becomes /dev/console for userspace — keep ttyS0 last for Proxmox serial.
+# IPv4-only vs dual-stack is decided at runtime (sysctl), not via cmdline.
 CMDLINE="${PERTISK_CMDLINE:-console=tty0 console=ttyS0 rdinit=/init}"
 cat >/mnt/pertisk-efi/loader/entries/pertisk-a.conf <<EOF
 title Pertisk KOS (slot A)

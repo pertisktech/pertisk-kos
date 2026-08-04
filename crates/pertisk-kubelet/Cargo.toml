@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 pertisk-config = { workspace = true }
+pertisk-net = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }

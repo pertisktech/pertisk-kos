@@ -95,11 +95,13 @@ pub async fn join_control_plane(
         .kubernetes_version
         .as_deref()
         .unwrap_or(DEFAULT_K8S_VERSION);
-    let pod_subnet = cluster.pod_subnet.as_deref().unwrap_or(DEFAULT_POD_SUBNET);
     let service_subnet = cluster
         .service_subnet
         .as_deref()
         .unwrap_or(DEFAULT_SERVICE_SUBNET);
+    let service_cidr = cluster.service_cluster_ip_range();
+    let cluster_cidr = cluster.cluster_cidr();
+    let sans = cluster.pki_extra_sans();
     let kubernetes_svc_ip = kubernetes_service_ip(service_subnet);
 
     info!(%advertise, %hostname, "joining control-plane (shared CA)");
@@ -111,7 +113,7 @@ pub async fn join_control_plane(
         &hostname,
         &endpoint_host,
         &kubernetes_svc_ip,
-        &cluster.cert_sans,
+        &sans,
     )?;
     pki::write_pki(&paths.pki(), &paths.etcd_pki(), &pki)?;
 
@@ -188,8 +190,8 @@ pub async fn join_control_plane(
             hostname: &hostname,
             kubernetes_version: k8s_ver,
             etcd_image: DEFAULT_ETCD_IMAGE,
-            service_cidr: service_subnet,
-            pod_subnet,
+            service_cidr: &service_cidr,
+            pod_subnet: &cluster_cidr,
             pki_host_path: "/etc/kubernetes/pki",
             etcd_initial_cluster: &initial_cluster,
             etcd_initial_cluster_state: "existing",
@@ -199,6 +201,7 @@ pub async fn join_control_plane(
     let _ = kube_vip::maybe_write_kube_vip(
         &paths.manifests(),
         vip,
+        cluster.vip6.as_deref(),
         &advertise,
         kube_vip::DEFAULT_KUBE_VIP_INTERFACE,
     )?;
@@ -325,6 +328,10 @@ pub fn get_join_config(
         .service_subnet
         .clone()
         .unwrap_or_else(|| DEFAULT_SERVICE_SUBNET.into());
+    let pod_cidr_ipv6 = cluster.pod_cidr_ipv6.clone();
+    let service_cidr_ipv6 = cluster.service_cidr_ipv6.clone();
+    let network_mode = cluster.network_mode;
+    let vip6 = cluster.vip6.clone();
     let k8s_ver = cluster
         .kubernetes_version
         .clone()
@@ -365,6 +372,10 @@ pub fn get_join_config(
             sa_key: Some(sa_key),
             pod_subnet: Some(pod_subnet.clone()),
             service_subnet: Some(service_subnet.clone()),
+            pod_cidr_ipv6: pod_cidr_ipv6.clone(),
+            service_cidr_ipv6: service_cidr_ipv6.clone(),
+            network_mode,
+            vip6: vip6.clone(),
             kubernetes_version: Some(k8s_ver.clone()),
             pod_cidr: None,
             cni,
@@ -397,6 +408,10 @@ pub fn get_join_config(
             sa_key: None,
             pod_subnet: Some(pod_subnet),
             service_subnet: Some(service_subnet),
+            pod_cidr_ipv6,
+            service_cidr_ipv6,
+            network_mode,
+            vip6,
             kubernetes_version: Some(k8s_ver),
             pod_cidr: None,
             cni: CniMode::None,

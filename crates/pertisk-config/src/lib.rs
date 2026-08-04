@@ -59,7 +59,7 @@ pub struct Dashboard {
     pub theme: Option<String>,
     /// `auto` | `ascii` | `light` | `rounded` | `heavy` | `double`
     ///
-    /// Default when omitted: `ascii`.
+    /// Default when omitted: `bordered`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border: Option<String>,
     /// Force column count (skips size probe). Omit to auto-detect.
@@ -155,6 +155,18 @@ pub struct Cluster {
     /// Cluster service CIDR (default `10.96.0.0/12`).
     #[serde(default, rename = "serviceSubnet")]
     pub service_subnet: Option<String>,
+    /// IPv6 pod CIDR when [`NetworkMode::DualStack`] (default `2001:db8:10:0::/56`).
+    #[serde(default, rename = "podCidrIPv6")]
+    pub pod_cidr_ipv6: Option<String>,
+    /// IPv6 service CIDR when dual-stack (default `2001:db8:96:1::/112`).
+    #[serde(default, rename = "serviceCidrIPv6")]
+    pub service_cidr_ipv6: Option<String>,
+    /// Node / cluster IP family mode. Default IPv4-only.
+    #[serde(default, rename = "networkMode")]
+    pub network_mode: NetworkMode,
+    /// Optional IPv6 API VIP (HA dual-stack); also added to cert SANs.
+    #[serde(default)]
+    pub vip6: Option<String>,
     /// Kubernetes version tag for static-pod images (e.g. `v1.32.5`).
     #[serde(default, rename = "kubernetesVersion")]
     pub kubernetes_version: Option<String>,
@@ -168,6 +180,91 @@ pub struct Cluster {
     /// Extra apiserver (and etcd) certificate SANs — VIP, extra DNS names, CP IPs.
     #[serde(default, rename = "certSANs")]
     pub cert_sans: Vec<String>,
+}
+
+impl Cluster {
+    pub const DEFAULT_POD_CIDR_IPV6: &'static str = "2001:db8:10:0::/56";
+    pub const DEFAULT_SERVICE_CIDR_IPV6: &'static str = "2001:db8:96:1::/112";
+
+    pub fn is_dual_stack(&self) -> bool {
+        matches!(self.network_mode, NetworkMode::DualStack)
+    }
+
+    /// `--service-cluster-ip-range` value for kube-apiserver / controller-manager.
+    pub fn service_cluster_ip_range(&self) -> String {
+        let v4 = self
+            .service_subnet
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("10.96.0.0/12");
+        if self.is_dual_stack() {
+            let v6 = self
+                .service_cidr_ipv6
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(Self::DEFAULT_SERVICE_CIDR_IPV6);
+            format!("{v4},{v6}")
+        } else {
+            v4.to_string()
+        }
+    }
+
+    pub fn effective_pod_cidr_ipv6(&self) -> Option<&str> {
+        if !self.is_dual_stack() {
+            return None;
+        }
+        Some(
+            self.pod_cidr_ipv6
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(Self::DEFAULT_POD_CIDR_IPV6),
+        )
+    }
+
+    /// `--cluster-cidr` for kube-controller-manager (IPv4 or IPv4,IPv6).
+    pub fn cluster_cidr(&self) -> String {
+        let v4 = self
+            .pod_subnet
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("10.244.0.0/16");
+        if let Some(v6) = self.effective_pod_cidr_ipv6() {
+            format!("{v4},{v6}")
+        } else {
+            v4.to_string()
+        }
+    }
+
+    /// `certSANs` plus optional `vip6` for apiserver/etcd certificates.
+    pub fn pki_extra_sans(&self) -> Vec<String> {
+        let mut sans = self.cert_sans.clone();
+        if let Some(v6) = self.vip6.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if !sans.iter().any(|s| s == v6) {
+                sans.push(v6.to_string());
+            }
+        }
+        sans
+    }
+}
+
+/// Node / cluster IP family policy.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NetworkMode {
+    /// IPv4 only (disable IPv6 on the guest before DHCP).
+    #[default]
+    Ipv4,
+    /// IPv4 + IPv6 (SLAAC/static v6, dual-stack Services / Cilium).
+    DualStack,
+}
+
+impl NetworkMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ipv4 => "ipv4",
+            Self::DualStack => "dual-stack",
+        }
+    }
 }
 
 /// How pod networking is provided on the node.
@@ -316,6 +413,38 @@ cluster:
         assert!(cluster.ca.unwrap().contains("BEGIN CERTIFICATE"));
         assert_eq!(cluster.pod_cidr.as_deref(), Some("10.244.0.0/24"));
         assert_eq!(cluster.cni, CniMode::Bridge);
+        assert_eq!(cluster.network_mode, NetworkMode::Ipv4);
+    }
+
+    #[test]
+    fn parses_dual_stack_cluster() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: controlplane
+cluster:
+  endpoint: https://10.1.1.210:6443
+  networkMode: dual-stack
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/12
+  podCidrIPv6: 2001:db8:10:0::/56
+  serviceCidrIPv6: 2001:db8:96:1::/112
+  vip6: fd00:1::210
+  certSANs: ["10.1.1.210"]
+"#;
+        let cfg = MachineConfig::from_yaml(yaml).unwrap();
+        let cluster = cfg.cluster.unwrap();
+        assert!(cluster.is_dual_stack());
+        assert_eq!(
+            cluster.service_cluster_ip_range(),
+            "10.96.0.0/12,2001:db8:96:1::/112"
+        );
+        assert_eq!(
+            cluster.cluster_cidr(),
+            "10.244.0.0/16,2001:db8:10:0::/56"
+        );
+        assert_eq!(cluster.vip6.as_deref(), Some("fd00:1::210"));
+        assert!(cluster.pki_extra_sans().contains(&"fd00:1::210".into()));
     }
 
     #[test]
@@ -431,7 +560,7 @@ machine:
         incoming.resolve_dashboard(None);
         let dash = incoming.machine.dashboard.unwrap();
         assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
-        assert_eq!(dash.border.as_deref(), Some("ascii"));
+        assert_eq!(dash.border.as_deref(), Some("bordered"));
         assert_eq!(dash.cols, None);
         assert_eq!(dash.rows, None);
         assert_eq!(dash.utf8, None);

@@ -70,8 +70,8 @@ mod linux {
             if iface.dhcp {
                 link::relax_rp_filter(&name);
                 let existing = rt.block_on(link::list_addresses(&name)).unwrap_or_default();
-                // IPv6 SLAAC/link-local often appears before DHCPv4 — only skip when
-                // we already have an IPv4 address.
+                // IPv6 SLAAC/link-local often appears before DHCPv4 — only skip DHCP
+                // when we already have an IPv4 address.
                 let has_v4 = existing.iter().any(|a| a.contains('.'));
                 if has_v4 {
                     info!(
@@ -79,24 +79,24 @@ mod linux {
                         addresses = ?existing,
                         "DHCP already configured (IPv4 present)"
                     );
-                    continue;
-                }
-                match link::run_dhcp(&name) {
-                    Ok(()) => {
-                        let addrs = rt.block_on(link::list_addresses(&name)).unwrap_or_default();
-                        info!(
+                } else {
+                    match link::run_dhcp(&name) {
+                        Ok(()) => {
+                            let addrs = rt.block_on(link::list_addresses(&name)).unwrap_or_default();
+                            info!(
+                                interface = %name,
+                                configured = %iface.interface,
+                                addresses = ?addrs,
+                                "DHCP configured"
+                            );
+                        }
+                        Err(err) => warn!(
                             interface = %name,
                             configured = %iface.interface,
-                            addresses = ?addrs,
-                            "DHCP configured"
-                        );
+                            error = %err,
+                            "DHCP failed; continuing"
+                        ),
                     }
-                    Err(err) => warn!(
-                        interface = %name,
-                        configured = %iface.interface,
-                        error = %err,
-                        "DHCP failed; continuing"
-                    ),
                 }
             } else {
                 for addr in &iface.addresses {
@@ -111,6 +111,33 @@ mod linux {
                     gateway = ?iface.gateway,
                     "static network configured"
                 );
+            }
+
+            // DHCP + static extras (typical: IPv6 ULA alongside DHCPv4).
+            // Previously skipped when IPv4 was already present — dual-stack never landed.
+            if iface.dhcp {
+                let existing = rt.block_on(link::list_addresses(&name)).unwrap_or_default();
+                for addr in &iface.addresses {
+                    let ip = addr.split('/').next().unwrap_or(addr.as_str());
+                    let already = existing.iter().any(|a| a.split('/').next() == Some(ip));
+                    if already {
+                        continue;
+                    }
+                    match rt.block_on(link::add_address(&name, addr)) {
+                        Ok(()) => info!(interface = %name, addr, "static address added (with DHCP)"),
+                        Err(err) => warn!(
+                            interface = %name,
+                            addr,
+                            error = %err,
+                            "static address add failed"
+                        ),
+                    }
+                }
+            }
+
+            // Lab LANs often lack IPv6 RA — synthesize a stable ULA when dual-stack.
+            if let Err(err) = rt.block_on(link::ensure_stable_ula(&name)) {
+                warn!(interface = %name, error = %err, "dual-stack ULA ensure failed");
             }
         }
 

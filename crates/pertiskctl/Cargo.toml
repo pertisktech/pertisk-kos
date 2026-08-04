@@ -15,6 +15,7 @@ anyhow = { workspace = true }
 base64 = "0.22"
 clap = { workspace = true }
 pertisk-bootstrap = { workspace = true }
+pertisk-config = { workspace = true }
 pertisk-proto = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }

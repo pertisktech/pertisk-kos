@@ -1439,6 +1439,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "pertisk-config",
+ "pertisk-net",
  "serde",
  "serde_yaml",
  "thiserror 2.0.19",
@@ -1509,6 +1510,7 @@ dependencies = [
  "base64",
  "clap",
  "pertisk-bootstrap",
+ "pertisk-config",
  "pertisk-proto",
  "tokio",
  "tonic",

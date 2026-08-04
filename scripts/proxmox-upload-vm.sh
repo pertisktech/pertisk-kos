@@ -224,6 +224,11 @@ else
     echo "create failed: ${RESP}" >&2
     exit 1
   }
+  if [[ "${DUAL_STACK:-${PERTISK_DUAL_STACK:-0}}" == "1" ]]; then
+    echo "    net0=virtio,bridge=${BRIDGE} (dual-stack: IPv6 enabled after machine config apply)"
+  else
+    echo "    net0=virtio,bridge=${BRIDGE} (IPv4-only by default; pass lab --dual-stack for IPv6)"
+  fi
 fi
 
 # EFI vars disk — must exist for OVMF; Secure Boot keys OFF (unsigned systemd-boot).

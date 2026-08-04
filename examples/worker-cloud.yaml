@@ -2,8 +2,9 @@ version: v1alpha1
 machine:
   type: worker
   # No install: disk is pre-imaged for cloud / golden QEMU.
+  # Hostname is overwritten at populate time (GUID-wk / GUID-cp); do not rely on this value.
   network:
-    hostname: pertisk-cp-1
+    hostname: seed-wk
     interfaces:
       - interface: eth0
         dhcp: true

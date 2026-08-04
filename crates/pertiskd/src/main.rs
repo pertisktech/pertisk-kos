@@ -226,7 +226,14 @@ fn run() -> Result<()> {
     };
 
     // Bring up DHCP before install — install can warn/fail on cloud (/dev/vda
-    // vs scsi) and must not delay addressing.
+    // vs scsi) and must not delay addressing. Default IPv4-only: disable IPv6
+    // unless machine config opts into dual-stack.
+    let early_dual = early_cfg
+        .as_ref()
+        .and_then(|c| c.cluster.as_ref())
+        .map(|c| c.is_dual_stack())
+        .unwrap_or(false);
+    sysctl::apply_ipv6_policy(early_dual);
     if let Ok(mut st) = api_state.lock() {
         st.set_message("network");
     }
@@ -314,6 +321,12 @@ fn run() -> Result<()> {
         }
         // Re-apply after STATE mount (seed config may differ from initramfs).
         if !args.skip_network {
+            let dual = cfg
+                .cluster
+                .as_ref()
+                .map(|c| c.is_dual_stack())
+                .unwrap_or(false);
+            sysctl::apply_ipv6_policy(dual);
             if let Err(err) = pertisk_net::apply_network(&cfg.machine.network) {
                 warn!(error = %err, "network apply failed");
             }

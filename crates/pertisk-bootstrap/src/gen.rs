@@ -6,7 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use pertisk_config::{
     Cluster, CniMode, Dashboard, Interface, Machine, MachineConfig, MachineType, Network,
-    CONFIG_VERSION,
+    NetworkMode, CONFIG_VERSION,
 };
 
 use crate::token::generate_bootstrap_token;
@@ -50,6 +50,24 @@ fn endpoint_host(endpoint: &str) -> String {
         .to_string()
 }
 
+pub struct GenNetworkOpts {
+    pub dual_stack: bool,
+    pub pod_cidr_ipv6: Option<String>,
+    pub service_cidr_ipv6: Option<String>,
+    pub vip6: Option<String>,
+}
+
+impl Default for GenNetworkOpts {
+    fn default() -> Self {
+        Self {
+            dual_stack: false,
+            pod_cidr_ipv6: None,
+            service_cidr_ipv6: None,
+            vip6: None,
+        }
+    }
+}
+
 fn base_cluster(
     endpoint: String,
     token: String,
@@ -57,7 +75,33 @@ fn base_cluster(
     service_subnet: &str,
     kubernetes_version: &str,
     cert_sans: Vec<String>,
+    net: &GenNetworkOpts,
 ) -> Cluster {
+    let (network_mode, pod_cidr_ipv6, service_cidr_ipv6, vip6) = if net.dual_stack {
+        (
+            NetworkMode::DualStack,
+            Some(
+                net.pod_cidr_ipv6
+                    .clone()
+                    .unwrap_or_else(|| Cluster::DEFAULT_POD_CIDR_IPV6.into()),
+            ),
+            Some(
+                net.service_cidr_ipv6
+                    .clone()
+                    .unwrap_or_else(|| Cluster::DEFAULT_SERVICE_CIDR_IPV6.into()),
+            ),
+            net.vip6.clone().filter(|s| !s.trim().is_empty()),
+        )
+    } else {
+        (NetworkMode::Ipv4, None, None, None)
+    };
+    let mut cert_sans = cert_sans;
+    if let Some(ref v6) = vip6 {
+        let v = v6.trim();
+        if !v.is_empty() && !cert_sans.iter().any(|s| s == v) {
+            cert_sans.push(v.to_string());
+        }
+    }
     Cluster {
         endpoint,
         token: Some(token),
@@ -66,6 +110,10 @@ fn base_cluster(
         sa_key: None,
         pod_subnet: Some(pod_subnet.into()),
         service_subnet: Some(service_subnet.into()),
+        pod_cidr_ipv6,
+        service_cidr_ipv6,
+        network_mode,
+        vip6,
         kubernetes_version: Some(kubernetes_version.into()),
         pod_cidr: None,
         cni: CniMode::None,
@@ -80,6 +128,24 @@ pub fn gen_config(
     kubernetes_version: &str,
     pod_subnet: &str,
     service_subnet: &str,
+) -> Result<GenConfigOutput> {
+    gen_config_with_network(
+        cluster_name,
+        endpoint,
+        kubernetes_version,
+        pod_subnet,
+        service_subnet,
+        &GenNetworkOpts::default(),
+    )
+}
+
+pub fn gen_config_with_network(
+    cluster_name: &str,
+    endpoint: &str,
+    kubernetes_version: &str,
+    pod_subnet: &str,
+    service_subnet: &str,
+    net: &GenNetworkOpts,
 ) -> Result<GenConfigOutput> {
     let token = generate_bootstrap_token();
     let endpoint = normalize_endpoint(endpoint);
@@ -114,6 +180,7 @@ pub fn gen_config(
             service_subnet,
             kubernetes_version,
             cert_sans.clone(),
+            net,
         )),
     };
 
@@ -141,6 +208,7 @@ pub fn gen_config(
             service_subnet,
             kubernetes_version,
             cert_sans,
+            net,
         )),
     };
 
@@ -161,6 +229,26 @@ pub fn gen_config_ha(
     kubernetes_version: &str,
     pod_subnet: &str,
     service_subnet: &str,
+) -> Result<GenConfigHaOutput> {
+    gen_config_ha_with_network(
+        cluster_name,
+        endpoint,
+        controlplanes,
+        kubernetes_version,
+        pod_subnet,
+        service_subnet,
+        &GenNetworkOpts::default(),
+    )
+}
+
+pub fn gen_config_ha_with_network(
+    cluster_name: &str,
+    endpoint: &str,
+    controlplanes: u32,
+    kubernetes_version: &str,
+    pod_subnet: &str,
+    service_subnet: &str,
+    net: &GenNetworkOpts,
 ) -> Result<GenConfigHaOutput> {
     if controlplanes == 0 {
         anyhow::bail!("controlplanes must be >= 1");
@@ -199,6 +287,7 @@ pub fn gen_config_ha(
                 service_subnet,
                 kubernetes_version,
                 cert_sans.clone(),
+                net,
             )),
         };
         let name = if i == 1 {
@@ -233,6 +322,7 @@ pub fn gen_config_ha(
             service_subnet,
             kubernetes_version,
             cert_sans,
+            net,
         )),
     };
 

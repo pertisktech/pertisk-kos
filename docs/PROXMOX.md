@@ -70,7 +70,7 @@ export PROXMOX_INSECURE=1
 
 Defaults: **4096 MB** / **2 vCPUs**. Role overrides: `--cp-memory` / `--cp-cores` / `--worker-memory` / `--worker-cores` and `--cp-disk-gb` / `--worker-disk-gb`.
 
-**Disk sizing:** `--cp-disk-gb` / `--worker-disk-gb` build **separate** cloud images (`out/pertisk-cloud-<arch>-Ng.qcow2`) so GPT **EPHEMERAL** and Proxmox scsi0 match each role. `qm resize` is **grow-only** and cannot shrink a shared max-sized import (that was why CP showed worker size). A default 8G image + resize alone does **not** grow guest partitions — rebuild without `--skip-build`. With `--skip-vms`, memory/cores still apply via `qm`; disk shrink needs VM recreate. Dashboard **STATE** stays ~1 GiB by layout; usable space for containers is **EPHEMERAL** (`/var`).
+**Disk sizing:** `--cp-disk-gb` / `--worker-disk-gb` build from a small (~4G) populate, then `qemu-img resize` to role-sized qcow2s (`out/pertisk-cloud-<arch>-Ng.qcow2`). First boot grows GPT **EPHEMERAL** and `mkfs.ext4` at final size (so containerd has enough inodes). `qm resize` alone does **not** rewrite GPT — use sized images. Dashboard **STATE** stays ~1 GiB by layout; usable space for containers is **EPHEMERAL** (`/var`).
 
 The script:
 
@@ -87,6 +87,30 @@ Cloud images set systemd-boot `timeout 0` so there is **no countdown menu**. Wit
 ### Console dashboard + finding the guest IP
 
 Proxmox VMs created by `proxmox-upload-vm.sh` enable **QEMU Guest Agent** (`agent=enabled=1`). The guest image does not yet ship `qemu-guest-agent`, so Summary IP may still be empty — use the Serial dashboard **network** panel, or add the agent package to the image later.
+
+Guests default to **IPv4-only** at runtime: `pertiskd` disables IPv6 via sysctl before DHCP (no hard `ipv6.disable=1` on the cmdline). Opt into dual-stack with `cluster.networkMode: dual-stack` / `pertiskctl gen config --dual-stack` / lab `--dual-stack` so SLAAC/global IPv6 is allowed. Rebuild the cloud image only when you need a fresh qcow2 for other changes — IPv4-only vs dual-stack is config-driven.
+
+### Resume HA lab (IPv4)
+
+If a previous run stopped after CP join / waiting on the VIP:
+
+```bash
+# Reuse existing VMs; skip image build. Adjust VIP / --cp-vmid to match the lab.
+./scripts/proxmox-lab-up.sh --skip-build --skip-vms \
+  --cp-vmid 210 --controlplanes 3 --vip 10.1.1.210 --workers 3 --cni cilium
+```
+
+Fresh HA with sizing (rebuild so disk layout matches):
+
+```bash
+./scripts/proxmox-lab-up.sh \
+  --cp-memory 4096 --cp-cores 2 \
+  --worker-memory 8192 --worker-cores 4 \
+  --cp-disk-gb 50 --worker-disk-gb 75 \
+  --controlplanes 3 --vip 10.1.1.210 --workers 3 --cni cilium
+```
+
+Requires: `./proxmox.sh`, `PROXMOX_SSH`, a free VIP on L2, outbound pulls for registry/Cilium.
 
 After boot, `pertiskd` shows a Serial TUI **as soon as Serial is ready** (before DHCP / STATE / containerd finish). Status line cycles `booting` → `network` → `mounting STATE` → `starting runtime`. Cursor is hidden; ~2s refresh.
 
@@ -239,6 +263,9 @@ make lab-up ARCH=amd64
 ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cp-vmid 210 --workers 2 --cni cilium
 # HA (pick a free L2 IP for kube-vip):
 ./scripts/proxmox-lab-up.sh --controlplanes 3 --vip 10.1.1.200 --workers 2 --cni cilium
+# Opt-in dual-stack (needs SLAAC/ULA on the bridge or static v6; optional --vip6):
+./scripts/proxmox-lab-up.sh --controlplanes 3 --vip 10.1.1.210 --vip6 'fd00:1::210' \
+  --dual-stack --workers 2 --cni cilium
 # CP vs worker sizing (builds role-sized qcow2s; Proxmox Hardware shows 50G / 75G):
 ./scripts/proxmox-lab-up.sh \
   --cp-memory 4096 --cp-cores 2 \
@@ -248,6 +275,8 @@ make lab-up ARCH=amd64
 # install an example app after CNI:
 APPS=examples/apps/nginx.yaml ./scripts/proxmox-lab-up.sh --skip-build --cni cilium
 ```
+
+**IPv4 vs dual-stack:** default labs stay IPv4-only (`networkMode: ipv4`, Cilium `ipv6.enabled=false`). `--dual-stack` sets `networkMode: dual-stack` with Talos-shaped CIDRs (`10.244.0.0/16` + `2001:db8:10:0::/56` pods, `10.96.0.0/12` + `2001:db8:96:1::/112` services), enables guest IPv6, dual-stack apiserver `--service-cluster-ip-range`, kubelet `--node-ip=v4,v6`, and Cilium IPv6 + cluster-pool CIDRs. Lab bridges often have no RA — guests then get a stable node ULA derived from DHCPv4 (`10.1.1.173` → `fd00:a:1:1::ad/64`). When the LAN also offers SLAAC, the GUA wins and the synthetic ULA is dropped so kubectl InternalIP and the serial dashboard eth0 match. Rebuild the cloud image when changing EPHEMERAL/kubelet dual-stack behavior. Flannel/Calico dual-stack is out of scope for lab-up.
 
 CNI choices (pick one): Cilium (default, kubeProxyReplacement), Calico (VXLAN + kube-proxy), Flannel (VXLAN + kube-proxy). See [examples/cni/README.md](../examples/cni/README.md) and [cilium.md](../examples/cni/cilium.md) / [calico.md](../examples/cni/calico.md).
 
@@ -269,6 +298,9 @@ make pertiskctl
 
 # HA: endpoint = VIP; bootstrap CP1, then join CP2/CP3:
 ./out/bin/pertiskctl gen config lab-ha https://<VIP>:6443 -o ./out/cluster --controlplanes 3
+# Dual-stack HA (Talos-shaped pod/service CIDRs; optional IPv6 VIP → certSANs + kube-vip ND):
+./out/bin/pertiskctl gen config lab-ha https://10.1.1.210:6443 -o ./out/cluster \
+  --controlplanes 3 --dual-stack [--vip6 '2405:9800:…:210']
 ./out/bin/pertiskctl -e <CP1>:50000 apply -f ./out/cluster/controlplane.yaml
 ./out/bin/pertiskctl -e <CP1>:50000 bootstrap
 ./out/bin/pertiskctl -e <CP1>:50000 get-join-config --controlplane --controlplane-index 2 \
@@ -278,6 +310,10 @@ make pertiskctl
 ./out/bin/pertiskctl -e <CP2>:50000 join-controlplane --etcd-endpoints https://<CP1>:2379
 # (repeat for CP3; kube-vip static pod owns the VIP)
 
+# Prefer node InternalIP IPv6 = SLAAC GUA (2405:9800:…) when the LAN sends RAs.
+# Apply waits ~8s for GUA before falling back to synthetic ULA (fd00:a:1:1::xx).
+# If a node still shows ULA, wait for RA then re-apply the same YAML (restarts kubelet).
+
 # Bootstrap finalizes (once apiserver is up): bootstrap-token Secret, node-join
 # RBAC, CP control-plane label/taint, CoreDNS, and metrics-server.
 # Wait ~1–2 min if the node is still unlabeled.
@@ -285,7 +321,12 @@ make pertiskctl
 # Per worker (edit hostname in a copy of worker.yaml):
 ./out/bin/pertiskctl -e <WK_IP>:50000 apply -f ./out/cluster/worker.yaml
 
-# CNI — see examples/cni/README.md (use VIP as k8sServiceHost when HA)
+# CNI — Cilium dual-stack (see examples/cni/cilium.md); k8sServiceHost = VIP when HA
+# Or lab-up: --skip-build --skip-vms --dual-stack --cni cilium --vip 10.1.1.210
+kubectl --kubeconfig ./out/cluster/admin.conf get nodes -o wide
+# Expect: InternalIP v4 + InternalIP 2405:9800:… (or fd00:… if no RA)
+
+# Flannel (IPv4-only labs):
 kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/cni/kube-flannel.yaml
 # Basic addons are already applied by bootstrap; re-apply if needed:
 kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/dns/coredns.yaml

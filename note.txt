@@ -121,3 +121,27 @@ kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/bootstrap/node-r
   --cp-memory 4096 --cp-cores 2 \
   --worker-memory 8192 --worker-cores 4 \
   --cp-disk-gb 50 --worker-disk-gb 75  --controlplanes 3 --vip 10.1.1.200 --workers 3 --cni cilium
+
+
+kubectl get namespace cilium-secrets -o json | jq '.spec.finalizers = []' | kubectl replace --raw /api/v1/namespaces/cilium-secrets/finalize -f -
+
+helm install cilium cilium/cilium \
+  --namespace cilium --create-namespace \
+  --set ipam.mode=kubernetes \
+  --set kubeProxyReplacement=true \
+  --set 'securityContext.capabilities.ciliumAgent={CHOWN,KILL,NET_ADMIN,NET_RAW,IPC_LOCK,SYS_ADMIN,SYS_RESOURCE,DAC_OVERRIDE,FOWNER,SETGID,SETUID}' \
+  --set 'securityContext.capabilities.cleanCiliumState={NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}' \
+  --set cgroup.autoMount.enabled=false \
+  --set ipv6.enabled=false \
+  --set cgroup.hostRoot=/sys/fs/cgroup \
+  --set k8sServiceHost=$IP \
+  --set k8sServicePort=6443 \
+  --set l2announcements.enabled=true \
+  --set bpf.masquerade=true \
+  --set hubble.enabled=true \
+  --set hubble.relay.enabled=true \
+  --set hubble.ui.enabled=true \
+  --set prometheus.enabled=true \
+  --set ipam.operator.clusterPoolIPv4MaskSize=24 \
+  --set hubble.relay.hostNetwork=true \
+  --set hubble.relay.dnsPolicy=ClusterFirstWithHostNet

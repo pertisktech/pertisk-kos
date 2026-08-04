@@ -1,4 +1,4 @@
-//! kube-vip ARP VIP static pod for multi-CP HA.
+//! kube-vip ARP/ND VIP static pod for multi-CP HA.
 
 use std::fs;
 use std::path::Path;
@@ -10,30 +10,43 @@ pub const DEFAULT_KUBE_VIP_IMAGE: &str = "ghcr.io/kube-vip/kube-vip:v0.8.9";
 pub const DEFAULT_KUBE_VIP_INTERFACE: &str = "eth0";
 
 /// Write kube-vip when `vip` is set and differs from this node's advertise IP.
+/// Optional `vip6` adds an IPv6 VIP (ND) alongside the IPv4 VIP when dual-stack HA.
 pub fn maybe_write_kube_vip(
     manifests_dir: &Path,
     vip: Option<&str>,
+    vip6: Option<&str>,
     advertise_ip: &str,
     interface: &str,
 ) -> Result<bool> {
-    let Some(vip) = vip.map(str::trim).filter(|s| !s.is_empty()) else {
+    let vip = vip.map(str::trim).filter(|s| !s.is_empty());
+    let vip6 = vip6.map(str::trim).filter(|s| !s.is_empty());
+    let Some(vip) = vip else {
         remove_kube_vip(manifests_dir);
         return Ok(false);
     };
-    if vip == advertise_ip {
+    if vip == advertise_ip && vip6.is_none() {
         remove_kube_vip(manifests_dir);
         return Ok(false);
     }
-    write_kube_vip(manifests_dir, vip, interface)?;
+    write_kube_vip(manifests_dir, vip, vip6, interface)?;
     Ok(true)
 }
 
-pub fn write_kube_vip(manifests_dir: &Path, vip: &str, interface: &str) -> Result<()> {
+pub fn write_kube_vip(
+    manifests_dir: &Path,
+    vip: &str,
+    vip6: Option<&str>,
+    interface: &str,
+) -> Result<()> {
     fs::create_dir_all(manifests_dir)?;
     let iface = if interface.is_empty() {
         DEFAULT_KUBE_VIP_INTERFACE
     } else {
         interface
+    };
+    let (address, vip_cidr) = match vip6.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(v6) => (format!("{vip},{v6}"), "32,128".to_string()),
+        None => (vip.to_string(), "32".to_string()),
     };
     // Shape matches `kube-vip manifest pod --controlplane --arp --leaderElection`
     // (v0.8.9). hostAliases is required: kube-vip talks to https://kubernetes:6443
@@ -65,7 +78,7 @@ pub fn write_kube_vip(manifests_dir: &Path, vip: &str, interface: &str) -> Resul
                     { "name": "port", "value": "6443" },
                     { "name": "vip_nodename", "valueFrom": { "fieldRef": { "fieldPath": "spec.nodeName" } } },
                     { "name": "vip_interface", "value": iface },
-                    { "name": "vip_cidr", "value": "32" },
+                    { "name": "vip_cidr", "value": vip_cidr },
                     { "name": "dns_mode", "value": "first" },
                     { "name": "cp_enable", "value": "true" },
                     { "name": "cp_namespace", "value": "kube-system" },
@@ -74,7 +87,7 @@ pub fn write_kube_vip(manifests_dir: &Path, vip: &str, interface: &str) -> Resul
                     { "name": "vip_leaseduration", "value": "15" },
                     { "name": "vip_renewdeadline", "value": "10" },
                     { "name": "vip_retryperiod", "value": "2" },
-                    { "name": "address", "value": vip },
+                    { "name": "address", "value": address },
                     { "name": "prometheus_server", "value": ":2112" }
                 ],
                 "securityContext": {
@@ -123,7 +136,7 @@ mod tests {
     #[test]
     fn kube_vip_sets_host_aliases_and_cidr() {
         let dir = tempdir().unwrap();
-        write_kube_vip(dir.path(), "10.1.1.200", "eth0").unwrap();
+        write_kube_vip(dir.path(), "10.1.1.200", None, "eth0").unwrap();
         let y = fs::read_to_string(dir.path().join("kube-vip.yaml")).unwrap();
         assert!(y.contains("hostAliases") || y.contains("hostaliases"));
         assert!(y.contains("kubernetes"));
@@ -132,5 +145,14 @@ mod tests {
         assert!(y.contains("vip_arp"));
         assert!(y.contains("vip_cidr"));
         assert!(!y.contains("vip_subnet"));
+    }
+
+    #[test]
+    fn kube_vip_dual_stack_address() {
+        let dir = tempdir().unwrap();
+        write_kube_vip(dir.path(), "10.1.1.200", Some("fd00:1::210"), "eth0").unwrap();
+        let y = fs::read_to_string(dir.path().join("kube-vip.yaml")).unwrap();
+        assert!(y.contains("10.1.1.200,fd00:1::210") || y.contains("fd00:1::210"));
+        assert!(y.contains("32,128"));
     }
 }

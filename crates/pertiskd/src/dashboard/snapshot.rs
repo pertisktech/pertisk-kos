@@ -434,7 +434,19 @@ fn row_iface_name(row: &str) -> &str {
 }
 
 fn first_ipv4(addresses: &[String]) -> Option<&str> {
-    addresses.iter().find(|a| a.contains('.')).map(|s| s.as_str())
+    addresses.iter().find_map(|a| {
+        let ip = a.split('/').next().unwrap_or(a.as_str());
+        if ip.contains('.') {
+            Some(ip)
+        } else {
+            None
+        }
+    })
+}
+
+fn first_global_ipv6(addresses: &[String]) -> Option<&str> {
+    // Prefer SLAAC GUA over synthetic fd00:: ULA (same rule as kubelet --node-ip).
+    pertisk_net::prefer_global_ipv6(addresses.iter().map(|s| s.as_str()))
 }
 
 fn row_has_ipv4(row: &str) -> bool {
@@ -510,9 +522,19 @@ fn pick_primary_node_ip(host_ifaces: &[IfaceAddrs], configured: &[String]) -> (S
             ))
             .then_with(|| a.name.cmp(&b.name))
     });
-    for iface in ordered {
-        if let Some(ip) = first_ipv4(&iface.addresses) {
-            return (iface.name.clone(), ip.to_string());
+    for iface in &ordered {
+        if let Some(v4) = first_ipv4(&iface.addresses) {
+            let mut display = v4.to_string();
+            if let Some(v6) = first_global_ipv6(&iface.addresses) {
+                display.push(' ');
+                display.push_str(v6);
+            }
+            return (iface.name.clone(), display);
+        }
+    }
+    for iface in &ordered {
+        if let Some(v6) = first_global_ipv6(&iface.addresses) {
+            return (iface.name.clone(), format!("(no ipv4) {v6}"));
         }
     }
     if let Some(iface) = host_ifaces.first() {
@@ -789,7 +811,7 @@ Cached:          2048000 kB
         ];
         let p = prioritize_host_network(&ifaces, &rows, &[]);
         assert_eq!(p.node_iface, "eth0");
-        assert_eq!(p.node_ip, "10.1.1.198/24");
+        assert_eq!(p.node_ip, "10.1.1.198");
         assert_eq!(p.net_rows.len(), 1);
         assert!(p.net_rows[0].starts_with("eth0"));
         assert!(p.interfaces.iter().all(|i| !is_cni_iface(&i.name)));
@@ -813,7 +835,29 @@ Cached:          2048000 kB
         ];
         let p = prioritize_host_network(&ifaces, &rows, &["ens18".into()]);
         assert_eq!(p.node_iface, "ens18");
-        assert_eq!(p.node_ip, "10.1.1.50/24");
+        assert_eq!(p.node_ip, "10.1.1.50");
         assert_eq!(row_iface_name(&p.net_rows[0]), "ens18");
+    }
+
+    #[test]
+    fn prefer_gua_over_ula_for_node_ip() {
+        let ifaces = vec![IfaceAddrs {
+            name: "eth0".into(),
+            addresses: vec![
+                "10.1.1.173/24".into(),
+                "fd00:a:1:1::ad/64".into(),
+                "2405:9800:b901:194c:be24:11ff:fe91:e066/64".into(),
+            ],
+        }];
+        let rows = vec![
+            "eth0  UP  10.1.1.173/24  fd00:a:1:1::ad/64  2405:9800:b901:194c:be24:11ff:fe91:e066/64"
+                .into(),
+        ];
+        let p = prioritize_host_network(&ifaces, &rows, &[]);
+        assert_eq!(p.node_iface, "eth0");
+        assert_eq!(
+            p.node_ip,
+            "10.1.1.173 2405:9800:b901:194c:be24:11ff:fe91:e066"
+        );
     }
 }
