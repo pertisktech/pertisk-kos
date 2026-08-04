@@ -69,6 +69,7 @@ impl Default for GenNetworkOpts {
 }
 
 fn base_cluster(
+    cluster_name: &str,
     endpoint: String,
     token: String,
     pod_subnet: &str,
@@ -103,6 +104,7 @@ fn base_cluster(
         }
     }
     Cluster {
+        name: Some(cluster_name.into()),
         endpoint,
         token: Some(token),
         ca: None,
@@ -174,6 +176,7 @@ pub fn gen_config_with_network(
             dashboard: Some(Dashboard::builtin()),
         },
         cluster: Some(base_cluster(
+            cluster_name,
             endpoint.clone(),
             token.clone(),
             pod_subnet,
@@ -202,6 +205,7 @@ pub fn gen_config_with_network(
             dashboard: Some(Dashboard::builtin()),
         },
         cluster: Some(base_cluster(
+            cluster_name,
             endpoint.clone(),
             token.clone(),
             pod_subnet,
@@ -281,6 +285,7 @@ pub fn gen_config_ha_with_network(
                 dashboard: Some(Dashboard::builtin()),
             },
             cluster: Some(base_cluster(
+                cluster_name,
                 endpoint.clone(),
                 token.clone(),
                 pod_subnet,
@@ -316,6 +321,7 @@ pub fn gen_config_ha_with_network(
             dashboard: Some(Dashboard::builtin()),
         },
         cluster: Some(base_cluster(
+            cluster_name,
             endpoint.clone(),
             token.clone(),
             pod_subnet,

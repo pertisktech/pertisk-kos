@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api, setToken, getToken } from '../api'
 
 export default function Login() {
@@ -70,9 +70,6 @@ export default function Login() {
             <a href="/api/auth/oidc/start">Continue with Auth0 (SSO)</a>
           </p>
         )}
-        <p className="muted" style={{ marginTop: '1.25rem' }}>
-          <Link to="/">Back</Link>
-        </p>
       </div>
     </div>
   )

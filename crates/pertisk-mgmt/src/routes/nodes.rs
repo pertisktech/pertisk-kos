@@ -24,6 +24,8 @@ pub struct NodeOut {
     pub role: String,
     pub vmid: Option<i64>,
     pub ip: Option<String>,
+    pub ip6: Option<String>,
+    pub k8s_version: Option<String>,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
@@ -41,7 +43,7 @@ async fn list(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Vec<NodeOut>>> {
     let rows = sqlx::query_as::<_, NodeOut>(
-        r#"SELECT id, cluster_id, name, role, vmid, ip, status, created_at, updated_at
+        r#"SELECT id, cluster_id, name, role, vmid, ip, ip6, k8s_version, status, created_at, updated_at
            FROM nodes WHERE cluster_id = ? ORDER BY role, name"#,
     )
     .bind(&id)

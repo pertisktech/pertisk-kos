@@ -137,6 +137,9 @@ pub struct Install {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Cluster {
+    /// Logical cluster name (kubeconfig context / cluster entry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub endpoint: String,
     #[serde(default)]
     pub token: Option<String>,

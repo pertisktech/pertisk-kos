@@ -1,6 +1,7 @@
 mod auth_routes;
 mod clusters;
 mod health;
+mod meta;
 mod nodes;
 mod providers;
 
@@ -19,6 +20,7 @@ pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .merge(health::routes())
         .merge(auth_routes::routes())
+        .merge(meta::routes())
         .merge(providers::routes())
         .merge(clusters::routes())
         .merge(nodes::routes())

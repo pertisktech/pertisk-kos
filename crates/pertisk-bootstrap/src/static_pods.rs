@@ -47,6 +47,67 @@ pub fn write_static_pods(manifests_dir: &Path, p: &StaticPodParams<'_>) -> Resul
     Ok(())
 }
 
+/// Rewrite control-plane static-pod image tags to `kubernetes_version`.
+/// Leaves etcd / kube-vip untouched (cluster membership + VIP must not churn).
+/// Returns how many manifest files were updated.
+pub fn bump_control_plane_images(manifests_dir: &Path, kubernetes_version: &str) -> Result<usize> {
+    let ver = normalize_k8s_version(kubernetes_version);
+    let files = [
+        "kube-apiserver.yaml",
+        "kube-controller-manager.yaml",
+        "kube-scheduler.yaml",
+    ];
+    let mut changed = 0usize;
+    for name in files {
+        let path = manifests_dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let old = fs::read_to_string(&path)
+            .with_context(|| format!("read {}", path.display()))?;
+        let new = bump_registry_k8s_image_tags(&old, &ver);
+        if new != old {
+            fs::write(&path, new).with_context(|| format!("write {}", path.display()))?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+fn normalize_k8s_version(v: &str) -> String {
+    let v = v.trim();
+    if v.starts_with('v') {
+        v.to_string()
+    } else {
+        format!("v{v}")
+    }
+}
+
+/// Replace `registry.k8s.io/kube-*:vX.Y.Z` image tags with `ver` (already normalized).
+fn bump_registry_k8s_image_tags(yaml: &str, ver: &str) -> String {
+    let mut out = String::with_capacity(yaml.len());
+    for line in yaml.lines() {
+        if let Some(idx) = line.find("registry.k8s.io/kube-") {
+            if let Some(colon) = line[idx..].find(':') {
+                let abs = idx + colon;
+                // Keep prefix through ':'; rewrite tag (stop at whitespace / comment).
+                let rest = &line[abs + 1..];
+                let tag_end = rest
+                    .find(|c: char| c.is_whitespace() || c == '#' || c == '"')
+                    .unwrap_or(rest.len());
+                out.push_str(&line[..=abs]);
+                out.push_str(ver);
+                out.push_str(&rest[tag_end..]);
+                out.push('\n');
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 fn write_yaml(path: &Path, value: &serde_json::Value) -> Result<()> {
     let s = serde_yaml::to_string(value).context("serialize pod")?;
     fs::write(path, s).with_context(|| format!("write {}", path.display()))?;
@@ -297,5 +358,31 @@ mod tests {
         assert!(etcd.contains("https://10.1.1.10:2380"));
         assert!(etcd.contains("--initial-cluster-state=new"));
         assert!(etcd.contains("0.0.0.0:2380"));
+    }
+
+    #[test]
+    fn bump_images_updates_cp_only() {
+        let dir = tempdir().unwrap();
+        write_static_pods(
+            dir.path(),
+            &StaticPodParams {
+                advertise_ip: "10.1.1.10",
+                hostname: "lab-cp-1",
+                kubernetes_version: "v1.36.2",
+                etcd_image: "registry.k8s.io/etcd:3.5.16-0",
+                service_cidr: "10.96.0.0/12",
+                pod_subnet: "10.244.0.0/16",
+                pki_host_path: "/etc/kubernetes/pki",
+                etcd_initial_cluster: "lab-cp-1=https://10.1.1.10:2380",
+                etcd_initial_cluster_state: "new",
+            },
+        )
+        .unwrap();
+        assert_eq!(bump_control_plane_images(dir.path(), "v1.36.3").unwrap(), 3);
+        let api = fs::read_to_string(dir.path().join("kube-apiserver.yaml")).unwrap();
+        assert!(api.contains("registry.k8s.io/kube-apiserver:v1.36.3"));
+        assert!(!api.contains(":v1.36.2"));
+        let etcd = fs::read_to_string(dir.path().join("etcd.yaml")).unwrap();
+        assert!(etcd.contains("registry.k8s.io/etcd:3.5.16-0"));
     }
 }

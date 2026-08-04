@@ -6,6 +6,8 @@ mod crypto;
 mod db;
 mod error;
 mod jobs;
+mod kubeconfig;
+mod node_sync;
 mod proxmox;
 mod rbac;
 mod routes;

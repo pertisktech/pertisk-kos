@@ -21,6 +21,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/clusters/{id}/kubeconfig", get(kubeconfig))
         .route("/clusters/{id}/jobs", get(list_jobs))
+        .route("/clusters/{id}/delete-check", get(delete_check))
         .route("/clusters/{id}/upgrade", axum::routing::post(upgrade))
         .route("/clusters/{id}/config", axum::routing::post(update_config))
         .route("/jobs/{id}", get(get_job))
@@ -32,6 +33,9 @@ pub struct ClusterOut {
     pub id: String,
     pub name: String,
     pub provider_id: String,
+    pub provider_name: Option<String>,
+    pub provider_url: Option<String>,
+    pub provider_node: Option<String>,
     pub status: String,
     pub controlplanes: i64,
     pub workers: i64,
@@ -48,6 +52,7 @@ pub struct ClusterOut {
     pub cp_vmid: Option<i64>,
     pub endpoint: Option<String>,
     pub error: Option<String>,
+    pub network_mode: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -60,6 +65,8 @@ struct CreateCluster {
     controlplanes: i64,
     #[serde(default = "one")]
     workers: i64,
+    #[serde(default = "default_net_mode")]
+    network_mode: String,
     vip: Option<String>,
     vip6: Option<String>,
     #[serde(default = "default_cni")]
@@ -112,17 +119,28 @@ fn default_wk_disk() -> i64 {
 fn default_vmid() -> i64 {
     210
 }
+fn default_net_mode() -> String {
+    "ipv4".into()
+}
+
+const CLUSTER_SELECT: &str = r#"
+SELECT c.id, c.name, c.provider_id,
+       p.name as provider_name, p.url as provider_url, p.node as provider_node,
+       c.status, c.controlplanes, c.workers, c.vip, c.vip6, c.cni, c.k8s_version,
+       c.cp_memory, c.cp_cores, c.cp_disk_gb, c.worker_memory, c.worker_cores, c.worker_disk_gb,
+       c.cp_vmid, c.endpoint, c.error, COALESCE(c.network_mode, 'ipv4') as network_mode,
+       c.created_at, c.updated_at
+FROM clusters c
+LEFT JOIN providers p ON p.id = c.provider_id
+"#;
 
 async fn list(
     State(state): State<AppState>,
     CurrentUser(_): CurrentUser,
 ) -> ApiResult<Json<Vec<ClusterOut>>> {
-    let rows = sqlx::query_as::<_, ClusterOut>(
-        r#"SELECT id, name, provider_id, status, controlplanes, workers, vip, vip6, cni, k8s_version,
-                  cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb,
-                  cp_vmid, endpoint, error, created_at, updated_at
-           FROM clusters ORDER BY created_at DESC"#,
-    )
+    let rows = sqlx::query_as::<_, ClusterOut>(&format!(
+        "{CLUSTER_SELECT} ORDER BY c.created_at DESC"
+    ))
     .fetch_all(state.pool())
     .await?;
     Ok(Json(rows))
@@ -133,19 +151,57 @@ async fn get_one(
     CurrentUser(_): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let cluster = sqlx::query_as::<_, ClusterOut>(
-        r#"SELECT id, name, provider_id, status, controlplanes, workers, vip, vip6, cni, k8s_version,
-                  cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb,
-                  cp_vmid, endpoint, error, created_at, updated_at
-           FROM clusters WHERE id = ?"#,
-    )
+    let cluster = sqlx::query_as::<_, ClusterOut>(&format!(
+        "{CLUSTER_SELECT} WHERE c.id = ?"
+    ))
     .bind(&id)
     .fetch_optional(state.pool())
     .await?
     .ok_or(AppError::NotFound)?;
 
+    // Refresh node IP / K8s version when ready (missing IPs or active upgrade).
+    if cluster.status == "ready" {
+        let upgrading: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM jobs WHERE cluster_id = ? AND kind = 'upgrade_cluster' AND status = 'running'",
+        )
+        .bind(&id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap_or(0);
+        let missing_ip: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM nodes WHERE cluster_id = ? AND (ip IS NULL OR ip = '')",
+        )
+        .bind(&id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap_or(0);
+        if upgrading > 0 || missing_ip > 0 {
+            let kc: Option<String> = sqlx::query_scalar(
+                "SELECT kubeconfig_path FROM clusters WHERE id = ?",
+            )
+            .bind(&id)
+            .fetch_optional(state.pool())
+            .await?;
+            if let Some(kc) = kc.filter(|s| !s.is_empty()) {
+                let log_path: Option<String> = sqlx::query_scalar(
+                    "SELECT log_path FROM jobs WHERE cluster_id = ? AND kind IN ('create_cluster', 'upgrade_cluster') ORDER BY updated_at DESC LIMIT 1",
+                )
+                .bind(&id)
+                .fetch_optional(state.pool())
+                .await?;
+                let _ = crate::node_sync::sync_cluster_nodes(
+                    state.pool(),
+                    &id,
+                    Some(std::path::Path::new(&kc)),
+                    log_path.as_deref(),
+                )
+                .await;
+            }
+        }
+    }
+
     let nodes = sqlx::query_as::<_, crate::routes::nodes::NodeOut>(
-        r#"SELECT id, cluster_id, name, role, vmid, ip, status, created_at, updated_at
+        r#"SELECT id, cluster_id, name, role, vmid, ip, ip6, k8s_version, status, created_at, updated_at
            FROM nodes WHERE cluster_id = ? ORDER BY role, name"#,
     )
     .bind(&id)
@@ -164,13 +220,21 @@ async fn create(
     Json(body): Json<CreateCluster>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_mutate(&user)?;
+    let mode = body.network_mode.to_ascii_lowercase();
+    if !matches!(mode.as_str(), "ipv4" | "ipv6" | "dual-stack") {
+        return Err(AppError::bad("network_mode must be ipv4|ipv6|dual-stack"));
+    }
     if body.controlplanes < 1 {
         return Err(AppError::bad("controlplanes must be >= 1"));
     }
     if body.controlplanes > 1 {
         let vip = body.vip.as_deref().unwrap_or("").trim();
-        if vip.is_empty() {
-            return Err(AppError::bad("vip required when controlplanes > 1"));
+        let vip6 = body.vip6.as_deref().unwrap_or("").trim();
+        if matches!(mode.as_str(), "ipv4" | "dual-stack") && vip.is_empty() {
+            return Err(AppError::bad("vip required when controlplanes > 1 (ipv4/dual-stack)"));
+        }
+        if matches!(mode.as_str(), "ipv6" | "dual-stack") && vip6.is_empty() {
+            return Err(AppError::bad("vip6 required when controlplanes > 1 (ipv6/dual-stack)"));
         }
     }
     if body.workers < 0 {
@@ -187,22 +251,33 @@ async fn create(
         return Err(AppError::bad("provider not found"));
     }
 
+    let vip = if mode == "ipv6" {
+        None
+    } else {
+        body.vip.clone()
+    };
+    let vip6 = if mode == "ipv4" {
+        None
+    } else {
+        body.vip6.clone()
+    };
+
     let id = Uuid::new_v4().to_string();
     let now = db::now_rfc3339();
     sqlx::query(
         r#"INSERT INTO clusters
            (id, name, provider_id, status, controlplanes, workers, vip, vip6, cni, k8s_version,
             cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb, cp_vmid,
-            created_at, updated_at)
-           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            network_mode, created_at, updated_at)
+           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&id)
     .bind(&body.name)
     .bind(&body.provider_id)
     .bind(body.controlplanes)
     .bind(body.workers)
-    .bind(&body.vip)
-    .bind(&body.vip6)
+    .bind(&vip)
+    .bind(&vip6)
     .bind(&body.cni)
     .bind(&body.k8s_version)
     .bind(body.cp_memory)
@@ -212,6 +287,7 @@ async fn create(
     .bind(body.worker_cores)
     .bind(body.worker_disk_gb)
     .bind(body.cp_vmid)
+    .bind(&mode)
     .bind(&now)
     .bind(&now)
     .execute(state.pool())
@@ -221,7 +297,7 @@ async fn create(
         &state,
         Some(&id),
         "create_cluster",
-        serde_json::json!({ "cp_vmid": body.cp_vmid }),
+        serde_json::json!({ "cp_vmid": body.cp_vmid, "network_mode": mode }),
     )
     .await
     .map_err(AppError::Anyhow)?;
@@ -242,26 +318,175 @@ async fn create(
     })))
 }
 
+async fn delete_check(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let row = sqlx::query_as::<_, (String, String, String, Option<i64>, i64, i64)>(
+        "SELECT id, name, provider_id, cp_vmid, controlplanes, workers FROM clusters WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(state.pool())
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let (cid, name, provider_id, cp_vmid, cps, workers) = row;
+    let node_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE cluster_id = ?")
+            .bind(&cid)
+            .fetch_one(state.pool())
+            .await
+            .unwrap_or(0);
+
+    let provider = sqlx::query_as::<_, (String, String, String, String, String, i64)>(
+        "SELECT id, name, url, token_id, node, insecure FROM providers WHERE id = ?",
+    )
+    .bind(&provider_id)
+    .fetch_optional(state.pool())
+    .await?;
+
+    let mut provider_json = serde_json::json!({
+        "exists": false,
+        "id": provider_id,
+        "reachable": false,
+    });
+
+    if let Some((pid, pname, url, token_id, node, insecure)) = provider {
+        let secret_row: Option<String> =
+            sqlx::query_scalar("SELECT token_secret_enc FROM providers WHERE id = ?")
+                .bind(&pid)
+                .fetch_optional(state.pool())
+                .await?;
+        let mut reachable = false;
+        let mut version: Option<String> = None;
+        let mut check_error: Option<String> = None;
+
+        if let Some(enc) = secret_row {
+            match crate::crypto::decrypt(&state.cfg().secret_key, &enc) {
+                Ok(secret) => {
+                    let client = crate::proxmox::ProxmoxClient {
+                        url: url.clone(),
+                        token_id: token_id.clone(),
+                        token_secret: secret,
+                        insecure: insecure != 0,
+                    };
+                    match client.test_connection().await {
+                        Ok(r) => {
+                            reachable = true;
+                            version = Some(r.version);
+                        }
+                        Err(e) => check_error = Some(match &e {
+                            AppError::BadRequest(m) | AppError::Conflict(m) => m.clone(),
+                            other => other.to_string(),
+                        }),
+                    }
+                }
+                Err(e) => check_error = Some(format!("decrypt secret: {e}")),
+            }
+        }
+
+        provider_json = serde_json::json!({
+            "exists": true,
+            "id": pid,
+            "name": pname,
+            "url": url,
+            "node": node,
+            "insecure": insecure != 0,
+            "reachable": reachable,
+            "version": version,
+            "error": check_error,
+        });
+    }
+
+    Ok(Json(serde_json::json!({
+        "cluster_id": cid,
+        "cluster_name": name,
+        "cp_vmid": cp_vmid,
+        "controlplanes": cps,
+        "workers": workers,
+        "recorded_nodes": node_count,
+        "planned_vms": cps + workers,
+        "provider": provider_json,
+        "can_delete": true,
+        "warning": if !provider_json["exists"].as_bool().unwrap_or(false) {
+            Some("Provider is missing — only the DB record will be removed; Proxmox VMs may remain.")
+        } else if !provider_json["reachable"].as_bool().unwrap_or(false) {
+            Some("Provider is unreachable — delete will still remove the DB record; VM cleanup may fail.")
+        } else {
+            None
+        },
+    })))
+}
+
 async fn delete(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_mutate(&user)?;
-    let exists: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM clusters WHERE id = ?")
+    let row: Option<(String, String, String)> =
+        sqlx::query_as("SELECT id, status, provider_id FROM clusters WHERE id = ?")
             .bind(&id)
             .fetch_optional(state.pool())
             .await?;
-    if exists.is_none() {
+    let Some((_cid, status, provider_id)) = row else {
         return Err(AppError::NotFound);
+    };
+
+    // Require provider to exist for ready clusters (so VM cleanup target is known).
+    // Failed/pending may still delete without provider (DB-only).
+    let provider_exists: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM providers WHERE id = ?")
+            .bind(&provider_id)
+            .fetch_optional(state.pool())
+            .await?;
+    let immediate = matches!(
+        status.as_str(),
+        "error" | "pending" | "deleting" | "provisioning"
+    );
+    if provider_exists.is_none() && !immediate {
+        return Err(AppError::bad(
+            "provider missing — restore/recreate the Proxmox provider before deleting a ready cluster, or the VMs cannot be cleaned up safely",
+        ));
     }
+
     let now = db::now_rfc3339();
     sqlx::query("UPDATE clusters SET status = 'deleting', updated_at = ? WHERE id = ?")
         .bind(&now)
         .bind(&id)
         .execute(state.pool())
         .await?;
+
+    // Cancel queued work for this cluster so delete is not blocked.
+    let _ = sqlx::query(
+        r#"UPDATE jobs SET status = 'cancelled', error = 'superseded by delete', updated_at = ?, finished_at = ?
+           WHERE cluster_id = ? AND status IN ('queued')"#,
+    )
+    .bind(&now)
+    .bind(&now)
+    .bind(&id)
+    .execute(state.pool())
+    .await;
+
+    if immediate {
+        jobs::force_delete_cluster(&state, &id)
+            .await
+            .map_err(AppError::Anyhow)?;
+        audit(
+            state.pool(),
+            Some(&user.id),
+            "cluster.delete",
+            Some(&id),
+            Some("force"),
+        )
+        .await;
+        return Ok(Json(serde_json::json!({
+            "ok": true,
+            "mode": "immediate",
+            "provider_id": provider_id,
+        })));
+    }
 
     let job_id = jobs::enqueue(&state, Some(&id), "delete_cluster", serde_json::json!({}))
         .await
@@ -276,7 +501,11 @@ async fn delete(
     )
     .await;
 
-    Ok(Json(serde_json::json!({ "job_id": job_id })))
+    Ok(Json(serde_json::json!({
+        "job_id": job_id,
+        "mode": "async",
+        "provider_id": provider_id,
+    })))
 }
 
 async fn kubeconfig(
@@ -315,6 +544,7 @@ async fn kubeconfig(
                 .bind(&id)
                 .execute(state.pool())
                 .await;
+                let content = crate::kubeconfig::rename_kubeconfig_context(&content, &name);
                 return Ok((
                     [
                         (

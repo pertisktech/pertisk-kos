@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { Icon } from '../components/Icons'
+import { useConfirm } from '../components/Confirm'
 
 const emptyForm = {
   name: 'lab-pve',
@@ -13,8 +15,9 @@ const emptyForm = {
 }
 
 export default function Providers() {
+  const confirm = useConfirm()
   const [list, setList] = useState([])
-  const [editingId, setEditingId] = useState(null) // null | 'new' | id
+  const [editingId, setEditingId] = useState(null)
   const [form, setForm] = useState({ ...emptyForm })
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
@@ -64,9 +67,7 @@ export default function Providers() {
     setSaving(true)
     try {
       if (editingId === 'new') {
-        if (!form.token_secret) {
-          throw new Error('Token secret is required')
-        }
+        if (!form.token_secret) throw new Error('Token secret is required')
         await api('/providers', { method: 'POST', body: form })
         setMsg('Provider created')
       } else {
@@ -79,9 +80,7 @@ export default function Providers() {
           bridge: form.bridge,
           insecure: form.insecure,
         }
-        if (form.token_secret) {
-          body.token_secret = form.token_secret
-        }
+        if (form.token_secret) body.token_secret = form.token_secret
         await api(`/providers/${editingId}`, { method: 'PUT', body })
         setMsg('Provider updated')
       }
@@ -110,8 +109,14 @@ export default function Providers() {
     }
   }
 
-  async function remove(id) {
-    if (!confirm('Delete provider?')) return
+  async function remove(id, name) {
+    const ok = await confirm({
+      title: 'Delete provider',
+      message: `Remove provider “${name}”? Clusters that use it will keep records but cannot recreate VMs.`,
+      confirmLabel: 'Delete',
+      tone: 'danger',
+    })
+    if (!ok) return
     setError('')
     try {
       await api(`/providers/${id}`, { method: 'DELETE' })
@@ -127,18 +132,22 @@ export default function Providers() {
   return (
     <div>
       <div className="page-head">
-        <h1>Providers</h1>
+        <h1><Icon name="providers" size={22} /> Providers</h1>
         {editingId ? (
-          <button type="button" className="secondary" onClick={cancelForm}>Cancel</button>
+          <button type="button" className="secondary btn-icon" onClick={cancelForm}>
+            <Icon name="x" size={16} /> Cancel
+          </button>
         ) : (
-          <button type="button" onClick={startCreate}>Add Proxmox</button>
+          <button type="button" className="btn-icon" onClick={startCreate}>
+            <Icon name="plus" size={16} /> Add Proxmox
+          </button>
         )}
       </div>
       {error && <div className="error">{error}</div>}
       {msg && <p className="muted">{msg}</p>}
       {editingId && (
         <form className="card" onSubmit={save}>
-          <h2>{formTitle}</h2>
+          <h2 className="card-title"><Icon name="edit" size={18} /> {formTitle}</h2>
           <p className="muted">
             Lab Proxmox uses a self-signed cert — keep <strong>Insecure TLS = Yes</strong>.
             Leave token secret blank when editing to keep the existing secret.
@@ -169,7 +178,9 @@ export default function Providers() {
               </select>
             </div>
           </div>
-          <button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+          <button type="submit" className="btn-icon" disabled={saving}>
+            <Icon name="check" size={16} /> {saving ? 'Saving…' : 'Save'}
+          </button>
         </form>
       )}
       <div className="card">
@@ -186,9 +197,15 @@ export default function Providers() {
                 <td>{p.storage}</td>
                 <td>{p.insecure ? 'insecure' : 'verify'}</td>
                 <td className="row-actions">
-                  <button type="button" className="secondary" onClick={() => startEdit(p)}>Edit</button>
-                  <button type="button" className="secondary" onClick={() => test(p.id)}>Test</button>
-                  <button type="button" className="danger" onClick={() => remove(p.id)}>Delete</button>
+                  <button type="button" className="secondary btn-icon" onClick={() => startEdit(p)}>
+                    <Icon name="edit" size={14} /> Edit
+                  </button>
+                  <button type="button" className="secondary btn-icon" onClick={() => test(p.id)}>
+                    <Icon name="play" size={14} /> Test
+                  </button>
+                  <button type="button" className="danger btn-icon" onClick={() => remove(p.id, p.name)}>
+                    <Icon name="trash" size={14} />
+                  </button>
                 </td>
               </tr>
             ))}

@@ -14,3 +14,4 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+ureq = { version = "2", default-features = false, features = ["tls"] }

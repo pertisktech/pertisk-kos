@@ -10,7 +10,7 @@ mod kubeconfig;
 mod manifests;
 mod paths;
 mod pki;
-mod static_pods;
+pub mod static_pods;
 mod token;
 
 use std::fs;
@@ -29,7 +29,7 @@ pub use gen::{
     GenConfigHaOutput, GenConfigOutput, GenNetworkOpts,
 };
 pub use join::{get_join_config, join_control_plane, JoinConfigResult, JoinControlPlaneResult};
-pub use kubeconfig::sanitize_kubeconfig;
+pub use kubeconfig::{rename_kubeconfig_context, sanitize_kubeconfig};
 pub use paths::BootstrapPaths;
 pub use token::generate_bootstrap_token;
 
@@ -115,12 +115,18 @@ pub fn bootstrap_control_plane(
     )?;
     pki::write_pki(&paths.pki(), &paths.etcd_pki(), &pki)?;
 
+    let kc_name = cluster
+        .name
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("pertisk");
     let admin = kubeconfig::render_kubeconfig(
         &cluster.endpoint,
         &pki.ca_crt,
         &pki.admin_crt,
         &pki.admin_key,
         "kubernetes-admin",
+        kc_name,
     );
     let local_admin = kubeconfig::render_kubeconfig(
         "https://127.0.0.1:6443",
@@ -128,6 +134,7 @@ pub fn bootstrap_control_plane(
         &pki.admin_crt,
         &pki.admin_key,
         "kubernetes-admin",
+        kc_name,
     );
     let cm_conf = kubeconfig::render_kubeconfig(
         "https://127.0.0.1:6443",
@@ -135,6 +142,7 @@ pub fn bootstrap_control_plane(
         &pki.cm_crt,
         &pki.cm_key,
         "system:kube-controller-manager",
+        kc_name,
     );
     let sched_conf = kubeconfig::render_kubeconfig(
         "https://127.0.0.1:6443",
@@ -142,6 +150,7 @@ pub fn bootstrap_control_plane(
         &pki.sched_crt,
         &pki.sched_key,
         "system:kube-scheduler",
+        kc_name,
     );
     let kubelet_conf = kubeconfig::render_kubeconfig(
         "https://127.0.0.1:6443",
@@ -149,6 +158,7 @@ pub fn bootstrap_control_plane(
         &pki.kubelet_crt,
         &pki.kubelet_key,
         &format!("system:node:{hostname}"),
+        kc_name,
     );
 
     fs::write(paths.admin_kubeconfig(), &admin)?;

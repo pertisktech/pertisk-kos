@@ -77,6 +77,7 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             endpoint TEXT,
             kubeconfig_path TEXT,
             error TEXT,
+            network_mode TEXT NOT NULL DEFAULT 'ipv4',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -88,6 +89,8 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             role TEXT NOT NULL,
             vmid INTEGER,
             ip TEXT,
+            ip6 TEXT,
+            k8s_version TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -111,6 +114,20 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await
     .context("migrate")?;
+
+    // Additive columns for existing DBs (ignore if already present).
+    let _ = sqlx::query(
+        "ALTER TABLE clusters ADD COLUMN network_mode TEXT NOT NULL DEFAULT 'ipv4'",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN ip6 TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN k8s_version TEXT")
+        .execute(pool)
+        .await;
+
     Ok(())
 }
 

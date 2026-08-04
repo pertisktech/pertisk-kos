@@ -39,7 +39,12 @@ VIP="${VIP:-}"
 VIP6="${VIP6:-}"
 DUAL_STACK="${DUAL_STACK:-0}"
 WORKERS="${WORKERS:-2}"
-NAME_PREFIX="${NAME_PREFIX:-pertisk}"
+if [[ -n "${NAME_PREFIX:-}" ]]; then
+  PREFIX_SET=1
+else
+  PREFIX_SET=0
+  NAME_PREFIX=pertisk
+fi
 CLUSTER_NAME="${CLUSTER_NAME:-lab-ha}"
 K8S_VER="${K8S_VER:-v1.36.3}"
 CNI="${CNI:-cilium}"          # cilium | calico | flannel | none
@@ -104,7 +109,7 @@ while [[ $# -gt 0 ]]; do
     --vip6) VIP6="$2"; shift 2 ;;
     --dual-stack) DUAL_STACK=1; shift ;;
     --workers) WORKERS="$2"; shift 2 ;;
-    --prefix) NAME_PREFIX="$2"; shift 2 ;;
+    --prefix) NAME_PREFIX="$2"; PREFIX_SET=1; shift 2 ;;
     --cluster) CLUSTER_NAME="$2"; shift 2 ;;
     --cni) CNI="$2"; shift 2 ;;
     --k8s) K8S_VER="$2"; shift 2 ;;
@@ -126,6 +131,11 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
 done
+
+# Proxmox VM names follow cluster name unless --prefix was set explicitly.
+if [[ "$PREFIX_SET" -eq 0 ]]; then
+  NAME_PREFIX="$CLUSTER_NAME"
+fi
 
 CP_MEMORY="${CP_MEMORY:-$MEMORY}"
 CP_CORES="${CP_CORES:-$CORES}"
@@ -154,8 +164,8 @@ if [[ "$CONTROLPLANES" -lt 1 ]]; then
   echo "ERROR: --controlplanes must be >= 1" >&2
   exit 1
 fi
-if [[ "$CONTROLPLANES" -gt 1 && -z "$VIP" ]]; then
-  echo "ERROR: --vip IP is required when --controlplanes > 1" >&2
+if [[ "$CONTROLPLANES" -gt 1 && -z "$VIP" && -z "$VIP6" ]]; then
+  echo "ERROR: --vip and/or --vip6 is required when --controlplanes > 1" >&2
   exit 1
 fi
 
@@ -565,11 +575,11 @@ step_resolve_ips() {
     WORKER_IPS+=("$(wait_ip "$wvid" "${CLUSTER_NAME}-wk-${i}")")
   done
   if [[ "$CONTROLPLANES" -gt 1 ]]; then
-    API_ENDPOINT="$VIP"
+    API_ENDPOINT="${VIP:-$VIP6}"
   else
     API_ENDPOINT="$CP_IP"
   fi
-  log "CPs=${CP_IPS[*]} VIP=${VIP:-none} API_ENDPOINT=${API_ENDPOINT} workers=${WORKER_IPS[*]:-}"
+  log "CPs=${CP_IPS[*]} VIP=${VIP:-none} VIP6=${VIP6:-none} API_ENDPOINT=${API_ENDPOINT} workers=${WORKER_IPS[*]:-}"
 }
 
 step_cluster() {
@@ -928,7 +938,27 @@ EOF
 }
 
 # --- run ---
-log "lab-up cluster=${CLUSTER_NAME} cp-vmid=${CP_VMID} controlplanes=${CONTROLPLANES} workers=${WORKERS} cni=${CNI} vip=${VIP:-none}"
+# kubectl node VERSION is the kubelet baked into the cloud image. Machine-config
+# kubernetesVersion alone cannot change it — rebuild when the pin differs.
+image_k8s_ver() {
+  local f="${ROOT}/out/runtime/versions.txt"
+  [[ -f "$f" ]] || { echo ""; return 0; }
+  sed -n 's/^K8S_VER=//p' "$f" | head -1 | tr -d '[:space:]'
+}
+
+requested_k8s="$K8S_VER"
+embedded_k8s="$(image_k8s_ver)"
+if [[ "$SKIP_BUILD" == "1" && -n "$embedded_k8s" && "$embedded_k8s" != "$requested_k8s" ]]; then
+  log "kubelet in image is ${embedded_k8s} but --k8s=${requested_k8s} — rebuilding cloud image (fetch-runtime + make cloud)"
+  SKIP_BUILD=0
+elif [[ "$SKIP_BUILD" == "1" && -n "$embedded_k8s" ]]; then
+  log "kubelet in image matches --k8s=${requested_k8s} (skip build)"
+fi
+
+# fetch-runtime / make cloud read K8S_VER from the environment.
+export K8S_VER
+
+log "lab-up cluster=${CLUSTER_NAME} cp-vmid=${CP_VMID} controlplanes=${CONTROLPLANES} workers=${WORKERS} cni=${CNI} k8s=${K8S_VER} vip=${VIP:-none}"
 step_build
 step_vms
 step_resolve_ips

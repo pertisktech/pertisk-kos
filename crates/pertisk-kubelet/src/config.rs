@@ -179,6 +179,7 @@ mod tests {
         let dir = temp_dir();
         let paths = KubeletPaths::with_prefix(&dir);
         let cluster = Cluster {
+            name: None,
             endpoint: "https://10.0.0.1:6443".into(),
             token: Some("abc.def".into()),
             ca: Some("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".into()),

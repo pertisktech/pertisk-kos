@@ -1,8 +1,10 @@
 //! Start and babysit containerd + kubelet.
 
 use anyhow::Result;
-use pertisk_config::MachineConfig;
-use pertisk_kubelet::{start_kubelet_with_sink, KubeletHandle, KubeletPaths};
+use pertisk_config::{MachineConfig, MachineType};
+use pertisk_kubelet::{
+    ensure_kubelet_version, start_kubelet_with_sink, KubeletHandle, KubeletPaths,
+};
 use pertisk_runtime::{start_containerd_with_sink, ContainerdHandle, RuntimePaths};
 use tracing::{info, warn};
 
@@ -74,6 +76,7 @@ impl NodeServices {
     }
 
     /// After `pertiskctl apply`, start kubelet if cluster config is now present.
+    /// When `kubernetesVersion` changes: bump static-pod images (CP) and replace kubelet.
     pub fn on_config_reload(&mut self, cfg: &MachineConfig, logs: &crate::log_ring::LogRing) {
         if self.containerd.is_none() {
             match start_containerd_with_sink(
@@ -87,6 +90,36 @@ impl NodeServices {
                 Err(err) => warn!(error = %err, "containerd start after reload failed"),
             }
         }
+
+        let mut kubelet_needs_restart = false;
+        if let Some(cluster) = cfg.cluster.as_ref() {
+            if let Some(ver) = cluster
+                .kubernetes_version
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if matches!(cfg.machine.machine_type, MachineType::Controlplane) {
+                    match pertisk_bootstrap::static_pods::bump_control_plane_images(
+                        std::path::Path::new("/etc/kubernetes/manifests"),
+                        ver,
+                    ) {
+                        Ok(0) => {}
+                        Ok(n) => info!(files = n, version = %ver, "bumped control-plane static pod images"),
+                        Err(err) => warn!(error = %err, "static pod image bump failed"),
+                    }
+                }
+                match ensure_kubelet_version(&KubeletPaths::default(), ver) {
+                    Ok(true) => {
+                        info!(version = %ver, "kubelet binary upgraded; will restart");
+                        kubelet_needs_restart = true;
+                    }
+                    Ok(false) => {}
+                    Err(err) => warn!(error = %err, "kubelet binary upgrade failed"),
+                }
+            }
+        }
+
         if self.kubelet.is_none() && self.containerd.is_some() && cfg.cluster.is_some() {
             match start_kubelet_with_sink(&KubeletPaths::default(), cfg, Some(logs.sink("kubelet")))
             {
@@ -98,6 +131,8 @@ impl NodeServices {
             }
         } else if cfg.cluster.is_none() {
             info!("config reload: still no cluster block; kubelet not started");
+        } else if kubelet_needs_restart {
+            self.restart_kubelet(cfg, logs);
         }
     }
 

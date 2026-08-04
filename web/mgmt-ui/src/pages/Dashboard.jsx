@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
+import { Icon } from '../components/Icons'
 
 export default function Dashboard() {
   const [clusters, setClusters] = useState([])
@@ -26,8 +27,10 @@ export default function Dashboard() {
   return (
     <div>
       <div className="page-head">
-        <h1>Dashboard</h1>
-        <Link className="btn" to="/clusters/new">Create cluster</Link>
+        <h1><Icon name="dashboard" size={22} /> Dashboard</h1>
+        <Link className="btn btn-icon" to="/clusters/new">
+          <Icon name="plus" size={16} /> Create cluster
+        </Link>
       </div>
       <div className="grid-stats">
         <div className="stat"><div className="label">Clusters</div><div className="value">{clusters.length}</div></div>
@@ -37,11 +40,11 @@ export default function Dashboard() {
         <div className="stat"><div className="label">Providers</div><div className="value">{providers.length}</div></div>
       </div>
       <div className="card">
-        <h2>API</h2>
+        <h2 className="card-title"><Icon name="play" size={18} /> API</h2>
         <p className="muted">{health ? `status: ${health.status}` : 'unreachable'}</p>
       </div>
       <div className="card">
-        <h2>Recent clusters</h2>
+        <h2 className="card-title"><Icon name="clusters" size={18} /> Recent clusters</h2>
         {clusters.length === 0 ? (
           <p className="muted">No clusters yet. Configure a Proxmox provider, then create M CP + N workers.</p>
         ) : (
