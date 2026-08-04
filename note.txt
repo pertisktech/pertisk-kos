@@ -123,6 +123,13 @@ kubectl --kubeconfig ./out/cluster/admin.conf apply -f examples/bootstrap/node-r
   --cp-disk-gb 50 --worker-disk-gb 75  --controlplanes 3 --vip 10.1.1.200 --workers 3 --cni cilium
 
 
+./scripts/proxmox-lab-up.sh --dual-stack \
+  --cp-memory 4096 --cp-cores 2 \
+  --worker-memory 8192 --worker-cores 4 \
+  --cp-disk-gb 50 --worker-disk-gb 75 \
+  --controlplanes 3 --vip 10.1.1.210 --workers 3 --cni cilium
+
+
 kubectl get namespace cilium-secrets -o json | jq '.spec.finalizers = []' | kubectl replace --raw /api/v1/namespaces/cilium-secrets/finalize -f -
 
 helm install cilium cilium/cilium \
