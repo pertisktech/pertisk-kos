@@ -689,55 +689,45 @@ step_cni() {
     cilium)
       command -v helm >/dev/null || die "helm required for CNI=cilium"
       command -v kubectl >/dev/null || die "kubectl required"
-      log "install Cilium (kubeProxyReplacement + Hubble; Talos-shaped bpf/cgroup mounts; dual-stack=${DUAL_STACK})"
+      log "install Cilium (kubernetes IPAM + kubeProxyReplacement + Hubble; dual-stack=${DUAL_STACK})"
       helm repo add cilium https://helm.cilium.io/ >/dev/null 2>&1 || true
       helm repo update cilium >/dev/null 2>&1 || true
       export KUBECONFIG="$kc"
       local cilium_extra=()
       if [[ "$DUAL_STACK" == "1" ]]; then
-        # Match Talos Omni cilium-install dual-stack (ipv6 + pool masks).
-        # Keep ipam.mode=cluster-pool (Pertisk); Talos uses kubernetes IPAM + Node.PodCIDR.
+        # Dual-stack on top of the known-good IPv4 helm set (Node.PodCIDR from
+        # controller-manager --cluster-cidr=v4,v6).
         cilium_extra+=(
           --set ipv6.enabled=true
           --set enableIPv6Masquerade=true
-          --set ipam.operator.clusterPoolIPv4PodCIDRList="{10.244.0.0/16}"
-          --set ipam.operator.clusterPoolIPv6PodCIDRList="{2001:db8:10:0::/56}"
-          --set ipam.operator.clusterPoolIPv4MaskSize=24
           --set ipam.operator.clusterPoolIPv6MaskSize=112
-          --set l2announcements.enabled=true
         )
       else
         cilium_extra+=(--set ipv6.enabled=false --set enableIPv6Masquerade=false)
       fi
-      # Shared with Talos cilium-install: kubeProxyReplacement, bpf.masquerade,
-      # cgroup autoMount off + hostRoot, Hubble/Prometheus, agent capabilities.
-      # Pertisk-only: bpf.autoMount off (host mounts bpffs), k8sServiceHost=VIP/API.
+      # Known-good lab values (ipam.mode=kubernetes, Hubble relay hostNetwork).
+      # Pertisk-only: bpf.autoMount=false (host already mounts bpffs).
       helm upgrade --install cilium cilium/cilium \
         --kubeconfig "$kc" \
         --namespace cilium --create-namespace \
-        --set ipam.mode=cluster-pool \
-        --set ipv4.enabled=true \
-        --set bpf.masquerade=true \
-        --set encryption.nodeEncryption=false \
-        --set k8sServiceHost="${API_ENDPOINT}" \
-        --set k8sServicePort=6443 \
+        --set ipam.mode=kubernetes \
         --set kubeProxyReplacement=true \
-        --set operator.replicas=1 \
-        --set serviceAccounts.cilium.name=cilium \
-        --set serviceAccounts.operator.name=cilium-operator \
-        --set hubble.enabled=true \
-        --set hubble.relay.enabled=true \
-        --set hubble.ui.enabled=true \
-        --set prometheus.enabled=true \
-        --set operator.prometheus.enabled=true \
-        --set hubble.metrics.enabled="{dns,drop,tcp,flow,port-distribution,icmp,http}" \
-        --set externalIPs.enabled=true \
-        --set bgpControlPlane.enabled=true \
         --set securityContext.capabilities.ciliumAgent="{CHOWN,KILL,NET_ADMIN,NET_RAW,IPC_LOCK,SYS_ADMIN,SYS_RESOURCE,DAC_OVERRIDE,FOWNER,SETGID,SETUID}" \
         --set securityContext.capabilities.cleanCiliumState="{NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}" \
         --set cgroup.autoMount.enabled=false \
         --set cgroup.hostRoot=/sys/fs/cgroup \
         --set bpf.autoMount.enabled=false \
+        --set k8sServiceHost="${API_ENDPOINT}" \
+        --set k8sServicePort=6443 \
+        --set l2announcements.enabled=true \
+        --set bpf.masquerade=true \
+        --set hubble.enabled=true \
+        --set hubble.relay.enabled=true \
+        --set hubble.ui.enabled=true \
+        --set prometheus.enabled=true \
+        --set ipam.operator.clusterPoolIPv4MaskSize=24 \
+        --set hubble.relay.hostNetwork=true \
+        --set hubble.relay.dnsPolicy=ClusterFirstWithHostNet \
         "${cilium_extra[@]}" \
         --timeout 10m || {
           echo "WARNING: helm install reported failure; continuing to netns / iptables patches" >&2

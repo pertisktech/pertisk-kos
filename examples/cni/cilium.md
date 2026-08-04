@@ -31,48 +31,59 @@
 # `installIptablesRules=false` with Hubble/L7 unless you also enable BPF TProxy
 # (`enable-bpf-tproxy`) — agent fatals: L7 proxy requires iptables or BPF TProxy.
 #
-# On the management host:
+# On the management host (known-good IPv4-only):
 #
-#   export IP=10.1.1.177   # advertise / node InternalIP
+#   export IP=10.1.1.210   # VIP (HA) or CP advertise IP
+#   export KUBECONFIG=./out/cluster/admin.conf
 #   helm repo add cilium https://helm.cilium.io/
 #   helm upgrade --install cilium cilium/cilium \
-#     --kubeconfig ./out/cluster/admin.conf \
 #     --namespace cilium --create-namespace \
-#     --set ipam.mode=cluster-pool \
-#     --set ipv4.enabled=true \
+#     --set ipam.mode=kubernetes \
+#     --set kubeProxyReplacement=true \
+#     --set 'securityContext.capabilities.ciliumAgent={CHOWN,KILL,NET_ADMIN,NET_RAW,IPC_LOCK,SYS_ADMIN,SYS_RESOURCE,DAC_OVERRIDE,FOWNER,SETGID,SETUID}' \
+#     --set 'securityContext.capabilities.cleanCiliumState={NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}' \
+#     --set cgroup.autoMount.enabled=false \
 #     --set ipv6.enabled=false \
-#
-# Dual-stack (with pertiskctl --dual-stack / lab --dual-stack).
-# Aligned with Talos Omni cilium-install (ipv6 + pool masks + L2 announcements);
-# Pertisk keeps cluster-pool IPAM (Talos uses kubernetes) and bpf.autoMount=false.
-#     --set ipv6.enabled=true \
-#     --set enableIPv6Masquerade=true \
-#     --set ipam.operator.clusterPoolIPv4PodCIDRList="{10.244.0.0/16}" \
-#     --set ipam.operator.clusterPoolIPv6PodCIDRList="{2001:db8:10:0::/56}" \
-#     --set ipam.operator.clusterPoolIPv4MaskSize=24 \
-#     --set ipam.operator.clusterPoolIPv6MaskSize=112 \
-#     --set l2announcements.enabled=true \
-#     --set bpf.masquerade=true \
-#     --set encryption.nodeEncryption=false \
+#     --set cgroup.hostRoot=/sys/fs/cgroup \
+#     --set bpf.autoMount.enabled=false \
 #     --set k8sServiceHost=$IP \
 #     --set k8sServicePort=6443 \
-#     --set kubeProxyReplacement=true \
-#     --set operator.replicas=1 \
-#     --set serviceAccounts.cilium.name=cilium \
-#     --set serviceAccounts.operator.name=cilium-operator \
+#     --set l2announcements.enabled=true \
+#     --set bpf.masquerade=true \
 #     --set hubble.enabled=true \
 #     --set hubble.relay.enabled=true \
 #     --set hubble.ui.enabled=true \
 #     --set prometheus.enabled=true \
-#     --set operator.prometheus.enabled=true \
-#     --set hubble.metrics.enabled="{dns,drop,tcp,flow,port-distribution,icmp,http}" \
-#     --set externalIPs.enabled=true \
-#     --set bgpControlPlane.enabled=true \
-#     --set securityContext.capabilities.ciliumAgent="{CHOWN,KILL,NET_ADMIN,NET_RAW,IPC_LOCK,SYS_ADMIN,SYS_RESOURCE,DAC_OVERRIDE,FOWNER,SETGID,SETUID}" \
-#     --set securityContext.capabilities.cleanCiliumState="{NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}" \
+#     --set ipam.operator.clusterPoolIPv4MaskSize=24 \
+#     --set hubble.relay.hostNetwork=true \
+#     --set hubble.relay.dnsPolicy=ClusterFirstWithHostNet
+#
+# Dual-stack (cluster must be gen'd with `pertiskctl --dual-stack` so apiserver
+# / controller-manager have v4,v6 CIDRs; Cilium uses kubernetes IPAM + Node.PodCIDR):
+#
+#   helm upgrade --install cilium cilium/cilium \
+#     --namespace cilium --create-namespace \
+#     --set ipam.mode=kubernetes \
+#     --set kubeProxyReplacement=true \
+#     --set 'securityContext.capabilities.ciliumAgent={CHOWN,KILL,NET_ADMIN,NET_RAW,IPC_LOCK,SYS_ADMIN,SYS_RESOURCE,DAC_OVERRIDE,FOWNER,SETGID,SETUID}' \
+#     --set 'securityContext.capabilities.cleanCiliumState={NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}' \
 #     --set cgroup.autoMount.enabled=false \
+#     --set ipv6.enabled=true \
+#     --set enableIPv6Masquerade=true \
 #     --set cgroup.hostRoot=/sys/fs/cgroup \
-#     --set bpf.autoMount.enabled=false
+#     --set bpf.autoMount.enabled=false \
+#     --set k8sServiceHost=$IP \
+#     --set k8sServicePort=6443 \
+#     --set l2announcements.enabled=true \
+#     --set bpf.masquerade=true \
+#     --set hubble.enabled=true \
+#     --set hubble.relay.enabled=true \
+#     --set hubble.ui.enabled=true \
+#     --set prometheus.enabled=true \
+#     --set ipam.operator.clusterPoolIPv4MaskSize=24 \
+#     --set ipam.operator.clusterPoolIPv6MaskSize=112 \
+#     --set hubble.relay.hostNetwork=true \
+#     --set hubble.relay.dnsPolicy=ClusterFirstWithHostNet
 #
 #   # Required until image binds /run over /var/run (lab-up does this):
 #   kubectl -n cilium patch ds cilium --type=json \
@@ -84,19 +95,18 @@
 #   # Also required (lab-up does this): wrap cilium-agent so iptables → legacy.
 #
 # Or: ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cni cilium
-# Dual-stack: ./scripts/proxmox-lab-up.sh --dual-stack --cni cilium [--vip6 fd00:1::210]
+# Dual-stack: ./scripts/proxmox-lab-up.sh --dual-stack --cni cilium --vip 10.1.1.210
 #
 # Notes:
 # - Prefer `helm upgrade --install` (not bare `helm install`) so re-runs are idempotent.
 # - Do not install Flannel or Calico together with Cilium.
 # - Built-in bridge CNI (`cluster.cni: bridge`) must stay off so Cilium owns /etc/cni/net.d.
-# - Default labs keep `ipv6.enabled=false`. Use `--dual-stack` (or the Helm sets above)
-#   with `pertiskctl gen config --dual-stack` so apiserver service CIDRs match Cilium.
+# - `ipam.mode=kubernetes` needs controller-manager `--allocate-node-cidrs` + matching
+#   `--cluster-cidr` (dual-stack: `10.244.0.0/16,2001:db8:10:0::/56`).
 # - Refresh kubeconfig after DHCP IP changes:
 #     pertiskctl -e <CP_IP>:50000 kubeconfig -f ./out/cluster/admin.conf
 #
 # Check:
 #   kubectl --kubeconfig ./out/cluster/admin.conf get nodes -o wide
 #   kubectl --kubeconfig ./out/cluster/admin.conf -n cilium get pods -o wide
-
-See also: [README.md](./README.md) (CNI matrix), [calico.md](./calico.md), Flannel via `--cni flannel`.
+#   cilium status --wait
