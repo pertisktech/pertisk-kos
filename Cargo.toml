@@ -47,3 +47,10 @@ tonic = { version = "0.12", features = ["transport", "tls"] }
 tonic-build = "0.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# macOS 27+ rejects proc-macro dylibs whose LINKEDIT string pool is not
+# 8-byte aligned. Release strip (llvm-objcopy) can produce that layout.
+# sqlx-macros is compile-time only, so keeping symbols is fine.
+# https://github.com/rust-lang/rust/issues/157750
+[profile.release.package.sqlx-macros]
+strip = "none"

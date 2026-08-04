@@ -25,9 +25,29 @@ make uki ARCH=amd64                     # Unified Kernel Image → out/uki/
 ```
 
 See [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md) for signed UKI + OVMF enrollment.
-See [docs/MGMT.md](./docs/MGMT.md) for the Proxmox management UI (Rust API + React, single port).
 
 Artifacts: `out/initramfs-<arch>.cpio.gz` (production) or `out/initramfs-<arch>-debug.cpio.gz`, plus `-v<version>` copies.
+
+## Management UI + API
+
+Single-port Proxmox management plane: Rust API (`pertisk-mgmt`) + React UI. Details: [docs/MGMT.md](./docs/MGMT.md).
+
+```bash
+export MGMT_ADMIN_USER=admin
+export MGMT_ADMIN_PASSWORD=admin
+export MGMT_SECRET_KEY=$(openssl rand -hex 32)
+
+make mgmt
+./out/bin/pertisk-mgmt --listen 0.0.0.0:8080 --db ./data/mgmt.db
+# open http://127.0.0.1:8080
+```
+
+Dev (UI hot reload + API in two terminals):
+
+```bash
+MGMT_ADMIN_PASSWORD=admin cargo run -p pertisk-mgmt -- --listen 127.0.0.1:8080
+cd web/mgmt-ui && npm run dev   # http://127.0.0.1:5173 proxies /api → :8080
+```
 
 ## Quick start (mTLS + upgrade)
 
