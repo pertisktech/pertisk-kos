@@ -260,7 +260,7 @@ Still manual / incomplete:
 **Later (Talos / Omni parity)**
 
 - etcd snapshot / restore
-- Proxmox provider automation + Omni-like web
+- Proxmox provider automation + Omni-like web — see [docs/MGMT.md](./docs/MGMT.md) (`pertisk-mgmt`)
 - container/CRI introspection
 - net / disk inspect
 - reset / wipe

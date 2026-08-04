@@ -21,7 +21,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPLOAD="${ROOT}/scripts/proxmox-upload-vm.sh"
 CREATE_VMS="${ROOT}/scripts/proxmox-create-cluster-vms.sh"
 CTL="${ROOT}/out/bin/pertiskctl"
-CLUSTER_OUT="${ROOT}/out/cluster"
+CLUSTER_OUT="${CLUSTER_OUT:-${ROOT}/out/cluster}"
 DISK="${PROXMOX_DISK:-${ROOT}/out/pertisk-cloud-amd64.qcow2}"
 
 MEMORY="${PROXMOX_MEMORY:-4096}"

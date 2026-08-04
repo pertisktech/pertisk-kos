@@ -12,6 +12,7 @@ members = [
     "crates/pertisk-config",
     "crates/pertisk-bootstrap",
     "crates/pertiskctl",
+    "crates/pertisk-mgmt",
 ]
 default-members = ["crates/pertiskd", "crates/pertiskctl"]
 

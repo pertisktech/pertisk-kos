@@ -24,3 +24,9 @@
 *.erofs
 *.img
 *.qcow2
+
+# Management UI / local data
+/data/
+/web/mgmt-ui/node_modules/
+/web/mgmt-ui/dist/
+/crates/pertisk-mgmt/static/assets/

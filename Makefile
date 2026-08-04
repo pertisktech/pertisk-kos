@@ -41,7 +41,8 @@ ifeq ($(filter $(PROFILE),production debug),)
 endif
 
 .PHONY: help build build-host build-all initramfs pertiskctl cloud uki \
-	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version lab-up
+	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version lab-up \
+	mgmt mgmt-ui
 
 help:
 	@echo "Pertisk KOS make targets"
@@ -50,6 +51,8 @@ help:
 	@echo "  make build-all [VERSION=...] [PROFILE=...] [EMBED_BOOT=1] [EMBED_RUNTIME=1]"
 	@echo "  make build-host [VERSION=...]          # cargo release (host)"
 	@echo "  make pertiskctl [VERSION=...]          # host CLI → out/bin/pertiskctl"
+	@echo "  make mgmt [VERSION=...]                # management API+UI → out/bin/pertisk-mgmt"
+	@echo "  make mgmt-ui                           # build React UI into crates/pertisk-mgmt/static"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
 	@echo "  make uki [VERSION=...] [ARCH=...]     # Unified Kernel Image"
 	@echo "  make lab-up [ARCH=...]                # build→VMs→IPs→cluster→CNI (see script)"
@@ -87,6 +90,7 @@ build-host:
 	@mkdir -p "$(ROOT)/out/bin"
 	@cp -f "$(ROOT)/target/release/pertiskd" "$(ROOT)/out/bin/pertiskd" 2>/dev/null || true
 	@cp -f "$(ROOT)/target/release/pertiskctl" "$(ROOT)/out/bin/pertiskctl" 2>/dev/null || true
+	@cp -f "$(ROOT)/target/release/pertisk-mgmt" "$(ROOT)/out/bin/pertisk-mgmt" 2>/dev/null || true
 	@echo "==> host bins in out/bin/ (if built)"
 
 ## Host CLI only (management client).
@@ -97,6 +101,24 @@ pertiskctl:
 	@cp -f "$(ROOT)/target/release/pertiskctl" "$(ROOT)/out/bin/pertiskctl"
 	@ls -lh "$(ROOT)/out/bin/pertiskctl"
 	@echo "==> $(ROOT)/out/bin/pertiskctl"
+
+## React management UI → crates/pertisk-mgmt/static (embedded by pertisk-mgmt).
+mgmt-ui:
+	@echo "==> build mgmt-ui"
+	cd "$(ROOT)/web/mgmt-ui" && npm install && npm run build
+	@rm -rf "$(ROOT)/crates/pertisk-mgmt/static"
+	@mkdir -p "$(ROOT)/crates/pertisk-mgmt/static"
+	@cp -R "$(ROOT)/web/mgmt-ui/dist/." "$(ROOT)/crates/pertisk-mgmt/static/"
+	@echo "==> UI assets in crates/pertisk-mgmt/static"
+
+## Management API + embedded UI (single port).
+mgmt: mgmt-ui
+	@echo "==> build pertisk-mgmt VERSION=$(VERSION)"
+	PERTISK_BUILD_VERSION="$(VERSION)" cargo build --release -p pertisk-mgmt
+	@mkdir -p "$(ROOT)/out/bin"
+	@cp -f "$(ROOT)/target/release/pertisk-mgmt" "$(ROOT)/out/bin/pertisk-mgmt"
+	@ls -lh "$(ROOT)/out/bin/pertisk-mgmt"
+	@echo "==> $(ROOT)/out/bin/pertisk-mgmt"
 
 ## Cloud golden disk (kernel + systemd-boot + containerd/kubelet in initramfs).
 cloud:

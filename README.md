@@ -19,11 +19,13 @@ make build VERSION=0.2.0 ARCH=amd64 EMBED_BOOT=1 EMBED_RUNTIME=1
 make build-all VERSION=0.2.0            # amd64 + arm64
 make build-host VERSION=0.2.0           # host cargo release bins → out/bin/
 make pertiskctl                         # host CLI → out/bin/pertiskctl
+make mgmt                               # management UI+API → out/bin/pertisk-mgmt
 make cloud VERSION=0.2.0 ARCH=amd64     # golden disk image
 make uki ARCH=amd64                     # Unified Kernel Image → out/uki/
 ```
 
 See [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md) for signed UKI + OVMF enrollment.
+See [docs/MGMT.md](./docs/MGMT.md) for the Proxmox management UI (Rust API + React, single port).
 
 Artifacts: `out/initramfs-<arch>.cpio.gz` (production) or `out/initramfs-<arch>-debug.cpio.gz`, plus `-v<version>` copies.
 
