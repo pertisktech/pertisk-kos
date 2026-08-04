@@ -9,6 +9,56 @@ use crate::crypto;
 use crate::db;
 use crate::state::AppState;
 
+/// Shared env for packaged lab-up / add-node (images dir, optional host overrides).
+fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) {
+    let cfg = state.cfg();
+    let _ = std::fs::create_dir_all(&cfg.images_dir);
+    cmd.env("PERTISK_IMAGES_DIR", cfg.images_dir.display().to_string());
+    cmd.env("PERTISKCTL", cfg.pertiskctl.display().to_string());
+    if let Some(root) = cfg.lab_up.parent().and_then(|p| p.parent()) {
+        cmd.env("PERTISK_ROOT", root.display().to_string());
+    }
+    for key in [
+        "PROXMOX_DISK",
+        "PROXMOX_SSH",
+        "LAB_SUBNET",
+        "PROXMOX_IMAGES_DIR",
+    ] {
+        if let Ok(v) = std::env::var(key) {
+            if !v.is_empty() {
+                cmd.env(key, v);
+            }
+        }
+    }
+    let ssh_from_host = std::env::var("PROXMOX_SSH")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .is_some();
+    if !ssh_from_host {
+        if let Some(host) = pve_host_from_url(provider_url) {
+            if host
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '.')
+                && host.contains('.')
+            {
+                cmd.env("PROXMOX_SSH", format!("root@{host}"));
+            }
+        }
+    }
+}
+
+fn pve_host_from_url(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let host = rest.split(['/', ':']).next()?.trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
 /// Background worker that drains the jobs table.
 pub fn spawn_worker(state: AppState) {
     tokio::spawn(async move {
@@ -274,6 +324,8 @@ async fn run_create_cluster(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    apply_lab_env(&mut cmd, state, &provider.url);
+
     if provider.insecure != 0 {
         cmd.env("PROXMOX_INSECURE", "1");
     }
@@ -332,11 +384,24 @@ async fn run_create_cluster(
         ),
     )?;
 
-    // If lab-up script missing, simulate for UI/dev
+    // If lab-up script missing: optional UI/dev stub, otherwise fail clearly.
     if !state.cfg().lab_up.exists() {
+        let allow_stub = std::env::var("MGMT_ALLOW_LAB_STUB")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !allow_stub {
+            let path = state.cfg().lab_up.display();
+            let _ = mark_nodes_status(state.pool(), cid, "provisioning", "error").await;
+            let _ = mark_nodes_status(state.pool(), cid, "pending", "error").await;
+            anyhow::bail!(
+                "lab-up script not found at {path}\n\
+                 Set MGMT_LAB_UP to an absolute path (RPM default: /usr/share/pertisk-mgmt/scripts/proxmox-lab-up.sh),\n\
+                 or set MGMT_ALLOW_LAB_STUB=1 for local UI-only stub."
+            );
+        }
         append_log(
             log_path,
-            "WARNING: lab-up script not found; marking cluster ready (dev stub)\n",
+            "WARNING: lab-up script not found; MGMT_ALLOW_LAB_STUB=1 — marking cluster ready (dev stub)\n",
         )?;
         seed_stub_nodes(state, &cluster, "ready").await?;
         let now = db::now_rfc3339();
@@ -346,12 +411,17 @@ async fn run_create_cluster(
             .unwrap_or_else(|| "127.0.0.1".into());
         let kc = cluster_out.join("admin.conf");
         std::fs::write(&kc, "# stub kubeconfig\n")?;
+        let stub_msg = format!(
+            "dev stub: lab-up missing at {} — not a real Proxmox cluster",
+            state.cfg().lab_up.display()
+        );
         sqlx::query(
-            "UPDATE clusters SET status = 'ready', endpoint = ?, kubeconfig_path = ?, cp_vmid = ?, updated_at = ? WHERE id = ?",
+            "UPDATE clusters SET status = 'ready', endpoint = ?, kubeconfig_path = ?, cp_vmid = ?, error = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&endpoint)
         .bind(kc.to_string_lossy().as_ref())
         .bind(cp_vmid)
+        .bind(&stub_msg)
         .bind(&now)
         .bind(cid)
         .execute(state.pool())
@@ -1138,6 +1208,7 @@ async fn run_add_node(
             .env("PROXMOX_BRIDGE", &provider.bridge)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        apply_lab_env(&mut cmd, state, &provider.url);
         if provider.insecure != 0 {
             cmd.env("PROXMOX_INSECURE", "1");
         }

@@ -37,7 +37,14 @@ contents:
     type: config|noreplace
     file_info:
       mode: 0640
+  - src: ${STAGING}/usr/share/pertisk-mgmt
+    dst: /usr/share/pertisk-mgmt
+    type: tree
   - dst: /var/lib/pertisk-mgmt
+    type: dir
+    file_info:
+      mode: 0750
+  - dst: /var/lib/pertisk-mgmt/images
     type: dir
     file_info:
       mode: 0750

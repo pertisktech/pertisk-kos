@@ -759,6 +759,30 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   border: 1px solid rgba(232, 93, 93, 0.35);
   color: var(--danger);
 }
+.banner.success {
+  background: rgba(74, 222, 155, 0.12);
+  border: 1px solid rgba(74, 222, 155, 0.35);
+  color: var(--success);
+}
+.banner.info {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--accent-hover);
+}
+.banner.warn {
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  color: var(--warning);
+}
+.banner .linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
 
 .tabs-shell {
   margin-top: 0.25rem;

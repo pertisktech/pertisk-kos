@@ -71,7 +71,9 @@ Create with **M control planes** + **N workers**. When `M > 1`, **VIP** is requi
 
 Use a **free** L2 IPv4 for `--vip` (not already answering ping). Guest images need the `af_packet` module for kube-vip ARP (`make fetch-kernel` + rebuild cloud image).
 
-Jobs shell `MGMT_LAB_UP` (default `./scripts/proxmox-lab-up.sh`) with provider credentials.
+Jobs shell `MGMT_LAB_UP` (default `./scripts/proxmox-lab-up.sh` locally, or `/usr/share/pertisk-mgmt/scripts/proxmox-lab-up.sh` in the RPM) with provider credentials.
+
+If `MGMT_LAB_UP` is missing, create fails unless `MGMT_ALLOW_LAB_STUB=1` (UI-only stub). RPM installs pack scripts + examples under `/usr/share/pertisk-mgmt/`; place cloud qcow2 under `/var/lib/pertisk-mgmt/images/` (or set `PROXMOX_DISK`) because create uses `--skip-build`.
 
 While create runs, the **Nodes** tab lists planned CP/worker rows as `provisioning` immediately; status (and IP when known) updates from lab-up logs as Proxmox VMs are created and nodes join. Failed creates mark unfinished nodes as `error`.
 
@@ -98,7 +100,20 @@ sudo systemctl restart pertisk-mgmt
 # open http://<host>:8080
 ```
 
-Installs `/usr/bin/pertisk-mgmt`, `/usr/bin/pertiskctl`, systemd unit, and data dir `/var/lib/pertisk-mgmt`. Requires Docker on the build host; `kubectl` is recommended on the target for node sync / top.
+Installs `/usr/bin/pertisk-mgmt`, `/usr/bin/pertiskctl`, scripts under `/usr/share/pertisk-mgmt/`, systemd unit, and data dir `/var/lib/pertisk-mgmt`. Requires Docker on the build host; `kubectl` is recommended on the target for node sync / top.
+
+After install, set a stable `MGMT_SECRET_KEY` and ensure `MGMT_LAB_UP` points at the packaged script (default in env). Create jobs use `--skip-build` and look for qcow2 under `/var/lib/pertisk-mgmt/images` (`PERTISK_IMAGES_DIR` / `MGMT_IMAGES_DIR`):
+
+```bash
+sudo mkdir -p /var/lib/pertisk-mgmt/images
+sudo cp out/pertisk-cloud-amd64*.qcow2 /var/lib/pertisk-mgmt/images/
+# Prefer role-sized images matching UI disk sizes (e.g. *-50g.qcow2, *-75g.qcow2).
+# Base pertisk-cloud-amd64.qcow2 is used as fallback when sized files are missing.
+# optional: PROXMOX_DISK=... and PROXMOX_SSH=root@<pve> in pertisk-mgmt.env
+sudo chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images
+```
+
+Mgmt auto-sets `PROXMOX_SSH=root@<host>` from the provider URL when the host is an IP. Ensure the `pertisk-mgmt` user can SSH to PVE (key in `~pertisk-mgmt/.ssh` or agent) for disk import and MAC→IP.
 
 ## RBAC
 

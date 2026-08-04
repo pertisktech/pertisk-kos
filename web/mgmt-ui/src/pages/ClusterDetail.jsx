@@ -582,6 +582,15 @@ machine:
   const cps = nodes.filter((n) => n.role === 'controlplane')
   const wks = nodes.filter((n) => n.role !== 'controlplane')
   const latestJob = jobs[0]
+  const createJob = jobs.find((j) => j.kind === 'create_cluster')
+  const createRunning = createJob?.status === 'running' || createJob?.status === 'queued'
+  const createFailed = createJob?.status === 'failed'
+  const createSucceeded = createJob?.status === 'succeeded'
+  const nodesWithoutIp = nodes.filter((n) => !n.ip?.trim())
+  const hollowReady =
+    c.status === 'ready' &&
+    nodes.length > 0 &&
+    nodesWithoutIp.length === nodes.length
   const upgradeRunning = jobs.some((j) => j.kind === 'upgrade_cluster' && j.status === 'running')
   const selCount = selectedNodes.size
 
@@ -613,6 +622,44 @@ machine:
         <div className="banner danger">
           <Icon name="alert" size={18} />
           <span>{c.error}</span>
+        </div>
+      )}
+      {createRunning && (
+        <div className="banner info">
+          <Icon name="play" size={18} />
+          <span>
+            Creating cluster — Proxmox VMs and join in progress.
+            {' '}
+            <button type="button" className="linkish" onClick={() => setTab('jobs')}>Watch job log</button>
+            {' · '}
+            <button type="button" className="linkish" onClick={() => setTab('nodes')}>Nodes</button>
+          </span>
+        </div>
+      )}
+      {createFailed && !c.error && (
+        <div className="banner danger">
+          <Icon name="alert" size={18} />
+          <span>
+            Create cluster failed{createJob?.error ? `: ${createJob.error}` : '.'}
+            {' '}
+            <button type="button" className="linkish" onClick={() => setTab('jobs')}>View job log</button>
+          </span>
+        </div>
+      )}
+      {createSucceeded && !hollowReady && c.status === 'ready' && !createRunning && (
+        <div className="banner success">
+          <Icon name="clusters" size={18} />
+          <span>Cluster create finished successfully.</span>
+        </div>
+      )}
+      {hollowReady && (
+        <div className="banner warn">
+          <Icon name="alert" size={18} />
+          <span>
+            Cluster shows ready but no node has an IP — create likely used a lab-up stub
+            (missing <code className="mono-inline">MGMT_LAB_UP</code>) or VMs never joined.
+            Delete this cluster, fix lab-up on the server, and create again.
+          </span>
         </div>
       )}
 

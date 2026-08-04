@@ -52,8 +52,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 WORKDIR /work
 COPY packaging/mgmt /work/packaging/mgmt
-RUN mkdir -p staging/usr/bin staging/usr/lib/systemd/system staging/etc/pertisk-mgmt staging/scripts /out \
-  && chmod +x packaging/mgmt/scripts/*.sh
+COPY scripts /work/repo-scripts
+COPY examples /work/repo-examples
+RUN mkdir -p staging/usr/bin staging/usr/lib/systemd/system staging/etc/pertisk-mgmt staging/scripts \
+      staging/usr/share/pertisk-mgmt/scripts staging/usr/share/pertisk-mgmt/examples /out \
+  && chmod +x packaging/mgmt/scripts/*.sh \
+  && cp -a /work/repo-scripts/. staging/usr/share/pertisk-mgmt/scripts/ \
+  && cp -a /work/repo-examples/. staging/usr/share/pertisk-mgmt/examples/ \
+  && chmod +x staging/usr/share/pertisk-mgmt/scripts/*.sh
 
 COPY --from=build /src/target/release/pertisk-mgmt staging/usr/bin/pertisk-mgmt
 COPY --from=build /src/target/release/pertiskctl staging/usr/bin/pertiskctl

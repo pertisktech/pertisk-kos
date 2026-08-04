@@ -17,12 +17,20 @@
 #   ./scripts/proxmox-lab-up.sh --skip-addons   # skip optional reflector (CoreDNS + metrics-server always)
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${PERTISK_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 UPLOAD="${ROOT}/scripts/proxmox-upload-vm.sh"
 CREATE_VMS="${ROOT}/scripts/proxmox-create-cluster-vms.sh"
-CTL="${ROOT}/out/bin/pertiskctl"
+# Prefer explicit binary from mgmt (RPM: /usr/bin/pertiskctl).
+if [[ -n "${PERTISKCTL:-}" && -x "${PERTISKCTL}" ]]; then
+  CTL="${PERTISKCTL}"
+elif [[ -x "${ROOT}/out/bin/pertiskctl" ]]; then
+  CTL="${ROOT}/out/bin/pertiskctl"
+elif command -v pertiskctl >/dev/null 2>&1; then
+  CTL="$(command -v pertiskctl)"
+else
+  CTL="${ROOT}/out/bin/pertiskctl"
+fi
 CLUSTER_OUT="${CLUSTER_OUT:-${ROOT}/out/cluster}"
-DISK="${PROXMOX_DISK:-${ROOT}/out/pertisk-cloud-amd64.qcow2}"
 
 MEMORY="${PROXMOX_MEMORY:-4096}"
 CORES="${PROXMOX_CORES:-2}"
@@ -50,6 +58,30 @@ K8S_VER="${K8S_VER:-v1.36.3}"
 CNI="${CNI:-cilium}"          # cilium | calico | flannel | none
 CALICO_VERSION="${CALICO_VERSION:-v3.29.3}"
 ARCH="${ARCH:-amd64}"
+# Cloud images: RPM puts qcow2 under /var/lib/pertisk-mgmt/images; local builds use $ROOT/out.
+IMAGES_DIR="${PERTISK_IMAGES_DIR:-${PROXMOX_IMAGES_DIR:-}}"
+if [[ -z "$IMAGES_DIR" ]]; then
+  for _img_d in /var/lib/pertisk-mgmt/images "${ROOT}/out" "${ROOT}/images"; do
+    if [[ -d "$_img_d" ]]; then
+      IMAGES_DIR="$_img_d"
+      break
+    fi
+  done
+fi
+IMAGES_DIR="${IMAGES_DIR:-${ROOT}/out}"
+DISK="${PROXMOX_DISK:-}"
+if [[ -z "$DISK" ]]; then
+  for _cand in \
+    "${IMAGES_DIR}/pertisk-cloud-${ARCH}.qcow2" \
+    "${ROOT}/out/pertisk-cloud-${ARCH}.qcow2"; do
+    if [[ -f "$_cand" ]]; then
+      DISK="$_cand"
+      break
+    fi
+  done
+  DISK="${DISK:-${IMAGES_DIR}/pertisk-cloud-${ARCH}.qcow2}"
+fi
+unset _img_d _cand
 SKIP_BUILD=0
 SKIP_VMS=0
 SKIP_ADDONS=0
@@ -97,6 +129,7 @@ Env: PROXMOX_*, PROXMOX_SSH, APPS (space/comma-separated kubectl apply paths)
      PROXMOX_MEMORY / PROXMOX_CORES (defaults for both roles)
      PROXMOX_CP_MEMORY / PROXMOX_CP_CORES / PROXMOX_WORKER_MEMORY / PROXMOX_WORKER_CORES
      PROXMOX_CP_DISK_GB / PROXMOX_WORKER_DISK_GB / PERTISK_DISK_GB
+     PERTISK_IMAGES_DIR / PROXMOX_IMAGES_DIR (default: /var/lib/pertisk-mgmt/images or \$ROOT/out)
 EOF
   exit 0
 }
@@ -147,8 +180,17 @@ WORKER_DISK_GB="${WORKER_DISK_GB:-$DISK_GB}"
 # Fast build: populate ~4G, then qemu-img resize per role. Guest grows GPT +
 # EPHEMERAL on first boot. Distinct --*-disk-gb → separate sized qcow2s.
 sized_qcow() {
-  local gb="$1"
-  echo "${ROOT}/out/pertisk-cloud-${ARCH}-${gb}g.qcow2"
+  local gb="$1" cand
+  for cand in \
+    "${IMAGES_DIR}/pertisk-cloud-${ARCH}-${gb}g.qcow2" \
+    "${ROOT}/out/pertisk-cloud-${ARCH}-${gb}g.qcow2"; do
+    if [[ -f "$cand" ]]; then
+      echo "$cand"
+      return 0
+    fi
+  done
+  # Preferred write/read path when building or when image is not present yet.
+  echo "${IMAGES_DIR}/pertisk-cloud-${ARCH}-${gb}g.qcow2"
 }
 
 CP_DISK="$DISK"
@@ -193,8 +235,13 @@ fi
 : "${PROXMOX_NODE:?set PROXMOX_NODE}"
 
 # Derive PVE SSH + lab subnet from PROXMOX_URL when unset (lab default).
+# Prefer setting SSH for IP hosts without a probe (mgmt service user may lack keys
+# yet; later steps fail clearly). Match proxmox-add-node.sh.
 PVE_HOST="$(echo "${PROXMOX_URL}" | sed -E 's|https?://([^/:]+).*|\1|')"
-if [[ -z "${PROXMOX_SSH:-}" && -n "${PVE_HOST}" ]]; then
+if [[ -z "${PROXMOX_SSH:-}" && "${PVE_HOST}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  export PROXMOX_SSH="root@${PVE_HOST}"
+  echo "==> auto PROXMOX_SSH=${PROXMOX_SSH}"
+elif [[ -z "${PROXMOX_SSH:-}" && -n "${PVE_HOST}" ]]; then
   if ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new \
     "root@${PVE_HOST}" true >/dev/null 2>&1; then
     export PROXMOX_SSH="root@${PVE_HOST}"
@@ -210,6 +257,7 @@ if [[ -z "${PROXMOX_SSH:-}" ]]; then
   echo "WARNING: PROXMOX_SSH unset — MAC→IP needs ARP on the PVE bridge." >&2
   echo "         export PROXMOX_SSH=root@${PVE_HOST:-<pve>}  (and/or --subnet 10.1.1.0/24)" >&2
 fi
+echo "==> images dir=${IMAGES_DIR} disk=${DISK}"
 
 command -v jq >/dev/null || { echo "jq required" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl required" >&2; exit 1; }
@@ -438,12 +486,16 @@ step_build() {
   if [[ "$SKIP_BUILD" == "1" ]]; then
     log "skip build"
     if [[ -n "$CP_DISK_GB" && ! -f "$CP_DISK" ]]; then
-      [[ -f "$DISK" ]] || die "disk missing: $CP_DISK (and fallback $DISK)"
+      [[ -f "$DISK" ]] || die "disk missing: $CP_DISK (and fallback $DISK)
+Copy cloud qcow2 into ${IMAGES_DIR}/ (e.g. pertisk-cloud-${ARCH}.qcow2 or *-Ng.qcow2),
+or set PROXMOX_DISK / PERTISK_IMAGES_DIR in /etc/pertisk-mgmt/pertisk-mgmt.env"
       log "warn: missing sized CP image $CP_DISK — using $DISK"
       CP_DISK="$DISK"
     fi
     if [[ -n "$WORKER_DISK_GB" && ! -f "$WORKER_DISK" ]]; then
-      [[ -f "$DISK" ]] || die "disk missing: $WORKER_DISK (and fallback $DISK)"
+      [[ -f "$DISK" ]] || die "disk missing: $WORKER_DISK (and fallback $DISK)
+Copy cloud qcow2 into ${IMAGES_DIR}/ (e.g. pertisk-cloud-${ARCH}.qcow2 or *-Ng.qcow2),
+or set PROXMOX_DISK / PERTISK_IMAGES_DIR in /etc/pertisk-mgmt/pertisk-mgmt.env"
       log "warn: missing sized worker image $WORKER_DISK — using $DISK"
       WORKER_DISK="$DISK"
     fi

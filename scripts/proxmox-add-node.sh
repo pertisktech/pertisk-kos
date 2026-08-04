@@ -13,9 +13,17 @@
 #     --cp-ip 10.1.1.48
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${PERTISK_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 UPLOAD="${ROOT}/scripts/proxmox-upload-vm.sh"
-CTL="${ROOT}/out/bin/pertiskctl"
+if [[ -n "${PERTISKCTL:-}" && -x "${PERTISKCTL}" ]]; then
+  CTL="${PERTISKCTL}"
+elif [[ -x "${ROOT}/out/bin/pertiskctl" ]]; then
+  CTL="${ROOT}/out/bin/pertiskctl"
+elif command -v pertiskctl >/dev/null 2>&1; then
+  CTL="$(command -v pertiskctl)"
+else
+  CTL="${ROOT}/out/bin/pertiskctl"
+fi
 IP_TIMEOUT="${IP_TIMEOUT:-300}"
 API_TIMEOUT="${API_TIMEOUT:-180}"
 
@@ -69,14 +77,43 @@ done
 : "${PROXMOX_NODE:?set PROXMOX_NODE}"
 
 ARCH="${PERTISK_ARCH:-amd64}"
-if [[ -z "$DISK" ]]; then
-  if [[ -n "$DISK_GB" && -f "${ROOT}/out/pertisk-cloud-${ARCH}-${DISK_GB}g.qcow2" ]]; then
-    DISK="${ROOT}/out/pertisk-cloud-${ARCH}-${DISK_GB}g.qcow2"
-  else
-    DISK="${PROXMOX_DISK:-${ROOT}/out/pertisk-cloud-${ARCH}.qcow2}"
-  fi
+IMAGES_DIR="${PERTISK_IMAGES_DIR:-${PROXMOX_IMAGES_DIR:-}}"
+if [[ -z "$IMAGES_DIR" ]]; then
+  for _img_d in /var/lib/pertisk-mgmt/images "${ROOT}/out" "${ROOT}/images"; do
+    if [[ -d "$_img_d" ]]; then
+      IMAGES_DIR="$_img_d"
+      break
+    fi
+  done
 fi
-[[ -f "$DISK" ]] || die "disk not found: $DISK"
+IMAGES_DIR="${IMAGES_DIR:-${ROOT}/out}"
+unset _img_d
+if [[ -z "$DISK" ]]; then
+  if [[ -n "$DISK_GB" ]]; then
+    for _cand in \
+      "${IMAGES_DIR}/pertisk-cloud-${ARCH}-${DISK_GB}g.qcow2" \
+      "${ROOT}/out/pertisk-cloud-${ARCH}-${DISK_GB}g.qcow2"; do
+      if [[ -f "$_cand" ]]; then
+        DISK="$_cand"
+        break
+      fi
+    done
+  fi
+  if [[ -z "$DISK" ]]; then
+    for _cand in \
+      "${PROXMOX_DISK:-}" \
+      "${IMAGES_DIR}/pertisk-cloud-${ARCH}.qcow2" \
+      "${ROOT}/out/pertisk-cloud-${ARCH}.qcow2"; do
+      [[ -n "$_cand" && -f "$_cand" ]] || continue
+      DISK="$_cand"
+      break
+    done
+  fi
+  DISK="${DISK:-${IMAGES_DIR}/pertisk-cloud-${ARCH}.qcow2}"
+fi
+unset _cand
+[[ -f "$DISK" ]] || die "disk not found: $DISK (set PROXMOX_DISK or copy qcow2 into ${IMAGES_DIR}/)"
+log "disk=${DISK}"
 
 # Auto SSH / subnet for ARP wait (same heuristics as lab-up).
 PVE_HOST="${PROXMOX_URL#*://}"

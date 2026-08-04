@@ -26,6 +26,8 @@ pub struct Config {
     pub public_url: String,
     /// Optional Bearer for scraping guest `:50001/metrics`.
     pub metrics_token: Option<String>,
+    /// Directory of prebuilt cloud qcow2 images (lab-up --skip-build).
+    pub images_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +83,10 @@ impl Config {
         let metrics_token = std::env::var("MGMT_METRICS_TOKEN")
             .ok()
             .filter(|s| !s.is_empty());
+        let images_dir = std::env::var("PERTISK_IMAGES_DIR")
+            .or_else(|_| std::env::var("MGMT_IMAGES_DIR"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| data_dir.join("images"));
 
         let auth0_domain = std::env::var("AUTH0_DOMAIN").ok().filter(|s| !s.is_empty());
         let auth0_client_id = std::env::var("AUTH0_CLIENT_ID").ok().filter(|s| !s.is_empty());
@@ -111,6 +117,7 @@ impl Config {
             auth0_audience,
             public_url,
             metrics_token,
+            images_dir,
         })
     }
 
