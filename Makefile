@@ -6,7 +6,8 @@
 #   make build EMBED_BOOT=1 EMBED_RUNTIME=1
 #   make build-all VERSION=0.2.0       # amd64 + arm64
 #   make build-host VERSION=0.2.0      # host cargo release bins
-#   make pertiskctl                    # host CLI → out/bin/pertiskctl
+#   make mgmt                               # management UI+API → out/bin/pertisk-mgmt
+#   make mgmt-rpm / make rpm                # linux/amd64 RPM → out/rpm/
 #   make cloud VERSION=0.2.0 ARCH=amd64
 #
 # VERSION embeds into binaries via PERTISK_BUILD_VERSION.
@@ -42,7 +43,7 @@ endif
 
 .PHONY: help build build-host build-all initramfs pertiskctl cloud uki \
 	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version lab-up \
-	mgmt mgmt-ui
+	mgmt mgmt-ui mgmt-rpm rpm
 
 help:
 	@echo "Pertisk KOS make targets"
@@ -53,6 +54,8 @@ help:
 	@echo "  make pertiskctl [VERSION=...]          # host CLI → out/bin/pertiskctl"
 	@echo "  make mgmt [VERSION=...]                # management API+UI → out/bin/pertisk-mgmt"
 	@echo "  make mgmt-ui                           # build React UI into crates/pertisk-mgmt/static"
+	@echo "  make mgmt-rpm [VERSION=...]            # linux/amd64 RPM (API+UI) → out/rpm/"
+	@echo "  make rpm                               # alias for mgmt-rpm (amd64 deploy)"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
 	@echo "  make uki [VERSION=...] [ARCH=...]     # Unified Kernel Image"
 	@echo "  make lab-up [ARCH=...]                # build→VMs→IPs→cluster→CNI (see script)"
@@ -119,6 +122,13 @@ mgmt: mgmt-ui
 	@cp -f "$(ROOT)/target/release/pertisk-mgmt" "$(ROOT)/out/bin/pertisk-mgmt"
 	@ls -lh "$(ROOT)/out/bin/pertisk-mgmt"
 	@echo "==> $(ROOT)/out/bin/pertisk-mgmt"
+
+## linux/amd64 RPM of management API+UI (Docker buildx; for RHEL/Rocky/Alma deploy).
+mgmt-rpm:
+	VERSION="$(VERSION)" "$(ROOT)/scripts/build-mgmt-rpm.sh"
+
+## Alias: package web/API for amd64 deploy.
+rpm: mgmt-rpm
 
 ## Cloud golden disk (kernel + systemd-boot + containerd/kubelet in initramfs).
 cloud:

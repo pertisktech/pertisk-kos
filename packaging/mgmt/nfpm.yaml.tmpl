@@ -1,0 +1,48 @@
+name: pertisk-mgmt
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+release: 1
+section: default
+priority: optional
+maintainer: Pertisk <ops@pertisk.io>
+description: |
+  Pertisk cluster management control plane — Rust API + embedded React UI
+  on a single port (default 8080).
+vendor: Pertisk
+homepage: https://github.com/pertisk-tech/pertisk-kos
+license: Apache-2.0
+
+depends:
+  - ca-certificates
+
+recommends:
+  - kubectl
+
+contents:
+  - src: ${STAGING}/usr/bin/pertisk-mgmt
+    dst: /usr/bin/pertisk-mgmt
+    file_info:
+      mode: 0755
+  - src: ${STAGING}/usr/bin/pertiskctl
+    dst: /usr/bin/pertiskctl
+    file_info:
+      mode: 0755
+  - src: ${STAGING}/usr/lib/systemd/system/pertisk-mgmt.service
+    dst: /usr/lib/systemd/system/pertisk-mgmt.service
+    file_info:
+      mode: 0644
+  - src: ${STAGING}/etc/pertisk-mgmt/pertisk-mgmt.env
+    dst: /etc/pertisk-mgmt/pertisk-mgmt.env
+    type: config|noreplace
+    file_info:
+      mode: 0640
+  - dst: /var/lib/pertisk-mgmt
+    type: dir
+    file_info:
+      mode: 0750
+
+scripts:
+  preinstall: ${STAGING}/scripts/preinstall.sh
+  postinstall: ${STAGING}/scripts/postinstall.sh
+  preremove: ${STAGING}/scripts/preremove.sh

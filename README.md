@@ -20,6 +20,7 @@ make build-all VERSION=0.2.0            # amd64 + arm64
 make build-host VERSION=0.2.0           # host cargo release bins → out/bin/
 make pertiskctl                         # host CLI → out/bin/pertiskctl
 make mgmt                               # management UI+API → out/bin/pertisk-mgmt
+make mgmt-rpm                           # linux/amd64 RPM (API+UI) → out/rpm/
 make cloud VERSION=0.2.0 ARCH=amd64     # golden disk image
 make uki ARCH=amd64                     # Unified Kernel Image → out/uki/
 ```
@@ -47,6 +48,14 @@ Dev (UI hot reload + API in two terminals):
 ```bash
 MGMT_ADMIN_PASSWORD=admin cargo run -p pertisk-mgmt -- --listen 127.0.0.1:8080
 cd web/mgmt-ui && npm run dev   # http://127.0.0.1:5173 proxies /api → :8080
+```
+
+Deploy as linux/amd64 RPM (Docker build):
+
+```bash
+make rpm                 # alias for make mgmt-rpm
+# → out/rpm/pertisk-mgmt-*.rpm
+# sudo rpm -Uvh out/rpm/pertisk-mgmt-*.rpm && sudo systemctl enable --now pertisk-mgmt
 ```
 
 ## Quick start (mTLS + upgrade)

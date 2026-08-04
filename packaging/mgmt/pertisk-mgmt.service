@@ -1,0 +1,26 @@
+[Unit]
+Description=Pertisk management API + UI
+Documentation=https://github.com/pertisk-tech/pertisk-kos
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pertisk-mgmt
+Group=pertisk-mgmt
+EnvironmentFile=-/etc/pertisk-mgmt/pertisk-mgmt.env
+WorkingDirectory=/var/lib/pertisk-mgmt
+ExecStart=/usr/bin/pertisk-mgmt
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65536
+
+# Hardening (lab-friendly; tighten for production as needed)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pertisk-mgmt
+
+[Install]
+WantedBy=multi-user.target

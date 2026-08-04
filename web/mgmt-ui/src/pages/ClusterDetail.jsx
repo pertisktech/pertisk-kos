@@ -254,14 +254,15 @@ machine:
 
   useEffect(() => {
     load()
+    const status = data?.cluster?.status
     const busy =
-      c?.status === 'provisioning' ||
-      c?.status === 'pending' ||
-      c?.status === 'upgrading' ||
-      c?.status === 'deleting'
+      status === 'provisioning' ||
+      status === 'pending' ||
+      status === 'upgrading' ||
+      status === 'deleting'
     const t = setInterval(load, busy ? 2000 : 4000)
     return () => clearInterval(t)
-  }, [load, c?.status])
+  }, [load, data?.cluster?.status])
 
   useEffect(() => {
     if (!followLog || !logRef.current) return

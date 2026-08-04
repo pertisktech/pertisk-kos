@@ -1,0 +1,74 @@
+# Build linux/amd64 pertisk-mgmt (+ pertiskctl) and package as RPM via nfpm.
+# Used by: make mgmt-rpm / scripts/build-mgmt-rpm.sh
+#
+#   docker buildx build --platform linux/amd64 -f packaging/mgmt/Dockerfile.rpm ...
+
+ARG RUST_VERSION=1.88
+ARG NFPM_VERSION=2.43.3
+
+FROM --platform=$BUILDPLATFORM node:22-bookworm AS ui
+WORKDIR /ui
+COPY web/mgmt-ui/package.json web/mgmt-ui/package-lock.json* ./
+RUN npm ci || npm install
+COPY web/mgmt-ui/ ./
+ARG VERSION=0.1.0
+ENV VITE_APP_VERSION=${VERSION}
+RUN npm run build
+
+# Platform set by `docker buildx --platform linux/amd64`.
+FROM rust:${RUST_VERSION}-bookworm AS build
+# etcd-client (via pertiskctl → pertisk-bootstrap) needs protoc at build time.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      protobuf-compiler \
+      pkg-config \
+      libssl-dev \
+      ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && protoc --version
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY proto ./proto
+# include_str! from pertisk-bootstrap (coredns + metrics-server manifests)
+COPY examples ./examples
+COPY --from=ui /ui/dist ./crates/pertisk-mgmt/static
+ARG VERSION=0.1.0
+ENV PERTISK_BUILD_VERSION=${VERSION}
+RUN cargo build --release -p pertisk-mgmt -p pertiskctl
+
+FROM debian:bookworm-slim AS pkg
+ARG VERSION=0.1.0
+ARG NFPM_VERSION=2.43.3
+# Asset name uses GoReleaser style: Linux_x86_64 (not linux_amd64).
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -fsSL \
+      "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" \
+      -o /tmp/nfpm.tgz \
+  && tar -xzf /tmp/nfpm.tgz -C /usr/local/bin nfpm \
+  && rm -f /tmp/nfpm.tgz \
+  && chmod +x /usr/local/bin/nfpm \
+  && nfpm --version
+
+WORKDIR /work
+COPY packaging/mgmt /work/packaging/mgmt
+RUN mkdir -p staging/usr/bin staging/usr/lib/systemd/system staging/etc/pertisk-mgmt staging/scripts /out \
+  && chmod +x packaging/mgmt/scripts/*.sh
+
+COPY --from=build /src/target/release/pertisk-mgmt staging/usr/bin/pertisk-mgmt
+COPY --from=build /src/target/release/pertiskctl staging/usr/bin/pertiskctl
+COPY packaging/mgmt/pertisk-mgmt.service staging/usr/lib/systemd/system/pertisk-mgmt.service
+COPY packaging/mgmt/pertisk-mgmt.env staging/etc/pertisk-mgmt/pertisk-mgmt.env
+COPY packaging/mgmt/scripts/preinstall.sh staging/scripts/preinstall.sh
+COPY packaging/mgmt/scripts/postinstall.sh staging/scripts/postinstall.sh
+COPY packaging/mgmt/scripts/preremove.sh staging/scripts/preremove.sh
+
+RUN sed -e "s|\${VERSION}|${VERSION}|g" \
+        -e "s|\${ARCH}|amd64|g" \
+        -e "s|\${STAGING}|/work/staging|g" \
+        packaging/mgmt/nfpm.yaml.tmpl > nfpm.yaml \
+  && nfpm package --config nfpm.yaml --packager rpm --target /out/ \
+  && ls -lh /out/
+
+FROM scratch AS export
+COPY --from=pkg /out/ /

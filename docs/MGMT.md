@@ -83,6 +83,23 @@ docker run -p 8080:8080 -e MGMT_ADMIN_PASSWORD=admin -e MGMT_SECRET_KEY=dev \
   -v pertisk-mgmt-data:/data pertisk-mgmt
 ```
 
+## RPM (linux/amd64)
+
+Package the management API + embedded UI for RHEL/Rocky/Alma (built via Docker for `linux/amd64`):
+
+```bash
+make mgmt-rpm          # or: make rpm
+# → out/rpm/pertisk-mgmt-<version>-1.x86_64.rpm
+
+sudo rpm -Uvh out/rpm/pertisk-mgmt-*.rpm
+sudo systemctl enable --now pertisk-mgmt
+# edit /etc/pertisk-mgmt/pertisk-mgmt.env (set MGMT_SECRET_KEY), then:
+sudo systemctl restart pertisk-mgmt
+# open http://<host>:8080
+```
+
+Installs `/usr/bin/pertisk-mgmt`, `/usr/bin/pertiskctl`, systemd unit, and data dir `/var/lib/pertisk-mgmt`. Requires Docker on the build host; `kubectl` is recommended on the target for node sync / top.
+
 ## RBAC
 
 | Role | Capabilities |
