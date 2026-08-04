@@ -38,10 +38,13 @@ mod linux_impl {
     /// bridge/br_netfilter/veth, Calico IPIP+ipset, kube-proxy xt_*, Cilium vxlan/nft.
     /// `xfrm_user` is required even without IPSec: Cilium's netlink handle opens
     /// NETLINK_XFRM (`protocol not supported` without the module).
+    /// `af_packet` (CONFIG_PACKET=m): kube-vip gratuitous ARP for the control-plane VIP.
     const BOOT_MODULES: &[&str] = &[
         "failover",
         "net_failover",
         "virtio_net",
+        // Early: kube-vip needs AF_PACKET as soon as the VIP static pod starts.
+        "af_packet",
         "virtio_scsi",
         "virtio_blk",
         "crc64",

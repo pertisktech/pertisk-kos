@@ -82,10 +82,10 @@ export default function NodeDetail() {
       if (clusterRes?.cluster?.name) setClusterName(clusterRes.cluster.name)
 
       const now = Date.now()
-      const api = snap.metrics?.api
-      const total = api?.requests_total ?? 0
-      const sum = api?.duration_sum_seconds ?? 0
-      const count = api?.duration_count ?? 0
+      const apiMetrics = snap.metrics?.api
+      const total = apiMetrics?.requests_total ?? 0
+      const sum = apiMetrics?.duration_sum_seconds ?? 0
+      const count = apiMetrics?.duration_count ?? 0
       let reqRate = 0
       let avgMs = null
       const prev = lastApi.current

@@ -249,6 +249,22 @@ th, td {
 }
 th { color: var(--text-muted); font-weight: 500; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
 
+tr.row-click {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+tr.row-click:hover td,
+tr.row-click:focus-visible td {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+tr.row-click:focus-visible {
+  outline: none;
+}
+.row-click-label {
+  color: var(--accent);
+  font-weight: 500;
+}
+
 .badge {
   display: inline-block;
   padding: 0.15rem 0.5rem;

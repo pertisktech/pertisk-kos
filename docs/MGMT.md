@@ -8,8 +8,8 @@ Single-port control plane: **Rust API** (`pertisk-mgmt`) + **React UI** (Adminat
 # Seed admin (optional; defaults admin/admin)
 export MGMT_ADMIN_USER=admin
 export MGMT_ADMIN_PASSWORD=admin
-export MGMT_SECRET_KEY=$(openssl rand -hex 32)
-
+#export MGMT_SECRET_KEY=$(openssl rand -hex 32)
+export MGMT_SECRET_KEY=dev-stable-key
 make mgmt
 ./out/bin/pertisk-mgmt --listen 0.0.0.0:8080 --db ./data/mgmt.db
 # open http://127.0.0.1:8080
@@ -64,8 +64,10 @@ Secrets are encrypted at rest with `MGMT_SECRET_KEY`. For lab self-signed TLS, s
 Create with **M control planes** + **N workers**. When `M > 1`, **VIP** is required (kube-vip), matching:
 
 ```bash
-./scripts/proxmox-lab-up.sh --controlplanes 3 --vip 10.1.1.200 --workers 2 --cni cilium
+./scripts/proxmox-lab-up.sh --controlplanes 3 --vip 10.1.1.250 --workers 2 --cni cilium
 ```
+
+Use a **free** L2 IPv4 for `--vip` (not already answering ping). Guest images need the `af_packet` module for kube-vip ARP (`make fetch-kernel` + rebuild cloud image).
 
 Jobs shell `MGMT_LAB_UP` (default `./scripts/proxmox-lab-up.sh`) with provider credentials.
 

@@ -35,7 +35,8 @@ if [[ "${PERTISK_FORCE_KERNEL:-0}" != "1" ]]; then
   # sd_mod needs t10-pi → crc64-rocksoft → crc64; require the leaf dep as a
   # freshness check so older module packs without SCSI deps get refreshed.
   # SCSI disk nodes need sd_mod deps; STATE/EPHEMERAL mounts need ext4.
-  [[ -f "${MODULES_OUT}/virtio_net.ko" && -f "${MODULES_OUT}/sd_mod.ko" && -f "${MODULES_OUT}/t10-pi.ko" && -f "${MODULES_OUT}/crc64.ko" && -f "${MODULES_OUT}/ext4.ko" && -f "${MODULES_OUT}/jbd2.ko" && -f "${MODULES_OUT}/overlay.ko" && -f "${MODULES_OUT}/vxlan.ko" && -f "${MODULES_OUT}/nf_tables.ko" && -f "${MODULES_OUT}/br_netfilter.ko" && -f "${MODULES_OUT}/x_tables.ko" && -f "${MODULES_OUT}/xt_tcpudp.ko" && -f "${MODULES_OUT}/xt_CT.ko" && -f "${MODULES_OUT}/xfrm_user.ko" && -f "${MODULES_OUT}/version" ]] && NEED_MODULES=0
+  # af_packet: kube-vip gratuitous ARP (CONFIG_PACKET=m on linux-virt)
+  [[ -f "${MODULES_OUT}/virtio_net.ko" && -f "${MODULES_OUT}/sd_mod.ko" && -f "${MODULES_OUT}/t10-pi.ko" && -f "${MODULES_OUT}/crc64.ko" && -f "${MODULES_OUT}/ext4.ko" && -f "${MODULES_OUT}/jbd2.ko" && -f "${MODULES_OUT}/overlay.ko" && -f "${MODULES_OUT}/vxlan.ko" && -f "${MODULES_OUT}/nf_tables.ko" && -f "${MODULES_OUT}/br_netfilter.ko" && -f "${MODULES_OUT}/x_tables.ko" && -f "${MODULES_OUT}/xt_tcpudp.ko" && -f "${MODULES_OUT}/xt_CT.ko" && -f "${MODULES_OUT}/xfrm_user.ko" && -f "${MODULES_OUT}/af_packet.ko" && -f "${MODULES_OUT}/version" ]] && NEED_MODULES=0
 fi
 
 # Kernel and modules must come from the same linux-virt package (vermagic).
@@ -104,6 +105,8 @@ docker run --rm --platform "${PLATFORM}" \
     # + kube-proxy iptables (xt_tcpudp/xt_nat/xt_statistic/…)
     # + Cilium datapath (vxlan, nft/iptables, xt_socket, xfrm_user for NETLINK_XFRM,
     #   inet_diag for socket LB, cls_bpf/sch_fq for tc)
+    # + af_packet: kube-vip IPv4 gratuitous ARP (without it: "failed to get raw socket:
+    #   address family not supported by protocol" and VIP never reachable off-node)
     for name in failover net_failover virtio_net virtio_scsi virtio_blk sd_mod \
                 ext4 crc32c_generic vfat nls_cp437 nls_iso8859-1 overlay \
                 llc stp bridge br_netfilter veth \
@@ -123,7 +126,8 @@ docker run --rm --platform "${PLATFORM}" \
                 nf_conntrack nf_nat vxlan geneve \
                 xfrm_algo xfrm_user \
                 inet_diag tcp_diag udp_diag \
-                cls_bpf act_bpf sch_fq; do
+                cls_bpf act_bpf sch_fq \
+                af_packet; do
       copy_module "$name"
     done
     printf "%s\n" "$KVER" > "/out/${MODULES_NAME}/version"

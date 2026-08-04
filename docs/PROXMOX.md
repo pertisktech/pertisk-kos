@@ -339,6 +339,8 @@ kubectl --kubeconfig ./out/cluster/admin.conf get nodes
 
 **Control-plane images:** static pods pull `registry.k8s.io/pause`, `etcd`, `kube-apiserver`, `kube-controller-manager`, `kube-scheduler` (default tag from `pertiskctl gen config -k`, currently `v1.36.3`). HA also pulls `ghcr.io/kube-vip/kube-vip` when `cluster.endpoint` is a VIP. The guest needs outbound HTTPS to that registry **and** a system CA bundle (`/etc/ssl/certs/ca-certificates.crt` is embedded in the image). Corporate TLS interception requires injecting your proxy CA. See [COMPATIBILITY.md](./COMPATIBILITY.md). Keep the **embedded kubelet** (`make fetch-runtime`) on the same minor as `-k`.
 
+**HA VIP:** pick an IPv4 address that is **free on the L2** (not used by DHCP or another host). kube-vip announces it with gratuitous ARP, which needs the `af_packet` module in the guest image (`make fetch-kernel` / rebuild cloud image). A busy VIP or a guest without `af_packet` leaves `:6443` unreachable off-node even while CP apiservers are healthy on their node IPs.
+
 ### 4c. Worker-only join (existing external CP)
 
 You can still join Pertisk workers to a non-Pertisk control plane with `examples/worker-join.yaml` + `pertiskctl apply`.

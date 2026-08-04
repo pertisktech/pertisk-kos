@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 
 const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 
 export default function Clusters() {
+  const nav = useNavigate()
   const [list, setList] = useState([])
   const [error, setError] = useState('')
   const [search, setSearch] = useSearchParams()
@@ -67,15 +68,27 @@ export default function Clusters() {
               <th>CP / Workers</th>
               <th>Network</th>
               <th>CNI</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
             {list.map((c) => {
               const net = c.network_mode || (c.vip6 && c.vip ? 'dual-stack' : c.vip6 ? 'ipv6' : 'ipv4')
+              const to = `/clusters/${c.id}`
               return (
-                <tr key={c.id}>
-                  <td>{c.name}</td>
+                <tr
+                  key={c.id}
+                  className="row-click"
+                  tabIndex={0}
+                  role="link"
+                  onClick={() => nav(to)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      nav(to)
+                    }
+                  }}
+                >
+                  <td><span className="row-click-label">{c.name}</span></td>
                   <td><span className={`badge ${c.status}`}>{c.status}</span></td>
                   <td>
                     {c.provider_name ? (
@@ -97,7 +110,6 @@ export default function Clusters() {
                     </span>
                   </td>
                   <td>{c.cni}</td>
-                  <td><Link to={`/clusters/${c.id}`}>Details</Link></td>
                 </tr>
               )
             })}

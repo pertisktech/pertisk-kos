@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 
 const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 
 export default function Dashboard() {
+  const nav = useNavigate()
   const [clusters, setClusters] = useState([])
   const [providers, setProviders] = useState([])
   const [health, setHealth] = useState(null)
@@ -63,17 +64,31 @@ export default function Dashboard() {
         ) : (
           <table>
             <thead>
-              <tr><th>Name</th><th>Status</th><th>Topology</th><th></th></tr>
+              <tr><th>Name</th><th>Status</th><th>Topology</th></tr>
             </thead>
             <tbody>
-              {clusters.slice(0, 8).map((c) => (
-                <tr key={c.id}>
-                  <td>{c.name}</td>
-                  <td><span className={`badge ${c.status}`}>{c.status}</span></td>
-                  <td>{c.controlplanes} CP / {c.workers} WK{c.vip ? ` · VIP ${c.vip}` : ''}</td>
-                  <td><Link to={`/clusters/${c.id}`}>Open</Link></td>
-                </tr>
-              ))}
+              {clusters.slice(0, 8).map((c) => {
+                const to = `/clusters/${c.id}`
+                return (
+                  <tr
+                    key={c.id}
+                    className="row-click"
+                    tabIndex={0}
+                    role="link"
+                    onClick={() => nav(to)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        nav(to)
+                      }
+                    }}
+                  >
+                    <td><span className="row-click-label">{c.name}</span></td>
+                    <td><span className={`badge ${c.status}`}>{c.status}</span></td>
+                    <td>{c.controlplanes} CP / {c.workers} WK{c.vip ? ` · VIP ${c.vip}` : ''}</td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         )}

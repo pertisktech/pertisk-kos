@@ -661,8 +661,39 @@ step_cluster() {
   done
 }
 
+# If the kube-vip ARP VIP became unreachable (busy IP, missing af_packet, …),
+# rewrite kubeconfig + API_ENDPOINT to a live CP so CNI/DNS still install.
+ensure_api_endpoint_reachable() {
+  local kc="$CLUSTER_OUT/admin.conf"
+  local cp_ip="${CP_IP:-}"
+  [[ -n "$cp_ip" ]] || return 0
+  if curl -sk --connect-timeout 2 "https://${API_ENDPOINT}:6443/readyz" >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ "$API_ENDPOINT" == "$cp_ip" ]]; then
+    die "apiserver unreachable at ${API_ENDPOINT}:6443"
+  fi
+  log "WARNING: API endpoint ${API_ENDPOINT}:6443 unreachable — falling back kubeconfig to CP ${cp_ip}"
+  log "         (pick a free --vip; ensure guest image has af_packet for kube-vip ARP)"
+  rewrite_kubeconfig_server "$kc" "https://${cp_ip}:6443"
+  API_ENDPOINT="$cp_ip"
+  curl -sk --connect-timeout 2 "https://${API_ENDPOINT}:6443/readyz" >/dev/null 2>&1 \
+    || die "apiserver still unreachable after fallback to ${cp_ip}:6443"
+}
+
+# Before HA create: refuse a VIP that already answers ICMP (almost certainly in use).
+warn_if_vip_busy() {
+  local vip="$1"
+  [[ -n "$vip" ]] || return 0
+  if ping -c 1 -W 1 "$vip" >/dev/null 2>&1; then
+    log "WARNING: ${vip} already responds to ping — likely in use on the LAN."
+    log "         kube-vip ARP will fight that host; pick a free VIP (e.g. 10.1.1.250)."
+  fi
+}
+
 step_cni() {
   local kc="$CLUSTER_OUT/admin.conf"
+  ensure_api_endpoint_reachable
   case "$CNI" in
     none)
       log "CNI=none — skip"
@@ -878,6 +909,7 @@ PY
 
 step_dns() {
   local kc="$CLUSTER_OUT/admin.conf"
+  ensure_api_endpoint_reachable
   command -v kubectl >/dev/null || die "kubectl required"
   log "ensure CoreDNS (kube-dns 10.96.0.10) — also applied by bootstrap finalize"
   kubectl --kubeconfig "$kc" apply -f "${ROOT}/examples/dns/coredns.yaml"
@@ -959,6 +991,7 @@ fi
 export K8S_VER
 
 log "lab-up cluster=${CLUSTER_NAME} cp-vmid=${CP_VMID} controlplanes=${CONTROLPLANES} workers=${WORKERS} cni=${CNI} k8s=${K8S_VER} vip=${VIP:-none}"
+warn_if_vip_busy "${VIP:-}"
 step_build
 step_vms
 step_resolve_ips
