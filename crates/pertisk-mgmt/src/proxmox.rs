@@ -119,6 +119,72 @@ impl ProxmoxClient {
         Ok(list)
     }
 
+    /// Set CPU/memory on a QEMU VM (Proxmox `config` PUT). Values in MB / cores.
+    pub async fn set_vm_hardware(
+        &self,
+        node: &str,
+        vmid: i64,
+        cores: Option<i64>,
+        memory_mb: Option<i64>,
+    ) -> ApiResult<()> {
+        if cores.is_none() && memory_mb.is_none() {
+            return Ok(());
+        }
+        let base = self.url.trim_end_matches('/');
+        let url = format!("{base}/api2/json/nodes/{node}/qemu/{vmid}/config");
+        let mut form = vec![];
+        if let Some(c) = cores {
+            form.push(("cores", c.to_string()));
+        }
+        if let Some(m) = memory_mb {
+            form.push(("memory", m.to_string()));
+        }
+        let resp = self
+            .client()?
+            .put(&url)
+            .header("Authorization", self.auth_header())
+            .form(&form)
+            .send()
+            .await
+            .map_err(|e| self.map_req_err(e))?;
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::bad(format!(
+                "set vm hardware {vmid} failed: {body}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Grow the primary disk (`scsi0`) to at least `disk_gb` GiB (never shrinks).
+    pub async fn grow_vm_disk(&self, node: &str, vmid: i64, disk_gb: i64) -> ApiResult<()> {
+        if disk_gb < 1 {
+            return Err(AppError::bad("disk_gb must be >= 1"));
+        }
+        let base = self.url.trim_end_matches('/');
+        let url = format!("{base}/api2/json/nodes/{node}/qemu/{vmid}/resize");
+        let size = format!("{disk_gb}G");
+        let resp = self
+            .client()?
+            .put(&url)
+            .header("Authorization", self.auth_header())
+            .form(&[("disk", "scsi0"), ("size", size.as_str())])
+            .send()
+            .await
+            .map_err(|e| self.map_req_err(e))?;
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            // Already at/above size is often reported as an error — treat as soft ok.
+            if body.contains("smaller") || body.contains("already") {
+                return Ok(());
+            }
+            return Err(AppError::bad(format!(
+                "resize disk {vmid} failed: {body}"
+            )));
+        }
+        Ok(())
+    }
+
     pub async fn delete_vm(&self, node: &str, vmid: i64) -> ApiResult<()> {
         let base = self.url.trim_end_matches('/');
         let stop_url = format!("{base}/api2/json/nodes/{node}/qemu/{vmid}/status/stop");

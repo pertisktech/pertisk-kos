@@ -175,7 +175,20 @@ async fn get_one(
         .fetch_one(state.pool())
         .await
         .unwrap_or(0);
-        if upgrading > 0 || missing_ip > 0 {
+        let mode = cluster.network_mode.to_ascii_lowercase();
+        let wants_ip6 = mode == "dual-stack" || mode == "ipv6";
+        let missing_ip6: i64 = if wants_ip6 {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM nodes WHERE cluster_id = ? AND (ip6 IS NULL OR ip6 = '')",
+            )
+            .bind(&id)
+            .fetch_one(state.pool())
+            .await
+            .unwrap_or(0)
+        } else {
+            0
+        };
+        if upgrading > 0 || missing_ip > 0 || missing_ip6 > 0 {
             let kc: Option<String> = sqlx::query_scalar(
                 "SELECT kubeconfig_path FROM clusters WHERE id = ?",
             )
@@ -200,10 +213,10 @@ async fn get_one(
         }
     }
 
-    let nodes = sqlx::query_as::<_, crate::routes::nodes::NodeOut>(
-        r#"SELECT id, cluster_id, name, role, vmid, ip, ip6, k8s_version, status, created_at, updated_at
-           FROM nodes WHERE cluster_id = ? ORDER BY role, name"#,
-    )
+    let nodes = sqlx::query_as::<_, crate::routes::nodes::NodeOut>(&format!(
+        "{} WHERE cluster_id = ? ORDER BY role, name",
+        crate::routes::nodes::NODE_SELECT
+    ))
     .bind(&id)
     .fetch_all(state.pool())
     .await?;

@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +13,12 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/clusters/{id}/nodes", get(list).post(add))
+        .route("/clusters/{id}/nodes/bulk-delete", axum::routing::post(bulk_delete))
         .route("/clusters/{cid}/nodes/{nid}", delete(remove))
+        .route(
+            "/clusters/{cid}/nodes/{nid}/hardware",
+            put(update_hardware),
+        )
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
@@ -26,15 +31,51 @@ pub struct NodeOut {
     pub ip: Option<String>,
     pub ip6: Option<String>,
     pub k8s_version: Option<String>,
+    pub memory: Option<i64>,
+    pub cores: Option<i64>,
+    pub disk_gb: Option<i64>,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
 }
 
+pub const NODE_SELECT: &str = r#"SELECT id, cluster_id, name, role, vmid, ip, ip6, k8s_version,
+       memory, cores, disk_gb, status, created_at, updated_at
+       FROM nodes"#;
+
 #[derive(Deserialize)]
 struct AddNode {
     /// controlplane | worker
     role: String,
+    /// How many nodes to add (default 1).
+    #[serde(default = "default_count")]
+    count: i64,
+    /// Optional hardware overrides applied to each new node (and cluster role defaults).
+    #[serde(default)]
+    memory: Option<i64>,
+    #[serde(default)]
+    cores: Option<i64>,
+    #[serde(default)]
+    disk_gb: Option<i64>,
+}
+
+fn default_count() -> i64 {
+    1
+}
+
+#[derive(Deserialize)]
+struct BulkDelete {
+    node_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct HardwareUpdate {
+    #[serde(default)]
+    memory: Option<i64>,
+    #[serde(default)]
+    cores: Option<i64>,
+    #[serde(default)]
+    disk_gb: Option<i64>,
 }
 
 async fn list(
@@ -42,10 +83,9 @@ async fn list(
     CurrentUser(_): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Vec<NodeOut>>> {
-    let rows = sqlx::query_as::<_, NodeOut>(
-        r#"SELECT id, cluster_id, name, role, vmid, ip, ip6, k8s_version, status, created_at, updated_at
-           FROM nodes WHERE cluster_id = ? ORDER BY role, name"#,
-    )
+    let rows = sqlx::query_as::<_, NodeOut>(&format!(
+        "{NODE_SELECT} WHERE cluster_id = ? ORDER BY role, name"
+    ))
     .bind(&id)
     .fetch_all(state.pool())
     .await?;
@@ -62,11 +102,28 @@ async fn add(
     if body.role != "controlplane" && body.role != "worker" {
         return Err(AppError::bad("role must be controlplane or worker"));
     }
-    let exists: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM clusters WHERE id = ?")
-            .bind(&id)
-            .fetch_optional(state.pool())
-            .await?;
+    if body.count < 1 || body.count > 16 {
+        return Err(AppError::bad("count must be 1..=16"));
+    }
+    if let Some(m) = body.memory {
+        if m < 512 {
+            return Err(AppError::bad("memory must be >= 512 MB"));
+        }
+    }
+    if let Some(c) = body.cores {
+        if c < 1 {
+            return Err(AppError::bad("cores must be >= 1"));
+        }
+    }
+    if let Some(d) = body.disk_gb {
+        if d < 10 {
+            return Err(AppError::bad("disk_gb must be >= 10"));
+        }
+    }
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM clusters WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(state.pool())
+        .await?;
     if exists.is_none() {
         return Err(AppError::NotFound);
     }
@@ -74,7 +131,13 @@ async fn add(
         &state,
         Some(&id),
         "add_node",
-        serde_json::json!({ "role": body.role }),
+        serde_json::json!({
+            "role": body.role,
+            "count": body.count,
+            "memory": body.memory,
+            "cores": body.cores,
+            "disk_gb": body.disk_gb,
+        }),
     )
     .await
     .map_err(AppError::Anyhow)?;
@@ -83,7 +146,7 @@ async fn add(
         Some(&user.id),
         "node.add",
         Some(&id),
-        Some(&body.role),
+        Some(&format!("{} x{}", body.role, body.count)),
     )
     .await;
     Ok(Json(serde_json::json!({ "job_id": job_id })))
@@ -99,7 +162,7 @@ async fn remove(
         &state,
         Some(&cid),
         "remove_node",
-        serde_json::json!({ "node_id": nid }),
+        serde_json::json!({ "node_ids": [nid] }),
     )
     .await
     .map_err(AppError::Anyhow)?;
@@ -107,6 +170,105 @@ async fn remove(
         state.pool(),
         Some(&user.id),
         "node.remove",
+        Some(&nid),
+        None,
+    )
+    .await;
+    Ok(Json(serde_json::json!({ "job_id": job_id })))
+}
+
+async fn bulk_delete(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<String>,
+    Json(body): Json<BulkDelete>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_mutate(&user)?;
+    if body.node_ids.is_empty() {
+        return Err(AppError::bad("node_ids required"));
+    }
+    if body.node_ids.len() > 32 {
+        return Err(AppError::bad("too many nodes (max 32)"));
+    }
+    let job_id = jobs::enqueue(
+        &state,
+        Some(&id),
+        "remove_node",
+        serde_json::json!({ "node_ids": body.node_ids }),
+    )
+    .await
+    .map_err(AppError::Anyhow)?;
+    audit(
+        state.pool(),
+        Some(&user.id),
+        "node.bulk_remove",
+        Some(&id),
+        Some(&format!("{} nodes", body.node_ids.len())),
+    )
+    .await;
+    Ok(Json(serde_json::json!({ "job_id": job_id })))
+}
+
+async fn update_hardware(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((cid, nid)): Path<(String, String)>,
+    Json(body): Json<HardwareUpdate>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_mutate(&user)?;
+    if body.memory.is_none() && body.cores.is_none() && body.disk_gb.is_none() {
+        return Err(AppError::bad("provide memory, cores, and/or disk_gb"));
+    }
+    if let Some(m) = body.memory {
+        if m < 512 {
+            return Err(AppError::bad("memory must be >= 512 MB"));
+        }
+    }
+    if let Some(c) = body.cores {
+        if c < 1 {
+            return Err(AppError::bad("cores must be >= 1"));
+        }
+    }
+    if let Some(d) = body.disk_gb {
+        if d < 10 {
+            return Err(AppError::bad("disk_gb must be >= 10"));
+        }
+    }
+    let row: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT disk_gb FROM nodes WHERE id = ? AND cluster_id = ?")
+            .bind(&nid)
+            .bind(&cid)
+            .fetch_optional(state.pool())
+            .await?;
+    let Some((cur_disk,)) = row else {
+        return Err(AppError::NotFound);
+    };
+    if let Some(d) = body.disk_gb {
+        if let Some(cur) = cur_disk {
+            if d < cur {
+                return Err(AppError::bad(format!(
+                    "disk can only grow (have {cur} GiB, asked {d} GiB)"
+                )));
+            }
+        }
+    }
+    let job_id = jobs::enqueue(
+        &state,
+        Some(&cid),
+        "resize_node",
+        serde_json::json!({
+            "node_id": nid,
+            "memory": body.memory,
+            "cores": body.cores,
+            "disk_gb": body.disk_gb,
+        }),
+    )
+    .await
+    .map_err(AppError::Anyhow)?;
+    audit(
+        state.pool(),
+        Some(&user.id),
+        "node.hardware",
         Some(&nid),
         None,
     )

@@ -3,6 +3,8 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, getToken } from '../api'
 import { Icon } from '../components/Icons'
 import { useConfirm } from '../components/Confirm'
+import Checkbox from '../components/Checkbox'
+import Modal from '../components/Modal'
 import K8sVersionSelect from '../components/K8sVersionSelect'
 
 const TABS = [
@@ -20,31 +22,81 @@ function NodeAddresses({ node, dualStack }) {
   return (
     <div className="node-ips">
       {v4 && <div className="mono-inline">{v4}</div>}
-      {(dualStack || v6) && v6 && <div className="mono-inline node-ip6">{v6}</div>}
+      {dualStack && (
+        v6
+          ? <div className="mono-inline node-ip6">{v6}</div>
+          : <div className="muted node-ip6">—</div>
+      )}
+      {!dualStack && v6 && <div className="mono-inline node-ip6">{v6}</div>}
     </div>
   )
 }
 
-function NodesTable({ nodes, dualStack, showK8s = true, targetVersion, onRemove }) {
+function formatHw(node) {
+  const cores = node.cores ?? '—'
+  const mem = node.memory != null ? `${node.memory} MB` : '—'
+  const disk = node.disk_gb != null ? `${node.disk_gb} GiB` : '—'
+  return `${cores} vCPU · ${mem} · ${disk}`
+}
+
+function NodesTable({
+  nodes,
+  dualStack,
+  showK8s = true,
+  showHw = false,
+  targetVersion,
+  selectable = false,
+  selected = new Set(),
+  onToggle,
+  onToggleAll,
+  onHardware,
+}) {
+  const allSelected = selectable && nodes.length > 0 && nodes.every((n) => selected.has(n.id))
+  const someSelected = selectable && nodes.some((n) => selected.has(n.id)) && !allSelected
+
   return (
     <table>
       <thead>
         <tr>
+          {selectable && (
+            <th className="col-check">
+              <Checkbox
+                id="nodes-select-all"
+                checked={allSelected}
+                indeterminate={someSelected}
+                onChange={(on) => onToggleAll?.(on)}
+              />
+            </th>
+          )}
           <th>Name</th>
           <th>Role</th>
           <th>VMID</th>
           <th>{dualStack ? 'IPv4 / IPv6' : 'IP'}</th>
           {showK8s && <th>K8s</th>}
+          {showHw && <th>Hardware</th>}
           <th>Status</th>
-          {onRemove && <th></th>}
+          {(onHardware || selectable) && <th className="col-actions" />}
         </tr>
       </thead>
       <tbody>
         {nodes.map((n) => {
           const atTarget = targetVersion && n.k8s_version === targetVersion
           const upgrading = n.status === 'upgrading'
+          const isSel = selected.has(n.id)
           return (
-            <tr key={n.id} className={upgrading ? 'row-upgrading' : ''}>
+            <tr
+              key={n.id}
+              className={`${upgrading ? 'row-upgrading' : ''} ${isSel ? 'row-selected' : ''}`}
+            >
+              {selectable && (
+                <td className="col-check">
+                  <Checkbox
+                    id={`node-${n.id}`}
+                    checked={isSel}
+                    onChange={() => onToggle?.(n.id)}
+                  />
+                </td>
+              )}
               <td>{n.name}</td>
               <td>
                 <span className="badge">{n.role === 'controlplane' ? 'CP' : 'worker'}</span>
@@ -61,17 +113,20 @@ function NodesTable({ nodes, dualStack, showK8s = true, targetVersion, onRemove 
                   )}
                 </td>
               )}
+              {showHw && <td className="hw-cell">{formatHw(n)}</td>}
               <td><span className={`badge ${n.status}`}>{n.status}</span></td>
-              {onRemove && (
-                <td>
-                  <button
-                    type="button"
-                    className="danger btn-icon"
-                    onClick={() => onRemove(n.id, n.name)}
-                    title="Remove node"
-                  >
-                    <Icon name="trash" size={14} />
-                  </button>
+              {onHardware && (
+                <td className="col-actions">
+                  <div className="row-actions-cell">
+                    <button
+                      type="button"
+                      className="secondary btn-icon"
+                      onClick={() => onHardware(n)}
+                      title="Upgrade hardware"
+                    >
+                      <Icon name="cpu" size={14} />
+                    </button>
+                  </div>
                 </td>
               )}
             </tr>
@@ -80,6 +135,21 @@ function NodesTable({ nodes, dualStack, showK8s = true, targetVersion, onRemove 
       </tbody>
     </table>
   )
+}
+
+function defaultsForRole(cluster, role) {
+  if (role === 'controlplane') {
+    return {
+      memory: cluster?.cp_memory ?? 4096,
+      cores: cluster?.cp_cores ?? 2,
+      disk_gb: cluster?.cp_disk_gb ?? 50,
+    }
+  }
+  return {
+    memory: cluster?.worker_memory ?? 8192,
+    cores: cluster?.worker_cores ?? 4,
+    disk_gb: cluster?.worker_disk_gb ?? 75,
+  }
 }
 
 export default function ClusterDetail() {
@@ -95,6 +165,19 @@ export default function ClusterDetail() {
   const [upgradeVer, setUpgradeVer] = useState('')
   const [configYaml, setConfigYaml] = useState('# machine config yaml\n')
   const [followLog, setFollowLog] = useState(true)
+  const [selectedNodes, setSelectedNodes] = useState(() => new Set())
+  const [addOpen, setAddOpen] = useState(false)
+  const [addForm, setAddForm] = useState({
+    role: 'worker',
+    count: 1,
+    memory: 8192,
+    cores: 4,
+    disk_gb: 75,
+  })
+  const [hwOpen, setHwOpen] = useState(false)
+  const [hwNode, setHwNode] = useState(null)
+  const [hwForm, setHwForm] = useState({ memory: 4096, cores: 2, disk_gb: 50 })
+  const [busy, setBusy] = useState(false)
   const logRef = useRef(null)
   const selectedJobRef = useRef(null)
 
@@ -102,8 +185,8 @@ export default function ClusterDetail() {
     ? search.get('tab')
     : 'overview'
 
-  function setTab(id) {
-    setSearch(id === 'overview' ? {} : { tab: id }, { replace: true })
+  function setTab(next) {
+    setSearch(next === 'overview' ? {} : { tab: next }, { replace: true })
   }
 
   const load = useCallback(async () => {
@@ -111,6 +194,12 @@ export default function ClusterDetail() {
       const d = await api(`/clusters/${id}`)
       setData(d)
       setUpgradeVer((prev) => prev || d?.cluster?.k8s_version || '')
+      setSelectedNodes((prev) => {
+        const ids = new Set((d?.nodes || []).map((n) => n.id))
+        const next = new Set()
+        for (const x of prev) if (ids.has(x)) next.add(x)
+        return next
+      })
     } catch (e) {
       setError(e.message)
     }
@@ -206,21 +295,134 @@ export default function ClusterDetail() {
     }
   }
 
-  async function addNode(role) {
-    await api(`/clusters/${id}/nodes`, { method: 'POST', body: { role } })
-    load()
+  function openAddModal() {
+    const d = defaultsForRole(data?.cluster, 'worker')
+    setAddForm({ role: 'worker', count: 1, ...d })
+    setAddOpen(true)
   }
 
-  async function removeNode(nid, name) {
+  function setAddRole(role) {
+    const d = defaultsForRole(data?.cluster, role)
+    setAddForm((f) => ({ ...f, role, ...d }))
+  }
+
+  async function submitAdd() {
+    setBusy(true)
+    setError('')
+    try {
+      const res = await api(`/clusters/${id}/nodes`, {
+        method: 'POST',
+        body: {
+          role: addForm.role,
+          count: Number(addForm.count) || 1,
+          memory: Number(addForm.memory),
+          cores: Number(addForm.cores),
+          disk_gb: Number(addForm.disk_gb),
+        },
+      })
+      setAddOpen(false)
+      if (res?.job_id) selectJob(res.job_id)
+      setTab('jobs')
+      load()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function toggleNode(nid) {
+    setSelectedNodes((prev) => {
+      const next = new Set(prev)
+      if (next.has(nid)) next.delete(nid)
+      else next.add(nid)
+      return next
+    })
+  }
+
+  function toggleAll(on) {
+    if (!on) {
+      setSelectedNodes(new Set())
+      return
+    }
+    setSelectedNodes(new Set((data?.nodes || []).map((n) => n.id)))
+  }
+
+  async function removeSelected() {
+    const nodes = data?.nodes || []
+    const picked = nodes.filter((n) => selectedNodes.has(n.id))
+    if (picked.length === 0) return
+    const names = picked.map((n) => n.name).join(', ')
     const ok = await confirm({
-      title: 'Remove node',
-      message: `Remove node “${name}” and destroy its VM?`,
-      confirmLabel: 'Remove',
+      title: picked.length === 1 ? 'Remove node' : `Remove ${picked.length} nodes`,
+      message: `Remove and destroy VM(s):\n${names}`,
+      confirmLabel: picked.length === 1 ? 'Remove' : `Remove ${picked.length}`,
       tone: 'danger',
     })
     if (!ok) return
-    await api(`/clusters/${id}/nodes/${nid}`, { method: 'DELETE' })
-    load()
+    setBusy(true)
+    setError('')
+    try {
+      const res = await api(`/clusters/${id}/nodes/bulk-delete`, {
+        method: 'POST',
+        body: { node_ids: picked.map((n) => n.id) },
+      })
+      setSelectedNodes(new Set())
+      if (res?.job_id) selectJob(res.job_id)
+      setTab('jobs')
+      load()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function openHardware(node) {
+    setHwNode(node)
+    setHwForm({
+      memory: node.memory ?? defaultsForRole(data?.cluster, node.role).memory,
+      cores: node.cores ?? defaultsForRole(data?.cluster, node.role).cores,
+      disk_gb: node.disk_gb ?? defaultsForRole(data?.cluster, node.role).disk_gb,
+    })
+    setHwOpen(true)
+  }
+
+  async function submitHardware() {
+    if (!hwNode) return
+    const curDisk = hwNode.disk_gb ?? defaultsForRole(data?.cluster, hwNode.role).disk_gb
+    if (Number(hwForm.disk_gb) < curDisk) {
+      setError(`Disk can only grow (have ${curDisk} GiB, asked ${hwForm.disk_gb} GiB)`)
+      return
+    }
+    const ok = await confirm({
+      title: 'Upgrade hardware',
+      message: `Resize “${hwNode.name}” on Proxmox?\n\n${hwForm.cores} vCPU · ${hwForm.memory} MB · ${hwForm.disk_gb} GiB\n\nDisk can only grow. Guest may need a reboot for CPU/memory.`,
+      confirmLabel: 'Apply hardware',
+      tone: 'primary',
+    })
+    if (!ok) return
+    setBusy(true)
+    setError('')
+    try {
+      const res = await api(`/clusters/${id}/nodes/${hwNode.id}/hardware`, {
+        method: 'PUT',
+        body: {
+          memory: Number(hwForm.memory),
+          cores: Number(hwForm.cores),
+          disk_gb: Number(hwForm.disk_gb),
+        },
+      })
+      setHwOpen(false)
+      setHwNode(null)
+      if (res?.job_id) selectJob(res.job_id)
+      setTab('jobs')
+      load()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function upgrade() {
@@ -291,6 +493,7 @@ export default function ClusterDetail() {
   const wks = nodes.filter((n) => n.role !== 'controlplane')
   const latestJob = jobs[0]
   const upgradeRunning = jobs.some((j) => j.kind === 'upgrade_cluster' && j.status === 'running')
+  const selCount = selectedNodes.size
 
   return (
     <div className="detail">
@@ -410,25 +613,6 @@ export default function ClusterDetail() {
                     <div><dt>Created</dt><dd className="muted">{c.created_at}</dd></div>
                   </dl>
                 </section>
-                <section>
-                  <h3 className="section-label">Resources</h3>
-                  <div className="panel-grid tight">
-                    <div className="mini-panel">
-                      <Icon name="cpu" size={18} />
-                      <div>
-                        <strong>Control plane</strong>
-                        <p className="muted">{c.cp_memory} MB · {c.cp_cores} vCPU · {c.cp_disk_gb} GiB</p>
-                      </div>
-                    </div>
-                    <div className="mini-panel">
-                      <Icon name="worker" size={18} />
-                      <div>
-                        <strong>Workers</strong>
-                        <p className="muted">{c.worker_memory} MB · {c.worker_cores} vCPU · {c.worker_disk_gb} GiB</p>
-                      </div>
-                    </div>
-                  </div>
-                </section>
               </div>
 
               {latestJob && (
@@ -457,19 +641,32 @@ export default function ClusterDetail() {
                   <p className="muted">{cps.length} control plane · {wks.length} worker</p>
                 </div>
                 <div className="row-actions">
-                  <button type="button" className="secondary btn-icon" onClick={() => addNode('worker')}>
-                    <Icon name="plus" size={16} /> Worker
-                  </button>
-                  <button type="button" className="secondary btn-icon" onClick={() => addNode('controlplane')}>
-                    <Icon name="plus" size={16} /> CP
+                  {selCount > 0 && (
+                    <button
+                      type="button"
+                      className="danger btn-icon"
+                      onClick={removeSelected}
+                      disabled={busy}
+                    >
+                      <Icon name="trash" size={14} /> Remove ({selCount})
+                    </button>
+                  )}
+                  <button type="button" className="btn-icon" onClick={openAddModal}>
+                    <Icon name="plus" size={16} /> Add node
                   </button>
                 </div>
               </div>
+
               <NodesTable
                 nodes={nodes}
                 dualStack={dualStack}
                 showK8s
-                onRemove={removeNode}
+                showHw
+                selectable
+                selected={selectedNodes}
+                onToggle={toggleNode}
+                onToggleAll={toggleAll}
+                onHardware={openHardware}
               />
               {nodes.length === 0 && (
                 <p className="muted empty-hint">Nodes appear after the create job finishes.</p>
@@ -531,6 +728,7 @@ export default function ClusterDetail() {
                     nodes={nodes}
                     dualStack={dualStack}
                     showK8s
+                    showHw
                     targetVersion={upgradeRunning ? upgradeVer : null}
                   />
                 )}
@@ -592,6 +790,159 @@ export default function ClusterDetail() {
           )}
         </div>
       </div>
+
+      <Modal
+        open={addOpen}
+        title="Add node"
+        icon="plus"
+        onClose={() => setAddOpen(false)}
+        wide
+      >
+        <p className="modal-hint">
+          Creates a Proxmox VM, waits for DHCP, and joins the cluster. Watch Jobs for live progress;
+          the node shows as <span className="badge provisioning">provisioning</span> until ready.
+        </p>
+        <div className="field">
+          <label>Role</label>
+          <div className="role-pills">
+            <button
+              type="button"
+              className={`role-pill ${addForm.role === 'worker' ? 'active' : ''}`}
+              onClick={() => setAddRole('worker')}
+            >
+              <strong>Worker</strong>
+              <span>Compute capacity</span>
+            </button>
+            <button
+              type="button"
+              className={`role-pill ${addForm.role === 'controlplane' ? 'active' : ''}`}
+              onClick={() => setAddRole('controlplane')}
+            >
+              <strong>Control plane</strong>
+              <span>Keep odd count for etcd</span>
+            </button>
+          </div>
+        </div>
+        <div className="field">
+          <label>Count</label>
+          <input
+            type="number"
+            min={1}
+            max={16}
+            value={addForm.count}
+            onChange={(e) => setAddForm((f) => ({ ...f, count: e.target.value }))}
+          />
+        </div>
+        <div className="field-row">
+          <div className="field">
+            <label>vCPU</label>
+            <input
+              type="number"
+              min={1}
+              value={addForm.cores}
+              onChange={(e) => setAddForm((f) => ({ ...f, cores: e.target.value }))}
+            />
+          </div>
+          <div className="field">
+            <label>Memory (MB)</label>
+            <input
+              type="number"
+              min={512}
+              step={256}
+              value={addForm.memory}
+              onChange={(e) => setAddForm((f) => ({ ...f, memory: e.target.value }))}
+            />
+          </div>
+          <div className="field">
+            <label>Disk (GiB)</label>
+            <input
+              type="number"
+              min={10}
+              value={addForm.disk_gb}
+              onChange={(e) => setAddForm((f) => ({ ...f, disk_gb: e.target.value }))}
+            />
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="secondary" onClick={() => setAddOpen(false)}>
+            Cancel
+          </button>
+          <button type="button" onClick={submitAdd} disabled={busy}>
+            {busy ? 'Queuing…' : 'Add node'}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={hwOpen}
+        title={hwNode ? `Hardware · ${hwNode.name}` : 'Hardware'}
+        icon="cpu"
+        onClose={() => {
+          setHwOpen(false)
+          setHwNode(null)
+        }}
+        wide
+      >
+        <p className="modal-hint">
+          Resize this VM on Proxmox. Disk can only grow; CPU/memory may need a guest reboot.
+        </p>
+        <div className="field-row">
+          <div className="field">
+            <label>vCPU</label>
+            <input
+              type="number"
+              min={1}
+              value={hwForm.cores}
+              onChange={(e) => setHwForm((f) => ({ ...f, cores: e.target.value }))}
+            />
+          </div>
+          <div className="field">
+            <label>Memory (MB)</label>
+            <input
+              type="number"
+              min={512}
+              step={256}
+              value={hwForm.memory}
+              onChange={(e) => setHwForm((f) => ({ ...f, memory: e.target.value }))}
+            />
+          </div>
+          <div className="field">
+            <label>Disk (GiB)</label>
+            <input
+              type="number"
+              min={hwNode?.disk_gb ?? 10}
+              value={hwForm.disk_gb}
+              onChange={(e) => setHwForm((f) => ({ ...f, disk_gb: e.target.value }))}
+            />
+            {hwNode?.disk_gb != null && (
+              <p className="muted" style={{ fontSize: '0.75rem', margin: '0.25rem 0 0' }}>
+                Minimum {hwNode.disk_gb} GiB — disk can only grow.
+              </p>
+            )}
+          </div>
+        </div>
+        {hwNode && (
+          <p className="muted" style={{ fontSize: '0.8rem', marginTop: 0 }}>
+            Current: {formatHw(hwNode)}
+            {hwNode.vmid != null ? ` · VMID ${hwNode.vmid}` : ''}
+          </p>
+        )}
+        <div className="modal-actions">
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              setHwOpen(false)
+              setHwNode(null)
+            }}
+          >
+            Cancel
+          </button>
+          <button type="button" onClick={submitHardware} disabled={busy}>
+            {busy ? 'Queuing…' : 'Apply hardware'}
+          </button>
+        </div>
+      </Modal>
     </div>
   )
 }

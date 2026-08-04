@@ -127,6 +127,49 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN k8s_version TEXT")
         .execute(pool)
         .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN memory INTEGER")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN cores INTEGER")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN disk_gb INTEGER")
+        .execute(pool)
+        .await;
+
+    // Backfill node hardware from cluster role defaults when unset.
+    let _ = sqlx::query(
+        r#"UPDATE nodes SET
+             memory = COALESCE(nodes.memory, CASE WHEN nodes.role = 'controlplane' THEN c.cp_memory ELSE c.worker_memory END),
+             cores = COALESCE(nodes.cores, CASE WHEN nodes.role = 'controlplane' THEN c.cp_cores ELSE c.worker_cores END),
+             disk_gb = COALESCE(nodes.disk_gb, CASE WHEN nodes.role = 'controlplane' THEN c.cp_disk_gb ELSE c.worker_disk_gb END)
+           FROM clusters c
+           WHERE nodes.cluster_id = c.id
+             AND (nodes.memory IS NULL OR nodes.cores IS NULL OR nodes.disk_gb IS NULL)"#,
+    )
+    .execute(pool)
+    .await;
+    // SQLite may not support UPDATE…FROM; fall back to two role-specific updates.
+    let _ = sqlx::query(
+        r#"UPDATE nodes SET
+             memory = COALESCE(memory, (SELECT cp_memory FROM clusters WHERE id = nodes.cluster_id)),
+             cores = COALESCE(cores, (SELECT cp_cores FROM clusters WHERE id = nodes.cluster_id)),
+             disk_gb = COALESCE(disk_gb, (SELECT cp_disk_gb FROM clusters WHERE id = nodes.cluster_id))
+           WHERE role = 'controlplane'
+             AND (memory IS NULL OR cores IS NULL OR disk_gb IS NULL)"#,
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        r#"UPDATE nodes SET
+             memory = COALESCE(memory, (SELECT worker_memory FROM clusters WHERE id = nodes.cluster_id)),
+             cores = COALESCE(cores, (SELECT worker_cores FROM clusters WHERE id = nodes.cluster_id)),
+             disk_gb = COALESCE(disk_gb, (SELECT worker_disk_gb FROM clusters WHERE id = nodes.cluster_id))
+           WHERE role != 'controlplane'
+             AND (memory IS NULL OR cores IS NULL OR disk_gb IS NULL)"#,
+    )
+    .execute(pool)
+    .await;
 
     Ok(())
 }

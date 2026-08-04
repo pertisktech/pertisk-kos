@@ -43,6 +43,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
     if matches!(
         kind.as_str(),
         "create_cluster" | "add_node" | "upgrade_cluster" | "update_config" | "remove_node"
+            | "resize_node"
     ) {
         if let Some(cid) = &cluster_id {
             let st: Option<String> =
@@ -73,7 +74,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         .await?;
 
     if let Some(cid) = &cluster_id {
-        if kind != "delete_cluster" {
+        if kind != "delete_cluster" && !is_node_maintenance_job(&kind) {
             let _ = sqlx::query(
                 "UPDATE clusters SET status = 'provisioning', updated_at = ?, error = NULL WHERE id = ?",
             )
@@ -105,6 +106,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         }
         "add_node" => run_add_node(state, cluster_id.as_deref(), &payload, &log_file).await,
         "remove_node" => run_remove_node(state, cluster_id.as_deref(), &payload, &log_file).await,
+        "resize_node" => run_resize_node(state, cluster_id.as_deref(), &payload, &log_file).await,
         "upgrade_cluster" => run_upgrade(state, cluster_id.as_deref(), &payload, &log_file).await,
         "update_config" => {
             run_update_config(state, cluster_id.as_deref(), &payload, &log_file).await
@@ -124,7 +126,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             .execute(state.pool())
             .await?;
             if let Some(cid) = &cluster_id {
-                if kind != "delete_cluster" {
+                if kind != "delete_cluster" && !is_node_maintenance_job(&kind) {
                     let _ = sqlx::query(
                         "UPDATE clusters SET status = 'ready', updated_at = ?, error = NULL WHERE id = ?",
                     )
@@ -152,6 +154,15 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
                 if kind == "delete_cluster" {
                     // Best-effort: still purge DB so UI is not stuck on "deleting".
                     let _ = purge_cluster_db(state, cid).await;
+                } else if is_node_maintenance_job(&kind) {
+                    // Node-level ops must not mark a healthy cluster as broken.
+                    let _ = sqlx::query(
+                        "UPDATE clusters SET status = 'ready', updated_at = ? WHERE id = ? AND status != 'deleting'",
+                    )
+                    .bind(&now)
+                    .bind(cid)
+                    .execute(state.pool())
+                    .await;
                 } else {
                     let _ = sqlx::query(
                         "UPDATE clusters SET status = 'error', error = ?, updated_at = ? WHERE id = ?",
@@ -166,6 +177,11 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Jobs that only touch individual nodes — cluster stays ready on failure.
+fn is_node_maintenance_job(kind: &str) -> bool {
+    matches!(kind, "resize_node" | "remove_node" | "add_node")
 }
 
 fn append_log(path: &str, line: &str) -> anyhow::Result<()> {
@@ -438,11 +454,14 @@ async fn seed_stub_nodes(state: &AppState, cluster: &ClusterRow) -> anyhow::Resu
         let id = Uuid::new_v4().to_string();
         let vmid = cluster.cp_vmid.map(|v| v + i - 1);
         let _ = sqlx::query(
-            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, k8s_version, status, created_at, updated_at)
-               VALUES (?, ?, ?, 'controlplane', ?, ?, 'ready', ?, ?)
+            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, k8s_version, memory, cores, disk_gb, status, created_at, updated_at)
+               VALUES (?, ?, ?, 'controlplane', ?, ?, ?, ?, ?, 'ready', ?, ?)
                ON CONFLICT(cluster_id, name) DO UPDATE SET
                  vmid = COALESCE(excluded.vmid, nodes.vmid),
                  k8s_version = COALESCE(nodes.k8s_version, excluded.k8s_version),
+                 memory = COALESCE(nodes.memory, excluded.memory),
+                 cores = COALESCE(nodes.cores, excluded.cores),
+                 disk_gb = COALESCE(nodes.disk_gb, excluded.disk_gb),
                  status = 'ready',
                  updated_at = excluded.updated_at"#,
         )
@@ -451,6 +470,9 @@ async fn seed_stub_nodes(state: &AppState, cluster: &ClusterRow) -> anyhow::Resu
         .bind(&name)
         .bind(vmid)
         .bind(&cluster.k8s_version)
+        .bind(cluster.cp_memory)
+        .bind(cluster.cp_cores)
+        .bind(cluster.cp_disk_gb)
         .bind(&now)
         .bind(&now)
         .execute(state.pool())
@@ -462,11 +484,14 @@ async fn seed_stub_nodes(state: &AppState, cluster: &ClusterRow) -> anyhow::Resu
         let id = Uuid::new_v4().to_string();
         let vmid = worker_base + i - 1;
         let _ = sqlx::query(
-            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, k8s_version, status, created_at, updated_at)
-               VALUES (?, ?, ?, 'worker', ?, ?, 'ready', ?, ?)
+            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, k8s_version, memory, cores, disk_gb, status, created_at, updated_at)
+               VALUES (?, ?, ?, 'worker', ?, ?, ?, ?, ?, 'ready', ?, ?)
                ON CONFLICT(cluster_id, name) DO UPDATE SET
                  vmid = COALESCE(excluded.vmid, nodes.vmid),
                  k8s_version = COALESCE(nodes.k8s_version, excluded.k8s_version),
+                 memory = COALESCE(nodes.memory, excluded.memory),
+                 cores = COALESCE(nodes.cores, excluded.cores),
+                 disk_gb = COALESCE(nodes.disk_gb, excluded.disk_gb),
                  status = 'ready',
                  updated_at = excluded.updated_at"#,
         )
@@ -475,6 +500,9 @@ async fn seed_stub_nodes(state: &AppState, cluster: &ClusterRow) -> anyhow::Resu
         .bind(&name)
         .bind(vmid)
         .bind(&cluster.k8s_version)
+        .bind(cluster.worker_memory)
+        .bind(cluster.worker_cores)
+        .bind(cluster.worker_disk_gb)
         .bind(&now)
         .bind(&now)
         .execute(state.pool())
@@ -616,73 +644,388 @@ async fn run_add_node(
     let cid = cluster_id.ok_or_else(|| anyhow::anyhow!("cluster_id required"))?;
     let p: serde_json::Value = serde_json::from_str(payload)?;
     let role = p.get("role").and_then(|v| v.as_str()).unwrap_or("worker");
-    let now = db::now_rfc3339();
+    let count = p
+        .get("count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1)
+        .clamp(1, 16);
 
-    let (name_prefix, cps, workers, cp_vmid): (String, i64, i64, Option<i64>) =
-        sqlx::query_as("SELECT name, controlplanes, workers, cp_vmid FROM clusters WHERE id = ?")
-            .bind(cid)
-            .fetch_one(state.pool())
-            .await?;
+    let cluster = sqlx::query_as::<_, ClusterRow>(
+        r#"SELECT id, name, provider_id, controlplanes, workers, vip, vip6, cni, k8s_version,
+                  cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb, cp_vmid,
+                  COALESCE(network_mode, 'ipv4') as network_mode
+           FROM clusters WHERE id = ?"#,
+    )
+    .bind(cid)
+    .fetch_one(state.pool())
+    .await?;
 
-    if role == "controlplane" {
-        let new_cps = cps + 1;
-        if new_cps % 2 == 0 {
-            append_log(
-                log_path,
-                "WARNING: even control-plane count reduces etcd quorum safety\n",
-            )?;
-        }
-        let idx = new_cps;
-        let name = format!("{name_prefix}-cp-{idx}");
-        let vmid = cp_vmid.map(|b| b + idx - 1);
-        let id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO nodes (id, cluster_id, name, role, vmid, status, created_at, updated_at) VALUES (?, ?, ?, 'controlplane', ?, 'ready', ?, ?)",
+    let provider = sqlx::query_as::<_, ProviderRow>(
+        "SELECT id, url, token_id, token_secret_enc, node, storage, bridge, insecure FROM providers WHERE id = ?",
+    )
+    .bind(&cluster.provider_id)
+    .fetch_one(state.pool())
+    .await?;
+    let secret = crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?;
+
+    let (def_mem, def_cores, def_disk) = if role == "controlplane" {
+        (cluster.cp_memory, cluster.cp_cores, cluster.cp_disk_gb)
+    } else {
+        (
+            cluster.worker_memory,
+            cluster.worker_cores,
+            cluster.worker_disk_gb,
         )
-        .bind(&id)
+    };
+    let memory = p
+        .get("memory")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(def_mem);
+    let cores = p.get("cores").and_then(|v| v.as_i64()).unwrap_or(def_cores);
+    let disk_gb = p
+        .get("disk_gb")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(def_disk);
+
+    let cp_ip = resolve_cp_ip(state, cid, &cluster).await?;
+    let cluster_out = state.cfg().kubeconfigs_dir().join(&cluster.name);
+    std::fs::create_dir_all(&cluster_out)?;
+    let add_script = add_node_script_path(state);
+
+    let now = db::now_rfc3339();
+    sqlx::query("UPDATE clusters SET status = 'provisioning', updated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(cid)
+        .execute(state.pool())
+        .await?;
+
+    append_log(
+        log_path,
+        &format!(
+            "add {count}× {role} → cluster={} (cp_api={cp_ip}, {cores}vCPU {memory}MB {disk_gb}GiB)\n",
+            cluster.name
+        ),
+    )?;
+
+    if !add_script.exists() {
+        anyhow::bail!(
+            "add-node script missing at {} — cannot provision VMs",
+            add_script.display()
+        );
+    }
+
+    let mode = cluster.network_mode.to_ascii_lowercase();
+    let want_ip6 = mode == "dual-stack" || mode == "ipv6";
+    let mut joined_names: Vec<String> = Vec::new();
+
+    for n in 1..=count {
+        let now = db::now_rfc3339();
+        let (name, vmid, cp_index) = if role == "controlplane" {
+            let (cps_now,): (i64,) =
+                sqlx::query_as("SELECT controlplanes FROM clusters WHERE id = ?")
+                    .bind(cid)
+                    .fetch_one(state.pool())
+                    .await?;
+            let new_cps = cps_now + 1;
+            if new_cps % 2 == 0 {
+                append_log(
+                    log_path,
+                    "WARNING: even control-plane count reduces etcd quorum safety\n",
+                )?;
+            }
+            let name = format!("{}-cp-{new_cps}", cluster.name);
+            let vmid = cluster.cp_vmid.map(|b| b + new_cps - 1).unwrap_or(210 + new_cps - 1);
+            sqlx::query("UPDATE clusters SET controlplanes = ?, updated_at = ? WHERE id = ?")
+                .bind(new_cps)
+                .bind(&now)
+                .bind(cid)
+                .execute(state.pool())
+                .await?;
+            (name, vmid, Some(new_cps))
+        } else {
+            let (cps_now, workers_now): (i64, i64) =
+                sqlx::query_as("SELECT controlplanes, workers FROM clusters WHERE id = ?")
+                    .bind(cid)
+                    .fetch_one(state.pool())
+                    .await?;
+            let new_w = workers_now + 1;
+            let name = format!("{}-wk-{new_w}", cluster.name);
+            let base = cluster.cp_vmid.unwrap_or(210) + cps_now;
+            let vmid = base + new_w - 1;
+            sqlx::query("UPDATE clusters SET workers = ?, updated_at = ? WHERE id = ?")
+                .bind(new_w)
+                .bind(&now)
+                .bind(cid)
+                .execute(state.pool())
+                .await?;
+            (name, vmid, None)
+        };
+
+        let node_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, memory, cores, disk_gb, k8s_version, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?)"#,
+        )
+        .bind(&node_id)
         .bind(cid)
         .bind(&name)
+        .bind(role)
         .bind(vmid)
+        .bind(memory)
+        .bind(cores)
+        .bind(disk_gb)
+        .bind(&cluster.k8s_version)
         .bind(&now)
         .bind(&now)
         .execute(state.pool())
         .await?;
-        sqlx::query("UPDATE clusters SET controlplanes = ?, updated_at = ? WHERE id = ?")
-            .bind(new_cps)
-            .bind(&now)
-            .bind(cid)
-            .execute(state.pool())
-            .await?;
+
         append_log(
             log_path,
-            &format!("added control plane {name} (join-controlplane via lab tooling)\n"),
+            &format!(
+                "==> [{n}/{count}] provisioning {name} (vmid={vmid}) — create VM → wait IP → join\n"
+            ),
         )?;
-    } else {
-        let new_w = workers + 1;
-        let name = format!("{name_prefix}-wk-{new_w}");
-        let base = cp_vmid.unwrap_or(210) + cps;
-        let vmid = base + new_w - 1;
-        let id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO nodes (id, cluster_id, name, role, vmid, status, created_at, updated_at) VALUES (?, ?, ?, 'worker', ?, 'ready', ?, ?)",
-        )
-        .bind(&id)
-        .bind(cid)
-        .bind(&name)
-        .bind(vmid)
-        .bind(&now)
-        .bind(&now)
-        .execute(state.pool())
-        .await?;
-        sqlx::query("UPDATE clusters SET workers = ?, updated_at = ? WHERE id = ?")
-            .bind(new_w)
-            .bind(&now)
-            .bind(cid)
-            .execute(state.pool())
-            .await?;
-        append_log(log_path, &format!("added worker {name}\n"))?;
+
+        let mut cmd = Command::new(&add_script);
+        cmd.arg("--role")
+            .arg(role)
+            .arg("--vmid")
+            .arg(vmid.to_string())
+            .arg("--name")
+            .arg(&name)
+            .arg("--memory")
+            .arg(memory.to_string())
+            .arg("--cores")
+            .arg(cores.to_string())
+            .arg("--disk-gb")
+            .arg(disk_gb.to_string())
+            .arg("--cluster-out")
+            .arg(&cluster_out)
+            .arg("--cluster-name")
+            .arg(&cluster.name)
+            .arg("--cp-ip")
+            .arg(&cp_ip)
+            .arg("--bridge")
+            .arg(&provider.bridge)
+            .env("PROXMOX_URL", &provider.url)
+            .env("PROXMOX_TOKEN_ID", &provider.token_id)
+            .env("PROXMOX_TOKEN_SECRET", &secret)
+            .env("PROXMOX_NODE", &provider.node)
+            .env("PROXMOX_STORAGE", &provider.storage)
+            .env("PROXMOX_BRIDGE", &provider.bridge)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if provider.insecure != 0 {
+            cmd.env("PROXMOX_INSECURE", "1");
+        }
+        if let Some(idx) = cp_index {
+            cmd.arg("--controlplane-index").arg(idx.to_string());
+        }
+
+        match stream_command(&mut cmd, log_path).await {
+            Ok(output) => {
+                let ip = output
+                    .lines()
+                    .rev()
+                    .find_map(|l| l.strip_prefix("NODE_IP=").map(str::to_string));
+                let now = db::now_rfc3339();
+                sqlx::query(
+                    "UPDATE nodes SET status = 'ready', ip = COALESCE(?, ip), updated_at = ? WHERE id = ?",
+                )
+                .bind(&ip)
+                .bind(&now)
+                .bind(&node_id)
+                .execute(state.pool())
+                .await?;
+                joined_names.push(name.clone());
+                append_log(
+                    log_path,
+                    &format!(
+                        "ready {name}{}\n",
+                        ip.as_ref()
+                            .map(|i| format!(" @ {i}"))
+                            .unwrap_or_default()
+                    ),
+                )?;
+            }
+            Err(e) => {
+                let now = db::now_rfc3339();
+                let _ = sqlx::query(
+                    "UPDATE nodes SET status = 'error', updated_at = ? WHERE id = ?",
+                )
+                .bind(&now)
+                .bind(&node_id)
+                .execute(state.pool())
+                .await;
+                let _ = sqlx::query(
+                    "UPDATE clusters SET status = 'ready', error = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(e.to_string())
+                .bind(&now)
+                .bind(cid)
+                .execute(state.pool())
+                .await;
+                return Err(e);
+            }
+        }
     }
+
+    let kc = cluster_out.join("admin.conf");
+    if kc.is_file() {
+        for name in &joined_names {
+            append_log(
+                log_path,
+                &format!(
+                    "wait for kubectl addresses on {name}{}\n",
+                    if want_ip6 { " (incl. IPv6)" } else { "" }
+                ),
+            )?;
+            match crate::node_sync::wait_node_addresses(
+                &kc,
+                name,
+                want_ip6,
+                std::time::Duration::from_secs(180),
+            )
+            .await
+            {
+                Ok(snap) => {
+                    let now = db::now_rfc3339();
+                    let _ = sqlx::query(
+                        r#"UPDATE nodes SET
+                             ip = COALESCE(?, ip),
+                             ip6 = COALESCE(?, ip6),
+                             k8s_version = COALESCE(?, k8s_version),
+                             updated_at = ?
+                           WHERE cluster_id = ? AND name = ?"#,
+                    )
+                    .bind(&snap.ip)
+                    .bind(&snap.ip6)
+                    .bind(&snap.k8s_version)
+                    .bind(&now)
+                    .bind(cid)
+                    .bind(name)
+                    .execute(state.pool())
+                    .await;
+                    append_log(
+                        log_path,
+                        &format!(
+                            "synced {name} ip={} ip6={}\n",
+                            snap.ip.as_deref().unwrap_or("—"),
+                            snap.ip6.as_deref().unwrap_or("—")
+                        ),
+                    )?;
+                }
+                Err(e) => {
+                    append_log(log_path, &format!("warn: wait addresses {name}: {e}\n"))?;
+                }
+            }
+        }
+        let _ = crate::node_sync::sync_cluster_nodes(
+            state.pool(),
+            cid,
+            Some(&kc),
+            Some(log_path),
+        )
+        .await;
+    }
+
+    let now = db::now_rfc3339();
+    sqlx::query(
+        "UPDATE clusters SET status = 'ready', error = NULL, updated_at = ? WHERE id = ?",
+    )
+    .bind(&now)
+    .bind(cid)
+    .execute(state.pool())
+    .await?;
+    append_log(log_path, "add-node complete\n")?;
     Ok(())
+}
+
+fn add_node_script_path(state: &AppState) -> PathBuf {
+    let beside = state
+        .cfg()
+        .lab_up
+        .parent()
+        .map(|p| p.join("proxmox-add-node.sh"));
+    if let Some(p) = beside {
+        if p.exists() {
+            return p;
+        }
+    }
+    PathBuf::from("./scripts/proxmox-add-node.sh")
+}
+
+async fn resolve_cp_ip(
+    state: &AppState,
+    cid: &str,
+    cluster: &ClusterRow,
+) -> anyhow::Result<String> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT ip FROM nodes WHERE cluster_id = ? AND role = 'controlplane' AND ip IS NOT NULL AND ip != '' ORDER BY name ASC LIMIT 1",
+    )
+    .bind(cid)
+    .fetch_optional(state.pool())
+    .await?;
+    if let Some((Some(ip),)) = row {
+        return Ok(ip);
+    }
+    if let Some(vip) = cluster.vip.as_ref().filter(|v| !v.is_empty()) {
+        return Ok(vip.clone());
+    }
+    anyhow::bail!(
+        "no control-plane IP found — wait until CP nodes have IPs before adding nodes"
+    )
+}
+
+async fn stream_command(cmd: &mut Command, log_path: &str) -> anyhow::Result<String> {
+    append_log(
+        log_path,
+        &format!("$ {:?}\n", cmd.as_std().get_program()),
+    )?;
+    let mut child = cmd.spawn()?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let log_out = log_path.to_string();
+    let log_err = log_path.to_string();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let tx_out = tx.clone();
+    let tx_err = tx.clone();
+    drop(tx);
+
+    let out_task = tokio::spawn(async move {
+        if let Some(out) = stdout {
+            let mut lines = BufReader::new(out).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = append_log(&log_out, &format!("{line}\n"));
+                let _ = tx_out.send(line);
+            }
+        }
+    });
+    let err_task = tokio::spawn(async move {
+        if let Some(err) = stderr {
+            let mut lines = BufReader::new(err).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = append_log(&log_err, &format!("{line}\n"));
+                let _ = tx_err.send(line);
+            }
+        }
+    });
+
+    let status = child.wait().await?;
+    let _ = out_task.await;
+    let _ = err_task.await;
+
+    let mut captured = String::new();
+    while let Some(line) = rx.recv().await {
+        captured.push_str(&line);
+        captured.push('\n');
+    }
+
+    if !status.success() {
+        anyhow::bail!("command exited with {status}");
+    }
+    Ok(captured)
 }
 
 async fn run_remove_node(
@@ -693,11 +1036,36 @@ async fn run_remove_node(
 ) -> anyhow::Result<()> {
     let cid = cluster_id.ok_or_else(|| anyhow::anyhow!("cluster_id required"))?;
     let p: serde_json::Value = serde_json::from_str(payload)?;
-    let node_id = p
-        .get("node_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("node_id required"))?;
+    let mut ids: Vec<String> = p
+        .get("node_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        if let Some(one) = p.get("node_id").and_then(|v| v.as_str()) {
+            ids.push(one.to_string());
+        }
+    }
+    if ids.is_empty() {
+        anyhow::bail!("node_ids required");
+    }
 
+    for node_id in &ids {
+        remove_one_node(state, cid, node_id, log_path).await?;
+    }
+    Ok(())
+}
+
+async fn remove_one_node(
+    state: &AppState,
+    cid: &str,
+    node_id: &str,
+    log_path: &str,
+) -> anyhow::Result<()> {
     let node = sqlx::query_as::<_, (String, String, Option<i64>)>(
         "SELECT name, role, vmid FROM nodes WHERE id = ? AND cluster_id = ?",
     )
@@ -705,31 +1073,76 @@ async fn run_remove_node(
     .bind(cid)
     .fetch_optional(state.pool())
     .await?
-    .ok_or_else(|| anyhow::anyhow!("node not found"))?;
+    .ok_or_else(|| anyhow::anyhow!("node not found: {node_id}"))?;
 
-    let (cps,): (i64,) =
-        sqlx::query_as("SELECT controlplanes FROM clusters WHERE id = ?")
-            .bind(cid)
-            .fetch_one(state.pool())
-            .await?;
+    let cluster = sqlx::query_as::<_, (i64, Option<String>)>(
+        "SELECT controlplanes, kubeconfig_path FROM clusters WHERE id = ?",
+    )
+    .bind(cid)
+    .fetch_one(state.pool())
+    .await?;
+    let (cps, kc) = cluster;
 
     if node.1 == "controlplane" {
         let remaining = cps - 1;
         if remaining < 1 {
-            anyhow::bail!("cannot remove last control plane");
+            anyhow::bail!("cannot remove last control plane ({})", node.0);
         }
-        // Quorum: majority of original; block if remaining < majority of previous odd set
         let majority = cps / 2 + 1;
         if remaining < majority && cps > 1 {
             anyhow::bail!(
-                "removing CP would break etcd quorum (have {cps}, need majority {majority})"
+                "removing {} would break etcd quorum (have {cps}, need majority {majority})",
+                node.0
             );
         }
-        sqlx::query("UPDATE clusters SET controlplanes = controlplanes - 1, updated_at = ? WHERE id = ?")
-            .bind(db::now_rfc3339())
-            .bind(cid)
-            .execute(state.pool())
-            .await?;
+    }
+
+    // Drain + delete from Kubernetes before tearing down the VM.
+    if let Some(kc) = kc.as_deref().filter(|s| !s.is_empty()) {
+        if std::path::Path::new(kc).is_file() {
+            append_log(log_path, &format!("drain {}\n", node.0))?;
+            let _ = kubectl(
+                kc,
+                &[
+                    "drain",
+                    &node.0,
+                    "--ignore-daemonsets",
+                    "--delete-emptydir-data",
+                    "--force",
+                    "--grace-period=30",
+                    "--timeout=3m",
+                ],
+                log_path,
+            )
+            .await;
+            append_log(log_path, &format!("kubectl delete node {}\n", node.0))?;
+            match kubectl(kc, &["delete", "node", &node.0, "--wait=true"], log_path).await {
+                Ok(()) => {}
+                Err(e) => {
+                    append_log(
+                        log_path,
+                        &format!("warn: kubectl delete node {}: {e} (continuing)\n", node.0),
+                    )?;
+                }
+            }
+        } else {
+            append_log(
+                log_path,
+                &format!("skip k8s delete (kubeconfig missing: {kc})\n"),
+            )?;
+        }
+    } else {
+        append_log(log_path, "skip k8s delete (no kubeconfig_path)\n")?;
+    }
+
+    if node.1 == "controlplane" {
+        sqlx::query(
+            "UPDATE clusters SET controlplanes = controlplanes - 1, updated_at = ? WHERE id = ?",
+        )
+        .bind(db::now_rfc3339())
+        .bind(cid)
+        .execute(state.pool())
+        .await?;
     } else {
         let (w,): (i64,) = sqlx::query_as("SELECT workers FROM clusters WHERE id = ?")
             .bind(cid)
@@ -743,28 +1156,12 @@ async fn run_remove_node(
             .await?;
     }
 
-    // Best-effort Proxmox delete
     if let Some(vmid) = node.2 {
-        let provider_id: String =
-            sqlx::query_scalar("SELECT provider_id FROM clusters WHERE id = ?")
-                .bind(cid)
-                .fetch_one(state.pool())
-                .await?;
-        let provider = sqlx::query_as::<_, ProviderRow>(
-            "SELECT id, url, token_id, token_secret_enc, node, storage, bridge, insecure FROM providers WHERE id = ?",
-        )
-        .bind(&provider_id)
-        .fetch_one(state.pool())
-        .await?;
-        let secret = crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?;
-        let client = crate::proxmox::ProxmoxClient {
-            url: provider.url.clone(),
-            token_id: provider.token_id,
-            token_secret: secret,
-            insecure: provider.insecure != 0,
-        };
-        append_log(log_path, &format!("deleting VM {vmid}\n"))?;
-        let _ = client.delete_vm(&provider.node, vmid).await;
+        if let Ok(client) = provider_client_for_cluster(state, cid).await {
+            let node_name = provider_node_for_cluster(state, cid).await?;
+            append_log(log_path, &format!("deleting VM {vmid} ({})\n", node.0))?;
+            let _ = client.delete_vm(&node_name, vmid).await;
+        }
     }
 
     sqlx::query("DELETE FROM nodes WHERE id = ?")
@@ -773,6 +1170,141 @@ async fn run_remove_node(
         .await?;
     append_log(log_path, &format!("removed node {}\n", node.0))?;
     Ok(())
+}
+
+async fn run_resize_node(
+    state: &AppState,
+    cluster_id: Option<&str>,
+    payload: &str,
+    log_path: &str,
+) -> anyhow::Result<()> {
+    let cid = cluster_id.ok_or_else(|| anyhow::anyhow!("cluster_id required"))?;
+    let p: serde_json::Value = serde_json::from_str(payload)?;
+    let node_id = p
+        .get("node_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("node_id required"))?;
+
+    let row = sqlx::query_as::<_, (String, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
+        "SELECT name, vmid, memory, cores, disk_gb FROM nodes WHERE id = ? AND cluster_id = ?",
+    )
+    .bind(node_id)
+    .bind(cid)
+    .fetch_optional(state.pool())
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("node not found"))?;
+
+    let (name, vmid, cur_mem, cur_cores, cur_disk) = row;
+    let want_mem = p.get("memory").and_then(|v| v.as_i64()).or(cur_mem);
+    let want_cores = p.get("cores").and_then(|v| v.as_i64()).or(cur_cores);
+    let want_disk = p.get("disk_gb").and_then(|v| v.as_i64()).or(cur_disk);
+
+    let mut apply_disk = want_disk;
+    if let Some(d) = want_disk {
+        if let Some(cur) = cur_disk {
+            if d < cur {
+                append_log(
+                    log_path,
+                    &format!(
+                        "warn: disk can only grow (have {cur} GiB, asked {d} GiB) — skipping disk change\n"
+                    ),
+                )?;
+                apply_disk = Some(cur);
+            }
+        }
+    }
+
+    let vmid = vmid.ok_or_else(|| anyhow::anyhow!("node {name} has no VMID"))?;
+    let client = provider_client_for_cluster(state, cid).await?;
+    let pve_node = provider_node_for_cluster(state, cid).await?;
+
+    append_log(
+        log_path,
+        &format!(
+            "resize {name} (vmid={vmid}): cores={want_cores:?} memory={want_mem:?}MB disk={apply_disk:?}GiB\n"
+        ),
+    )?;
+
+    let set_cores = if want_cores != cur_cores {
+        want_cores
+    } else {
+        None
+    };
+    let set_mem = if want_mem != cur_mem { want_mem } else { None };
+    if set_cores.is_some() || set_mem.is_some() {
+        client
+            .set_vm_hardware(&pve_node, vmid, set_cores, set_mem)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        append_log(log_path, "updated Proxmox CPU/memory\n")?;
+    }
+
+    if let (Some(want), Some(cur)) = (apply_disk, cur_disk) {
+        if want > cur {
+            client
+                .grow_vm_disk(&pve_node, vmid, want)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            append_log(log_path, &format!("grew disk to {want} GiB\n"))?;
+        }
+    } else if let Some(want) = apply_disk {
+        if cur_disk.is_none() {
+            client
+                .grow_vm_disk(&pve_node, vmid, want)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            append_log(log_path, &format!("set disk to {want} GiB\n"))?;
+        }
+    }
+
+    let now = db::now_rfc3339();
+    sqlx::query(
+        "UPDATE nodes SET memory = ?, cores = ?, disk_gb = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(want_mem)
+    .bind(want_cores)
+    .bind(apply_disk)
+    .bind(&now)
+    .bind(node_id)
+    .execute(state.pool())
+    .await?;
+    append_log(log_path, &format!("hardware updated for {name}\n"))?;
+    Ok(())
+}
+
+async fn provider_client_for_cluster(
+    state: &AppState,
+    cid: &str,
+) -> anyhow::Result<crate::proxmox::ProxmoxClient> {
+    let provider_id: String = sqlx::query_scalar("SELECT provider_id FROM clusters WHERE id = ?")
+        .bind(cid)
+        .fetch_one(state.pool())
+        .await?;
+    let provider = sqlx::query_as::<_, ProviderRow>(
+        "SELECT id, url, token_id, token_secret_enc, node, storage, bridge, insecure FROM providers WHERE id = ?",
+    )
+    .bind(&provider_id)
+    .fetch_one(state.pool())
+    .await?;
+    let secret = crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?;
+    Ok(crate::proxmox::ProxmoxClient {
+        url: provider.url.clone(),
+        token_id: provider.token_id,
+        token_secret: secret,
+        insecure: provider.insecure != 0,
+    })
+}
+
+async fn provider_node_for_cluster(state: &AppState, cid: &str) -> anyhow::Result<String> {
+    let provider_id: String = sqlx::query_scalar("SELECT provider_id FROM clusters WHERE id = ?")
+        .bind(cid)
+        .fetch_one(state.pool())
+        .await?;
+    let node: String = sqlx::query_scalar("SELECT node FROM providers WHERE id = ?")
+        .bind(&provider_id)
+        .fetch_one(state.pool())
+        .await?;
+    Ok(node)
 }
 
 async fn run_upgrade(

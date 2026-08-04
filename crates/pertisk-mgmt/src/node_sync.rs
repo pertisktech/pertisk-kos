@@ -190,16 +190,53 @@ fn parse_wide_line(line: &str) -> Option<(String, NodeSnapshot)> {
         .iter()
         .find(|p| p.parse::<std::net::Ipv4Addr>().is_ok())
         .map(|s| (*s).to_string());
+    let ip6 = parts
+        .iter()
+        .find(|p| {
+            // kubectl wide may show bare IPv6; reject placeholders.
+            **p != "<none>" && p.parse::<std::net::Ipv6Addr>().is_ok()
+        })
+        .map(|s| (*s).to_string());
 
     Some((
         name,
         NodeSnapshot {
             ip,
-            ip6: None,
+            ip6,
             k8s_version: version,
             kubelet_status: status,
         },
     ))
+}
+
+/// Wait until kubectl reports the node (and optionally an IPv6 InternalIP).
+pub async fn wait_node_addresses(
+    kubeconfig: &Path,
+    node_name: &str,
+    want_ip6: bool,
+    timeout: std::time::Duration,
+) -> anyhow::Result<NodeSnapshot> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last = NodeSnapshot::default();
+    loop {
+        if let Ok(rows) = fetch_from_kubectl(kubeconfig).await {
+            if let Some((_, snap)) = rows.into_iter().find(|(n, _)| n == node_name) {
+                last = snap.clone();
+                let has_v4 = snap.ip.as_deref().is_some_and(|s| !s.is_empty());
+                let has_v6 = snap.ip6.as_deref().is_some_and(|s| !s.is_empty());
+                if (has_v4 || has_v6) && (!want_ip6 || has_v6) {
+                    return Ok(snap);
+                }
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            if last.ip.is_some() || last.ip6.is_some() {
+                return Ok(last);
+            }
+            anyhow::bail!("timed out waiting for addresses on {node_name}");
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
 }
 
 #[cfg(test)]
