@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { APP_VERSION } from '../utils/version'
 
 export default function Settings() {
   const [mode, setMode] = useState(null)
@@ -16,6 +17,10 @@ export default function Settings() {
       <div className="card">
         <h2>Session</h2>
         {me && <p>{me.username} · role <strong>{me.role}</strong></p>}
+      </div>
+      <div className="card">
+        <h2>About</h2>
+        <p className="muted">Pertisk KOS <strong>v{APP_VERSION}</strong></p>
       </div>
       <div className="card">
         <h2>Authentication</h2>

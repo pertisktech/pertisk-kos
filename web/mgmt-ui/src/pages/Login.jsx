@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, setToken, getToken } from '../api'
+import { APP_VERSION } from '../utils/version'
 
 export default function Login() {
   const nav = useNavigate()
@@ -47,7 +48,7 @@ export default function Login() {
   return (
     <div className="login-wrap">
       <div className="login-card">
-        <h1>Pertisk Management</h1>
+        <h1>Pertisk KOS Management</h1>
         <p>Sign in to manage Proxmox-backed clusters (HA CP + workers).</p>
         {error && <div className="error">{error}</div>}
         {mode?.local !== false && (
@@ -71,6 +72,9 @@ export default function Login() {
           </p>
         )}
       </div>
+      <footer className="login-footer">
+        <p className="version">Pertisk KOS v{APP_VERSION}</p>
+      </footer>
     </div>
   )
 }

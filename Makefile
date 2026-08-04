@@ -104,8 +104,8 @@ pertiskctl:
 
 ## React management UI → crates/pertisk-mgmt/static (embedded by pertisk-mgmt).
 mgmt-ui:
-	@echo "==> build mgmt-ui"
-	cd "$(ROOT)/web/mgmt-ui" && npm install && npm run build
+	@echo "==> build mgmt-ui VERSION=$(VERSION)"
+	cd "$(ROOT)/web/mgmt-ui" && npm install && VITE_APP_VERSION="$(VERSION)" npm run build
 	@rm -rf "$(ROOT)/crates/pertisk-mgmt/static"
 	@mkdir -p "$(ROOT)/crates/pertisk-mgmt/static"
 	@cp -R "$(ROOT)/web/mgmt-ui/dist/." "$(ROOT)/crates/pertisk-mgmt/static/"

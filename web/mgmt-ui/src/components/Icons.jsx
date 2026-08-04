@@ -142,6 +142,12 @@ export function Icon({ name, size = 18, className = '' }) {
           <path d="M15 6 9 12l6 6" />
         </svg>
       )
+    case 'chevron-down':
+      return (
+        <svg {...props}>
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      )
     default:
       return null
   }
