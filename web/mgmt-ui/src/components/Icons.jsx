@@ -142,6 +142,14 @@ export function Icon({ name, size = 18, className = '' }) {
           <path d="M15 6 9 12l6 6" />
         </svg>
       )
+    case 'reboot':
+      return (
+        <svg {...props}>
+          <path d="M4 4v5h5" />
+          <path d="M20 20v-5h-5" />
+          <path d="M5.6 9A7 7 0 0 1 19 7.5M18.4 15A7 7 0 0 1 5 16.5" />
+        </svg>
+      )
     case 'chevron-down':
       return (
         <svg {...props}>

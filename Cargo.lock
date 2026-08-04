@@ -2130,6 +2130,7 @@ dependencies = [
  "http",
  "jsonwebtoken",
  "mime_guess",
+ "pertisk-config",
  "rand",
  "reqwest",
  "rust-embed",

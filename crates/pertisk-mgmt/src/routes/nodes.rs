@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::routing::{delete, get, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +14,9 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/clusters/{id}/nodes", get(list).post(add))
         .route("/clusters/{id}/nodes/bulk-delete", axum::routing::post(bulk_delete))
+        .route("/clusters/{id}/nodes/bulk-reboot", post(bulk_reboot))
         .route("/clusters/{cid}/nodes/{nid}", delete(remove))
+        .route("/clusters/{cid}/nodes/{nid}/reboot", post(reboot))
         .route(
             "/clusters/{cid}/nodes/{nid}/hardware",
             put(update_hardware),
@@ -65,6 +67,11 @@ fn default_count() -> i64 {
 
 #[derive(Deserialize)]
 struct BulkDelete {
+    node_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct BulkReboot {
     node_ids: Vec<String>,
 }
 
@@ -202,6 +209,63 @@ async fn bulk_delete(
         state.pool(),
         Some(&user.id),
         "node.bulk_remove",
+        Some(&id),
+        Some(&format!("{} nodes", body.node_ids.len())),
+    )
+    .await;
+    Ok(Json(serde_json::json!({ "job_id": job_id })))
+}
+
+async fn reboot(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((cid, nid)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_mutate(&user)?;
+    let job_id = jobs::enqueue(
+        &state,
+        Some(&cid),
+        "reboot_node",
+        serde_json::json!({ "node_id": nid }),
+    )
+    .await
+    .map_err(AppError::Anyhow)?;
+    audit(
+        state.pool(),
+        Some(&user.id),
+        "node.reboot",
+        Some(&nid),
+        None,
+    )
+    .await;
+    Ok(Json(serde_json::json!({ "job_id": job_id })))
+}
+
+async fn bulk_reboot(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<String>,
+    Json(body): Json<BulkReboot>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_mutate(&user)?;
+    if body.node_ids.is_empty() {
+        return Err(AppError::bad("node_ids required"));
+    }
+    if body.node_ids.len() > 32 {
+        return Err(AppError::bad("too many nodes (max 32)"));
+    }
+    let job_id = jobs::enqueue(
+        &state,
+        Some(&id),
+        "reboot_node",
+        serde_json::json!({ "node_ids": body.node_ids }),
+    )
+    .await
+    .map_err(AppError::Anyhow)?;
+    audit(
+        state.pool(),
+        Some(&user.id),
+        "node.bulk_reboot",
         Some(&id),
         Some(&format!("{} nodes", body.node_ids.len())),
     )

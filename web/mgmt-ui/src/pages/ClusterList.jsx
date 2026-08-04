@@ -1,15 +1,47 @@
-import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useCallback, useEffect, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+
+const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 
 export default function Clusters() {
   const [list, setList] = useState([])
   const [error, setError] = useState('')
+  const [search, setSearch] = useSearchParams()
+  const expectDelete = search.get('deleting')
+
+  const load = useCallback(() => {
+    api('/clusters')
+      .then((rows) => {
+        setList(rows)
+        // Drop ?deleting= once that cluster is gone from the API.
+        if (expectDelete && !rows.some((c) => c.id === expectDelete)) {
+          setSearch({}, { replace: true })
+        }
+      })
+      .catch((e) => setError(e.message))
+  }, [expectDelete, setSearch])
 
   useEffect(() => {
-    api('/clusters').then(setList).catch((e) => setError(e.message))
-  }, [])
+    load()
+  }, [load])
+
+  // Keep polling while any cluster is mid-create/delete, or until a just-deleted id disappears.
+  useEffect(() => {
+    const busy = list.some((c) => BUSY.has(c.status)) || !!expectDelete
+    if (!busy) return undefined
+    const t = setInterval(load, 2000)
+    return () => clearInterval(t)
+  }, [list, load, expectDelete])
+
+  useEffect(() => {
+    function onFocus() {
+      load()
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [load])
 
   return (
     <div>
@@ -20,6 +52,11 @@ export default function Clusters() {
         </Link>
       </div>
       {error && <div className="error">{error}</div>}
+      {expectDelete && (
+        <p className="muted" style={{ marginTop: 0 }}>
+          Deleting cluster… the list will update when the job finishes.
+        </p>
+      )}
       <div className="card">
         <table>
           <thead>

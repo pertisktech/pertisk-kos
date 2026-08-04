@@ -20,6 +20,11 @@
   --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
   --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
   --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --scrollbar-size: 8px;
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: color-mix(in srgb, var(--border) 88%, var(--bg-elevated));
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--accent) 42%, var(--border));
+  --scrollbar-thumb-active: color-mix(in srgb, var(--accent) 58%, var(--border));
 }
 
 [data-theme="light"] {
@@ -33,6 +38,9 @@
   --accent: #6d3ef5;
   --accent-hover: #8b65f7;
   --shadow-md: 0 8px 24px rgba(22, 22, 42, 0.1);
+  --scrollbar-thumb: color-mix(in srgb, var(--border) 70%, #c4c4d8);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--accent) 35%, #c4c4d8);
+  --scrollbar-thumb-active: color-mix(in srgb, var(--accent) 50%, #a8a8c4);
 }
 
 * { box-sizing: border-box; }
@@ -56,6 +64,40 @@ body {
     radial-gradient(600px 300px at 0% 60%, color-mix(in srgb, #60a5fa 5%, transparent), transparent 70%);
   pointer-events: none;
   z-index: -1;
+}
+
+/* Modern scrollbars — violet-tinted, thin, rounded */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+  transition: background-color var(--transition-fast);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:active {
+  background: var(--scrollbar-thumb-active);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 a { color: var(--accent); text-decoration: none; }

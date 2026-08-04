@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+
+const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 
 export default function Dashboard() {
   const [clusters, setClusters] = useState([])
   const [providers, setProviders] = useState([])
   const [health, setHealth] = useState(null)
 
-  useEffect(() => {
+  const load = useCallback(() => {
     Promise.all([
       api('/clusters').catch(() => []),
       api('/providers').catch(() => []),
@@ -19,6 +21,17 @@ export default function Dashboard() {
       setHealth(h)
     })
   }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  useEffect(() => {
+    const busy = clusters.some((c) => BUSY.has(c.status))
+    if (!busy) return undefined
+    const t = setInterval(load, 2000)
+    return () => clearInterval(t)
+  }, [clusters, load])
 
   const ready = clusters.filter((c) => c.status === 'ready').length
   const cps = clusters.reduce((n, c) => n + (c.controlplanes || 0), 0)

@@ -43,7 +43,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
     if matches!(
         kind.as_str(),
         "create_cluster" | "add_node" | "upgrade_cluster" | "update_config" | "remove_node"
-            | "resize_node"
+            | "resize_node" | "reboot_node"
     ) {
         if let Some(cid) = &cluster_id {
             let st: Option<String> =
@@ -107,6 +107,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         "add_node" => run_add_node(state, cluster_id.as_deref(), &payload, &log_file).await,
         "remove_node" => run_remove_node(state, cluster_id.as_deref(), &payload, &log_file).await,
         "resize_node" => run_resize_node(state, cluster_id.as_deref(), &payload, &log_file).await,
+        "reboot_node" => run_reboot_node(state, cluster_id.as_deref(), &payload, &log_file).await,
         "upgrade_cluster" => run_upgrade(state, cluster_id.as_deref(), &payload, &log_file).await,
         "update_config" => {
             run_update_config(state, cluster_id.as_deref(), &payload, &log_file).await
@@ -181,7 +182,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
 
 /// Jobs that only touch individual nodes — cluster stays ready on failure.
 fn is_node_maintenance_job(kind: &str) -> bool {
-    matches!(kind, "resize_node" | "remove_node" | "add_node")
+    matches!(kind, "resize_node" | "remove_node" | "add_node" | "reboot_node")
 }
 
 fn append_log(path: &str, line: &str) -> anyhow::Result<()> {
@@ -1272,6 +1273,85 @@ async fn run_resize_node(
     Ok(())
 }
 
+async fn run_reboot_node(
+    state: &AppState,
+    cluster_id: Option<&str>,
+    payload: &str,
+    log_path: &str,
+) -> anyhow::Result<()> {
+    let cid = cluster_id.ok_or_else(|| anyhow::anyhow!("cluster_id required"))?;
+    let p: serde_json::Value = serde_json::from_str(payload)?;
+    let mut ids: Vec<String> = p
+        .get("node_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        if let Some(one) = p.get("node_id").and_then(|v| v.as_str()) {
+            ids.push(one.to_string());
+        }
+    }
+    if ids.is_empty() {
+        anyhow::bail!("node_id or node_ids required");
+    }
+
+    let mut failures = 0usize;
+    for node_id in ids {
+        let row = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT name, ip FROM nodes WHERE id = ? AND cluster_id = ?",
+        )
+        .bind(&node_id)
+        .bind(cid)
+        .fetch_optional(state.pool())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("node not found: {node_id}"))?;
+
+        let (name, ip) = row;
+        append_log(log_path, &format!("reboot {name}\n"))?;
+        let Some(ip) = ip else {
+            append_log(log_path, "skip (no IP)\n")?;
+            failures += 1;
+            continue;
+        };
+        if !state.cfg().pertiskctl.exists() {
+            append_log(log_path, "pertiskctl missing\n")?;
+            failures += 1;
+            continue;
+        }
+
+        let out = Command::new(&state.cfg().pertiskctl)
+            .args(["-e", &format!("{ip}:50000"), "reboot"])
+            .output()
+            .await;
+
+        match out {
+            Ok(o) => {
+                append_log(log_path, &String::from_utf8_lossy(&o.stdout))?;
+                append_log(log_path, &String::from_utf8_lossy(&o.stderr))?;
+                if !o.status.success() {
+                    failures += 1;
+                    append_log(
+                        log_path,
+                        &format!("reboot failed on {name} (exit {})\n", o.status),
+                    )?;
+                }
+            }
+            Err(err) => {
+                failures += 1;
+                append_log(log_path, &format!("pertiskctl error on {name}: {err}\n"))?;
+            }
+        }
+    }
+    if failures > 0 {
+        anyhow::bail!("{failures} node(s) failed to reboot");
+    }
+    Ok(())
+}
+
 async fn provider_client_for_cluster(
     state: &AppState,
     cid: &str,
@@ -1967,50 +2047,86 @@ async fn run_update_config(
         .unwrap_or("");
     let node_id = p.get("node_id").and_then(|v| v.as_str());
 
+    if !config_yaml.contains("version:") {
+        anyhow::bail!("config_yaml missing version (expected v1alpha1); partial dashboard-only YAML is OK");
+    }
+
     let nodes = if let Some(nid) = node_id {
-        sqlx::query_as::<_, (String, String, Option<String>)>(
-            "SELECT id, name, ip FROM nodes WHERE id = ? AND cluster_id = ?",
+        sqlx::query_as::<_, (String, String, Option<String>, String)>(
+            "SELECT id, name, ip, role FROM nodes WHERE id = ? AND cluster_id = ?",
         )
         .bind(nid)
         .bind(cid)
         .fetch_all(state.pool())
         .await?
     } else {
-        sqlx::query_as::<_, (String, String, Option<String>)>(
-            "SELECT id, name, ip FROM nodes WHERE cluster_id = ?",
+        sqlx::query_as::<_, (String, String, Option<String>, String)>(
+            "SELECT id, name, ip, role FROM nodes WHERE cluster_id = ?",
         )
         .bind(cid)
         .fetch_all(state.pool())
         .await?
     };
 
-    let tmp = state.cfg().data_dir.join(format!("cfg-{}.yaml", Uuid::new_v4()));
-    std::fs::write(&tmp, config_yaml)?;
-
-    for (_id, name, ip) in nodes {
+    let mut failures = 0usize;
+    for (_id, name, ip, role) in nodes {
         append_log(log_path, &format!("apply config to {name}\n"))?;
-        if let Some(ip) = ip {
-            if state.cfg().pertiskctl.exists() {
-                let out = Command::new(&state.cfg().pertiskctl)
-                    .args([
-                        "-e",
-                        &format!("{ip}:50000"),
-                        "apply",
-                        "-f",
-                        &tmp.to_string_lossy(),
-                    ])
-                    .output()
-                    .await;
-                if let Ok(o) = out {
-                    append_log(log_path, &String::from_utf8_lossy(&o.stdout))?;
-                    append_log(log_path, &String::from_utf8_lossy(&o.stderr))?;
+        let Some(ip) = ip else {
+            append_log(log_path, "skip (no IP)\n")?;
+            failures += 1;
+            continue;
+        };
+        if !state.cfg().pertiskctl.exists() {
+            append_log(log_path, "pertiskctl missing; config update recorded\n")?;
+            continue;
+        }
+
+        let machine_type = if role == "controlplane" {
+            pertisk_config::MachineType::Controlplane
+        } else {
+            pertisk_config::MachineType::Worker
+        };
+        let node_yaml = pertisk_config::set_machine_type_yaml(config_yaml, machine_type)
+            .map_err(|e| anyhow::anyhow!("rewrite machine.type for {name}: {e}"))?;
+
+        let tmp = state
+            .cfg()
+            .data_dir
+            .join(format!("cfg-{}-{}.yaml", Uuid::new_v4(), name));
+        std::fs::write(&tmp, &node_yaml)?;
+        let out = Command::new(&state.cfg().pertiskctl)
+            .args([
+                "-e",
+                &format!("{ip}:50000"),
+                "apply",
+                "-f",
+                &tmp.to_string_lossy(),
+            ])
+            .output()
+            .await;
+        let _ = std::fs::remove_file(&tmp);
+
+        match out {
+            Ok(o) => {
+                append_log(log_path, &String::from_utf8_lossy(&o.stdout))?;
+                append_log(log_path, &String::from_utf8_lossy(&o.stderr))?;
+                if !o.status.success() {
+                    failures += 1;
+                    append_log(
+                        log_path,
+                        &format!("apply failed on {name} (exit {})\n", o.status),
+                    )?;
                 }
-            } else {
-                append_log(log_path, "pertiskctl missing; config update recorded\n")?;
+            }
+            Err(err) => {
+                failures += 1;
+                append_log(log_path, &format!("pertiskctl error on {name}: {err}\n"))?;
             }
         }
     }
-    let _ = std::fs::remove_file(&tmp);
+    if failures > 0 {
+        anyhow::bail!("{failures} node(s) failed to apply config");
+    }
     Ok(())
 }
 

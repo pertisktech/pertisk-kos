@@ -50,6 +50,7 @@ function NodesTable({
   onToggle,
   onToggleAll,
   onHardware,
+  onReboot,
 }) {
   const allSelected = selectable && nodes.length > 0 && nodes.every((n) => selected.has(n.id))
   const someSelected = selectable && nodes.some((n) => selected.has(n.id)) && !allSelected
@@ -75,7 +76,7 @@ function NodesTable({
           {showK8s && <th>K8s</th>}
           {showHw && <th>Hardware</th>}
           <th>Status</th>
-          {(onHardware || selectable) && <th className="col-actions" />}
+          {(onHardware || onReboot) && <th className="col-actions" />}
         </tr>
       </thead>
       <tbody>
@@ -115,17 +116,29 @@ function NodesTable({
               )}
               {showHw && <td className="hw-cell">{formatHw(n)}</td>}
               <td><span className={`badge ${n.status}`}>{n.status}</span></td>
-              {onHardware && (
+              {(onHardware || onReboot) && (
                 <td className="col-actions">
                   <div className="row-actions-cell">
-                    <button
-                      type="button"
-                      className="secondary btn-icon"
-                      onClick={() => onHardware(n)}
-                      title="Upgrade hardware"
-                    >
-                      <Icon name="cpu" size={14} />
-                    </button>
+                    {onReboot && (
+                      <button
+                        type="button"
+                        className="secondary btn-icon"
+                        onClick={() => onReboot(n)}
+                        title="Reboot guest"
+                      >
+                        <Icon name="reboot" size={14} />
+                      </button>
+                    )}
+                    {onHardware && (
+                      <button
+                        type="button"
+                        className="secondary btn-icon"
+                        onClick={() => onHardware(n)}
+                        title="Upgrade hardware"
+                      >
+                        <Icon name="cpu" size={14} />
+                      </button>
+                    )}
                   </div>
                 </td>
               )}
@@ -163,7 +176,12 @@ export default function ClusterDetail() {
   const [selectedJob, setSelectedJob] = useState(null)
   const [error, setError] = useState('')
   const [upgradeVer, setUpgradeVer] = useState('')
-  const [configYaml, setConfigYaml] = useState('# machine config yaml\n')
+  const [configYaml, setConfigYaml] = useState(`version: v1alpha1
+machine:
+  dashboard:
+    theme: catppuccin
+    border: bordered
+`)
   const [followLog, setFollowLog] = useState(true)
   const [selectedNodes, setSelectedNodes] = useState(() => new Set())
   const [addOpen, setAddOpen] = useState(false)
@@ -288,8 +306,13 @@ export default function ClusterDetail() {
     })
     if (!ok) return
     try {
-      await api(`/clusters/${id}`, { method: 'DELETE' })
-      nav('/clusters')
+      const res = await api(`/clusters/${id}`, { method: 'DELETE' })
+      // Async delete leaves a "deleting" row until the job finishes — list polls it off.
+      if (res?.job_id) {
+        nav(`/clusters?deleting=${id}`)
+      } else {
+        nav('/clusters')
+      }
     } catch (err) {
       setError(err.message)
     }
@@ -364,6 +387,58 @@ export default function ClusterDetail() {
     setError('')
     try {
       const res = await api(`/clusters/${id}/nodes/bulk-delete`, {
+        method: 'POST',
+        body: { node_ids: picked.map((n) => n.id) },
+      })
+      setSelectedNodes(new Set())
+      if (res?.job_id) selectJob(res.job_id)
+      setTab('jobs')
+      load()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function rebootNode(node) {
+    const ok = await confirm({
+      title: 'Reboot node',
+      message: `Reboot “${node.name}”?\n\nThe guest OS will restart via pertiskd.`,
+      confirmLabel: 'Reboot',
+      tone: 'primary',
+    })
+    if (!ok) return
+    setBusy(true)
+    setError('')
+    try {
+      const res = await api(`/clusters/${id}/nodes/${node.id}/reboot`, { method: 'POST' })
+      if (res?.job_id) selectJob(res.job_id)
+      setTab('jobs')
+      load()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function rebootSelected() {
+    const nodes = data?.nodes || []
+    const picked = nodes.filter((n) => selectedNodes.has(n.id))
+    if (picked.length === 0) return
+    const names = picked.map((n) => n.name).join(', ')
+    const ok = await confirm({
+      title: picked.length === 1 ? 'Reboot node' : `Reboot ${picked.length} nodes`,
+      message: `Reboot guest OS on:\n${names}`,
+      confirmLabel: picked.length === 1 ? 'Reboot' : `Reboot ${picked.length}`,
+      tone: 'primary',
+    })
+    if (!ok) return
+    setBusy(true)
+    setError('')
+    try {
+      const res = await api(`/clusters/${id}/nodes/bulk-reboot`, {
         method: 'POST',
         body: { node_ids: picked.map((n) => n.id) },
       })
@@ -642,14 +717,24 @@ export default function ClusterDetail() {
                 </div>
                 <div className="row-actions">
                   {selCount > 0 && (
-                    <button
-                      type="button"
-                      className="danger btn-icon"
-                      onClick={removeSelected}
-                      disabled={busy}
-                    >
-                      <Icon name="trash" size={14} /> Remove ({selCount})
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="secondary btn-icon"
+                        onClick={rebootSelected}
+                        disabled={busy}
+                      >
+                        <Icon name="reboot" size={14} /> Reboot ({selCount})
+                      </button>
+                      <button
+                        type="button"
+                        className="danger btn-icon"
+                        onClick={removeSelected}
+                        disabled={busy}
+                      >
+                        <Icon name="trash" size={14} /> Remove ({selCount})
+                      </button>
+                    </>
                   )}
                   <button type="button" className="btn-icon" onClick={openAddModal}>
                     <Icon name="plus" size={16} /> Add node
@@ -667,6 +752,7 @@ export default function ClusterDetail() {
                 onToggle={toggleNode}
                 onToggleAll={toggleAll}
                 onHardware={openHardware}
+                onReboot={rebootNode}
               />
               {nodes.length === 0 && (
                 <p className="muted empty-hint">Nodes appear after the create job finishes.</p>
@@ -677,7 +763,12 @@ export default function ClusterDetail() {
           {tab === 'config' && (
             <div className="tab-body tab-body-fill">
               <h3 className="section-label">Machine config</h3>
-              <p className="muted">Apply YAML to all nodes via pertiskctl (queued job).</p>
+              <p className="muted">
+                Apply YAML to all nodes via pertiskctl. Partial updates merge with each
+                node&apos;s on-disk config (cluster / network preserved).{' '}
+                <code className="mono-inline">machine.type</code> is set per node role
+                so workers are not flipped to controlplane.
+              </p>
               <textarea
                 className="config-editor"
                 value={configYaml}

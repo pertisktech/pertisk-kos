@@ -22,6 +22,8 @@ pub enum ConfigError {
     Parse(#[from] serde_yaml::Error),
     #[error("unsupported version: {0}")]
     UnsupportedVersion(String),
+    #[error("{0}")]
+    Msg(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -299,6 +301,27 @@ impl MachineConfig {
         Ok(cfg)
     }
 
+    /// Parse an apply payload, deep-merging onto the previous on-disk YAML when
+    /// present. Partial updates (e.g. only `machine.dashboard`) keep
+    /// `machine.type`, `network`, `cluster`, and other fields so kubelet is
+    /// not left without a cluster block.
+    pub fn from_yaml_merged(incoming: &str, previous_yaml: Option<&str>) -> Result<Self, ConfigError> {
+        let patch: serde_yaml::Value = serde_yaml::from_str(incoming)?;
+        let merged = match previous_yaml {
+            Some(prev) => {
+                let mut base: serde_yaml::Value = serde_yaml::from_str(prev)?;
+                deep_merge_yaml(&mut base, patch);
+                base
+            }
+            None => patch,
+        };
+        let cfg: Self = serde_yaml::from_value(merged)?;
+        if cfg.version != CONFIG_VERSION {
+            return Err(ConfigError::UnsupportedVersion(cfg.version));
+        }
+        Ok(cfg)
+    }
+
     /// Keep an existing on-disk dashboard theme/border when the new YAML omits
     /// the section; clear size/utf8 pins so the console probe can run (a stale
     /// `cols`/`rows` that does not match the pane blanks Proxmox Serial).
@@ -344,6 +367,54 @@ impl MachineConfig {
             cluster: None,
         }
     }
+}
+
+/// Recursively merge `patch` into `base` (maps only). Sequences and scalars in
+/// `patch` replace the corresponding `base` value.
+fn deep_merge_yaml(base: &mut serde_yaml::Value, patch: serde_yaml::Value) {
+    match (base, patch) {
+        (serde_yaml::Value::Mapping(base_map), serde_yaml::Value::Mapping(patch_map)) => {
+            for (k, v) in patch_map {
+                match base_map.get_mut(&k) {
+                    Some(existing) => deep_merge_yaml(existing, v),
+                    None => {
+                        base_map.insert(k, v);
+                    }
+                }
+            }
+        }
+        (base_slot, patch_val) => {
+            *base_slot = patch_val;
+        }
+    }
+}
+
+/// Set `machine.type` on a YAML document (used when pushing one draft to mixed
+/// control-plane / worker nodes).
+pub fn set_machine_type_yaml(yaml: &str, machine_type: MachineType) -> Result<String, ConfigError> {
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+    let ty = match machine_type {
+        MachineType::Controlplane => "controlplane",
+        MachineType::Worker => "worker",
+    };
+    let root = doc
+        .as_mapping_mut()
+        .ok_or_else(|| ConfigError::Msg("root must be a mapping".into()))?;
+    if !root.contains_key(serde_yaml::Value::from("machine")) {
+        root.insert(
+            serde_yaml::Value::from("machine"),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+    }
+    let machine = root
+        .get_mut(serde_yaml::Value::from("machine"))
+        .and_then(|m| m.as_mapping_mut())
+        .ok_or_else(|| ConfigError::Msg("machine must be a mapping".into()))?;
+    machine.insert(
+        serde_yaml::Value::from("type"),
+        serde_yaml::Value::from(ty),
+    );
+    Ok(serde_yaml::to_string(&doc)?)
 }
 
 #[cfg(test)]
@@ -595,6 +666,62 @@ machine:
         assert_eq!(
             incoming.machine.dashboard.unwrap().theme.as_deref(),
             Some("wild-cherry")
+        );
+    }
+
+    #[test]
+    fn from_yaml_merged_preserves_cluster_and_type() {
+        let previous = r#"
+version: v1alpha1
+machine:
+  type: worker
+  network:
+    hostname: wk-1
+    interfaces:
+      - interface: eth0
+        dhcp: true
+cluster:
+  endpoint: https://10.1.1.210:6443
+  token: abc.def
+  cni: none
+"#;
+        let patch = r#"
+version: v1alpha1
+machine:
+  dashboard:
+    theme: catppuccin
+    border: bordered
+"#;
+        let cfg = MachineConfig::from_yaml_merged(patch, Some(previous)).unwrap();
+        assert_eq!(cfg.machine.machine_type, MachineType::Worker);
+        assert_eq!(
+            cfg.machine.network.hostname.as_deref(),
+            Some("wk-1")
+        );
+        assert_eq!(
+            cfg.cluster.as_ref().map(|c| c.endpoint.as_str()),
+            Some("https://10.1.1.210:6443")
+        );
+        let dash = cfg.machine.dashboard.unwrap();
+        assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
+        assert_eq!(dash.border.as_deref(), Some("bordered"));
+    }
+
+    #[test]
+    fn set_machine_type_yaml_overrides() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: controlplane
+  dashboard:
+    theme: nord
+"#;
+        let out = set_machine_type_yaml(yaml, MachineType::Worker).unwrap();
+        let cfg = MachineConfig::from_yaml(&out).unwrap();
+        assert_eq!(cfg.machine.machine_type, MachineType::Worker);
+        assert_eq!(
+            cfg.machine.dashboard.unwrap().theme.as_deref(),
+            Some("nord")
         );
     }
 }
