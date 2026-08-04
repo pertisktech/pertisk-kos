@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+http = "1"
 pertisk-bootstrap = { workspace = true }
 pertisk-config = { workspace = true }
 pertisk-disk = { workspace = true }
@@ -17,6 +18,7 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+tower = "0.5"
 tracing = { workspace = true }
 
 [dev-dependencies]

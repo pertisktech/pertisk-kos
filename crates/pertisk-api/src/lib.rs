@@ -1,5 +1,6 @@
 //! Management gRPC API for Pertisk KOS (M4).
 
+mod api_metrics;
 mod logs;
 mod metrics;
 mod server;

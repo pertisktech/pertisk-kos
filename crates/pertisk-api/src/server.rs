@@ -468,6 +468,7 @@ pub async fn serve(
     }
 
     builder
+        .layer(crate::api_metrics::ApiMetricsLayer)
         .add_service(MachineServiceServer::new(svc))
         .serve(listen)
         .await?;

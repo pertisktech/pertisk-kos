@@ -1100,6 +1100,57 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   gap: 0.3rem;
 }
 
+/* Node detail */
+.breadcrumb a { color: var(--accent); text-decoration: none; }
+.breadcrumb a:hover { color: var(--accent-hover); }
+.node-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 500;
+}
+.node-link:hover { color: var(--accent-hover); text-decoration: underline; }
+.node-info-stats .value { font-size: 1.05rem; word-break: break-all; }
+.health-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.health-pill {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 7rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.health-pill-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.health-pill-value {
+  font-family: var(--mono);
+  font-size: 0.95rem;
+}
+.health-pill.up { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+.health-pill.up .health-pill-value { color: var(--success); }
+.health-pill.down { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.health-pill.down .health-pill-value { color: var(--danger); }
+.health-pill.unknown .health-pill-value { color: var(--text-muted); }
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.chart-card { margin-bottom: 0; }
+.chart-wrap { width: 100%; min-height: 220px; }
+.chart-error { margin: 0 0 0.5rem; color: var(--warning); }
+.chart-footnote { margin: 0.5rem 0 0; font-size: 0.8rem; }
+
 @media (max-width: 900px) {
   .overview-grid { grid-template-columns: 1fr; }
 }
@@ -1110,4 +1161,5 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   .form-grid, .panel-grid { grid-template-columns: 1fr; }
   .jobs-layout { grid-template-columns: 1fr; }
   .tabs { overflow-x: auto; }
+  .chart-grid { grid-template-columns: 1fr; }
 }

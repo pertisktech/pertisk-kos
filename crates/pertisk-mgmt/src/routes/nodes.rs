@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,11 @@ pub fn routes() -> Router<AppState> {
         .route("/clusters/{id}/nodes", get(list).post(add))
         .route("/clusters/{id}/nodes/bulk-delete", axum::routing::post(bulk_delete))
         .route("/clusters/{id}/nodes/bulk-reboot", post(bulk_reboot))
-        .route("/clusters/{cid}/nodes/{nid}", delete(remove))
+        .route(
+            "/clusters/{cid}/nodes/{nid}",
+            get(get_one).delete(remove),
+        )
+        .route("/clusters/{cid}/nodes/{nid}/status", get(status))
         .route("/clusters/{cid}/nodes/{nid}/reboot", post(reboot))
         .route(
             "/clusters/{cid}/nodes/{nid}/hardware",
@@ -97,6 +101,43 @@ async fn list(
     .fetch_all(state.pool())
     .await?;
     Ok(Json(rows))
+}
+
+async fn get_one(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path((cid, nid)): Path<(String, String)>,
+) -> ApiResult<Json<NodeOut>> {
+    let row = sqlx::query_as::<_, NodeOut>(&format!(
+        "{NODE_SELECT} WHERE id = ? AND cluster_id = ?"
+    ))
+    .bind(&nid)
+    .bind(&cid)
+    .fetch_optional(state.pool())
+    .await?;
+    let Some(node) = row else {
+        return Err(AppError::NotFound);
+    };
+    Ok(Json(node))
+}
+
+async fn status(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path((cid, nid)): Path<(String, String)>,
+) -> ApiResult<Json<crate::node_status::NodeStatusOut>> {
+    let row = sqlx::query_as::<_, NodeOut>(&format!(
+        "{NODE_SELECT} WHERE id = ? AND cluster_id = ?"
+    ))
+    .bind(&nid)
+    .bind(&cid)
+    .fetch_optional(state.pool())
+    .await?;
+    let Some(node) = row else {
+        return Err(AppError::NotFound);
+    };
+    let out = crate::node_status::gather(&state, node, &cid).await;
+    Ok(Json(out))
 }
 
 async fn add(

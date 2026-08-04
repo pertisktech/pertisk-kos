@@ -2,7 +2,7 @@ mod auth_routes;
 mod clusters;
 mod health;
 mod meta;
-mod nodes;
+pub(crate) mod nodes;
 mod providers;
 
 use axum::extract::{FromRequestParts, Request, State};

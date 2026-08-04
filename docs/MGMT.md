@@ -34,8 +34,24 @@ cd web/mgmt-ui && npm run dev   # http://127.0.0.1:5173 proxies /api → :8080
 | `MGMT_SECRET_KEY` | JWT + AES key (hex 64 chars or any string) |
 | `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET` | SSO |
 | `MGMT_PUBLIC_URL` | Public base URL for OIDC callback |
+| `MGMT_METRICS_TOKEN` | Optional Bearer when scraping guest `:50001/metrics` |
+| `MGMT_PERTISKCTL` | Path to `pertiskctl` (default `./out/bin/pertiskctl`) |
 
 Auth0 role claim: `https://pertisk.io/role` or `role` → `admin` \| `operator` \| `viewer`.
+
+## Node detail
+
+Cluster → Nodes → click a node name → `/clusters/:id/nodes/:nid`.
+
+The page shows inventory (VMID, IPs, K8s, hardware), live Machine Health, and charts:
+
+| Source | How mgmt collects it |
+|--------|----------------------|
+| Health | `pertiskctl -e {ip}:50000 health` |
+| Gauges + API metrics | HTTP scrape `http://{ip}:50001/metrics` (new series: `pertisk_api_requests_total`, duration sum/count) |
+| CPU / memory % | `kubectl top node` via cluster kubeconfig (needs metrics-server) |
+
+Charts poll every ~4s and keep ~60 samples **in the browser** only — refresh clears history. Soft errors (unreachable guest, missing metrics-server) show under each section without failing the page.
 
 ## Proxmox provider
 

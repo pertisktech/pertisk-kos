@@ -41,6 +41,7 @@ function formatHw(node) {
 
 function NodesTable({
   nodes,
+  clusterId,
   dualStack,
   showK8s = true,
   showHw = false,
@@ -98,7 +99,15 @@ function NodesTable({
                   />
                 </td>
               )}
-              <td>{n.name}</td>
+              <td>
+                {clusterId ? (
+                  <Link className="node-link" to={`/clusters/${clusterId}/nodes/${n.id}`}>
+                    {n.name}
+                  </Link>
+                ) : (
+                  n.name
+                )}
+              </td>
               <td>
                 <span className="badge">{n.role === 'controlplane' ? 'CP' : 'worker'}</span>
               </td>
@@ -744,6 +753,7 @@ machine:
 
               <NodesTable
                 nodes={nodes}
+                clusterId={id}
                 dualStack={dualStack}
                 showK8s
                 showHw
@@ -817,6 +827,7 @@ machine:
                 ) : (
                   <NodesTable
                     nodes={nodes}
+                    clusterId={id}
                     dualStack={dualStack}
                     showK8s
                     showHw

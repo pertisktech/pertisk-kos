@@ -129,7 +129,7 @@ fn render_metrics(state: &SharedState) -> String {
 
     let scrapes = METRICS_SCRAPES.load(Ordering::Relaxed);
 
-    format!(
+    let mut body = format!(
         r#"# HELP pertisk_node_ready 1 if the node management plane considers itself ready
 # TYPE pertisk_node_ready gauge
 pertisk_node_ready {ready}
@@ -166,7 +166,9 @@ pertisk_info{{version="{version}",api="{api}",platform="{platform}"}} 1
         version = st.version,
         api = st.api_version,
         platform = st.platform,
-    )
+    );
+    crate::api_metrics::snapshot().render_prometheus(&mut body);
+    body
 }
 
 #[cfg(test)]
@@ -182,6 +184,8 @@ mod tests {
         let body = render_metrics(&st);
         assert!(body.contains("pertisk_node_ready"));
         assert!(body.contains("pertisk_info{"));
+        assert!(body.contains("pertisk_api_requests_total"));
+        assert!(body.contains("pertisk_api_request_duration_seconds_sum"));
     }
 
     #[test]

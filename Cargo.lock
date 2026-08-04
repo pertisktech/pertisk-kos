@@ -2042,6 +2042,7 @@ name = "pertisk-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "http",
  "pertisk-bootstrap",
  "pertisk-config",
  "pertisk-disk",
@@ -2052,6 +2053,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tonic",
+ "tower 0.5.3",
  "tracing",
 ]
 

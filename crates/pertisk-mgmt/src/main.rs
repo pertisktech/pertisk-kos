@@ -7,6 +7,7 @@ mod db;
 mod error;
 mod jobs;
 mod kubeconfig;
+mod node_status;
 mod node_sync;
 mod proxmox;
 mod rbac;

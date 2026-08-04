@@ -7,6 +7,7 @@ import Providers from './pages/Providers'
 import Clusters from './pages/ClusterList'
 import ClusterNew from './pages/ClusterNew'
 import ClusterDetail from './pages/ClusterDetail'
+import NodeDetail from './pages/NodeDetail'
 import Settings from './pages/Settings'
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
             <Route path="/clusters" element={<Clusters />} />
             <Route path="/clusters/new" element={<ClusterNew />} />
             <Route path="/clusters/:id" element={<ClusterDetail />} />
+            <Route path="/clusters/:id/nodes/:nid" element={<NodeDetail />} />
             <Route path="/providers" element={<Providers />} />
             <Route path="/settings" element={<Settings />} />
           </Route>

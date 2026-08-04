@@ -24,6 +24,8 @@ pub struct Config {
     #[allow(dead_code)]
     pub auth0_audience: Option<String>,
     pub public_url: String,
+    /// Optional Bearer for scraping guest `:50001/metrics`.
+    pub metrics_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +78,9 @@ impl Config {
             .unwrap_or(86400);
         let public_url = std::env::var("MGMT_PUBLIC_URL")
             .unwrap_or_else(|_| format!("http://{}", listen));
+        let metrics_token = std::env::var("MGMT_METRICS_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
 
         let auth0_domain = std::env::var("AUTH0_DOMAIN").ok().filter(|s| !s.is_empty());
         let auth0_client_id = std::env::var("AUTH0_CLIENT_ID").ok().filter(|s| !s.is_empty());
@@ -105,6 +110,7 @@ impl Config {
             auth0_client_secret,
             auth0_audience,
             public_url,
+            metrics_token,
         })
     }
 
