@@ -50,12 +50,12 @@ MGMT_ADMIN_PASSWORD=admin cargo run -p pertisk-mgmt -- --listen 127.0.0.1:8080
 cd web/mgmt-ui && npm run dev   # http://127.0.0.1:5173 proxies /api → :8080
 ```
 
-Deploy as linux/amd64 RPM (Docker build):
+Deploy as linux/amd64 RPM (Docker build). Full steps (images + `pertisk-mgmt`→PVE SSH): [docs/MGMT.md](./docs/MGMT.md#rpm-deploy-linuxamd64).
 
 ```bash
-make rpm                 # alias for make mgmt-rpm
-# → out/rpm/pertisk-mgmt-*.rpm
-# sudo rpm -Uvh out/rpm/pertisk-mgmt-*.rpm && sudo systemctl enable --now pertisk-mgmt
+make rpm VERSION=0.1.3   # → out/rpm/pertisk-mgmt-*.rpm
+scp out/rpm/pertisk-mgmt-*.rpm almalinux@10.1.1.12:/tmp/
+ssh almalinux@10.1.1.12 'sudo rpm -Uvh /tmp/pertisk-mgmt-*-1.x86_64.rpm && sudo systemctl enable --now pertisk-mgmt'
 ```
 
 ## Quick start (mTLS + upgrade)

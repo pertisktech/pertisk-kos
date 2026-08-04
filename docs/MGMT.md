@@ -85,35 +85,98 @@ docker run -p 8080:8080 -e MGMT_ADMIN_PASSWORD=admin -e MGMT_SECRET_KEY=dev \
   -v pertisk-mgmt-data:/data pertisk-mgmt
 ```
 
-## RPM (linux/amd64)
+## RPM deploy (linux/amd64)
 
-Package the management API + embedded UI for RHEL/Rocky/Alma (built via Docker for `linux/amd64`):
+Package the management API + embedded UI for RHEL/Rocky/Alma (Docker build for `linux/amd64`). Installs `/usr/bin/pertisk-mgmt`, `/usr/bin/pertiskctl`, scripts under `/usr/share/pertisk-mgmt/`, systemd unit (`User=pertisk-mgmt`), and data dir `/var/lib/pertisk-mgmt`. Requires Docker on the **build** host; `kubectl` is recommended on the **target** for node sync / top.
+
+### 1. Build
 
 ```bash
-make mgmt-rpm          # or: make rpm
+make rpm VERSION=0.1.3          # or: make mgmt-rpm
 # → out/rpm/pertisk-mgmt-<version>-1.x86_64.rpm
-
-sudo rpm -Uvh out/rpm/pertisk-mgmt-*.rpm
-sudo systemctl enable --now pertisk-mgmt
-# edit /etc/pertisk-mgmt/pertisk-mgmt.env (set MGMT_SECRET_KEY), then:
-sudo systemctl restart pertisk-mgmt
-# open http://<host>:8080
 ```
 
-Installs `/usr/bin/pertisk-mgmt`, `/usr/bin/pertiskctl`, scripts under `/usr/share/pertisk-mgmt/`, systemd unit, and data dir `/var/lib/pertisk-mgmt`. Requires Docker on the build host; `kubectl` is recommended on the target for node sync / top.
+### 2. Install on the mgmt host
 
-After install, set a stable `MGMT_SECRET_KEY` and ensure `MGMT_LAB_UP` points at the packaged script (default in env). Create jobs use `--skip-build` and look for qcow2 under `/var/lib/pertisk-mgmt/images` (`PERTISK_IMAGES_DIR` / `MGMT_IMAGES_DIR`):
+Example target: AlmaLinux at `almalinux@10.1.1.12`.
 
 ```bash
-sudo mkdir -p /var/lib/pertisk-mgmt/images
-sudo cp out/pertisk-cloud-amd64*.qcow2 /var/lib/pertisk-mgmt/images/
-# Prefer role-sized images matching UI disk sizes (e.g. *-50g.qcow2, *-75g.qcow2).
-# Base pertisk-cloud-amd64.qcow2 is used as fallback when sized files are missing.
-# optional: PROXMOX_DISK=... and PROXMOX_SSH=root@<pve> in pertisk-mgmt.env
-sudo chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images
+MGMT_HOST=almalinux@10.1.1.12
+RPM=out/rpm/pertisk-mgmt-0.1.3-1.x86_64.rpm
+
+scp "$RPM" "${MGMT_HOST}:/tmp/"
+ssh "$MGMT_HOST" 'sudo rpm -Uvh /tmp/pertisk-mgmt-*-1.x86_64.rpm'
+ssh "$MGMT_HOST" 'sudo systemctl enable --now pertisk-mgmt'
 ```
 
-Mgmt auto-sets `PROXMOX_SSH=root@<host>` from the provider URL when the host is an IP. Ensure the `pertisk-mgmt` user can SSH to PVE (key in `~pertisk-mgmt/.ssh` or agent) for disk import and MAC→IP.
+`rpm -Uvh` may write `/etc/pertisk-mgmt/pertisk-mgmt.env.rpmnew` when the env file already exists — keep your edited env; merge new keys from `.rpmnew` if needed.
+
+### 3. Configure env
+
+On the mgmt host, edit `/etc/pertisk-mgmt/pertisk-mgmt.env`:
+
+```bash
+sudoedit /etc/pertisk-mgmt/pertisk-mgmt.env
+# set a stable MGMT_SECRET_KEY (changing it invalidates encrypted provider secrets)
+# MGMT_LAB_UP=/usr/share/pertisk-mgmt/scripts/proxmox-lab-up.sh   # RPM default
+# optional: PERTISK_IMAGES_DIR=/var/lib/pertisk-mgmt/images
+# optional: PROXMOX_SSH=root@10.1.1.197   # else auto-derived from provider URL IP
+sudo systemctl restart pertisk-mgmt
+# open http://<mgmt-host>:8080
+```
+
+### 4. Cloud images (required for Create Cluster)
+
+Create jobs always pass `--skip-build`. Lab-up looks under `/var/lib/pertisk-mgmt/images` (`PERTISK_IMAGES_DIR` / `MGMT_IMAGES_DIR`), then falls back to a base qcow2 if role-sized files are missing.
+
+```bash
+# On the build machine (after make cloud / lab-up once):
+MGMT_HOST=almalinux@10.1.1.12
+scp out/pertisk-cloud-amd64.qcow2 \
+    out/pertisk-cloud-amd64-50g.qcow2 \
+    out/pertisk-cloud-amd64-75g.qcow2 \
+    "${MGMT_HOST}:/tmp/"
+
+ssh "$MGMT_HOST" 'sudo bash -c "
+  mkdir -p /var/lib/pertisk-mgmt/images
+  mv /tmp/pertisk-cloud-amd64*.qcow2 /var/lib/pertisk-mgmt/images/
+  chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images
+  ls -lh /var/lib/pertisk-mgmt/images
+"'
+```
+
+Prefer role-sized images matching UI disk sizes (`*-50g.qcow2`, `*-75g.qcow2`). Base `pertisk-cloud-amd64.qcow2` is the fallback.
+
+### 5. SSH from `pertisk-mgmt` → Proxmox (required for disk import)
+
+Lab-up uses `PROXMOX_SSH` (`scp` + `qm importdisk`, MAC→ARP). The service runs as **`pertisk-mgmt`**, not your login user. Auto-sets `PROXMOX_SSH=root@<ip>` when the provider URL host is an IP.
+
+```bash
+MGMT_HOST=almalinux@10.1.1.12
+PVE=root@10.1.1.197   # match your Proxmox provider URL
+
+# Generate a key for the service user (once)
+ssh "$MGMT_HOST" 'sudo -u pertisk-mgmt -H bash -c "
+  mkdir -p ~/.ssh && chmod 700 ~/.ssh
+  [[ -f ~/.ssh/id_ed25519 ]] || ssh-keygen -t ed25519 -N \"\" -f ~/.ssh/id_ed25519 -C pertisk-mgmt@mgmt
+  cat ~/.ssh/id_ed25519.pub
+"'
+
+# Install that pubkey on PVE (from a host that already has root SSH to PVE)
+PUB=$(ssh "$MGMT_HOST" 'sudo -u pertisk-mgmt -H cat /var/lib/pertisk-mgmt/.ssh/id_ed25519.pub')
+ssh "$PVE" "grep -qxF '$PUB' /root/.ssh/authorized_keys || echo '$PUB' >> /root/.ssh/authorized_keys"
+
+# Verify
+ssh "$MGMT_HOST" 'sudo -u pertisk-mgmt -H ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new '"$PVE"' hostname'
+```
+
+Without this step, create fails at `SCP + qm importdisk` with `Connection closed` / `Permission denied`.
+
+### 6. UI checklist
+
+1. Providers → add Proxmox URL/token/node/storage (`Insecure TLS` if lab self-signed).
+2. Clusters → Create (VIP required when control planes > 1).
+3. Watch job logs + Nodes tab (`provisioning` → IPs as VMs come up).
 
 ## RBAC
 
