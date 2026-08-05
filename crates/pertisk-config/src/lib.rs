@@ -303,7 +303,7 @@ impl CniMode {
 
 impl MachineConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, ConfigError> {
-        let cfg: Self = serde_yaml::from_str(yaml)?;
+        let cfg: Self = serde_yaml::from_value(parse_yaml_value(yaml)?)?;
         if cfg.version != CONFIG_VERSION {
             return Err(ConfigError::UnsupportedVersion(cfg.version));
         }
@@ -315,10 +315,10 @@ impl MachineConfig {
     /// `machine.type`, `network`, `cluster`, and other fields so kubelet is
     /// not left without a cluster block.
     pub fn from_yaml_merged(incoming: &str, previous_yaml: Option<&str>) -> Result<Self, ConfigError> {
-        let patch: serde_yaml::Value = serde_yaml::from_str(incoming)?;
+        let patch = parse_yaml_value(incoming)?;
         let merged = match previous_yaml {
             Some(prev) => {
-                let mut base: serde_yaml::Value = serde_yaml::from_str(prev)?;
+                let mut base = parse_yaml_value(prev)?;
                 deep_merge_yaml(&mut base, patch);
                 base
             }
@@ -398,10 +398,189 @@ fn deep_merge_yaml(base: &mut serde_yaml::Value, patch: serde_yaml::Value) {
     }
 }
 
+/// Parse YAML into a [`serde_yaml::Value`], tolerating duplicate mapping keys
+/// (last wins). Editors often accidentally duplicate `dashboard.border`.
+fn parse_yaml_value(yaml: &str) -> Result<serde_yaml::Value, ConfigError> {
+    match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let msg = e.to_string();
+            if !msg.contains("duplicate entry") {
+                return Err(ConfigError::Parse(e));
+            }
+            let cleaned = dedup_block_yaml_keys(yaml);
+            serde_yaml::from_str(&cleaned).map_err(|e2| {
+                ConfigError::Msg(format!(
+                    "yaml parse failed after deduping duplicate keys ({msg}): {e2}"
+                ))
+            })
+        }
+    }
+}
+
+/// Block-style YAML: when serde_yaml reports a duplicate mapping key, drop the
+/// **earlier** occurrence (keep the later value) and retry. Preserves lists and
+/// unrelated structure — only the conflicting key line (+ its nested block) is
+/// removed.
+fn dedup_block_yaml_keys(input: &str) -> String {
+    let mut current = input.to_string();
+    for _ in 0..64 {
+        match serde_yaml::from_str::<serde_yaml::Value>(&current) {
+            Ok(_) => return current,
+            Err(e) => {
+                let msg = e.to_string();
+                let Some(key) = dup_key_from_error(&msg) else {
+                    return current;
+                };
+                let Some(line_no) = dup_line_from_error(&msg) else {
+                    return current;
+                };
+                match remove_earlier_key_occurrence(&current, &key, line_no) {
+                    Some(next) if next != current => current = next,
+                    _ => return current,
+                }
+            }
+        }
+    }
+    current
+}
+
+fn dup_key_from_error(msg: &str) -> Option<String> {
+    // duplicate entry with key "border"
+    let start = msg.find("key \"")?;
+    let rest = &msg[start + 5..];
+    let end = rest.find('"')?;
+    let key = &rest[..end];
+    (!key.is_empty()).then(|| key.to_string())
+}
+
+fn dup_line_from_error(msg: &str) -> Option<usize> {
+    // at line 4 column 5
+    let start = msg.find("at line ")?;
+    let rest = &msg[start + 8..];
+    let end = rest.find(" column")?;
+    rest[..end].parse().ok()
+}
+
+fn line_indent(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ').count()
+}
+
+/// `hint_line` is 1-based (from serde_yaml). It may point at the first or
+/// second duplicate; we collect every same-indent `key:` sibling and drop all
+/// but the **last** (key line + nested block).
+fn remove_earlier_key_occurrence(yaml: &str, key: &str, hint_line: usize) -> Option<String> {
+    let lines: Vec<&str> = yaml.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let needle = format!("{key}:");
+    let is_key = |line: &str| {
+        let t = line.trim_start();
+        t == needle || t.starts_with(&format!("{needle} "))
+    };
+
+    let hint_idx = hint_line
+        .saturating_sub(1)
+        .min(lines.len().saturating_sub(1));
+
+    // Prefer indent from a real key line near the hint.
+    let indent = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_key(l))
+        .map(|(i, l)| (i.abs_diff(hint_idx), line_indent(l)))
+        .min_by_key(|(dist, _)| *dist)
+        .map(|(_, ind)| ind)?;
+
+    let indices: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, l)| line_indent(l) == indent && is_key(l) && same_mapping_parent(&lines, *i, hint_idx, indent))
+        .map(|(i, _)| i)
+        .collect();
+
+    if indices.len() < 2 {
+        return None;
+    }
+
+    // Drop every occurrence except the last.
+    let keep = *indices.last()?;
+    let mut drop_ranges: Vec<(usize, usize)> = Vec::new();
+    for &start in &indices {
+        if start == keep {
+            continue;
+        }
+        let end = key_block_end(&lines, start, indent);
+        drop_ranges.push((start, end));
+    }
+    drop_ranges.sort_by_key(|(s, _)| *s);
+
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut i = 0usize;
+    let mut ri = 0usize;
+    while i < lines.len() {
+        if ri < drop_ranges.len() && i == drop_ranges[ri].0 {
+            i = drop_ranges[ri].1;
+            ri += 1;
+            continue;
+        }
+        out.push(lines[i]);
+        i += 1;
+    }
+
+    let mut s = out.join("\n");
+    if yaml.ends_with('\n') {
+        s.push('\n');
+    }
+    Some(s)
+}
+
+/// True when `a` and `b` share the same parent mapping (no intervening line
+/// with indent < key_indent between them).
+fn same_mapping_parent(lines: &[&str], a: usize, b: usize, key_indent: usize) -> bool {
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    for line in &lines[lo..=hi] {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        if line_indent(line) < key_indent {
+            return false;
+        }
+    }
+    true
+}
+
+fn key_block_end(lines: &[&str], start: usize, key_indent: usize) -> usize {
+    let mut end = start + 1;
+    while end < lines.len() {
+        let line = lines[end];
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            let mut j = end + 1;
+            while j < lines.len()
+                && (lines[j].trim().is_empty() || lines[j].trim_start().starts_with('#'))
+            {
+                j += 1;
+            }
+            if j < lines.len() && line_indent(lines[j]) > key_indent {
+                end = j;
+                continue;
+            }
+            break;
+        }
+        if line_indent(line) > key_indent {
+            end += 1;
+            continue;
+        }
+        break;
+    }
+    end
+}
+
 /// Set `machine.type` on a YAML document (used when pushing one draft to mixed
 /// control-plane / worker nodes).
 pub fn set_machine_type_yaml(yaml: &str, machine_type: MachineType) -> Result<String, ConfigError> {
-    let mut doc: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+    let mut doc = parse_yaml_value(yaml)?;
     let ty = match machine_type {
         MachineType::Controlplane => "controlplane",
         MachineType::Worker => "worker",
@@ -767,5 +946,54 @@ machine:
             cfg.machine.dashboard.unwrap().theme.as_deref(),
             Some("nord")
         );
+    }
+
+    #[test]
+    fn set_machine_type_dedups_duplicate_dashboard_border() {
+        let yaml = r#"version: v1alpha1
+machine:
+  dashboard:
+    border: bordered
+    theme: catppuccin
+    border: bordered
+    mgmt_url: https://ptkos.apps.thaidevops.co
+"#;
+        let out = set_machine_type_yaml(yaml, MachineType::Controlplane).unwrap();
+        let cfg = MachineConfig::from_yaml(&out).unwrap();
+        assert_eq!(cfg.machine.machine_type, MachineType::Controlplane);
+        let dash = cfg.machine.dashboard.unwrap();
+        assert_eq!(dash.border.as_deref(), Some("bordered"));
+        assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
+        assert_eq!(
+            dash.mgmt_url.as_deref(),
+            Some("https://ptkos.apps.thaidevops.co")
+        );
+        // Round-trip must not reintroduce duplicates.
+        assert_eq!(out.matches("border:").count(), 1);
+    }
+
+    #[test]
+    fn from_yaml_preserves_gen_style_lists_after_dedup_path() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: worker
+  network:
+    hostname: wk-1
+    interfaces:
+    - interface: eth0
+      dhcp: true
+      addresses: []
+      gateway: null
+    nameservers:
+    - 1.1.1.1
+  dashboard:
+    theme: catppuccin
+    border: bordered
+"#;
+        let cfg = MachineConfig::from_yaml(yaml).unwrap();
+        assert_eq!(cfg.machine.network.interfaces.len(), 1);
+        assert_eq!(cfg.machine.network.interfaces[0].interface, "eth0");
+        assert_eq!(cfg.machine.network.nameservers, vec!["1.1.1.1"]);
     }
 }

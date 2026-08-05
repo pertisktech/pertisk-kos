@@ -174,6 +174,26 @@ function defaultsForRole(cluster, role) {
   }
 }
 
+function errorBannerKey(clusterId, jobId, message) {
+  return `pertisk:err-banner:${clusterId}:${jobId || message.slice(0, 120)}`
+}
+
+function isErrorBannerDismissed(key) {
+  try {
+    return sessionStorage.getItem(key) === '1'
+  } catch {
+    return false
+  }
+}
+
+function dismissErrorBanner(key) {
+  try {
+    sessionStorage.setItem(key, '1')
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function ClusterDetail() {
   const { id } = useParams()
   const [search, setSearch] = useSearchParams()
@@ -190,6 +210,7 @@ machine:
   dashboard:
     theme: catppuccin
     border: bordered
+    mgmt_url: https://ptkos.apps.thaidevops.co
 `)
   const [followLog, setFollowLog] = useState(true)
   const [selectedNodes, setSelectedNodes] = useState(() => new Set())
@@ -205,6 +226,7 @@ machine:
   const [hwNode, setHwNode] = useState(null)
   const [hwForm, setHwForm] = useState({ memory: 4096, cores: 2, disk_gb: 50 })
   const [busy, setBusy] = useState(false)
+  const [errorDismissedKey, setErrorDismissedKey] = useState('')
   const logRef = useRef(null)
   const selectedJobRef = useRef(null)
 
@@ -607,8 +629,44 @@ machine:
     nodes.length > 0 &&
     nodesWithoutIp.length === nodes.length
   const upgradeRunning = jobs.some((j) => j.kind === 'upgrade_cluster' && j.status === 'running')
-  const latestFailedJob = jobs.find((j) => j.status === 'failed' && j.error)
-  const displayError = c.error || latestFailedJob?.error || ''
+  // Banner follows the newest job only. A later success (or in-progress job)
+  // must hide older failures — including sticky clusters.error from past runs.
+  // Each failure is one-time: dismiss (or close) hides it for this browser tab.
+  const latestFailedJob =
+    latestJob?.status === 'failed' && latestJob?.error ? latestJob : null
+  const rawDisplayError = (() => {
+    if (!latestJob) {
+      return c.status === 'error' ? c.error || '' : ''
+    }
+    if (
+      latestJob.status === 'succeeded' ||
+      latestJob.status === 'running' ||
+      latestJob.status === 'queued'
+    ) {
+      return ''
+    }
+    if (latestJob.status === 'failed') {
+      return latestJob.error || ''
+    }
+    return c.status === 'error' ? c.error || '' : ''
+  })()
+  const bannerKey = rawDisplayError
+    ? errorBannerKey(id, latestFailedJob?.id, rawDisplayError)
+    : ''
+  const displayError =
+    rawDisplayError &&
+    bannerKey &&
+    bannerKey !== errorDismissedKey &&
+    !isErrorBannerDismissed(bannerKey)
+      ? rawDisplayError
+      : ''
+
+  function dismissBanner() {
+    if (!bannerKey) return
+    dismissErrorBanner(bannerKey)
+    setErrorDismissedKey(bannerKey)
+  }
+
   const selCount = selectedNodes.size
 
   return (
@@ -658,8 +716,45 @@ machine:
               </p>
             )}
           </div>
+          <button
+            type="button"
+            className="banner-dismiss"
+            aria-label="Dismiss error"
+            title="Dismiss"
+            onClick={dismissBanner}
+          >
+            <Icon name="x" size={16} />
+          </button>
         </div>
       )}
+      {createFailed && !displayError && (() => {
+        const createKey = errorBannerKey(id, createJob?.id, createJob?.error || 'create_failed')
+        if (createKey === errorDismissedKey || isErrorBannerDismissed(createKey)) return null
+        return (
+          <div className="banner danger">
+            <Icon name="alert" size={18} />
+            <div className="banner-error-body">
+              <span>
+                Create cluster failed{createJob?.error ? `: ${createJob.error}` : '.'}
+                {' '}
+                <button type="button" className="linkish" onClick={() => setTab('jobs')}>View job log</button>
+              </span>
+            </div>
+            <button
+              type="button"
+              className="banner-dismiss"
+              aria-label="Dismiss error"
+              title="Dismiss"
+              onClick={() => {
+                dismissErrorBanner(createKey)
+                setErrorDismissedKey(createKey)
+              }}
+            >
+              <Icon name="x" size={16} />
+            </button>
+          </div>
+        )
+      })()}
       {createRunning && (
         <div className="banner info">
           <Icon name="play" size={18} />
@@ -669,16 +764,6 @@ machine:
             <button type="button" className="linkish" onClick={() => setTab('jobs')}>Watch job log</button>
             {' · '}
             <button type="button" className="linkish" onClick={() => setTab('nodes')}>Nodes</button>
-          </span>
-        </div>
-      )}
-      {createFailed && !displayError && (
-        <div className="banner danger">
-          <Icon name="alert" size={18} />
-          <span>
-            Create cluster failed{createJob?.error ? `: ${createJob.error}` : '.'}
-            {' '}
-            <button type="button" className="linkish" onClick={() => setTab('jobs')}>View job log</button>
           </span>
         </div>
       )}

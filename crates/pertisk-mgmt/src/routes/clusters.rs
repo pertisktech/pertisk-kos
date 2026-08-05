@@ -154,13 +154,38 @@ async fn get_one(
     CurrentUser(_): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let cluster = sqlx::query_as::<_, ClusterOut>(&format!(
+    let mut cluster = sqlx::query_as::<_, ClusterOut>(&format!(
         "{CLUSTER_SELECT} WHERE c.id = ?"
     ))
     .bind(&id)
     .fetch_optional(state.pool())
     .await?
     .ok_or(AppError::NotFound)?;
+
+    // Self-heal sticky errors: a later successful job (or ready status with a
+    // leftover error column) must not keep poisoning the UI banner.
+    let latest_job: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT status, error FROM jobs WHERE cluster_id = ? ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&id)
+    .fetch_optional(state.pool())
+    .await?;
+    let heal = match latest_job.as_ref() {
+        Some((st, _)) if st == "succeeded" || st == "running" || st == "queued" => true,
+        _ => cluster.status == "ready" && cluster.error.as_ref().is_some_and(|e| !e.is_empty()),
+    };
+    if heal && (cluster.status == "error" || cluster.error.as_ref().is_some_and(|e| !e.is_empty())) {
+        let now = db::now_rfc3339();
+        let _ = sqlx::query(
+            "UPDATE clusters SET status = 'ready', error = NULL, updated_at = ? WHERE id = ? AND status != 'deleting'",
+        )
+        .bind(&now)
+        .bind(&id)
+        .execute(state.pool())
+        .await;
+        cluster.status = "ready".into();
+        cluster.error = None;
+    }
 
     // Refresh node IP / K8s version when ready (missing IPs or active upgrade).
     if cluster.status == "ready" {

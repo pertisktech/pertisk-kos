@@ -804,6 +804,26 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   cursor: pointer;
   font: inherit;
 }
+.banner-dismiss {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: -0.15rem -0.25rem 0 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+.banner-dismiss:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
 
 .tabs-shell {
   margin-top: 0.25rem;

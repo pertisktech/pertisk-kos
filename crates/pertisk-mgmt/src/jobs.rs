@@ -205,7 +205,19 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             .execute(state.pool())
             .await?;
             if let Some(cid) = &cluster_id {
-                if kind != "delete_cluster" && !is_node_maintenance_job(&kind) {
+                if kind == "delete_cluster" {
+                    // handled above — skip
+                } else if is_node_maintenance_job(&kind) {
+                    // Node-level / config apply: keep cluster ready and clear any
+                    // sticky error left by older builds that marked update_config as cluster failure.
+                    let _ = sqlx::query(
+                        "UPDATE clusters SET status = 'ready', error = NULL, updated_at = ? WHERE id = ? AND status != 'deleting'",
+                    )
+                    .bind(&now)
+                    .bind(cid)
+                    .execute(state.pool())
+                    .await;
+                } else {
                     let _ = sqlx::query(
                         "UPDATE clusters SET status = 'ready', updated_at = ?, error = NULL WHERE id = ?",
                     )
@@ -235,8 +247,9 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
                     let _ = purge_cluster_db(state, cid).await;
                 } else if is_node_maintenance_job(&kind) {
                     // Node-level ops must not mark a healthy cluster as broken.
+                    // Clear sticky cluster.error from older update_config failures.
                     let _ = sqlx::query(
-                        "UPDATE clusters SET status = 'ready', updated_at = ? WHERE id = ? AND status != 'deleting'",
+                        "UPDATE clusters SET status = 'ready', error = NULL, updated_at = ? WHERE id = ? AND status != 'deleting'",
                     )
                     .bind(&now)
                     .bind(cid)
@@ -260,7 +273,10 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
 
 /// Jobs that only touch individual nodes — cluster stays ready on failure.
 fn is_node_maintenance_job(kind: &str) -> bool {
-    matches!(kind, "resize_node" | "remove_node" | "add_node" | "reboot_node")
+    matches!(
+        kind,
+        "resize_node" | "remove_node" | "add_node" | "reboot_node" | "update_config"
+    )
 }
 
 fn append_log(path: &str, line: &str) -> anyhow::Result<()> {
