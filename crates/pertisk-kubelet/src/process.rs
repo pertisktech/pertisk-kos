@@ -180,6 +180,7 @@ fn prepare_kubelet(
         paths,
         cfg.machine.network.hostname.as_deref(),
         tls_bootstrap,
+        cfg.machine.max_pods(),
     )?;
 
     if is_cp && have_cp_creds {

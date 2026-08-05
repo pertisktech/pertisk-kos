@@ -78,6 +78,7 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             kubeconfig_path TEXT,
             error TEXT,
             network_mode TEXT NOT NULL DEFAULT 'ipv4',
+            max_pods INTEGER NOT NULL DEFAULT 250,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -118,6 +119,11 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     // Additive columns for existing DBs (ignore if already present).
     let _ = sqlx::query(
         "ALTER TABLE clusters ADD COLUMN network_mode TEXT NOT NULL DEFAULT 'ipv4'",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "ALTER TABLE clusters ADD COLUMN max_pods INTEGER NOT NULL DEFAULT 250",
     )
     .execute(pool)
     .await;

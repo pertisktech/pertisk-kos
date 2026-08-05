@@ -192,6 +192,7 @@ mod tests {
                     utf8: Some(true),
                     mgmt_url: Some("https://ptkos.apps.thaidevops.co".into()),
                 }),
+                kubelet: None,
             },
             cluster: None,
         };

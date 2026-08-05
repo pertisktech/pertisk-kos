@@ -302,7 +302,8 @@ async fn run_create_cluster(
     let cluster = sqlx::query_as::<_, ClusterRow>(
         r#"SELECT id, name, provider_id, controlplanes, workers, vip, vip6, cni, k8s_version,
                   cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb, cp_vmid,
-                  COALESCE(network_mode, 'ipv4') as network_mode
+                  COALESCE(network_mode, 'ipv4') as network_mode,
+                  COALESCE(max_pods, 250) as max_pods
            FROM clusters WHERE id = ?"#,
     )
     .bind(cid)
@@ -357,6 +358,8 @@ async fn run_create_cluster(
         .arg(cluster.worker_disk_gb.to_string())
         .arg("--k8s")
         .arg(&cluster.k8s_version)
+        .arg("--max-pods")
+        .arg(cluster.max_pods.to_string())
         .env("PROXMOX_URL", &provider.url)
         .env("PROXMOX_TOKEN_ID", &provider.token_id)
         .env("PROXMOX_TOKEN_SECRET", &secret)
@@ -1089,7 +1092,8 @@ async fn run_add_node(
     let cluster = sqlx::query_as::<_, ClusterRow>(
         r#"SELECT id, name, provider_id, controlplanes, workers, vip, vip6, cni, k8s_version,
                   cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb, cp_vmid,
-                  COALESCE(network_mode, 'ipv4') as network_mode
+                  COALESCE(network_mode, 'ipv4') as network_mode,
+                  COALESCE(max_pods, 250) as max_pods
            FROM clusters WHERE id = ?"#,
     )
     .bind(cid)
@@ -2921,6 +2925,7 @@ struct ClusterRow {
     worker_disk_gb: i64,
     cp_vmid: Option<i64>,
     network_mode: String,
+    max_pods: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]

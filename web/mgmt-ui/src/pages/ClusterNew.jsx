@@ -21,6 +21,7 @@ export default function ClusterNew() {
     vip6: 'fd00:1::200',
     cni: 'cilium',
     k8s_version: '',
+    max_pods: 250,
     cp_memory: 4096,
     cp_cores: 2,
     cp_disk_gb: 50,
@@ -126,6 +127,7 @@ export default function ClusterNew() {
       vip6: mode === 'ipv4' ? null : (form.vip6 || null),
       cni: form.cni,
       k8s_version: form.k8s_version,
+      max_pods: Number(form.max_pods),
       cp_memory: Number(form.cp_memory),
       cp_cores: Number(form.cp_cores),
       cp_disk_gb: Number(form.cp_disk_gb),
@@ -201,6 +203,19 @@ export default function ClusterNew() {
               />
               <p className="hint muted">
                 Latest 10 stable releases. Picking a version other than the image pin rebuilds the cloud image.
+              </p>
+            </div>
+            <div className="field">
+              <label>Max pods (kubelet)</label>
+              <input
+                type="number"
+                min={1}
+                max={1000}
+                value={form.max_pods}
+                onChange={(e) => set('max_pods', e.target.value)}
+              />
+              <p className="hint muted">
+                Written as <code>machine.kubelet.extraConfig.maxPods</code> (Kubernetes default is 110).
               </p>
             </div>
             <div className="field">

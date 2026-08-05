@@ -15,13 +15,19 @@ use crate::process::KubeletError;
 ///
 /// `tls_bootstrap`: workers need certificate rotation so a bootstrap token can
 /// be exchanged for a `system:node:` client cert.
+///
+/// `max_pods`: optional `machine.kubelet.extraConfig.maxPods` (omit → kubelet default 110).
 pub fn write_kubelet_config(
     paths: &KubeletPaths,
     _hostname: Option<&str>,
     tls_bootstrap: bool,
+    max_pods: Option<u32>,
 ) -> Result<(), KubeletError> {
     paths.ensure_dirs()?;
     let rotate = if tls_bootstrap { "true" } else { "false" };
+    let max_pods_line = max_pods
+        .map(|n| format!("maxPods: {n}\n"))
+        .unwrap_or_default();
 
     let body = format!(
         r#"apiVersion: kubelet.config.k8s.io/v1beta1
@@ -65,19 +71,25 @@ staticPodPath: "/etc/kubernetes/manifests"
 # Control-plane: cert kubeconfig from pertiskctl bootstrap (no rotation needed).
 rotateCertificates: {rotate}
 serverTLSBootstrap: false
-# Pods that set spec.hostUsers (Flannel/charts) need this; GA in 1.36 but
+{max_pods_line}# Pods that set spec.hostUsers (Flannel/charts) need this; GA in 1.36 but
 # explicit so a mismatched/older kubelet binary does not reject the field.
 featureGates:
   UserNamespacesSupport: true
 "#,
         ca_file = paths.ca_file.display(),
         rotate = rotate,
+        max_pods_line = max_pods_line,
     );
 
     let mut f = fs::File::create(&paths.config)?;
     f.write_all(body.as_bytes())?;
     restrict_file_mode(&paths.config)?;
-    tracing::info!(path = %paths.config.display(), tls_bootstrap, "wrote kubelet config");
+    tracing::info!(
+        path = %paths.config.display(),
+        tls_bootstrap,
+        max_pods = ?max_pods,
+        "wrote kubelet config"
+    );
     Ok(())
 }
 
@@ -197,7 +209,7 @@ mod tests {
             cert_sans: vec![],
         };
         write_kubeconfig(&paths, &cluster).unwrap();
-        write_kubelet_config(&paths, Some("node-1"), true).unwrap();
+        write_kubelet_config(&paths, Some("node-1"), true, None).unwrap();
         assert!(paths.kubeconfig.exists());
         assert!(paths.ca_file.exists());
         let kc = fs::read_to_string(&paths.kubeconfig).unwrap();
@@ -211,6 +223,11 @@ mod tests {
         assert!(cfg.contains("UserNamespacesSupport: true"));
         assert!(cfg.contains("clientCAFile:"));
         assert!(cfg.contains(&paths.ca_file.display().to_string()));
+        assert!(!cfg.contains("maxPods:"));
+
+        write_kubelet_config(&paths, Some("node-1"), true, Some(250)).unwrap();
+        let cfg = fs::read_to_string(&paths.config).unwrap();
+        assert!(cfg.contains("maxPods: 250"));
     }
 
     fn temp_dir() -> PathBuf {

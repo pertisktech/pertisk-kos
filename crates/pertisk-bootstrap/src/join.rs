@@ -373,6 +373,7 @@ pub fn get_join_config(
             },
             install: None,
             dashboard: Some(Dashboard::builtin()),
+            kubelet: applied.machine.kubelet.clone(),
         },
         cluster: Some(Cluster {
             name: Some(cluster_name.into()),
@@ -410,6 +411,7 @@ pub fn get_join_config(
             },
             install: None,
             dashboard: Some(Dashboard::builtin()),
+            kubelet: applied.machine.kubelet.clone(),
         },
         cluster: Some(Cluster {
             name: Some(cluster_name.into()),

@@ -64,6 +64,17 @@ Secrets are encrypted at rest with `MGMT_SECRET_KEY`. For lab self-signed TLS, s
 
 When `M > 1`, **VIP** is required (kube-vip). Use a **free** L2 IPv4. Guest images need `af_packet` for kube-vip ARP.
 
+Create form **Max pods** (default `250`) is written into machine config as:
+
+```yaml
+machine:
+  kubelet:
+    extraConfig:
+      maxPods: 250
+```
+
+pertiskd applies that into kubelet’s `KubeletConfiguration`. Omit uses the upstream default (`110`). Join configs copy it from the bootstrapped control-plane.
+
 RPM create uses `--skip-build` and reads qcow2 from `/var/lib/pertisk-mgmt/images/`.
 
 ## Docker

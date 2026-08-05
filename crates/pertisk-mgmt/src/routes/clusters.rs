@@ -56,6 +56,7 @@ pub struct ClusterOut {
     pub endpoint: Option<String>,
     pub error: Option<String>,
     pub network_mode: String,
+    pub max_pods: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -90,6 +91,8 @@ struct CreateCluster {
     worker_disk_gb: i64,
     #[serde(default = "default_vmid")]
     cp_vmid: i64,
+    #[serde(default = "default_max_pods")]
+    max_pods: i64,
 }
 
 fn one() -> i64 {
@@ -122,6 +125,9 @@ fn default_wk_disk() -> i64 {
 fn default_vmid() -> i64 {
     210
 }
+fn default_max_pods() -> i64 {
+    250
+}
 fn default_net_mode() -> String {
     "ipv4".into()
 }
@@ -132,6 +138,7 @@ SELECT c.id, c.name, c.provider_id,
        c.status, c.controlplanes, c.workers, c.vip, c.vip6, c.cni, c.k8s_version,
        c.cp_memory, c.cp_cores, c.cp_disk_gb, c.worker_memory, c.worker_cores, c.worker_disk_gb,
        c.cp_vmid, c.endpoint, c.error, COALESCE(c.network_mode, 'ipv4') as network_mode,
+       COALESCE(c.max_pods, 250) as max_pods,
        c.created_at, c.updated_at
 FROM clusters c
 LEFT JOIN providers p ON p.id = c.provider_id
@@ -281,6 +288,9 @@ async fn create(
     if body.workers < 0 {
         return Err(AppError::bad("workers must be >= 0"));
     }
+    if body.max_pods < 1 || body.max_pods > 1000 {
+        return Err(AppError::bad("max_pods must be between 1 and 1000"));
+    }
 
     // Ensure provider exists
     let exists: Option<(String,)> =
@@ -318,8 +328,8 @@ async fn create(
         r#"INSERT INTO clusters
            (id, name, provider_id, status, controlplanes, workers, vip, vip6, cni, k8s_version,
             cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb, cp_vmid,
-            network_mode, created_at, updated_at)
-           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            network_mode, max_pods, created_at, updated_at)
+           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&id)
     .bind(&body.name)
@@ -338,6 +348,7 @@ async fn create(
     .bind(body.worker_disk_gb)
     .bind(body.cp_vmid)
     .bind(&mode)
+    .bind(body.max_pods)
     .bind(&now)
     .bind(&now)
     .execute(state.pool())

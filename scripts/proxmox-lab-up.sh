@@ -54,6 +54,7 @@ else
   NAME_PREFIX=pertisk
 fi
 CLUSTER_NAME="${CLUSTER_NAME:-lab-ha}"
+MAX_PODS="${MAX_PODS:-}"
 K8S_VER="${K8S_VER:-v1.36.3}"
 CNI="${CNI:-cilium}"          # cilium | calico | flannel | none
 CALICO_VERSION="${CALICO_VERSION:-v3.29.3}"
@@ -107,6 +108,7 @@ Flags:
   --cluster NAME      Kubernetes / hostname prefix (default ${CLUSTER_NAME})
   --cni NAME          cilium|calico|flannel|none (default ${CNI})
   --k8s VER           kubernetesVersion for gen config (default ${K8S_VER})
+  --max-pods N        kubelet maxPods (machine.kubelet.extraConfig.maxPods)
   --disk PATH         cloud qcow2 (default ${DISK})
   --memory MB         default RAM for CP and workers (default ${MEMORY}; env PROXMOX_MEMORY)
   --cores N           default vCPUs for CP and workers (default ${CORES}; env PROXMOX_CORES)
@@ -146,6 +148,7 @@ while [[ $# -gt 0 ]]; do
     --cluster) CLUSTER_NAME="$2"; shift 2 ;;
     --cni) CNI="$2"; shift 2 ;;
     --k8s) K8S_VER="$2"; shift 2 ;;
+    --max-pods) MAX_PODS="$2"; shift 2 ;;
     --disk) DISK="$2"; shift 2 ;;
     --memory) MEMORY="$2"; shift 2 ;;
     --cores) CORES="$2"; shift 2 ;;
@@ -742,6 +745,9 @@ step_cluster() {
     gen config "$CLUSTER_NAME" "https://${API_ENDPOINT}:6443"
     -o "$CLUSTER_OUT" -k "$K8S_VER" --controlplanes "$CONTROLPLANES"
   )
+  if [[ -n "$MAX_PODS" ]]; then
+    gen_args+=(--max-pods "$MAX_PODS")
+  fi
   if [[ "$DUAL_STACK" == "1" ]]; then
     gen_args+=(--dual-stack)
     [[ -n "$VIP6" ]] && gen_args+=(--vip6 "$VIP6")

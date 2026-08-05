@@ -5,8 +5,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use pertisk_config::{
-    Cluster, CniMode, Dashboard, Interface, Machine, MachineConfig, MachineType, Network,
-    NetworkMode, CONFIG_VERSION,
+    Cluster, CniMode, Dashboard, Interface, Machine, MachineConfig, MachineKubelet, MachineType,
+    Network, NetworkMode, CONFIG_VERSION,
 };
 
 use crate::token::generate_bootstrap_token;
@@ -55,6 +55,8 @@ pub struct GenNetworkOpts {
     pub pod_cidr_ipv6: Option<String>,
     pub service_cidr_ipv6: Option<String>,
     pub vip6: Option<String>,
+    /// Optional kubelet maxPods (`machine.kubelet.extraConfig.maxPods`).
+    pub max_pods: Option<u32>,
 }
 
 impl Default for GenNetworkOpts {
@@ -64,8 +66,13 @@ impl Default for GenNetworkOpts {
             pod_cidr_ipv6: None,
             service_cidr_ipv6: None,
             vip6: None,
+            max_pods: None,
         }
     }
+}
+
+fn kubelet_opts(max_pods: Option<u32>) -> Option<MachineKubelet> {
+    max_pods.map(MachineKubelet::with_max_pods)
 }
 
 fn base_cluster(
@@ -174,6 +181,7 @@ pub fn gen_config_with_network(
             },
             install: None,
             dashboard: Some(Dashboard::builtin()),
+            kubelet: kubelet_opts(net.max_pods),
         },
         cluster: Some(base_cluster(
             cluster_name,
@@ -203,6 +211,7 @@ pub fn gen_config_with_network(
             },
             install: None,
             dashboard: Some(Dashboard::builtin()),
+            kubelet: kubelet_opts(net.max_pods),
         },
         cluster: Some(base_cluster(
             cluster_name,
@@ -283,6 +292,7 @@ pub fn gen_config_ha_with_network(
                 },
                 install: None,
                 dashboard: Some(Dashboard::builtin()),
+                kubelet: kubelet_opts(net.max_pods),
             },
             cluster: Some(base_cluster(
                 cluster_name,
@@ -319,6 +329,7 @@ pub fn gen_config_ha_with_network(
             },
             install: None,
             dashboard: Some(Dashboard::builtin()),
+            kubelet: kubelet_opts(net.max_pods),
         },
         cluster: Some(base_cluster(
             cluster_name,

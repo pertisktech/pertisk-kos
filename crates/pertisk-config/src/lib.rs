@@ -46,6 +46,50 @@ pub struct Machine {
     /// Omit for built-in defaults; set fields to override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dashboard: Option<Dashboard>,
+    /// Kubelet settings (Talos-shaped). Applied into `/var/lib/kubelet/config.yaml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kubelet: Option<MachineKubelet>,
+}
+
+/// `machine.kubelet` — mirrors Talos-shaped kubelet knobs we honor.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MachineKubelet {
+    /// Extra KubeletConfiguration fields merged into the written config.
+    #[serde(
+        default,
+        rename = "extraConfig",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub extra_config: Option<KubeletExtraConfig>,
+}
+
+/// Subset of KubeletConfiguration we surface in machine YAML.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KubeletExtraConfig {
+    /// Max pods per node (`maxPods`). Upstream kubelet default is 110 when omitted.
+    #[serde(default, rename = "maxPods", skip_serializing_if = "Option::is_none")]
+    pub max_pods: Option<u32>,
+}
+
+impl MachineKubelet {
+    pub fn with_max_pods(max_pods: u32) -> Self {
+        Self {
+            extra_config: Some(KubeletExtraConfig {
+                max_pods: Some(max_pods),
+            }),
+        }
+    }
+}
+
+impl Machine {
+    /// `machine.kubelet.extraConfig.maxPods` when set.
+    pub fn max_pods(&self) -> Option<u32> {
+        self.kubelet
+            .as_ref()?
+            .extra_config
+            .as_ref()?
+            .max_pods
+    }
 }
 
 /// Serial console TUI appearance and geometry.
@@ -372,6 +416,7 @@ impl MachineConfig {
                 },
                 install: None,
                 dashboard: None,
+                kubelet: None,
             },
             cluster: None,
         }
@@ -750,6 +795,22 @@ machine:
             dash.mgmt_url.as_deref(),
             Some("https://ptkos.apps.thaidevops.co")
         );
+    }
+
+    #[test]
+    fn parses_kubelet_max_pods() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: worker
+  kubelet:
+    extraConfig:
+      maxPods: 250
+"#;
+        let cfg = MachineConfig::from_yaml(yaml).unwrap();
+        assert_eq!(cfg.machine.max_pods(), Some(250));
+        let out = serde_yaml::to_string(&cfg).unwrap();
+        assert!(out.contains("maxPods: 250"));
     }
 
     #[test]

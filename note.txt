@@ -154,18 +154,18 @@ helm install cilium cilium/cilium \
   --set hubble.relay.dnsPolicy=ClusterFirstWithHostNet
 
 
-  ./scripts/deploy-mgmt-lab.sh --mgmt almalinux@10.1.1.150 \
-  --skip-rpm --skip-build --cp-gb 50 --worker-gb 75
+  ./scripts/deploy-mgmt-lab.sh --mgmt almalinux@10.1.1.12 \
+  --skip-rpm  --cp-gb 50 --worker-gb 75
 
-scp out/pertisk-cloud-amd64{,-50g,-75g}.qcow2 almalinux@10.1.1.150:/tmp/
-ssh almalinux@10.1.1.150 'sudo mv /tmp/pertisk-cloud-amd64*.qcow2 /var/lib/pertisk-mgmt/images/ && sudo chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images'
+scp out/pertisk-cloud-amd64{,-50g,-75g}.qcow2 almalinux@10.1.1.12:/tmp/
+ssh almalinux@10.1.1.12 'sudo mv /tmp/pertisk-cloud-amd64*.qcow2 /var/lib/pertisk-mgmt/images/ && sudo chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images'
 
 
-export NFS_SERVER=10.1.1.150 NFS_PATH=/mnt/nfs_share
+export NFS_SERVER=10.1.1.12 NFS_PATH=/mnt/nfs_share
 envsubst < examples/addons/nfs/nfs-subdir-external-provisioner.yaml | kubectl apply -f -
 kubectl apply -f examples/addons/nfs/pertisk-nfs-modules-ds.yaml
 
 version: v1alpha1
 machine:
   dashboard:
-    mgmt_url: https://ptkos.apps.thaidevops.co
+    mgmt_url: https://ptkos.apps.pertisk.com

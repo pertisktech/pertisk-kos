@@ -103,6 +103,9 @@ enum Commands {
         /// Optional IPv6 API VIP (HA dual-stack); added to certSANs.
         #[arg(long)]
         vip6: Option<String>,
+        /// kubelet maxPods (machine.kubelet.extraConfig.maxPods).
+        #[arg(long)]
+        max_pods: Option<u32>,
     },
     /// Bootstrap the first control-plane (PKI + static pods).
     Bootstrap {
@@ -200,6 +203,9 @@ enum GenCommands {
         /// Optional IPv6 API VIP (HA dual-stack); added to certSANs.
         #[arg(long)]
         vip6: Option<String>,
+        /// kubelet maxPods (machine.kubelet.extraConfig.maxPods).
+        #[arg(long)]
+        max_pods: Option<u32>,
     },
 }
 
@@ -290,6 +296,7 @@ async fn main() -> Result<()> {
                     ref pod_cidr_ipv6,
                     ref service_cidr_ipv6,
                     ref vip6,
+                    max_pods,
                 },
         }
         | Commands::GenConfig {
@@ -304,6 +311,7 @@ async fn main() -> Result<()> {
             ref pod_cidr_ipv6,
             ref service_cidr_ipv6,
             ref vip6,
+            max_pods,
         } => {
             let net = GenNetworkOpts {
                 dual_stack,
@@ -314,6 +322,7 @@ async fn main() -> Result<()> {
                     dual_stack.then(|| Cluster::DEFAULT_SERVICE_CIDR_IPV6.into())
                 }),
                 vip6: vip6.clone(),
+                max_pods,
             };
             if controlplanes <= 1 {
                 let gen = gen_config_with_network(
