@@ -481,13 +481,35 @@ machine:
   async function submitHardware() {
     if (!hwNode) return
     const curDisk = hwNode.disk_gb ?? defaultsForRole(data?.cluster, hwNode.role).disk_gb
-    if (Number(hwForm.disk_gb) < curDisk) {
-      setError(`Disk can only grow (have ${curDisk} GiB, asked ${hwForm.disk_gb} GiB)`)
+    const curMem = hwNode.memory ?? defaultsForRole(data?.cluster, hwNode.role).memory
+    const curCores = hwNode.cores ?? defaultsForRole(data?.cluster, hwNode.role).cores
+    const nextMem = Number(hwForm.memory)
+    const nextCores = Number(hwForm.cores)
+    const nextDisk = Number(hwForm.disk_gb)
+    if (nextDisk < curDisk) {
+      setError(`Disk can only grow (have ${curDisk} GiB, asked ${nextDisk} GiB)`)
       return
     }
+    const body = {
+      memory: nextMem,
+      cores: nextCores,
+      disk_gb: nextDisk,
+    }
+    const changed = []
+    if (nextMem !== Number(curMem)) changed.push(`${nextMem} MB`)
+    if (nextCores !== Number(curCores)) changed.push(`${nextCores} vCPU`)
+    if (nextDisk !== Number(curDisk)) changed.push(`${nextDisk} GiB disk`)
+    // Close form before confirm so dialogs are not stacked.
+    const nodeName = hwNode.name
+    const nodeId = hwNode.id
+    setHwOpen(false)
+    setHwNode(null)
+    // Always include disk_gb so a Proxmox-only grow can re-run guest EPHEMERAL expand.
     const ok = await confirm({
       title: 'Upgrade hardware',
-      message: `Resize “${hwNode.name}” on Proxmox?\n\n${hwForm.cores} vCPU · ${hwForm.memory} MB · ${hwForm.disk_gb} GiB\n\nDisk can only grow. Guest may need a reboot for CPU/memory.`,
+      message: changed.length
+        ? `Resize “${nodeName}” on Proxmox to ${changed.join(' · ')}?\n\nDisk grow expands guest EPHEMERAL (/var). CPU/memory stop-starts the VM.`
+        : `Re-apply hardware on “${nodeName}” (${nextCores} vCPU · ${nextMem} MB · ${nextDisk} GiB)?\n\nThis re-runs guest EPHEMERAL grow if Proxmox disk is already larger.`,
       confirmLabel: 'Apply hardware',
       tone: 'primary',
     })
@@ -495,16 +517,10 @@ machine:
     setBusy(true)
     setError('')
     try {
-      const res = await api(`/clusters/${id}/nodes/${hwNode.id}/hardware`, {
+      const res = await api(`/clusters/${id}/nodes/${nodeId}/hardware`, {
         method: 'PUT',
-        body: {
-          memory: Number(hwForm.memory),
-          cores: Number(hwForm.cores),
-          disk_gb: Number(hwForm.disk_gb),
-        },
+        body,
       })
-      setHwOpen(false)
-      setHwNode(null)
       if (res?.job_id) selectJob(res.job_id)
       setTab('jobs')
       load()
@@ -585,7 +601,6 @@ machine:
   const createJob = jobs.find((j) => j.kind === 'create_cluster')
   const createRunning = createJob?.status === 'running' || createJob?.status === 'queued'
   const createFailed = createJob?.status === 'failed'
-  const createSucceeded = createJob?.status === 'succeeded'
   const nodesWithoutIp = nodes.filter((n) => !n.ip?.trim())
   const hollowReady =
     c.status === 'ready' &&
@@ -644,12 +659,6 @@ machine:
             {' '}
             <button type="button" className="linkish" onClick={() => setTab('jobs')}>View job log</button>
           </span>
-        </div>
-      )}
-      {createSucceeded && !hollowReady && c.status === 'ready' && !createRunning && (
-        <div className="banner success">
-          <Icon name="clusters" size={18} />
-          <span>Cluster create finished successfully.</span>
         </div>
       )}
       {hollowReady && (
@@ -1068,7 +1077,7 @@ machine:
         wide
       >
         <p className="modal-hint">
-          Resize this VM on Proxmox. Disk can only grow; CPU/memory may need a guest reboot.
+          Resize this VM on Proxmox. Disk can only grow. Changing CPU, memory, or disk will stop and start the VM so sizes apply inside the guest (EPHEMERAL /var expands on boot after a disk grow).
         </p>
         <div className="field-row">
           <div className="field">

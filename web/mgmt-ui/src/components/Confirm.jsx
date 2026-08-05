@@ -30,7 +30,7 @@ export function ConfirmProvider({ children }) {
     <ConfirmCtx.Provider value={confirm}>
       {children}
       {state && (
-        <div className="modal-backdrop" role="presentation" onClick={() => close(false)}>
+        <div className="modal-backdrop confirm-backdrop" role="presentation" onClick={() => close(false)}>
           <div
             className="modal-card"
             role="dialog"
@@ -42,7 +42,7 @@ export function ConfirmProvider({ children }) {
               <Icon name={state.tone === 'danger' ? 'alert' : 'check'} size={22} />
             </div>
             <h2 id="confirm-title">{state.title}</h2>
-            <p className="muted">{state.message}</p>
+            <p className="muted" style={{ whiteSpace: 'pre-line' }}>{state.message}</p>
             <div className="modal-actions">
               <button type="button" className="secondary" onClick={() => close(false)}>
                 {state.cancelLabel}

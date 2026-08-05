@@ -12,17 +12,17 @@ use pertisk_config::MachineConfig;
 use pertisk_proto::machine_service_server::{MachineService, MachineServiceServer};
 use pertisk_proto::{
     ApplyConfigurationRequest, ApplyConfigurationResponse, BootstrapRequest, BootstrapResponse,
-    GetJoinConfigRequest, GetJoinConfigResponse, HealthRequest, HealthResponse,
-    JoinControlPlaneRequest, JoinControlPlaneResponse, KubeconfigRequest, KubeconfigResponse,
-    LogsRequest, LogsResponse, MarkBootGoodRequest, MarkBootGoodResponse, RebootRequest,
-    RebootResponse, ServiceListRequest, ServiceListResponse, ServiceStatus, ShutdownRequest,
-    ShutdownResponse, UpgradeRequest, UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse,
-    ValidateConfigurationResponse, VersionRequest, VersionResponse,
+    GetJoinConfigRequest, GetJoinConfigResponse, GrowDiskRequest, GrowDiskResponse, HealthRequest,
+    HealthResponse, JoinControlPlaneRequest, JoinControlPlaneResponse, KubeconfigRequest,
+    KubeconfigResponse, LogsRequest, LogsResponse, MarkBootGoodRequest, MarkBootGoodResponse,
+    RebootRequest, RebootResponse, ServiceListRequest, ServiceListResponse, ServiceStatus,
+    ShutdownRequest, ShutdownResponse, UpgradeRequest, UpgradeResponse, UpgradeStatusRequest,
+    UpgradeStatusResponse, ValidateConfigurationResponse, VersionRequest, VersionResponse,
 };
 use pertisk_update::{apply_bundle, mark_boot_good, BootMeta, SlotLayout};
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::logs::tail_logs;
 use crate::state::{PowerAction, SharedState};
@@ -429,6 +429,45 @@ impl MachineService for MachineSvc {
             etcd_endpoints: result.etcd_endpoints,
             ca_pem: result.ca_pem,
         }))
+    }
+
+    async fn grow_disk(
+        &self,
+        _request: Request<GrowDiskRequest>,
+    ) -> Result<Response<GrowDiskResponse>, Status> {
+        info!("grow disk (EPHEMERAL) requested via API");
+        match pertisk_disk::grow_ephemeral_storage() {
+            Ok(r) => {
+                let message = match (r.partition_grew, r.filesystem_grew) {
+                    (false, false) => {
+                        "EPHEMERAL already fills the disk (or kernel still sees old capacity — rescan/reboot)".into()
+                    }
+                    (true, true) => "grew EPHEMERAL partition and filesystem".into(),
+                    (true, false) => "grew EPHEMERAL partition (filesystem unchanged)".into(),
+                    (false, true) => "resized EPHEMERAL filesystem".into(),
+                };
+                info!(
+                    partition_grew = r.partition_grew,
+                    filesystem_grew = r.filesystem_grew,
+                    "{message}"
+                );
+                Ok(Response::new(GrowDiskResponse {
+                    ok: true,
+                    message,
+                    partition_grew: r.partition_grew,
+                    filesystem_grew: r.filesystem_grew,
+                }))
+            }
+            Err(err) => {
+                warn!(error = %err, "grow disk failed");
+                Ok(Response::new(GrowDiskResponse {
+                    ok: false,
+                    message: err.to_string(),
+                    partition_grew: false,
+                    filesystem_grew: false,
+                }))
+            }
+        }
     }
 }
 

@@ -247,16 +247,20 @@ api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
   --data-urlencode "agent=enabled=1" >/dev/null 2>&1 || true
 
 # --- Disk import ---
+# Prefer explicit PROXMOX_SSH (scp+qm). Otherwise Omni-style Proxmox API upload
+# (provider token only — no SSH to the node). On SSH failure, fall back to API.
+DISK_ATTACHED=0
 if [[ -n "${PROXMOX_SSH:-}" ]]; then
   if [[ "${PROXMOX_KEEP_DISK:-0}" == "1" ]] && vm_has_scsi0; then
     echo "==> scsi0 already present — keep disk (unset PROXMOX_KEEP_DISK to re-import)"
+    DISK_ATTACHED=1
   else
     detach_scsi0
     echo "==> SCP + qm importdisk via ${PROXMOX_SSH}"
     REMOTE="/var/tmp/pertisk-${VMID}.qcow2"
-    scp -o StrictHostKeyChecking=accept-new "${DISK}" "${PROXMOX_SSH}:${REMOTE}"
-    # Attach on the node with qm — more reliable than API unused→scsi0 for ZFS.
-    ssh -o StrictHostKeyChecking=accept-new "${PROXMOX_SSH}" bash -s <<EOF
+    if scp -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
+         "${DISK}" "${PROXMOX_SSH}:${REMOTE}" \
+      && ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" bash -s <<EOF
 set -euo pipefail
 VMID=${VMID}
 STORAGE=${STORAGE}
@@ -264,8 +268,6 @@ REMOTE=${REMOTE}
 qm importdisk "\${VMID}" "\${REMOTE}" "\${STORAGE}" --format qcow2
 rm -f "\${REMOTE}"
 CONF=\$(qm config "\${VMID}")
-# Prefer the largest unused disk (and highest disk-N on ties). Never attach a
-# leftover 1M stub — that boots PXE / UEFI shell ("image not boot").
 BEST_KEY=""; BEST_VOL=""; BEST_SIZE=0; BEST_N=-1
 while IFS= read -r line; do
   key=\$(echo "\$line" | sed -n 's/^\\(unused[0-9]*\\):.*/\\1/p')
@@ -290,7 +292,6 @@ qm set "\${VMID}" --scsihw virtio-scsi-single
 qm set "\${VMID}" --scsi0 "\${BEST_VOL}"
 qm set "\${VMID}" --delete "\${BEST_KEY}" || true
 qm set "\${VMID}" --boot order=scsi0
-# Drop leftover tiny unused stubs so the next redeploy cannot pick them.
 while IFS= read -r line; do
   key=\$(echo "\$line" | sed -n 's/^\\(unused[0-9]*\\):.*/\\1/p')
   vol=\$(echo "\$line" | sed -n 's/^unused[0-9]*: //p')
@@ -304,23 +305,33 @@ while IFS= read -r line; do
 done < <(qm config "\${VMID}" | grep '^unused' || true)
 qm config "\${VMID}" | grep -E '^(scsi0|boot|efidisk0|unused):' || true
 EOF
-    if ! vm_has_scsi0; then
-      echo "ERROR: scsi0 still missing after qm attach" >&2
-      api_get "/nodes/${NODE}/qemu/${VMID}/config" | jq '{scsi0:.data.scsi0,unused0:.data.unused0,boot:.data.boot}' >&2 || true
-      exit 1
+    then
+      if vm_has_scsi0; then
+        echo "==> scsi0 attached via ${PROXMOX_SSH}"
+        DISK_ATTACHED=1
+      else
+        echo "WARNING: scsi0 missing after SSH import — falling back to API" >&2
+      fi
+    else
+      echo "WARNING: SSH import failed (scp/ssh) — falling back to Proxmox API upload" >&2
+      echo "         (set PROXMOX_NO_SSH=1 to skip SSH; or fix keys for ${PROXMOX_SSH})" >&2
     fi
-    echo "==> scsi0 attached via ${PROXMOX_SSH}"
   fi
-else
-  # PVE 8+: upload only accepts content ∈ {iso, vztmpl, import} on many backends.
-  # ZFS/LVM thin: use content=import, then scsi0 import-from=.
-  # Directory storage "local" can also use import.
-  UPLOAD_STORAGE="${PROXMOX_UPLOAD_STORAGE:-${STORAGE}}"
+fi
+
+if [[ "$DISK_ATTACHED" != "1" ]]; then
+  # PVE 8+: upload content=import, then scsi0 import-from= (no SSH).
+  # ZFS/LVM cannot store import files — use directory storage (usually local).
+  UPLOAD_STORAGE="${PROXMOX_UPLOAD_STORAGE:-}"
+  if [[ -z "$UPLOAD_STORAGE" ]]; then
+    case "${STORAGE}" in
+      *zfs*|*lvm*|local-lvm) UPLOAD_STORAGE=local ;;
+      *) UPLOAD_STORAGE="${STORAGE}" ;;
+    esac
+  fi
   VOL="pertisk-${VMID}.qcow2"
   IMPORT_REF="${UPLOAD_STORAGE}:import/${VOL}"
 
-  # Always replace the guest disk so redeploys pick up a new image.
-  # Set PROXMOX_KEEP_DISK=1 to skip upload/import when scsi0 already exists.
   if [[ "${PROXMOX_KEEP_DISK:-0}" == "1" ]] && vm_has_scsi0; then
     echo "==> scsi0 already present — keep disk (unset PROXMOX_KEEP_DISK to re-import)"
   else
@@ -338,12 +349,9 @@ else
     if [[ "${UP_CODE}" != "200" ]] || ! echo "${UP_BODY}" | jq -e '.data != null' >/dev/null 2>&1; then
       echo "upload failed (HTTP ${UP_CODE}): ${UP_BODY}" >&2
       echo >&2
-      echo "local-zfs cannot use content=images. Fixes:" >&2
-      echo "  1) Recommended: export PROXMOX_SSH=root@${NODE%%.*}  # or root@host" >&2
-      echo "     and re-run (scp + qm importdisk → ${STORAGE})" >&2
-      echo "  2) Or upload via directory storage first:" >&2
-      echo "     PROXMOX_UPLOAD_STORAGE=local PROXMOX_STORAGE=${STORAGE} ./scripts/proxmox-upload-vm.sh ..." >&2
-      echo "  3) Or UI: upload qcow2 → Hardware → Import disk" >&2
+      echo "API import needs directory storage with content=import (usually 'local')." >&2
+      echo "  PROXMOX_UPLOAD_STORAGE=local PROXMOX_STORAGE=${STORAGE}" >&2
+      echo "  Or set PROXMOX_SSH=root@host for scp + qm importdisk" >&2
       exit 1
     fi
     UPID="$(echo "${UP_BODY}" | jq -r '.data')"

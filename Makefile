@@ -57,6 +57,8 @@ help:
 	@echo "  make mgmt-rpm [VERSION=...]            # linux/amd64 RPM (API+UI) → out/rpm/"
 	@echo "  make rpm                               # alias for mgmt-rpm (amd64 deploy)"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
+	@echo "  make stage-images [DEST=out]           # cloud + *-50g/*-75g qcow2 for RPM mgmt"
+	@echo "  make deploy-lab MGMT=user@host PVE=ip  # build→RPM→images→mgmt (see script)"
 	@echo "  make uki [VERSION=...] [ARCH=...]     # Unified Kernel Image"
 	@echo "  make lab-up [ARCH=...]                # build→VMs→IPs→cluster→CNI (see script)"
 	@echo "  make test | check-hardening | fmt | clippy | clean"
@@ -136,6 +138,19 @@ cloud:
 	$(MAKE) fetch-runtime ARCH="$(BUILD_ARCH)"
 	$(MAKE) build VERSION="$(VERSION)" ARCH="$(BUILD_ARCH)" EMBED_BOOT=1 EMBED_RUNTIME=1
 	PERTISK_VERSION="$(VERSION)" PERTISK_ARCH="$(BUILD_ARCH)" "$(ROOT)/image/build-cloud-image.sh"
+
+## Stage base + role-sized qcow2 for RPM mgmt (/var/lib/pertisk-mgmt/images).
+## Optional: make stage-images DEST=/tmp/images
+stage-images:
+	ARCH="$(BUILD_ARCH)" DEST="$(DEST)" "$(ROOT)/scripts/stage-cloud-images.sh"
+
+## Local build → RPM on mgmt → copy images to mgmt (create pushes to Proxmox).
+##   make deploy-lab MGMT=almalinux@10.1.1.12 PVE=10.1.1.197 VERSION=0.1.3
+deploy-lab:
+	@[[ -n "$(MGMT)" ]] || { echo "set MGMT=user@host" >&2; exit 1; }
+	"$(ROOT)/scripts/deploy-mgmt-lab.sh" --mgmt "$(MGMT)" \
+		$(if $(PVE),--pve "$(PVE)",) \
+		$(if $(VERSION),--version "$(VERSION)",)
 
 ## Unified Kernel Image (requires kernel + initramfs artifacts).
 uki:

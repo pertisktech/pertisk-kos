@@ -115,16 +115,21 @@ unset _cand
 [[ -f "$DISK" ]] || die "disk not found: $DISK (set PROXMOX_DISK or copy qcow2 into ${IMAGES_DIR}/)"
 log "disk=${DISK}"
 
-# Auto SSH / subnet for ARP wait (same heuristics as lab-up).
+# Auto subnet / optional SSH (API disk import by default — same as lab-up).
 PVE_HOST="${PROXMOX_URL#*://}"
 PVE_HOST="${PVE_HOST%%:*}"
-if [[ -z "${PROXMOX_SSH:-}" && "$PVE_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ "${PROXMOX_NO_SSH:-0}" == "1" ]]; then
+  unset PROXMOX_SSH || true
+elif [[ -z "${PROXMOX_SSH:-}" && "${PROXMOX_SSH_AUTO:-0}" == "1" && "$PVE_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   export PROXMOX_SSH="root@${PVE_HOST}"
-  log "auto PROXMOX_SSH=${PROXMOX_SSH}"
+  log "auto PROXMOX_SSH=${PROXMOX_SSH} (PROXMOX_SSH_AUTO=1)"
 fi
 if [[ -z "${LAB_SUBNET:-}" && "${PVE_HOST}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
   LAB_SUBNET="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.0/24"
   log "auto LAB_SUBNET=${LAB_SUBNET}"
+fi
+if [[ -z "${PROXMOX_SSH:-}" && -z "${PROXMOX_UPLOAD_STORAGE:-}" ]]; then
+  export PROXMOX_UPLOAD_STORAGE=local
 fi
 
 CURL=(curl -sS)
@@ -156,6 +161,10 @@ arp_ip_for_mac() {
       2>/dev/null || true)"
   else
     out="$(ip -4 neigh show 2>/dev/null | awk -v m="$mac" 'BEGIN{IGNORECASE=1} $0 ~ m {print $1; exit}' || true)"
+    if [[ -z "$out" ]] && command -v arp >/dev/null 2>&1; then
+      out="$(arp -an 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -F "$mac" \
+        | sed -n 's/.*(\([0-9.]*\)).*/\1/p' | head -1 || true)"
+    fi
   fi
   if [[ "$out" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "$out"
@@ -164,12 +173,44 @@ arp_ip_for_mac() {
 
 nudge_arp_subnet() {
   local cidr="$1" base
-  [[ -n "$cidr" && -n "${PROXMOX_SSH:-}" ]] || return 0
+  [[ -n "$cidr" ]] || return 0
   base="${cidr%/*}"; base="${base%.*}"
-  log "nudge ARP on ${PROXMOX_SSH} for ${base}.0/24"
-  ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o BatchMode=yes "${PROXMOX_SSH}" \
-    "base=${base}; for i in \$(seq 1 254); do ping -c1 -W1 \${base}.\$i >/dev/null 2>&1 & done; wait" \
-    >/dev/null 2>&1 || true
+  if [[ -n "${PROXMOX_SSH:-}" ]]; then
+    log "nudge ARP on ${PROXMOX_SSH} for ${base}.0/24"
+    ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o BatchMode=yes "${PROXMOX_SSH}" \
+      "base=${base}; for i in \$(seq 1 254); do ping -c1 -W1 \${base}.\$i >/dev/null 2>&1 & done; wait" \
+      >/dev/null 2>&1 || true
+  else
+    log "nudge ARP locally for ${base}.0/24 (no PROXMOX_SSH)"
+    (
+      local i
+      for i in $(seq 1 254); do
+        ping -c1 -W1 "${base}.${i}" >/dev/null 2>&1 &
+        if (( i % 64 == 0 )); then wait || true; fi
+      done
+      wait || true
+    ) >/dev/null 2>&1 || true
+  fi
+}
+
+scan_api_subnet_for_mac() {
+  local mac="$1" cidr="$2" base i
+  [[ -n "$cidr" ]] || return 0
+  mac="$(echo "$mac" | tr 'A-F' 'a-f')"
+  base="${cidr%/*}"; base="${base%.*}"
+  log "scan :50000 on ${base}.0/24 (parallel) for MAC ${mac}"
+  (
+    for i in $(seq 1 254); do
+      if command -v nc >/dev/null 2>&1; then
+        nc -z -w 1 "${base}.${i}" 50000 >/dev/null 2>&1 &
+      else
+        timeout 1 bash -c "echo >/dev/tcp/${base}.${i}/50000" 2>/dev/null &
+      fi
+      if (( i % 80 == 0 )); then wait || true; fi
+    done
+    wait || true
+  ) >/dev/null 2>&1 || true
+  arp_ip_for_mac "$mac"
 }
 
 api_reachable() {
@@ -189,10 +230,13 @@ wait_ip() {
   while (( SECONDS < deadline )); do
     ip="$(arp_ip_for_mac "$mac" || true)"
     if [[ -z "$ip" && -n "${LAB_SUBNET:-}" ]]; then
-      if [[ "$nudged" == "0" ]] || (( SECONDS % 30 < 3 )); then
+      if [[ "$nudged" == "0" ]] || (( SECONDS % 45 < 3 )); then
         nudged=1
         nudge_arp_subnet "$LAB_SUBNET"
         ip="$(arp_ip_for_mac "$mac" || true)"
+        if [[ -z "$ip" ]]; then
+          ip="$(scan_api_subnet_for_mac "$mac" "$LAB_SUBNET" || true)"
+        fi
       fi
     fi
     if [[ -n "$ip" ]] && api_reachable "$ip"; then
@@ -207,7 +251,7 @@ wait_ip() {
     fi
     sleep 3
   done
-  die "timed out waiting for IP/API for VM ${vmid}"
+  die "timed out waiting for IP/API for VM ${vmid} MAC=${mac} (PROXMOX_SSH=${PROXMOX_SSH:-unset} subnet=${LAB_SUBNET:-unset})"
 }
 
 wait_api() {

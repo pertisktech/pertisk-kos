@@ -26,6 +26,33 @@ pub struct EphemeralVolume {
     pub root: PathBuf,
 }
 
+/// Result of expanding EPHEMERAL after a hypervisor disk resize.
+#[derive(Debug, Clone, Default)]
+pub struct GrowEphemeralResult {
+    /// GPT partition end was moved.
+    pub partition_grew: bool,
+    /// ext4 was resized (online or offline).
+    pub filesystem_grew: bool,
+}
+
+/// Expand EPHEMERAL to fill a resized disk (safe while `/var` is mounted).
+///
+/// Call after Proxmox/`qm resize` (or reboot so the kernel sees the new size).
+/// Rescans the parent disk, grows GPT partition 6 to the end, then `resize2fs`.
+pub fn grow_ephemeral_storage() -> Result<GrowEphemeralResult, EphemeralError> {
+    #[cfg(target_os = "linux")]
+    {
+        let Some(dev) = find_ephemeral_device() else {
+            return Err(EphemeralError::DeviceNotFound);
+        };
+        Ok(prepare_ephemeral_device(&dev))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(GrowEphemeralResult::default())
+    }
+}
+
 /// Mount PARTLABEL `EPHEMERAL` and bind it over `/var` when present.
 ///
 /// Order:
@@ -49,9 +76,9 @@ pub fn prepare_ephemeral_at(
             warn!("no EPHEMERAL partition; keeping tmpfs /var");
             return Ok(None);
         };
-        // After qemu-img resize of a small golden image, grow GPT then ensure
-        // an ext4 with inode density for the final size (mkfs, not largefile4+resize).
-        prepare_ephemeral_device(&dev);
+        // After qemu-img / Proxmox resize, grow GPT then ensure ext4 fills the
+        // partition (resize2fs; mkfs only when unformatted or inode-starved).
+        let _ = prepare_ephemeral_device(&dev);
         Ok(Some(mount_ephemeral_partition(&dev, mountpoint, var)?))
     }
     #[cfg(not(target_os = "linux"))]
@@ -99,9 +126,36 @@ fn guess_ephemeral_nodes() -> impl Iterator<Item = PathBuf> {
 
 /// Grow GPT if the disk was resized, then mkfs/resize so `/var` has usable inodes.
 #[cfg(target_os = "linux")]
-fn prepare_ephemeral_device(part_dev: &Path) {
-    let grew = grow_ephemeral_partition(part_dev);
-    ensure_ephemeral_filesystem(part_dev, grew);
+fn prepare_ephemeral_device(part_dev: &Path) -> GrowEphemeralResult {
+    rescan_parent_disk(part_dev);
+    let partition_grew = grow_ephemeral_partition(part_dev);
+    let filesystem_grew = ensure_ephemeral_filesystem(part_dev, partition_grew);
+    GrowEphemeralResult {
+        partition_grew,
+        filesystem_grew,
+    }
+}
+
+/// Ask the kernel to refresh whole-disk capacity after hypervisor resize.
+#[cfg(target_os = "linux")]
+fn rescan_parent_disk(part_dev: &Path) {
+    use std::process::Command;
+
+    let Some((disk, _, _)) = partition_sysfs(part_dev) else {
+        return;
+    };
+    let disk_path = format!("/dev/{disk}");
+    // SCSI/virtio-scsi: rescan capacity.
+    let rescan = PathBuf::from(format!("/sys/class/block/{disk}/device/rescan"));
+    if rescan.exists() {
+        if let Err(err) = fs::write(&rescan, "1") {
+            warn!(disk = %disk, error = %err, "block rescan write failed");
+        } else {
+            info!(disk = %disk, "rescanned block device capacity");
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let _ = Command::new(disk_tool("partprobe")).arg(&disk_path).status();
 }
 
 /// Expand EPHEMERAL GPT partition to the end of a resized disk. Returns true when grown.
@@ -110,6 +164,7 @@ fn grow_ephemeral_partition(part_dev: &Path) -> bool {
     use std::process::Command;
 
     let Some((disk, part_num, sys_part)) = partition_sysfs(part_dev) else {
+        warn!(device = %part_dev.display(), "cannot resolve EPHEMERAL sysfs for grow");
         return false;
     };
     let disk_sys = PathBuf::from(format!("/sys/class/block/{disk}"));
@@ -127,6 +182,12 @@ fn grow_ephemeral_partition(part_dev: &Path) -> bool {
     let usable_end = disk_sectors.saturating_sub(2048);
     let part_end = part_start.saturating_add(part_size);
     if part_end + 2048 >= usable_end {
+        info!(
+            disk = %disk,
+            part_end,
+            disk_sectors,
+            "EPHEMERAL already fills disk (or kernel still sees old capacity)"
+        );
         return false;
     }
 
@@ -136,19 +197,28 @@ fn grow_ephemeral_partition(part_dev: &Path) -> bool {
         partition = part_num,
         part_end,
         disk_sectors,
+        usable_end,
         "growing EPHEMERAL partition to disk end"
     );
 
-    // Move backup GPT to new end, then recreate partition 6 from same start → end.
-    let _ = Command::new("sgdisk").args(["-e", &disk_path.to_string_lossy()]).status();
-    let _ = Command::new("sgdisk")
-        .args(["-d", &part_num.to_string(), &disk_path.to_string_lossy()])
-        .status();
+    let sgdisk = disk_tool("sgdisk");
+    let partprobe = disk_tool("partprobe");
+
+    // Move backup GPT to new end, then recreate partition from same start → end.
+    if !run_ok(&sgdisk, &["-e", &disk_path.to_string_lossy()]) {
+        warn!("sgdisk -e failed (backup GPT relocate)");
+        return false;
+    }
+    if !run_ok(&sgdisk, &["-d", &part_num.to_string(), &disk_path.to_string_lossy()]) {
+        warn!(partition = part_num, "sgdisk -d failed");
+        return false;
+    }
     let n_arg = format!("{part_num}:{part_start}:0");
     let t_arg = format!("{part_num}:8300");
     let c_arg = format!("{part_num}:{PARTLABEL_EPHEMERAL}");
-    if let Err(err) = Command::new("sgdisk")
-        .args([
+    if !run_ok(
+        &sgdisk,
+        &[
             "-n",
             &n_arg,
             "-t",
@@ -156,21 +226,58 @@ fn grow_ephemeral_partition(part_dev: &Path) -> bool {
             "-c",
             &c_arg,
             &disk_path.to_string_lossy(),
-        ])
-        .status()
-    {
-        warn!(error = %err, "sgdisk recreate EPHEMERAL failed");
+        ],
+    ) {
+        warn!("sgdisk recreate EPHEMERAL failed");
         return false;
     }
-    let _ = Command::new("partprobe").arg(&disk_path).status();
-    std::thread::sleep(Duration::from_millis(500));
+    let _ = run_ok(&partprobe, &[&disk_path.to_string_lossy()]);
+    // Tell the kernel the partition size changed (mounted EPHEMERAL grow).
+    let part_size_sys = PathBuf::from(format!("/sys/class/block/{sys_part}/size"));
+    if part_size_sys.exists() {
+        // Reading size after partprobe is enough; force a partition table reread.
+        let _ = Command::new(&partprobe).arg(&disk_path).status();
+    }
+    std::thread::sleep(Duration::from_millis(800));
     true
+}
+
+#[cfg(target_os = "linux")]
+fn disk_tool(name: &str) -> String {
+    for p in [
+        format!("/usr/sbin/{name}"),
+        format!("/sbin/{name}"),
+        format!("/usr/bin/{name}"),
+        name.to_string(),
+    ] {
+        if p == name || Path::new(&p).is_file() {
+            return p;
+        }
+    }
+    name.to_string()
+}
+
+#[cfg(target_os = "linux")]
+fn run_ok(bin: &str, args: &[&str]) -> bool {
+    use std::process::Command;
+    match Command::new(bin).args(args).status() {
+        Ok(st) if st.success() => true,
+        Ok(st) => {
+            warn!(bin, ?args, code = ?st.code(), "disk tool exited non-zero");
+            false
+        }
+        Err(err) => {
+            warn!(bin, error = %err, "disk tool spawn failed");
+            false
+        }
+    }
 }
 
 /// Create or repair EPHEMERAL ext4. Prefer mkfs at final size over resize2fs of a
 /// tiny `largefile4` FS (inode count does not grow → ENOSPC on image extracts).
+/// Returns true when the filesystem size changed.
 #[cfg(target_os = "linux")]
-fn ensure_ephemeral_filesystem(part_dev: &Path, grew: bool) {
+fn ensure_ephemeral_filesystem(part_dev: &Path, grew: bool) -> bool {
     use std::process::Command;
 
     let has_ext4 = blkid_type(part_dev).as_deref() == Some("ext4");
@@ -183,7 +290,7 @@ fn ensure_ephemeral_filesystem(part_dev: &Path, grew: bool) {
             grew,
             "formatting EPHEMERAL ext4 (final size / inode density)"
         );
-        match Command::new("mkfs.ext4")
+        match Command::new(disk_tool("mkfs.ext4"))
             .args([
                 "-F",
                 "-q",
@@ -197,29 +304,90 @@ fn ensure_ephemeral_filesystem(part_dev: &Path, grew: bool) {
         {
             Ok(st) if st.success() => {
                 info!(device = %part_dev.display(), "EPHEMERAL filesystem created");
+                return true;
             }
             Ok(st) => warn!(code = ?st.code(), "mkfs.ext4 exited non-zero"),
             Err(err) => warn!(error = %err, "mkfs.ext4 not available"),
         }
-        return;
+        return false;
     }
 
-    if grew {
-        match Command::new("resize2fs").arg(part_dev).status() {
-            Ok(st) if st.success() => {
-                info!(device = %part_dev.display(), "EPHEMERAL filesystem resized");
-            }
-            Ok(st) => warn!(code = ?st.code(), "resize2fs exited non-zero"),
-            Err(err) => warn!(error = %err, "resize2fs not available"),
+    let needs = grew || filesystem_smaller_than_partition(part_dev);
+    if !needs {
+        return false;
+    }
+    match Command::new(disk_tool("resize2fs")).arg(part_dev).status() {
+        Ok(st) if st.success() => {
+            info!(device = %part_dev.display(), "EPHEMERAL filesystem resized");
+            true
+        }
+        Ok(st) => {
+            warn!(code = ?st.code(), "resize2fs exited non-zero");
+            false
+        }
+        Err(err) => {
+            warn!(error = %err, "resize2fs not available");
+            false
         }
     }
+}
+
+/// True when ext4 is smaller than the partition (e.g. GPT grew but FS did not).
+#[cfg(target_os = "linux")]
+fn filesystem_smaller_than_partition(part_dev: &Path) -> bool {
+    use std::process::Command;
+
+    let Some((_, _, sys_part)) = partition_sysfs(part_dev) else {
+        return false;
+    };
+    let Ok(part_sectors) = read_u64(Path::new(&format!("/sys/class/block/{sys_part}/size"))) else {
+        return false;
+    };
+    let part_bytes = part_sectors.saturating_mul(512);
+
+    let out = Command::new(disk_tool("tune2fs"))
+        .args(["-l"])
+        .arg(part_dev)
+        .output();
+    let Ok(out) = out else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut block_count: Option<u64> = None;
+    let mut block_size: Option<u64> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("Block count:") {
+            block_count = rest.trim().parse().ok();
+        }
+        if let Some(rest) = line.strip_prefix("Block size:") {
+            block_size = rest.trim().parse().ok();
+        }
+    }
+    let (Some(bc), Some(bs)) = (block_count, block_size) else {
+        return false;
+    };
+    let fs_bytes = bc.saturating_mul(bs);
+    // Allow 16 MiB slack for alignment / reserved GPT.
+    let needs = fs_bytes + 16 * 1024 * 1024 < part_bytes;
+    if needs {
+        info!(
+            device = %part_dev.display(),
+            fs_bytes,
+            part_bytes,
+            "EPHEMERAL filesystem smaller than partition — will resize2fs"
+        );
+    }
+    needs
 }
 
 #[cfg(target_os = "linux")]
 fn blkid_type(part_dev: &Path) -> Option<String> {
     use std::process::Command;
 
-    let out = Command::new("blkid")
+    let out = Command::new(disk_tool("blkid"))
         .args(["-o", "value", "-s", "TYPE"])
         .arg(part_dev)
         .output()
@@ -248,7 +416,7 @@ fn inode_starved_for_partition(part_dev: &Path) -> bool {
     };
     let part_bytes = part_sectors.saturating_mul(512);
 
-    let out = Command::new("tune2fs")
+    let out = Command::new(disk_tool("tune2fs"))
         .args(["-l"])
         .arg(part_dev)
         .output();

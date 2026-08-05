@@ -26,6 +26,8 @@ service MachineService {
   rpc JoinControlPlane(JoinControlPlaneRequest) returns (JoinControlPlaneResponse);
   // Export worker + controlplane-join YAML (includes caKey/saKey) from a bootstrapped CP.
   rpc GetJoinConfig(GetJoinConfigRequest) returns (GetJoinConfigResponse);
+  // Expand EPHEMERAL GPT + ext4 after hypervisor disk resize (safe while /var mounted).
+  rpc GrowDisk(GrowDiskRequest) returns (GrowDiskResponse);
 }
 
 message VersionRequest {}
@@ -187,4 +189,13 @@ message GetJoinConfigResponse {
   string controlplane_yaml = 4;
   repeated string etcd_endpoints = 5;
   string ca_pem = 6;
+}
+
+message GrowDiskRequest {}
+
+message GrowDiskResponse {
+  bool ok = 1;
+  string message = 2;
+  bool partition_grew = 3;
+  bool filesystem_grew = 4;
 }

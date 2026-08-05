@@ -234,18 +234,20 @@ fi
 : "${PROXMOX_TOKEN_SECRET:?set PROXMOX_TOKEN_SECRET}"
 : "${PROXMOX_NODE:?set PROXMOX_NODE}"
 
-# Derive PVE SSH + lab subnet from PROXMOX_URL when unset (lab default).
-# Prefer setting SSH for IP hosts without a probe (mgmt service user may lack keys
-# yet; later steps fail clearly). Match proxmox-add-node.sh.
+# Derive lab subnet from PROXMOX_URL. Disk import defaults to Proxmox API
+# (Omni-style — provider token only). Set PROXMOX_SSH=root@host to use scp+qm.
+# PROXMOX_NO_SSH=1 clears SSH; PROXMOX_SSH_AUTO=1 restores old auto root@<ip>.
 PVE_HOST="$(echo "${PROXMOX_URL}" | sed -E 's|https?://([^/:]+).*|\1|')"
-if [[ -z "${PROXMOX_SSH:-}" && "${PVE_HOST}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ "${PROXMOX_NO_SSH:-0}" == "1" ]]; then
+  unset PROXMOX_SSH || true
+elif [[ -z "${PROXMOX_SSH:-}" && "${PROXMOX_SSH_AUTO:-0}" == "1" && "${PVE_HOST}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   export PROXMOX_SSH="root@${PVE_HOST}"
-  echo "==> auto PROXMOX_SSH=${PROXMOX_SSH}"
-elif [[ -z "${PROXMOX_SSH:-}" && -n "${PVE_HOST}" ]]; then
+  echo "==> auto PROXMOX_SSH=${PROXMOX_SSH} (PROXMOX_SSH_AUTO=1)"
+elif [[ -z "${PROXMOX_SSH:-}" && "${PROXMOX_SSH_AUTO:-0}" == "1" && -n "${PVE_HOST}" ]]; then
   if ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new \
     "root@${PVE_HOST}" true >/dev/null 2>&1; then
     export PROXMOX_SSH="root@${PVE_HOST}"
-    echo "==> auto PROXMOX_SSH=${PROXMOX_SSH}"
+    echo "==> auto PROXMOX_SSH=${PROXMOX_SSH} (PROXMOX_SSH_AUTO=1)"
   fi
 fi
 if [[ -z "${LAB_SUBNET}" && "${PVE_HOST}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
@@ -254,8 +256,18 @@ if [[ -z "${LAB_SUBNET}" && "${PVE_HOST}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9
 fi
 
 if [[ -z "${PROXMOX_SSH:-}" ]]; then
-  echo "WARNING: PROXMOX_SSH unset — MAC→IP needs ARP on the PVE bridge." >&2
-  echo "         export PROXMOX_SSH=root@${PVE_HOST:-<pve>}  (and/or --subnet 10.1.1.0/24)" >&2
+  # ZFS/LVM cannot hold content=import; upload via directory storage then import-from.
+  if [[ -z "${PROXMOX_UPLOAD_STORAGE:-}" ]]; then
+    case "${PROXMOX_STORAGE:-}" in
+      *zfs*|*lvm*|local-lvm) export PROXMOX_UPLOAD_STORAGE=local ;;
+      "") export PROXMOX_UPLOAD_STORAGE=local ;;
+      *) export PROXMOX_UPLOAD_STORAGE="${PROXMOX_STORAGE}" ;;
+    esac
+  fi
+  echo "==> disk import via Proxmox API (upload→${PROXMOX_UPLOAD_STORAGE}; no SSH)"
+  echo "    set PROXMOX_SSH=root@${PVE_HOST:-<pve>} for scp+qm instead"
+else
+  echo "==> disk import via SSH ${PROXMOX_SSH}"
 fi
 echo "==> images dir=${IMAGES_DIR} disk=${DISK}"
 
@@ -291,38 +303,92 @@ vm_mac() {
 }
 
 arp_ip_for_mac() {
-  local mac="$1" out=""
+  local mac="$1" out="" mac_cmp
   mac="$(echo "$mac" | tr 'A-F' 'a-f')"
+  mac_cmp="$(echo "$mac" | tr -d ':.-')"
   if [[ -n "${PROXMOX_SSH:-}" ]]; then
     out="$(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes "${PROXMOX_SSH}" \
       "ip -4 neigh show | awk 'BEGIN{IGNORECASE=1} \$0 ~ /${mac}/ {print \$1; exit}'" \
       2>/dev/null || true)"
   else
-    out="$(ip -4 neigh show 2>/dev/null | awk -v m="$mac" 'BEGIN{IGNORECASE=1} $0 ~ m {print $1; exit}' || true)"
+    # Prefer entries that have an lladdr (skip INCOMPLETE/FAILED).
+    out="$(ip -4 neigh show 2>/dev/null | awk -v m="$mac" -v c="$mac_cmp" '
+      BEGIN { IGNORECASE=1 }
+      $0 ~ /lladdr/ {
+        line=tolower($0)
+        gsub(/:/, "", line); gsub(/-/, "", line); gsub(/\./, "", line)
+        if (index(line, c) || tolower($0) ~ m) { print $1; exit }
+      }' || true)"
+    if [[ -z "$out" ]]; then
+      out="$(ip -4 neigh show 2>/dev/null | awk -v m="$mac" 'BEGIN{IGNORECASE=1} $0 ~ m {print $1; exit}' || true)"
+    fi
+    if [[ -z "$out" ]] && command -v arp >/dev/null 2>&1; then
+      out="$(arp -an 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -F "$mac" \
+        | sed -n 's/.*(\([0-9.]*\)).*/\1/p' | head -1 || true)"
+    fi
   fi
   if [[ "$out" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "$out"
   fi
 }
 
-# Populate PVE bridge ARP (guests often silent until nudged), then re-read neigh.
+# Populate ARP for LAB_SUBNET so MAC→IP works without PROXMOX_SSH (mgmt on same L2).
 nudge_arp_subnet() {
   local cidr="$1" base
   [[ -n "$cidr" ]] || return 0
-  [[ -n "${PROXMOX_SSH:-}" ]] || return 0
   base="${cidr%/*}"
   base="${base%.*}" # 10.1.1
-  log "nudge ARP on ${PROXMOX_SSH} for ${base}.0/24"
-  ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o BatchMode=yes "${PROXMOX_SSH}" \
-    "base=${base}; for i in \$(seq 1 254); do ping -c1 -W1 \${base}.\$i >/dev/null 2>&1 & done; wait" \
-    >/dev/null 2>&1 || true
+  if [[ -n "${PROXMOX_SSH:-}" ]]; then
+    log "nudge ARP on ${PROXMOX_SSH} for ${base}.0/24"
+    ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o BatchMode=yes "${PROXMOX_SSH}" \
+      "base=${base}; for i in \$(seq 1 254); do ping -c1 -W1 \${base}.\$i >/dev/null 2>&1 & done; wait" \
+      >/dev/null 2>&1 || true
+  else
+    log "nudge ARP locally for ${base}.0/24"
+    (
+      local i
+      for i in $(seq 1 254); do
+        ping -c1 -W1 "${base}.${i}" >/dev/null 2>&1 &
+        if (( i % 80 == 0 )); then wait || true; fi
+      done
+      wait || true
+    ) >/dev/null 2>&1 || true
+  fi
+}
+
+# Parallel :50000 probe (≈few seconds). TCP connects populate ARP, then match MAC.
+# Avoids the old sequential 254×2s scan that looked like a hang on the last VM.
+scan_api_subnet_for_mac() {
+  local mac="$1" cidr="$2" base i
+  [[ -n "$cidr" ]] || return 0
+  mac="$(echo "$mac" | tr 'A-F' 'a-f')"
+  base="${cidr%/*}"
+  base="${base%.*}"
+  log "scan :50000 on ${base}.0/24 (parallel) for MAC ${mac}"
+  (
+    for i in $(seq 1 254); do
+      if command -v nc >/dev/null 2>&1; then
+        nc -z -w 1 "${base}.${i}" 50000 >/dev/null 2>&1 &
+      else
+        timeout 1 bash -c "echo >/dev/tcp/${base}.${i}/50000" 2>/dev/null &
+      fi
+      if (( i % 80 == 0 )); then wait || true; fi
+    done
+    wait || true
+  ) >/dev/null 2>&1 || true
+  arp_ip_for_mac "$mac"
 }
 
 ping_sweep_find() {
-  local mac="$1" cidr="$2"
+  local mac="$1" cidr="$2" ip
   [[ -n "$cidr" ]] || return 0
   nudge_arp_subnet "$cidr"
-  arp_ip_for_mac "$mac"
+  ip="$(arp_ip_for_mac "$mac" || true)"
+  if [[ -n "$ip" ]]; then
+    echo "$ip"
+    return 0
+  fi
+  scan_api_subnet_for_mac "$mac" "$cidr" || true
 }
 
 api_reachable() {
@@ -330,7 +396,8 @@ api_reachable() {
   if command -v nc >/dev/null 2>&1; then
     nc -z -w 2 "$ip" 50000 >/dev/null 2>&1
   else
-    "${CURL[@]}" --connect-timeout 2 "http://${ip}:50000" >/dev/null 2>&1 || return 1
+    timeout 2 bash -c "echo >/dev/tcp/${ip}/50000" 2>/dev/null || \
+      "${CURL[@]}" --connect-timeout 2 "http://${ip}:50000" >/dev/null 2>&1 || return 1
   fi
 }
 
@@ -341,8 +408,9 @@ wait_ip() {
   deadline=$((SECONDS + IP_TIMEOUT))
   while (( SECONDS < deadline )); do
     ip="$(arp_ip_for_mac "$mac" || true)"
+    # Only sweep when we still have no IP — never re-sweep while waiting on :50000.
     if [[ -z "$ip" && -n "$LAB_SUBNET" ]]; then
-      if [[ "$nudged" == "0" ]] || (( SECONDS % 30 < 3 )); then
+      if [[ "$nudged" == "0" ]] || (( SECONDS % 60 < 3 )); then
         nudged=1
         ip="$(ping_sweep_find "$mac" "$LAB_SUBNET" || true)"
       fi
@@ -354,10 +422,15 @@ wait_ip() {
     fi
     if [[ -n "$ip" ]]; then
       log "VM ${vmid} ARP=${ip} but :50000 not ready yet..."
+    else
+      log "VM ${vmid} no ARP yet for ${mac}…"
     fi
     sleep 3
   done
-  die "timed out waiting for IP/API for VM ${vmid} MAC=${mac} (PROXMOX_SSH=${PROXMOX_SSH:-unset} subnet=${LAB_SUBNET:-unset})"
+  die "timed out waiting for IP/API for VM ${vmid} MAC=${mac} (PROXMOX_SSH=${PROXMOX_SSH:-unset} subnet=${LAB_SUBNET:-unset})
+hint: without PROXMOX_SSH, mgmt must share L2 with guests (LAB_SUBNET ping-sweep).
+      check: ip -4 neigh | grep -i ${mac}
+      resume: lab-up --skip-build --skip-vms --cp-vmid ${CP_VMID} --controlplanes ${CONTROLPLANES} --workers ${WORKERS}"
 }
 
 wait_api() {
@@ -634,9 +707,30 @@ step_resolve_ips() {
   log "CPs=${CP_IPS[*]} VIP=${VIP:-none} VIP6=${VIP6:-none} API_ENDPOINT=${API_ENDPOINT} workers=${WORKER_IPS[*]:-}"
 }
 
+ensure_pertiskctl() {
+  # RPM / packaged: PERTISKCTL=/usr/bin/pertiskctl (set by pertisk-mgmt).
+  # Dev tree: build with make when missing.
+  if [[ -x "$CTL" ]]; then
+    return 0
+  fi
+  if command -v pertiskctl >/dev/null 2>&1; then
+    CTL="$(command -v pertiskctl)"
+    return 0
+  fi
+  if [[ -x /usr/bin/pertiskctl ]]; then
+    CTL=/usr/bin/pertiskctl
+    return 0
+  fi
+  if command -v make >/dev/null 2>&1 && [[ -f "${ROOT}/Makefile" ]]; then
+    log "build pertiskctl"
+    make -C "$ROOT" pertiskctl
+  fi
+  [[ -x "$CTL" ]] || die "pertiskctl missing (set PERTISKCTL=/usr/bin/pertiskctl or install the RPM)"
+}
+
 step_cluster() {
-  make -C "$ROOT" pertiskctl
-  [[ -x "$CTL" ]] || die "pertiskctl missing"
+  ensure_pertiskctl
+  log "using pertiskctl=${CTL}"
 
   mkdir -p "$CLUSTER_OUT"
   log "gen config ${CLUSTER_NAME} https://${API_ENDPOINT}:6443 (controlplanes=${CONTROLPLANES} dual-stack=${DUAL_STACK})"

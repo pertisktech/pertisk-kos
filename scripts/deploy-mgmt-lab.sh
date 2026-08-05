@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Mgmt-only deploy (Omni-style Proxmox API — no scp to the PVE node):
+#   1) local build cloud images (+ optional RPM)
+#   2) install RPM on mgmt host
+#   3) copy qcow2 → mgmt /var/lib/pertisk-mgmt/images/
+#   4) Create cluster uploads disk via Proxmox API (provider token)
+#
+# Examples:
+#   ./scripts/deploy-mgmt-lab.sh --mgmt almalinux@10.1.1.12
+#   ./scripts/deploy-mgmt-lab.sh --mgmt almalinux@10.1.1.12 --skip-build --skip-rpm
+#   ./scripts/deploy-mgmt-lab.sh --mgmt almalinux@10.1.1.12 --with-ssh --pve 10.1.1.195
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ARCH="${PERTISK_ARCH:-${ARCH:-amd64}}"
+MGMT_HOST="${MGMT_HOST:-}"
+PVE_HOST="${PVE_HOST:-}"
+VERSION="${VERSION:-}"
+SKIP_BUILD=0
+SKIP_RPM=0
+SKIP_IMAGES=0
+WITH_SSH=0
+CP_GB="${CP_GB:-50}"
+WORKER_GB="${WORKER_GB:-75}"
+LAB_SUBNET="${LAB_SUBNET:-10.1.1.0/24}"
+
+usage() {
+  sed -n '2,12p' "$0"
+  cat <<EOF
+
+Flags:
+  --mgmt USER@HOST     mgmt SSH target (required; or env MGMT_HOST)
+  --version VER        RPM version for make rpm (default: from make version)
+  --skip-build         reuse existing out/pertisk-cloud-*.qcow2
+  --skip-rpm           do not build/install RPM
+  --skip-images        do not stage/copy qcow2
+  --with-ssh           also configure PROXMOX_SSH + keys (optional)
+  --pve HOST|root@HOST required with --with-ssh
+  --subnet CIDR        LAB_SUBNET for MAC→IP without SSH (default ${LAB_SUBNET})
+  --cp-gb N            (default ${CP_GB})
+  --worker-gb N        (default ${WORKER_GB})
+  -h, --help
+EOF
+  exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mgmt) MGMT_HOST="$2"; shift 2 ;;
+    --pve) PVE_HOST="$2"; shift 2 ;;
+    --version) VERSION="$2"; shift 2 ;;
+    --subnet) LAB_SUBNET="$2"; shift 2 ;;
+    --skip-build) SKIP_BUILD=1; shift ;;
+    --skip-rpm) SKIP_RPM=1; shift ;;
+    --skip-images) SKIP_IMAGES=1; shift ;;
+    --with-ssh) WITH_SSH=1; shift ;;
+    --cp-gb) CP_GB="$2"; shift 2 ;;
+    --worker-gb) WORKER_GB="$2"; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "unknown arg: $1" >&2; usage ;;
+  esac
+done
+
+[[ -n "$MGMT_HOST" ]] || { echo "ERROR: set --mgmt USER@HOST" >&2; exit 1; }
+if [[ "$WITH_SSH" == "1" && -z "$PVE_HOST" ]]; then
+  echo "ERROR: --with-ssh requires --pve HOST" >&2
+  exit 1
+fi
+
+if [[ -z "$VERSION" ]]; then
+  VERSION="$(make -C "$ROOT" -s version 2>/dev/null || echo 0.1.0)"
+fi
+
+PVE_SSH=""
+if [[ -n "$PVE_HOST" ]]; then
+  if [[ "$PVE_HOST" == *@* ]]; then
+    PVE_SSH="$PVE_HOST"
+  else
+    PVE_SSH="root@${PVE_HOST}"
+  fi
+fi
+
+echo "==> pipeline: local build → RPM @ ${MGMT_HOST} → images on mgmt → create via Proxmox API"
+
+# --- 1) images ---
+if [[ "$SKIP_IMAGES" != "1" ]]; then
+  STAGE_ARGS=(--arch "$ARCH" --cp-gb "$CP_GB" --worker-gb "$WORKER_GB" --dest "${ROOT}/out")
+  [[ "$SKIP_BUILD" == "1" ]] && STAGE_ARGS+=(--skip-build)
+  echo "==> [1/3] stage cloud images"
+  "$ROOT/scripts/stage-cloud-images.sh" "${STAGE_ARGS[@]}"
+else
+  echo "==> [1/3] skip images"
+fi
+
+# --- 2) RPM ---
+if [[ "$SKIP_RPM" != "1" ]]; then
+  echo "==> [2/3] build + install RPM VERSION=${VERSION}"
+  make -C "$ROOT" rpm VERSION="$VERSION"
+  RPM="$(ls -1t "${ROOT}/out/rpm/pertisk-mgmt-${VERSION}"-*.rpm 2>/dev/null | head -1 || true)"
+  [[ -n "$RPM" && -f "$RPM" ]] || RPM="$(ls -1t "${ROOT}/out/rpm/pertisk-mgmt-"*.rpm 2>/dev/null | head -1 || true)"
+  [[ -n "$RPM" && -f "$RPM" ]] || { echo "ERROR: no RPM in out/rpm/" >&2; exit 1; }
+  scp "$RPM" "${MGMT_HOST}:/tmp/pertisk-mgmt.rpm"
+  ssh "$MGMT_HOST" 'sudo rpm -Uvh /tmp/pertisk-mgmt.rpm && sudo systemctl enable pertisk-mgmt'
+else
+  echo "==> [2/3] skip RPM"
+fi
+
+# --- 3) copy images → mgmt only ---
+if [[ "$SKIP_IMAGES" != "1" ]]; then
+  echo "==> [3/3] copy qcow2 → ${MGMT_HOST}:/var/lib/pertisk-mgmt/images/"
+  scp "${ROOT}/out/pertisk-cloud-${ARCH}.qcow2" \
+      "${ROOT}/out/pertisk-cloud-${ARCH}-${CP_GB}g.qcow2" \
+      "${ROOT}/out/pertisk-cloud-${ARCH}-${WORKER_GB}g.qcow2" \
+      "${MGMT_HOST}:/tmp/"
+  ssh "$MGMT_HOST" "sudo bash -c '
+    mkdir -p /var/lib/pertisk-mgmt/images
+    mv /tmp/pertisk-cloud-${ARCH}*.qcow2 /var/lib/pertisk-mgmt/images/
+    chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images
+    ls -lh /var/lib/pertisk-mgmt/images
+  '"
+fi
+
+# --- env: API-only by default (like Omni infra provider) ---
+echo "==> configure API disk import (PROXMOX_NO_SSH=1, upload→local)"
+ssh "$MGMT_HOST" "sudo bash -c '
+  ENV=/etc/pertisk-mgmt/pertisk-mgmt.env
+  touch \"\$ENV\"
+  set_kv() {
+    local k=\"\$1\" v=\"\$2\"
+    if grep -q \"^\${k}=\" \"\$ENV\" 2>/dev/null; then
+      sed -i \"s|^\${k}=.*|\${k}=\${v}|\" \"\$ENV\"
+    elif grep -q \"^# *\${k}=\" \"\$ENV\" 2>/dev/null; then
+      sed -i \"s|^# *\${k}=.*|\${k}=\${v}|\" \"\$ENV\"
+    else
+      echo \"\${k}=\${v}\" >> \"\$ENV\"
+    fi
+  }
+  set_kv PERTISK_IMAGES_DIR /var/lib/pertisk-mgmt/images
+  set_kv PROXMOX_NO_SSH 1
+  set_kv PROXMOX_UPLOAD_STORAGE local
+  set_kv LAB_SUBNET ${LAB_SUBNET}
+  # Clear forced SSH unless --with-ssh
+  if [[ \"${WITH_SSH}\" != \"1\" ]]; then
+    sed -i \"s|^PROXMOX_SSH=|# PROXMOX_SSH=|\" \"\$ENV\" 2>/dev/null || true
+  fi
+'"
+
+if [[ "$WITH_SSH" == "1" && -n "$PVE_SSH" ]]; then
+  echo "==> optional SSH mode PROXMOX_SSH=${PVE_SSH}"
+  ssh "$MGMT_HOST" "sudo bash -c '
+    ENV=/etc/pertisk-mgmt/pertisk-mgmt.env
+    sed -i \"s|^PROXMOX_NO_SSH=.*|PROXMOX_NO_SSH=0|\" \"\$ENV\"
+    if grep -q \"^PROXMOX_SSH=\" \"\$ENV\"; then
+      sed -i \"s|^PROXMOX_SSH=.*|PROXMOX_SSH=${PVE_SSH}|\" \"\$ENV\"
+    else
+      echo \"PROXMOX_SSH=${PVE_SSH}\" >> \"\$ENV\"
+    fi
+  '"
+  ssh "$MGMT_HOST" 'sudo -u pertisk-mgmt -H bash -c "
+    mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    [[ -f ~/.ssh/id_ed25519 ]] || ssh-keygen -t ed25519 -N \"\" -f ~/.ssh/id_ed25519 -C pertisk-mgmt@mgmt
+  "'
+  PUB="$(ssh "$MGMT_HOST" 'sudo -u pertisk-mgmt -H cat /var/lib/pertisk-mgmt/.ssh/id_ed25519.pub')"
+  if ssh -o BatchMode=yes -o ConnectTimeout=5 "$PVE_SSH" true 2>/dev/null; then
+    ssh "$PVE_SSH" "mkdir -p /root/.ssh && chmod 700 /root/.ssh
+      grep -qxF '$PUB' /root/.ssh/authorized_keys 2>/dev/null || echo '$PUB' >> /root/.ssh/authorized_keys
+      chmod 600 /root/.ssh/authorized_keys"
+  else
+    echo "WARNING: cannot SSH to ${PVE_SSH} — install pubkey manually: $PUB" >&2
+  fi
+fi
+
+ssh "$MGMT_HOST" 'sudo systemctl restart pertisk-mgmt && sudo systemctl --no-pager -l status pertisk-mgmt | head -20' || true
+
+cat <<EOF
+
+======== deploy done ========
+mgmt:     ${MGMT_HOST}
+images:   /var/lib/pertisk-mgmt/images/pertisk-cloud-${ARCH}*.qcow2
+disk:     Proxmox API upload → local → import-from → provider storage
+          (no scp to PVE; like Omni infra provider)
+
+Next:
+  1. UI → Providers → add Proxmox (URL / API token / node / storage)
+     Ensure storage "local" allows content type Import (Datacenter → Storage).
+  2. Clusters → Create (use a free VIP if CP>1)
+  3. Job log should show: API upload content=import → storage=local
+
+EOF

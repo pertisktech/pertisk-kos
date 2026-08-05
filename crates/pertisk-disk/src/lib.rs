@@ -9,7 +9,8 @@ mod plan;
 mod state;
 
 pub use ephemeral::{
-    prepare_ephemeral, prepare_ephemeral_at, try_prepare_ephemeral, EphemeralError, EphemeralVolume,
+    grow_ephemeral_storage, prepare_ephemeral, prepare_ephemeral_at, try_prepare_ephemeral,
+    EphemeralError, EphemeralVolume, GrowEphemeralResult,
 };
 pub use esp::{prepare_esp, prepare_esp_at, try_prepare_esp, EspError, EspVolume};
 pub use install::{

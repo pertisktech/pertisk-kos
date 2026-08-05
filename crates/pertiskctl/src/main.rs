@@ -12,9 +12,10 @@ use pertisk_bootstrap::{
 use pertisk_config::Cluster;
 use pertisk_proto::machine_service_client::MachineServiceClient;
 use pertisk_proto::{
-    ApplyConfigurationRequest, BootstrapRequest, GetJoinConfigRequest, HealthRequest,
-    JoinControlPlaneRequest, KubeconfigRequest, LogsRequest, MarkBootGoodRequest, RebootRequest,
-    ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest, VersionRequest,
+    ApplyConfigurationRequest, BootstrapRequest, GetJoinConfigRequest, GrowDiskRequest,
+    HealthRequest, JoinControlPlaneRequest, KubeconfigRequest, LogsRequest, MarkBootGoodRequest,
+    RebootRequest, ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest,
+    VersionRequest,
 };
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
@@ -149,6 +150,8 @@ enum Commands {
     },
     Reboot,
     Shutdown,
+    /// Grow EPHEMERAL (/var) to fill a resized Proxmox disk.
+    GrowDisk,
     Upgrade {
         #[arg(long)]
         bundle: String,
@@ -458,6 +461,17 @@ async fn main() -> Result<()> {
                 .await?
                 .into_inner();
             println!("shutdown: {} — {}", resp.accepted, resp.message);
+        }
+        Commands::GrowDisk => {
+            let mut client = connect(&cli).await?;
+            let resp = client.grow_disk(GrowDiskRequest {}).await?.into_inner();
+            println!(
+                "grow-disk: ok={} partition_grew={} filesystem_grew={} — {}",
+                resp.ok, resp.partition_grew, resp.filesystem_grew, resp.message
+            );
+            if !resp.ok {
+                anyhow::bail!("{}", resp.message);
+            }
         }
         Commands::Upgrade { ref bundle, reboot } => {
             let mut client = connect(&cli).await?;

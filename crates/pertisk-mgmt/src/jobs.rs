@@ -21,6 +21,9 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) {
     for key in [
         "PROXMOX_DISK",
         "PROXMOX_SSH",
+        "PROXMOX_NO_SSH",
+        "PROXMOX_UPLOAD_STORAGE",
+        "PROXMOX_SSH_AUTO",
         "LAB_SUBNET",
         "PROXMOX_IMAGES_DIR",
     ] {
@@ -30,11 +33,25 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) {
             }
         }
     }
+    // Omni-style default: Proxmox API only (provider token). Do not invent
+    // PROXMOX_SSH from the provider URL — that forced scp and broke RPM labs
+    // without keys. Opt in with PROXMOX_SSH=… or PROXMOX_SSH_AUTO=1.
+    let no_ssh = std::env::var("PROXMOX_NO_SSH")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let ssh_auto = std::env::var("PROXMOX_SSH_AUTO")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     let ssh_from_host = std::env::var("PROXMOX_SSH")
         .ok()
         .filter(|s| !s.is_empty())
         .is_some();
-    if !ssh_from_host {
+    let mut using_ssh = false;
+    if no_ssh {
+        cmd.env_remove("PROXMOX_SSH");
+    } else if ssh_from_host {
+        using_ssh = true;
+    } else if ssh_auto {
         if let Some(host) = pve_host_from_url(provider_url) {
             if host
                 .chars()
@@ -42,7 +59,18 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) {
                 && host.contains('.')
             {
                 cmd.env("PROXMOX_SSH", format!("root@{host}"));
+                using_ssh = true;
             }
+        }
+    }
+    if !using_ssh {
+        if std::env::var("PROXMOX_UPLOAD_STORAGE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .is_none()
+        {
+            // Directory storage for content=import; VM disks can still be local-zfs.
+            cmd.env("PROXMOX_UPLOAD_STORAGE", "local");
         }
     }
 }
@@ -1624,21 +1652,33 @@ async fn run_resize_node(
         None
     };
     let set_mem = if want_mem != cur_mem { want_mem } else { None };
-    if set_cores.is_some() || set_mem.is_some() {
+    let cpu_mem_changed = set_cores.is_some() || set_mem.is_some();
+    // Disk was requested in the payload (even if Proxmox already at size — guest
+    // EPHEMERAL may still be stale after a previous Proxmox-only grow).
+    let disk_requested = p.get("disk_gb").and_then(|v| v.as_i64()).is_some();
+
+    if cpu_mem_changed {
         client
             .set_vm_hardware(&pve_node, vmid, set_cores, set_mem)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        append_log(log_path, "updated Proxmox CPU/memory\n")?;
+        append_log(log_path, "updated Proxmox CPU/memory config\n")?;
     }
 
+    let mut disk_grew_proxmox = false;
     if let (Some(want), Some(cur)) = (apply_disk, cur_disk) {
         if want > cur {
             client
                 .grow_vm_disk(&pve_node, vmid, want)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            append_log(log_path, &format!("grew disk to {want} GiB\n"))?;
+            append_log(log_path, &format!("grew Proxmox disk to {want} GiB\n"))?;
+            disk_grew_proxmox = true;
+        } else if disk_requested {
+            append_log(
+                log_path,
+                &format!("Proxmox disk already >= {want} GiB — will grow guest EPHEMERAL\n"),
+            )?;
         }
     } else if let Some(want) = apply_disk {
         if cur_disk.is_none() {
@@ -1646,7 +1686,61 @@ async fn run_resize_node(
                 .grow_vm_disk(&pve_node, vmid, want)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            append_log(log_path, &format!("set disk to {want} GiB\n"))?;
+            append_log(log_path, &format!("set Proxmox disk to {want} GiB\n"))?;
+            disk_grew_proxmox = true;
+        }
+    }
+
+    // CPU/memory pending config needs QEMU stop+start.
+    if cpu_mem_changed {
+        append_log(log_path, "restarting VM so CPU/memory take effect…\n")?;
+        client
+            .restart_vm(&pve_node, vmid)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        append_log(log_path, "VM restarted\n")?;
+    }
+
+    // Guest EPHEMERAL (/var) must expand after Proxmox disk grow. Prefer live
+    // `pertiskctl grow-disk` (works while mounted). Fall back to QEMU restart
+    // so boot-time grow runs on older images without the GrowDisk RPC.
+    if disk_requested || disk_grew_proxmox {
+        let ip: Option<String> =
+            sqlx::query_scalar("SELECT ip FROM nodes WHERE id = ? AND cluster_id = ?")
+                .bind(node_id)
+                .bind(cid)
+                .fetch_optional(state.pool())
+                .await?
+                .flatten();
+        let mut guest_ok = false;
+        if let Some(ref ip) = ip {
+            if state.cfg().pertiskctl.exists() {
+                append_log(
+                    log_path,
+                    &format!("waiting for guest API {ip}:50000 then grow-disk…\n"),
+                )?;
+                guest_ok = wait_and_grow_guest_disk(state, ip, log_path).await?;
+            } else {
+                append_log(log_path, "pertiskctl missing — cannot grow guest EPHEMERAL via API\n")?;
+            }
+        } else {
+            append_log(log_path, "node has no IP — cannot grow guest EPHEMERAL via API\n")?;
+        }
+        if !guest_ok {
+            append_log(
+                log_path,
+                "grow-disk unavailable; restarting VM so boot grows EPHEMERAL…\n",
+            )?;
+            client
+                .restart_vm(&pve_node, vmid)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            append_log(log_path, "VM restarted\n")?;
+            if let Some(ref ip) = ip {
+                if state.cfg().pertiskctl.exists() {
+                    let _ = wait_and_grow_guest_disk(state, ip, log_path).await?;
+                }
+            }
         }
     }
 
@@ -1663,6 +1757,61 @@ async fn run_resize_node(
     .await?;
     append_log(log_path, &format!("hardware updated for {name}\n"))?;
     Ok(())
+}
+
+/// Wait for guest :50000 then run `pertiskctl grow-disk`.
+async fn wait_and_grow_guest_disk(
+    state: &AppState,
+    ip: &str,
+    log_path: &str,
+) -> anyhow::Result<bool> {
+    use tokio::net::TcpStream;
+    use tokio::time::{sleep, timeout, Duration};
+
+    let addr = format!("{ip}:50000");
+    for i in 1..=60 {
+        if timeout(Duration::from_secs(2), TcpStream::connect(&addr))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .is_some()
+        {
+            append_log(log_path, &format!("guest API up ({addr}) after ~{i}s\n"))?;
+            break;
+        }
+        if i == 60 {
+            append_log(log_path, &format!("guest API {addr} not ready\n"))?;
+            return Ok(false);
+        }
+        sleep(Duration::from_secs(2)).await;
+    }
+    // Brief settle so block layer sees the resized disk.
+    sleep(Duration::from_secs(3)).await;
+
+    let out = Command::new(&state.cfg().pertiskctl)
+        .args(["-e", &addr, "grow-disk"])
+        .output()
+        .await;
+    match out {
+        Ok(o) => {
+            append_log(log_path, &String::from_utf8_lossy(&o.stdout))?;
+            append_log(log_path, &String::from_utf8_lossy(&o.stderr))?;
+            if o.status.success() {
+                append_log(log_path, "guest EPHEMERAL grow-disk ok\n")?;
+                Ok(true)
+            } else {
+                append_log(
+                    log_path,
+                    &format!("grow-disk failed (exit {}) — older image may lack GrowDisk RPC\n", o.status),
+                )?;
+                Ok(false)
+            }
+        }
+        Err(err) => {
+            append_log(log_path, &format!("grow-disk spawn error: {err}\n"))?;
+            Ok(false)
+        }
+    }
 }
 
 async fn run_reboot_node(

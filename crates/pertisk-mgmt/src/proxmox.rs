@@ -119,7 +119,66 @@ impl ProxmoxClient {
         Ok(list)
     }
 
+    /// PUT/POST form helpers — Proxmox often returns HTTP 200 with `errors` in JSON.
+    async fn put_form(&self, path: &str, form: &[(&str, String)]) -> ApiResult<String> {
+        let base = self.url.trim_end_matches('/');
+        let url = format!("{base}/api2/json{path}");
+        let resp = self
+            .client()?
+            .put(&url)
+            .header("Authorization", self.auth_header())
+            .form(form)
+            .send()
+            .await
+            .map_err(|e| self.map_req_err(e))?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(AppError::bad(format!("proxmox {status}: {body}")));
+        }
+        if proxmox_body_has_errors(&body) {
+            return Err(AppError::bad(format!("proxmox error: {body}")));
+        }
+        Ok(body)
+    }
+
+    async fn post_form(&self, path: &str, form: &[(&str, String)]) -> ApiResult<String> {
+        let base = self.url.trim_end_matches('/');
+        let url = format!("{base}/api2/json{path}");
+        let resp = self
+            .client()?
+            .post(&url)
+            .header("Authorization", self.auth_header())
+            .form(form)
+            .send()
+            .await
+            .map_err(|e| self.map_req_err(e))?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(AppError::bad(format!("proxmox {status}: {body}")));
+        }
+        if proxmox_body_has_errors(&body) {
+            return Err(AppError::bad(format!("proxmox error: {body}")));
+        }
+        Ok(body)
+    }
+
+    pub async fn vm_qmp_status(&self, node: &str, vmid: i64) -> ApiResult<String> {
+        let v = self
+            .get_json(&format!("/nodes/{node}/qemu/{vmid}/status/current"))
+            .await?;
+        Ok(v.pointer("/data/status")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown")
+            .to_string())
+    }
+
     /// Set CPU/memory on a QEMU VM (Proxmox `config` PUT). Values in MB / cores.
+    ///
+    /// Also enables `hotplug`/`numa` so increases can apply live when the guest
+    /// supports it. Pending changes still need a QEMU stop+start (see
+    /// [`Self::restart_vm`]) — a guest OS reboot alone does not apply them.
     pub async fn set_vm_hardware(
         &self,
         node: &str,
@@ -130,29 +189,60 @@ impl ProxmoxClient {
         if cores.is_none() && memory_mb.is_none() {
             return Ok(());
         }
-        let base = self.url.trim_end_matches('/');
-        let url = format!("{base}/api2/json/nodes/{node}/qemu/{vmid}/config");
-        let mut form = vec![];
+        let mut form: Vec<(&str, String)> = vec![(
+            "hotplug",
+            "cpu,memory,disk,network,usb".into(),
+        )];
+        if memory_mb.is_some() {
+            form.push(("numa", "1".into()));
+        }
         if let Some(c) = cores {
             form.push(("cores", c.to_string()));
+            // vcpus = currently plugged count (hotplug path); cores = max.
+            form.push(("vcpus", c.to_string()));
         }
         if let Some(m) = memory_mb {
             form.push(("memory", m.to_string()));
         }
-        let resp = self
-            .client()?
-            .put(&url)
-            .header("Authorization", self.auth_header())
-            .form(&form)
-            .send()
+        self.put_form(&format!("/nodes/{node}/qemu/{vmid}/config"), &form)
             .await
-            .map_err(|e| self.map_req_err(e))?;
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(AppError::bad(format!(
-                "set vm hardware {vmid} failed: {body}"
-            )));
+            .map_err(|e| AppError::bad(format!("set vm hardware {vmid} failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Hard restart (stop → start) so pending CPU/memory config actually applies.
+    pub async fn restart_vm(&self, node: &str, vmid: i64) -> ApiResult<()> {
+        let status = self.vm_qmp_status(node, vmid).await.unwrap_or_default();
+        if status == "stopped" {
+            self.post_form(
+                &format!("/nodes/{node}/qemu/{vmid}/status/start"),
+                &[],
+            )
+            .await
+            .map_err(|e| AppError::bad(format!("start vm {vmid} failed: {e}")))?;
+            return Ok(());
         }
+
+        // Force stop — ACPI shutdown can hang if the guest is unhealthy.
+        let _ = self
+            .post_form(
+                &format!("/nodes/{node}/qemu/{vmid}/status/stop"),
+                &[("timeout", "30".into())],
+            )
+            .await;
+        for _ in 0..30 {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let st = self.vm_qmp_status(node, vmid).await.unwrap_or_default();
+            if st == "stopped" {
+                break;
+            }
+        }
+        self.post_form(
+            &format!("/nodes/{node}/qemu/{vmid}/status/start"),
+            &[],
+        )
+        .await
+        .map_err(|e| AppError::bad(format!("start vm {vmid} after resize failed: {e}")))?;
         Ok(())
     }
 
@@ -161,28 +251,28 @@ impl ProxmoxClient {
         if disk_gb < 1 {
             return Err(AppError::bad("disk_gb must be >= 1"));
         }
-        let base = self.url.trim_end_matches('/');
-        let url = format!("{base}/api2/json/nodes/{node}/qemu/{vmid}/resize");
         let size = format!("{disk_gb}G");
-        let resp = self
-            .client()?
-            .put(&url)
-            .header("Authorization", self.auth_header())
-            .form(&[("disk", "scsi0"), ("size", size.as_str())])
-            .send()
+        let form = vec![
+            ("disk", "scsi0".to_string()),
+            ("size", size),
+        ];
+        match self
+            .put_form(&format!("/nodes/{node}/qemu/{vmid}/resize"), &form)
             .await
-            .map_err(|e| self.map_req_err(e))?;
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            // Already at/above size is often reported as an error — treat as soft ok.
-            if body.contains("smaller") || body.contains("already") {
-                return Ok(());
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = e.to_string();
+                // Already at/above size is often reported as an error — treat as soft ok.
+                if msg.contains("smaller")
+                    || msg.contains("already")
+                    || msg.contains("equal")
+                {
+                    return Ok(());
+                }
+                Err(AppError::bad(format!("resize disk {vmid} failed: {msg}")))
             }
-            return Err(AppError::bad(format!(
-                "resize disk {vmid} failed: {body}"
-            )));
         }
-        Ok(())
     }
 
     pub async fn delete_vm(&self, node: &str, vmid: i64) -> ApiResult<()> {
@@ -221,4 +311,21 @@ pub struct TestResult {
     pub nodes: Vec<ProxmoxNode>,
     pub insecure: bool,
     pub url: String,
+}
+
+fn proxmox_body_has_errors(body: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    if let Some(msg) = v.get("message").and_then(|m| m.as_str()) {
+        if !msg.is_empty() {
+            return true;
+        }
+    }
+    match v.get("errors") {
+        Some(Value::Object(map)) => !map.is_empty(),
+        Some(Value::Array(arr)) => !arr.is_empty(),
+        Some(Value::String(s)) => !s.is_empty(),
+        _ => false,
+    }
 }

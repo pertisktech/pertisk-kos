@@ -534,6 +534,9 @@ a.btn-icon.secondary {
   padding: 1rem;
   animation: fadeIn 0.15s ease;
 }
+.modal-backdrop.confirm-backdrop {
+  z-index: 1100;
+}
 .modal-card {
   width: min(420px, 100%);
   background: var(--bg-elevated);
