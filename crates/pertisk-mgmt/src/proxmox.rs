@@ -492,10 +492,27 @@ impl ProxmoxClient {
         Ok(())
     }
 
+    /// Read current `scsi0` size in whole GiB (floor). Returns None if missing/unparsed.
+    pub async fn vm_disk_gb(&self, node: &str, vmid: i64) -> ApiResult<Option<i64>> {
+        let v = self
+            .get_json(&format!("/nodes/{node}/qemu/{vmid}/config"))
+            .await?;
+        let scsi0 = v
+            .pointer("/data/scsi0")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        Ok(parse_scsi0_size_gb(scsi0))
+    }
+
     /// Grow the primary disk (`scsi0`) to at least `disk_gb` GiB (never shrinks).
     pub async fn grow_vm_disk(&self, node: &str, vmid: i64, disk_gb: i64) -> ApiResult<()> {
         if disk_gb < 1 {
             return Err(AppError::bad("disk_gb must be >= 1"));
+        }
+        if let Some(cur) = self.vm_disk_gb(node, vmid).await? {
+            if cur >= disk_gb {
+                return Ok(());
+            }
         }
         let size = format!("{disk_gb}G");
         let form = vec![
@@ -506,7 +523,29 @@ impl ProxmoxClient {
             .put_form(&format!("/nodes/{node}/qemu/{vmid}/resize"), &form)
             .await
         {
-            Ok(_) => Ok(()),
+            Ok(body) => {
+                // Async task UPID — wait until finished.
+                if let Ok(v) = serde_json::from_str::<Value>(&body) {
+                    if let Some(upid) = v.get("data").and_then(|d| d.as_str()) {
+                        if upid.starts_with("UPID:") {
+                            self.wait_task(node, upid).await?;
+                        }
+                    }
+                }
+                // Verify grow landed (ZFS/local can report success while size lags).
+                for _ in 0..10 {
+                    if let Some(cur) = self.vm_disk_gb(node, vmid).await? {
+                        if cur >= disk_gb {
+                            return Ok(());
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                let got = self.vm_disk_gb(node, vmid).await?;
+                Err(AppError::bad(format!(
+                    "resize disk {vmid} to {disk_gb}G did not take effect (scsi0={got:?}G)"
+                )))
+            }
             Err(e) => {
                 let msg = e.to_string();
                 // Already at/above size is often reported as an error — treat as soft ok.
@@ -519,6 +558,34 @@ impl ProxmoxClient {
                 Err(AppError::bad(format!("resize disk {vmid} failed: {msg}")))
             }
         }
+    }
+
+    async fn wait_task(&self, node: &str, upid: &str) -> ApiResult<()> {
+        let encoded = urlencoding_upid(upid);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while std::time::Instant::now() < deadline {
+            let v = self
+                .get_json(&format!("/nodes/{node}/tasks/{encoded}/status"))
+                .await?;
+            let status = v
+                .pointer("/data/status")
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            if status == "stopped" {
+                let exit = v
+                    .pointer("/data/exitstatus")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                if exit == "OK" || exit.is_empty() {
+                    return Ok(());
+                }
+                return Err(AppError::bad(format!(
+                    "proxmox task {upid} failed: {exit}"
+                )));
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        Err(AppError::bad(format!("proxmox task {upid} timed out")))
     }
 
     pub async fn delete_vm(&self, node: &str, vmid: i64) -> ApiResult<()> {
@@ -586,4 +653,49 @@ fn proxmox_body_has_errors(body: &str) -> bool {
         Some(Value::String(s)) => !s.is_empty(),
         _ => false,
     }
+}
+
+/// Parse `size=30G` / `size=32` from a Proxmox scsi0 config string → GiB.
+fn parse_scsi0_size_gb(scsi0: &str) -> Option<i64> {
+    for part in scsi0.split(',') {
+        let part = part.trim();
+        let Some(rest) = part.strip_prefix("size=") else {
+            continue;
+        };
+        let rest = rest.trim();
+        if let Some(n) = rest.strip_suffix('G').or_else(|| rest.strip_suffix('g')) {
+            return n.parse::<i64>().ok().filter(|v| *v > 0);
+        }
+        if let Some(n) = rest.strip_suffix('T').or_else(|| rest.strip_suffix('t')) {
+            return n
+                .parse::<i64>()
+                .ok()
+                .filter(|v| *v > 0)
+                .map(|t| t.saturating_mul(1024));
+        }
+        if let Some(n) = rest.strip_suffix('M').or_else(|| rest.strip_suffix('m')) {
+            return n.parse::<i64>().ok().map(|m| (m / 1024).max(0));
+        }
+        // Bare number is GiB in recent PVE.
+        if let Ok(n) = rest.parse::<i64>() {
+            if n > 0 {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+fn urlencoding_upid(upid: &str) -> String {
+    // Match jq @uri used by upload-vm (encode path segment).
+    let mut out = String::with_capacity(upid.len() * 3);
+    for b in upid.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }

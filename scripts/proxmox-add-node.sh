@@ -287,7 +287,11 @@ UPLOAD_ARGS=(
   --cores "$CORES"
   --bridge "$BRIDGE"
 )
+# Always pass --disk-gb when set so base/fallback images are grown after import.
 [[ -n "$DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$DISK_GB")
+if [[ -n "$DISK_GB" && "$DISK" == *"pertisk-cloud-${ARCH}.qcow2" && "$DISK" != *"-${DISK_GB}g.qcow2" ]]; then
+  log "note: using base image — will qm-resize scsi0 → ${DISK_GB}G after import"
+fi
 "$UPLOAD" "${UPLOAD_ARGS[@]}"
 
 log "wait for guest Machine API"

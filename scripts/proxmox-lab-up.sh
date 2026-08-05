@@ -562,14 +562,14 @@ step_build() {
       [[ -f "$DISK" ]] || die "disk missing: $CP_DISK (and fallback $DISK)
 Copy cloud qcow2 into ${IMAGES_DIR}/ (e.g. pertisk-cloud-${ARCH}.qcow2 or *-Ng.qcow2),
 or set PROXMOX_DISK / PERTISK_IMAGES_DIR in /etc/pertisk-mgmt/pertisk-mgmt.env"
-      log "warn: missing sized CP image $CP_DISK — using $DISK"
+      log "warn: missing sized CP image $CP_DISK — using $DISK (will qm-resize scsi0 → ${CP_DISK_GB}G after import)"
       CP_DISK="$DISK"
     fi
     if [[ -n "$WORKER_DISK_GB" && ! -f "$WORKER_DISK" ]]; then
       [[ -f "$DISK" ]] || die "disk missing: $WORKER_DISK (and fallback $DISK)
 Copy cloud qcow2 into ${IMAGES_DIR}/ (e.g. pertisk-cloud-${ARCH}.qcow2 or *-Ng.qcow2),
 or set PROXMOX_DISK / PERTISK_IMAGES_DIR in /etc/pertisk-mgmt/pertisk-mgmt.env"
-      log "warn: missing sized worker image $WORKER_DISK — using $DISK"
+      log "warn: missing sized worker image $WORKER_DISK — using $DISK (will qm-resize scsi0 → ${WORKER_DISK_GB}G after import)"
       WORKER_DISK="$DISK"
     fi
     [[ -f "$CP_DISK" ]] || die "disk missing: $CP_DISK"
@@ -618,7 +618,7 @@ step_vms() {
     return 0
   fi
   if [[ -n "$CP_DISK_GB" || -n "$WORKER_DISK_GB" ]]; then
-    log "note: importing role-sized qcow2 (cp=${CP_DISK_GB:-default}G wk=${WORKER_DISK_GB:-default}G); EPHEMERAL grows on first boot"
+    log "note: target disks cp=${CP_DISK_GB:-default}G wk=${WORKER_DISK_GB:-default}G (grow scsi0 after import when image is smaller)"
   fi
   log "creating cluster VMs (cp=${CP_MEMORY}MB/${CP_CORES}c/${CP_DISK_GB:-img}G wk=${WORKER_MEMORY}MB/${WORKER_CORES}c/${WORKER_DISK_GB:-img}G)"
   CREATE_ARGS=(
@@ -635,7 +635,11 @@ step_vms() {
     --worker-memory "$WORKER_MEMORY"
     --worker-cores "$WORKER_CORES"
   )
-  # Image already built at role size — do not pass --*-disk-gb (qm resize cannot shrink).
+  # Always pass role disk sizes so upload-vm can `qm resize` when the qcow2 is
+  # smaller (common with --skip-build + missing *-Ng.qcow2 falling back to base).
+  # upload-vm skips resize when the image virtual size already matches.
+  [[ -n "$CP_DISK_GB" ]] && CREATE_ARGS+=(--cp-disk-gb "$CP_DISK_GB")
+  [[ -n "$WORKER_DISK_GB" ]] && CREATE_ARGS+=(--worker-disk-gb "$WORKER_DISK_GB")
   if [[ "$DUAL_STACK" == "1" ]]; then
     export DUAL_STACK=1 PERTISK_DUAL_STACK=1
   fi

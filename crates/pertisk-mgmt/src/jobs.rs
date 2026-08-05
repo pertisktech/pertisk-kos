@@ -1627,7 +1627,7 @@ async fn run_resize_node(
                 append_log(
                     log_path,
                     &format!(
-                        "warn: disk can only grow (have {cur} GiB, asked {d} GiB) — skipping disk change\n"
+                        "warn: disk can only grow (have {cur} GiB, asked {d} GiB) — skipping disk shrink\n"
                     ),
                 )?;
                 apply_disk = Some(cur);
@@ -1638,6 +1638,21 @@ async fn run_resize_node(
     let vmid = vmid.ok_or_else(|| anyhow::anyhow!("node {name} has no VMID"))?;
     let client = provider_client_for_cluster(state, cid).await?;
     let pve_node = provider_node_for_cluster(state, cid).await?;
+
+    // Prefer live Proxmox scsi0 size — DB can be ahead after a create that
+    // stored disk_gb but never grew the VM (missing *-Ng.qcow2 / no --disk-gb).
+    let proxmox_disk = client
+        .vm_disk_gb(&pve_node, vmid)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    if let Some(actual) = proxmox_disk {
+        append_log(
+            log_path,
+            &format!("Proxmox scsi0 size={actual} GiB (db disk_gb={cur_disk:?})\n"),
+        )?;
+    } else {
+        append_log(log_path, "Proxmox scsi0 size unknown\n")?;
+    }
 
     append_log(
         log_path,
@@ -1666,28 +1681,23 @@ async fn run_resize_node(
     }
 
     let mut disk_grew_proxmox = false;
-    if let (Some(want), Some(cur)) = (apply_disk, cur_disk) {
-        if want > cur {
+    if let Some(want) = apply_disk {
+        let actual = proxmox_disk.or(cur_disk).unwrap_or(0);
+        if want > actual {
             client
                 .grow_vm_disk(&pve_node, vmid, want)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            append_log(log_path, &format!("grew Proxmox disk to {want} GiB\n"))?;
+            append_log(
+                log_path,
+                &format!("grew Proxmox disk {actual} → {want} GiB\n"),
+            )?;
             disk_grew_proxmox = true;
         } else if disk_requested {
             append_log(
                 log_path,
                 &format!("Proxmox disk already >= {want} GiB — will grow guest EPHEMERAL\n"),
             )?;
-        }
-    } else if let Some(want) = apply_disk {
-        if cur_disk.is_none() {
-            client
-                .grow_vm_disk(&pve_node, vmid, want)
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            append_log(log_path, &format!("set Proxmox disk to {want} GiB\n"))?;
-            disk_grew_proxmox = true;
         }
     }
 
