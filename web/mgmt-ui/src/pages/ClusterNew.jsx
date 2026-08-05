@@ -9,6 +9,8 @@ export default function ClusterNew() {
   const [providers, setProviders] = useState([])
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [vmidCheck, setVmidCheck] = useState(null)
+  const [vmidChecking, setVmidChecking] = useState(false)
   const [form, setForm] = useState({
     name: 'lab-ha',
     provider_id: '',
@@ -35,12 +37,61 @@ export default function ClusterNew() {
     })
   }, [])
 
+  // Live VMID conflict check against the provider node.
+  useEffect(() => {
+    const providerId = form.provider_id
+    const cpVmid = Number(form.cp_vmid)
+    const cps = Number(form.controlplanes)
+    const workers = Number(form.workers)
+    const count = cps + workers
+    if (!providerId || !Number.isFinite(cpVmid) || cpVmid < 1 || count < 1) {
+      setVmidCheck(null)
+      return
+    }
+    let cancelled = false
+    setVmidChecking(true)
+    const t = setTimeout(() => {
+      api('/clusters/check-vmids', {
+        method: 'POST',
+        body: {
+          provider_id: providerId,
+          cp_vmid: cpVmid,
+          controlplanes: cps,
+          workers,
+        },
+      })
+        .then((r) => {
+          if (!cancelled) setVmidCheck(r)
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setVmidCheck({
+              ok: false,
+              message: err.message,
+              conflicts: [],
+              free: [],
+              range_start: cpVmid,
+              range_end: cpVmid + count - 1,
+            })
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setVmidChecking(false)
+        })
+    }, 400)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [form.provider_id, form.cp_vmid, form.controlplanes, form.workers])
+
   function set(k, v) {
     setForm((f) => ({ ...f, [k]: v }))
   }
 
   const ha = Number(form.controlplanes) > 1
   const mode = form.network_mode
+  const vmidBlocked = vmidCheck && !vmidCheck.ok
 
   async function submit(e) {
     e.preventDefault()
@@ -58,6 +109,10 @@ export default function ClusterNew() {
     }
     if (!String(form.k8s_version || '').trim()) {
       setError('Select a Kubernetes version')
+      return
+    }
+    if (vmidBlocked) {
+      setError(vmidCheck.message || 'Selected VMID range is already in use')
       return
     }
 
@@ -151,6 +206,26 @@ export default function ClusterNew() {
             <div className="field">
               <label>Base VMID</label>
               <input type="number" value={form.cp_vmid} onChange={(e) => set('cp_vmid', e.target.value)} />
+              {vmidChecking && <p className="hint muted">Checking VMIDs on provider…</p>}
+              {!vmidChecking && vmidCheck?.ok && (
+                <p className="hint muted">
+                  VMIDs {vmidCheck.range_start}–{vmidCheck.range_end} are free on {vmidCheck.node}.
+                </p>
+              )}
+              {!vmidChecking && vmidBlocked && (
+                <p className="hint" style={{ color: 'var(--danger, #b91c1c)' }}>
+                  {vmidCheck.message}
+                  {vmidCheck.conflicts?.length > 0 && (
+                    <>
+                      {' '}
+                      In use:{' '}
+                      {vmidCheck.conflicts
+                        .map((c) => `${c.vmid}${c.name ? ` (${c.name})` : ''}`)
+                        .join(', ')}
+                    </>
+                  )}
+                </p>
+              )}
             </div>
           </div>
           {ha && (
@@ -253,7 +328,7 @@ export default function ClusterNew() {
         </div>
 
         <div className="form-footer">
-          <button type="submit" className="btn-icon" disabled={saving}>
+          <button type="submit" className="btn-icon" disabled={saving || vmidBlocked || vmidChecking}>
             <Icon name="play" size={16} />
             {saving ? 'Creating…' : 'Create cluster'}
           </button>

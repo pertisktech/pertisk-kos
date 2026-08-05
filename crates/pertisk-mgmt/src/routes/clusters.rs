@@ -5,9 +5,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::audit;
+use crate::crypto;
 use crate::db;
 use crate::error::{ApiResult, AppError};
 use crate::jobs;
+use crate::proxmox::ProxmoxClient;
 use crate::rbac::require_mutate;
 use crate::routes::CurrentUser;
 use crate::state::AppState;
@@ -15,6 +17,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/clusters", get(list).post(create))
+        .route("/clusters/check-vmids", axum::routing::post(check_vmids))
         .route(
             "/clusters/{id}",
             get(get_one).delete(delete),
@@ -262,6 +265,15 @@ async fn create(
             .await?;
     if exists.is_none() {
         return Err(AppError::bad("provider not found"));
+    }
+
+    // Reject if any planned VMIDs already exist on the provider node.
+    let vm_count = body.controlplanes + body.workers;
+    if vm_count > 0 {
+        let check = provider_check_vmids(&state, &body.provider_id, body.cp_vmid, vm_count).await?;
+        if !check.ok {
+            return Err(AppError::bad(check.message));
+        }
     }
 
     let vip = if mode == "ipv6" {
@@ -708,4 +720,51 @@ async fn update_config(
     )
     .await;
     Ok(Json(serde_json::json!({ "job_id": job_id })))
+}
+
+#[derive(Deserialize)]
+struct CheckVmidsIn {
+    provider_id: String,
+    #[serde(default = "default_vmid")]
+    cp_vmid: i64,
+    #[serde(default = "one")]
+    controlplanes: i64,
+    #[serde(default = "one")]
+    workers: i64,
+}
+
+async fn check_vmids(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Json(body): Json<CheckVmidsIn>,
+) -> ApiResult<Json<crate::proxmox::VmIdCheck>> {
+    let count = body.controlplanes + body.workers;
+    if count < 1 {
+        return Err(AppError::bad("controlplanes + workers must be >= 1"));
+    }
+    let check = provider_check_vmids(&state, &body.provider_id, body.cp_vmid, count).await?;
+    Ok(Json(check))
+}
+
+async fn provider_check_vmids(
+    state: &AppState,
+    provider_id: &str,
+    cp_vmid: i64,
+    count: i64,
+) -> ApiResult<crate::proxmox::VmIdCheck> {
+    let row = sqlx::query_as::<_, (String, String, String, String, i64)>(
+        "SELECT url, token_id, token_secret_enc, node, insecure FROM providers WHERE id = ?",
+    )
+    .bind(provider_id)
+    .fetch_optional(state.pool())
+    .await?
+    .ok_or_else(|| AppError::bad("provider not found"))?;
+    let secret = crypto::decrypt(&state.cfg().secret_key, &row.2).map_err(AppError::Anyhow)?;
+    let client = ProxmoxClient {
+        url: row.0,
+        token_id: row.1,
+        token_secret: secret,
+        insecure: row.4 != 0,
+    };
+    client.check_vmids(&row.3, cp_vmid, count).await
 }

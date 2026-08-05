@@ -16,6 +16,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/providers", get(list).post(create))
+        .route("/providers/probe", post(probe))
         .route("/providers/{id}", get(get_one).put(update).delete(delete))
         .route("/providers/{id}/test", post(test))
         .route("/providers/{id}/storage", get(storage))
@@ -109,6 +110,32 @@ async fn create(
     Json(body): Json<ProviderIn>,
 ) -> ApiResult<Json<ProviderOut>> {
     require_mutate(&user)?;
+    // Validate Proxmox reachability + node + storage before insert.
+    let client = ProxmoxClient {
+        url: body.url.clone(),
+        token_id: body.token_id.clone(),
+        token_secret: body.token_secret.clone(),
+        insecure: body.insecure,
+    };
+    let probe = client
+        .probe(Some(&body.node), Some(&body.storage))
+        .await?;
+    if !probe.ok {
+        let msg = probe
+            .storage
+            .as_ref()
+            .filter(|s| !s.ok)
+            .map(|s| s.message.clone())
+            .unwrap_or_else(|| {
+                if !probe.node_ok {
+                    probe.node_message.clone()
+                } else {
+                    "Proxmox probe failed".into()
+                }
+            });
+        return Err(AppError::bad(msg));
+    }
+
     let id = Uuid::new_v4().to_string();
     let now = db::now_rfc3339();
     let enc = crypto::encrypt(&state.cfg().secret_key, &body.token_secret)
@@ -161,10 +188,10 @@ async fn update(
     .ok_or(AppError::NotFound)?;
 
     let name = body.name.unwrap_or(existing.name);
-    let url = body.url.unwrap_or(existing.url);
-    let token_id = body.token_id.unwrap_or(existing.token_id);
-    let node = body.node.unwrap_or(existing.node);
-    let storage = body.storage.unwrap_or(existing.storage);
+    let url = body.url.clone().unwrap_or(existing.url.clone());
+    let token_id = body.token_id.clone().unwrap_or(existing.token_id.clone());
+    let node = body.node.clone().unwrap_or(existing.node.clone());
+    let storage = body.storage.clone().unwrap_or(existing.storage.clone());
     let bridge = body.bridge.unwrap_or(existing.bridge);
     let insecure = body
         .insecure
@@ -176,7 +203,40 @@ async fn update(
         .unwrap_or(existing.defaults_json);
     let now = db::now_rfc3339();
 
-    if let Some(secret) = body.token_secret {
+    // Resolve secret for validation (new or existing).
+    let secret = if let Some(ref s) = body.token_secret {
+        s.clone()
+    } else {
+        let enc: String = sqlx::query_scalar("SELECT token_secret_enc FROM providers WHERE id = ?")
+            .bind(&id)
+            .fetch_one(state.pool())
+            .await?;
+        crypto::decrypt(&state.cfg().secret_key, &enc).map_err(AppError::Anyhow)?
+    };
+    let client = ProxmoxClient {
+        url: url.clone(),
+        token_id: token_id.clone(),
+        token_secret: secret.clone(),
+        insecure: insecure != 0,
+    };
+    let probe = client.probe(Some(&node), Some(&storage)).await?;
+    if !probe.ok {
+        let msg = probe
+            .storage
+            .as_ref()
+            .filter(|s| !s.ok)
+            .map(|s| s.message.clone())
+            .unwrap_or_else(|| {
+                if !probe.node_ok {
+                    probe.node_message.clone()
+                } else {
+                    "Proxmox probe failed".into()
+                }
+            });
+        return Err(AppError::bad(msg));
+    }
+
+    if body.token_secret.is_some() {
         let enc = crypto::encrypt(&state.cfg().secret_key, &secret).map_err(AppError::Anyhow)?;
         sqlx::query(
             r#"UPDATE providers SET name=?, url=?, token_id=?, token_secret_enc=?, node=?, storage=?, bridge=?, insecure=?, defaults_json=?, updated_at=? WHERE id=?"#,
@@ -246,7 +306,7 @@ async fn delete(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-async fn load_client(state: &AppState, id: &str) -> ApiResult<(ProxmoxClient, String)> {
+async fn load_client(state: &AppState, id: &str) -> ApiResult<(ProxmoxClient, String, String)> {
     let row = sqlx::query_as::<_, (String, String, String, String, i64, String)>(
         "SELECT url, token_id, token_secret_enc, node, insecure, storage FROM providers WHERE id = ?",
     )
@@ -263,18 +323,71 @@ async fn load_client(state: &AppState, id: &str) -> ApiResult<(ProxmoxClient, St
             insecure: row.4 != 0,
         },
         row.3,
+        row.5,
     ))
+}
+
+#[derive(Deserialize)]
+struct ProbeIn {
+    url: String,
+    token_id: String,
+    token_secret: String,
+    node: String,
+    storage: String,
+    #[serde(default)]
+    insecure: bool,
+}
+
+/// Probe an unsaved (or draft) provider: connection + node + storage.
+async fn probe(
+    State(_state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Json(body): Json<ProbeIn>,
+) -> ApiResult<Json<crate::proxmox::ProbeResult>> {
+    require_mutate(&user)?;
+    if body.token_secret.is_empty() {
+        return Err(AppError::bad("token_secret is required to probe"));
+    }
+    let client = ProxmoxClient {
+        url: body.url,
+        token_id: body.token_id,
+        token_secret: body.token_secret,
+        insecure: body.insecure,
+    };
+    let result = client
+        .probe(Some(&body.node), Some(&body.storage))
+        .await?;
+    Ok(Json(result))
 }
 
 async fn test(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     Path(id): Path<String>,
-) -> ApiResult<Json<crate::proxmox::TestResult>> {
+    Json(body): Json<TestOverrides>,
+) -> ApiResult<Json<crate::proxmox::ProbeResult>> {
     require_mutate(&user)?;
-    let (client, _) = load_client(&state, &id).await?;
-    let result = client.test_connection().await?;
+    let (client, saved_node, saved_storage) = load_client(&state, &id).await?;
+    let node = body
+        .node
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&saved_node);
+    let storage = body
+        .storage
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&saved_storage);
+    let result = client.probe(Some(node), Some(storage)).await?;
     Ok(Json(result))
+}
+
+#[derive(Deserialize, Default)]
+struct TestOverrides {
+    #[serde(default)]
+    node: Option<String>,
+    #[serde(default)]
+    storage: Option<String>,
 }
 
 async fn storage(
@@ -282,7 +395,7 @@ async fn storage(
     CurrentUser(_): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Vec<crate::proxmox::ProxmoxStorage>>> {
-    let (client, node) = load_client(&state, &id).await?;
+    let (client, node, _) = load_client(&state, &id).await?;
     let list = client.list_storage(&node).await?;
     Ok(Json(list))
 }

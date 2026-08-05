@@ -23,6 +23,42 @@ pub struct ProxmoxStorage {
     #[serde(rename = "type")]
     pub type_: Option<String>,
     pub content: Option<String>,
+    pub active: Option<i64>,
+    pub enabled: Option<i64>,
+    pub avail: Option<i64>,
+    pub total: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StorageValidation {
+    pub ok: bool,
+    pub storage: String,
+    pub node: String,
+    pub type_: Option<String>,
+    pub content: Option<String>,
+    pub active: bool,
+    pub enabled: bool,
+    pub message: String,
+    /// Other storage ids on the node (for UI dropdowns).
+    pub available: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VmIdConflict {
+    pub vmid: i64,
+    pub name: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VmIdCheck {
+    pub ok: bool,
+    pub node: String,
+    pub range_start: i64,
+    pub range_end: i64,
+    pub conflicts: Vec<VmIdConflict>,
+    pub free: Vec<i64>,
+    pub message: String,
 }
 
 impl ProxmoxClient {
@@ -117,6 +153,216 @@ impl ProxmoxClient {
             .and_then(|x| serde_json::from_value(x).ok())
             .unwrap_or_default();
         Ok(list)
+    }
+
+    /// Confirm `storage` exists on `node` and is usable for VM disks.
+    pub async fn validate_storage(
+        &self,
+        node: &str,
+        storage: &str,
+    ) -> ApiResult<StorageValidation> {
+        let list = self.list_storage(node).await?;
+        let available: Vec<String> = list.iter().map(|s| s.storage.clone()).collect();
+        let Some(found) = list.iter().find(|s| s.storage == storage) else {
+            return Ok(StorageValidation {
+                ok: false,
+                storage: storage.to_string(),
+                node: node.to_string(),
+                type_: None,
+                content: None,
+                active: false,
+                enabled: false,
+                message: format!(
+                    "storage `{storage}` not found on node `{node}` — available: {}",
+                    if available.is_empty() {
+                        "(none)".into()
+                    } else {
+                        available.join(", ")
+                    }
+                ),
+                available,
+            });
+        };
+        let enabled = found.enabled.unwrap_or(1) != 0;
+        let active = found.active.unwrap_or(1) != 0;
+        let content = found.content.clone().unwrap_or_default();
+        let can_images = content.split(',').any(|c| {
+            matches!(c.trim(), "images" | "rootdir" | "import")
+        });
+        let mut ok = enabled && active;
+        let mut message = format!(
+            "storage `{storage}` ok on `{node}` (type={}, content={})",
+            found.type_.as_deref().unwrap_or("?"),
+            if content.is_empty() { "?" } else { &content }
+        );
+        if !enabled {
+            ok = false;
+            message = format!("storage `{storage}` is disabled on node `{node}`");
+        } else if !active {
+            ok = false;
+            message = format!("storage `{storage}` is not active on node `{node}`");
+        } else if !content.is_empty() && !can_images {
+            ok = false;
+            message = format!(
+                "storage `{storage}` content `{content}` cannot hold VM disks (need images/rootdir)"
+            );
+        }
+        Ok(StorageValidation {
+            ok,
+            storage: storage.to_string(),
+            node: node.to_string(),
+            type_: found.type_.clone(),
+            content: found.content.clone(),
+            active,
+            enabled,
+            message,
+            available,
+        })
+    }
+
+    /// List QEMU VMs on a node (vmid / name / status).
+    pub async fn list_qemu(&self, node: &str) -> ApiResult<Vec<(i64, Option<String>, Option<String>)>> {
+        let v = self.get_json(&format!("/nodes/{node}/qemu")).await?;
+        let mut out = Vec::new();
+        if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
+            for item in arr {
+                let vmid = item
+                    .get("vmid")
+                    .and_then(|x| x.as_i64())
+                    .or_else(|| item.get("vmid").and_then(|x| x.as_u64()).map(|u| u as i64));
+                let Some(vmid) = vmid else { continue };
+                let name = item
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string);
+                let status = item
+                    .get("status")
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string);
+                out.push((vmid, name, status));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Check whether VMIDs in `[start, start+count)` are free on the node.
+    pub async fn check_vmids(
+        &self,
+        node: &str,
+        start: i64,
+        count: i64,
+    ) -> ApiResult<VmIdCheck> {
+        if start < 100 {
+            return Ok(VmIdCheck {
+                ok: false,
+                node: node.to_string(),
+                range_start: start,
+                range_end: start,
+                conflicts: vec![],
+                free: vec![],
+                message: "base VMID must be >= 100".into(),
+            });
+        }
+        if count < 1 {
+            return Ok(VmIdCheck {
+                ok: false,
+                node: node.to_string(),
+                range_start: start,
+                range_end: start,
+                conflicts: vec![],
+                free: vec![],
+                message: "VM count must be >= 1".into(),
+            });
+        }
+        let end = start + count - 1;
+        let existing = self.list_qemu(node).await?;
+        let mut conflicts = Vec::new();
+        let mut free = Vec::new();
+        for vmid in start..=end {
+            if let Some((_, name, status)) = existing.iter().find(|(id, _, _)| *id == vmid) {
+                conflicts.push(VmIdConflict {
+                    vmid,
+                    name: name.clone(),
+                    status: status.clone(),
+                });
+            } else {
+                free.push(vmid);
+            }
+        }
+        let ok = conflicts.is_empty();
+        let message = if ok {
+            format!("VMIDs {start}–{end} are free on `{node}`")
+        } else {
+            let detail = conflicts
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{} ({})",
+                        c.vmid,
+                        c.name.as_deref().unwrap_or("unnamed")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("VMIDs already in use on `{node}`: {detail}")
+        };
+        Ok(VmIdCheck {
+            ok,
+            node: node.to_string(),
+            range_start: start,
+            range_end: end,
+            conflicts,
+            free,
+            message,
+        })
+    }
+
+    /// Connection + optional node/storage checks used by provider probe/test.
+    pub async fn probe(
+        &self,
+        node: Option<&str>,
+        storage: Option<&str>,
+    ) -> ApiResult<ProbeResult> {
+        let conn = self.test_connection().await?;
+        let mut node_ok = true;
+        let mut node_message = String::new();
+        if let Some(n) = node {
+            if n.is_empty() {
+                node_ok = false;
+                node_message = "node is required".into();
+            } else if !conn.nodes.iter().any(|x| x.node == n) {
+                node_ok = false;
+                let names: Vec<_> = conn.nodes.iter().map(|x| x.node.as_str()).collect();
+                node_message = format!(
+                    "node `{n}` not found — available: {}",
+                    if names.is_empty() {
+                        "(none)".into()
+                    } else {
+                        names.join(", ")
+                    }
+                );
+            } else {
+                node_message = format!("node `{n}` ok");
+            }
+        }
+        let storage_check = match (node, storage) {
+            (Some(n), Some(s)) if node_ok && !s.is_empty() => {
+                Some(self.validate_storage(n, s).await?)
+            }
+            _ => None,
+        };
+        let storage_ok = storage_check.as_ref().map(|s| s.ok).unwrap_or(true);
+        let ok = conn.ok && node_ok && storage_ok;
+        Ok(ProbeResult {
+            ok,
+            version: conn.version,
+            nodes: conn.nodes,
+            insecure: conn.insecure,
+            url: conn.url,
+            node_ok,
+            node_message,
+            storage: storage_check,
+        })
     }
 
     /// PUT/POST form helpers — Proxmox often returns HTTP 200 with `errors` in JSON.
@@ -311,6 +557,18 @@ pub struct TestResult {
     pub nodes: Vec<ProxmoxNode>,
     pub insecure: bool,
     pub url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProbeResult {
+    pub ok: bool,
+    pub version: String,
+    pub nodes: Vec<ProxmoxNode>,
+    pub insecure: bool,
+    pub url: String,
+    pub node_ok: bool,
+    pub node_message: String,
+    pub storage: Option<StorageValidation>,
 }
 
 fn proxmox_body_has_errors(body: &str) -> bool {

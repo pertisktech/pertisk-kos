@@ -607,6 +607,8 @@ machine:
     nodes.length > 0 &&
     nodesWithoutIp.length === nodes.length
   const upgradeRunning = jobs.some((j) => j.kind === 'upgrade_cluster' && j.status === 'running')
+  const latestFailedJob = jobs.find((j) => j.status === 'failed' && j.error)
+  const displayError = c.error || latestFailedJob?.error || ''
   const selCount = selectedNodes.size
 
   return (
@@ -633,10 +635,29 @@ machine:
       </div>
 
       {error && <div className="error">{error}</div>}
-      {c.error && (
+      {displayError && (
         <div className="banner danger">
           <Icon name="alert" size={18} />
-          <span>{c.error}</span>
+          <div className="banner-error-body">
+            <pre className="banner-error-text">{displayError}</pre>
+            {latestFailedJob && (
+              <p className="banner-error-meta muted">
+                Job <span className="mono-inline">{latestFailedJob.kind}</span>
+                {latestFailedJob.finished_at ? ` · ${latestFailedJob.finished_at}` : ''}
+                {' · '}
+                <button
+                  type="button"
+                  className="linkish"
+                  onClick={() => {
+                    setTab('jobs')
+                    loadJobLog(latestFailedJob.id)
+                  }}
+                >
+                  View full job log
+                </button>
+              </p>
+            )}
+          </div>
         </div>
       )}
       {createRunning && (
@@ -651,7 +672,7 @@ machine:
           </span>
         </div>
       )}
-      {createFailed && !c.error && (
+      {createFailed && !displayError && (
         <div className="banner danger">
           <Icon name="alert" size={18} />
           <span>

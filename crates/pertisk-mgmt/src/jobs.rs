@@ -2085,6 +2085,10 @@ async fn run_upgrade(
                 }
             ),
         )?;
+        // After a CP bumps apiserver/kubelet, VIP may blip — wait before the next node.
+        if let Some(path) = kc.as_ref().filter(|s| !s.is_empty()) {
+            wait_api_ready(path, log_path).await?;
+        }
         upgrade_node_zero_downtime(
             state,
             cid,
@@ -2245,6 +2249,10 @@ async fn upgrade_node_zero_downtime(
     }
 
     if let Some(kc) = kc_path {
+        // Machine-config apply / static-pod bump can bounce the API VIP; ensure
+        // kubectl can talk to the cluster before creating the upgrade agent.
+        wait_api_ready(kc, log_path).await?;
+
         let already = node_kubelet_version(kc, name).await;
         if already.as_deref() == Some(want.as_str()) {
             append_log(
@@ -2259,7 +2267,16 @@ async fn upgrade_node_zero_downtime(
                     if is_cp { "yes" } else { "n/a" }
                 ),
             )?;
-            apply_node_version_via_agent(kc, name, &want, is_cp, log_path).await?;
+            // Agent is best-effort: VIP OpenAPI blips can fail create while the
+            // node still reaches the target version via config reload / retry.
+            if let Err(e) = apply_node_version_via_agent(kc, name, &want, is_cp, log_path).await {
+                append_log(
+                    log_path,
+                    &format!(
+                        "upgrade agent create/run issue on {name}: {e} — will wait for kubelet {want}\n"
+                    ),
+                )?;
+            }
         }
 
         append_log(log_path, &format!("wait Ready {name}\n"))?;
@@ -2414,16 +2431,64 @@ spec:
 
     let tmp = std::env::temp_dir().join(format!("{pod}.yaml"));
     std::fs::write(&tmp, &yaml)?;
-    let apply = Command::new("kubectl")
-        .args(["--kubeconfig", kubeconfig, "apply", "-f"])
-        .arg(&tmp)
-        .output()
-        .await?;
-    append_log(log_path, &String::from_utf8_lossy(&apply.stdout))?;
-    append_log(log_path, &String::from_utf8_lossy(&apply.stderr))?;
+
+    // Skip OpenAPI validation: during rolling CP upgrades the VIP often refuses
+    // connections mid-apply ("failed to download openapi … connection refused").
+    // Retry with API-ready waits for transient kube-vip / apiserver blips.
+    let mut applied = false;
+    let mut last_err = String::new();
+    for attempt in 1..=8 {
+        wait_api_ready(kubeconfig, log_path).await?;
+        let apply = Command::new("kubectl")
+            .args([
+                "--kubeconfig",
+                kubeconfig,
+                "apply",
+                "--validate=false",
+                "--request-timeout=30s",
+                "-f",
+            ])
+            .arg(&tmp)
+            .output()
+            .await?;
+        append_log(log_path, &String::from_utf8_lossy(&apply.stdout))?;
+        append_log(log_path, &String::from_utf8_lossy(&apply.stderr))?;
+        if apply.status.success() {
+            applied = true;
+            break;
+        }
+        last_err = format!(
+            "{}{}",
+            String::from_utf8_lossy(&apply.stdout),
+            String::from_utf8_lossy(&apply.stderr)
+        );
+        append_log(
+            log_path,
+            &format!(
+                "upgrade agent apply attempt {attempt}/8 failed; retrying after API wait\n"
+            ),
+        )?;
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
     let _ = std::fs::remove_file(&tmp);
-    if !apply.status.success() {
-        anyhow::bail!("failed to create upgrade agent pod on {node_name}");
+    if !applied {
+        // Config reload may have already bumped the node; treat as soft failure.
+        if node_kubelet_version(kubeconfig, node_name)
+            .await
+            .as_deref()
+            == Some(version)
+        {
+            append_log(
+                log_path,
+                &format!(
+                    "upgrade agent apply failed but kubelet already {version} on {node_name} — continuing\n"
+                ),
+            )?;
+            return Ok(());
+        }
+        anyhow::bail!(
+            "failed to create upgrade agent pod on {node_name}: {last_err}"
+        );
     }
 
     // Wait for Succeeded/Failed, or for the node kubelet version to already match
@@ -2585,6 +2650,73 @@ async fn kubectl(kubeconfig: &str, args: &[&str], log_path: &str) -> anyhow::Res
         anyhow::bail!("kubectl {} failed", args.first().unwrap_or(&""));
     }
     Ok(())
+}
+
+/// Wait until the API endpoint in kubeconfig answers (handles VIP blips while
+/// control-plane static pods / kubelet restart during rolling upgrades).
+/// Prefers /readyz; falls back to a simple namespace get so we can proceed when
+/// the API is up but not fully "ready" mid-upgrade.
+async fn wait_api_ready(kubeconfig: &str, log_path: &str) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    let mut logged = false;
+    let mut ok_streak = 0u32;
+    while std::time::Instant::now() < deadline {
+        let readyz = Command::new("kubectl")
+            .args([
+                "--kubeconfig",
+                kubeconfig,
+                "get",
+                "--raw=/readyz",
+                "--request-timeout=5s",
+            ])
+            .output()
+            .await;
+        let reachable = match &readyz {
+            Ok(o) if o.status.success() => true,
+            _ => {
+                let probe = Command::new("kubectl")
+                    .args([
+                        "--kubeconfig",
+                        kubeconfig,
+                        "get",
+                        "ns",
+                        "kube-system",
+                        "--request-timeout=5s",
+                    ])
+                    .output()
+                    .await;
+                matches!(probe, Ok(o) if o.status.success())
+            }
+        };
+        if reachable {
+            ok_streak += 1;
+            // Require a short stable window so we don't apply into a flapping VIP.
+            if ok_streak >= 2 {
+                if logged {
+                    append_log(log_path, "API reachable\n")?;
+                }
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            continue;
+        }
+        ok_streak = 0;
+        if !logged {
+            let detail = match readyz {
+                Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                Err(e) => e.to_string(),
+            };
+            append_log(
+                log_path,
+                &format!(
+                    "wait API (VIP may be settling after CP upgrade)… {detail}\n"
+                ),
+            )?;
+            logged = true;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+    anyhow::bail!("timed out waiting for API after control-plane upgrade blip")
 }
 
 fn patch_kubernetes_version(yaml: &str, version: &str) -> String {
