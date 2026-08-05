@@ -129,7 +129,14 @@ fn guess_ephemeral_nodes() -> impl Iterator<Item = PathBuf> {
 fn prepare_ephemeral_device(part_dev: &Path) -> GrowEphemeralResult {
     rescan_parent_disk(part_dev);
     let partition_grew = grow_ephemeral_partition(part_dev);
-    let filesystem_grew = ensure_ephemeral_filesystem(part_dev, partition_grew);
+    // After sgdisk recreate, re-resolve the partition node (size may have changed).
+    let dev = if partition_grew {
+        std::thread::sleep(Duration::from_millis(500));
+        find_ephemeral_device().unwrap_or_else(|| part_dev.to_path_buf())
+    } else {
+        part_dev.to_path_buf()
+    };
+    let filesystem_grew = ensure_ephemeral_filesystem(&dev, partition_grew);
     GrowEphemeralResult {
         partition_grew,
         filesystem_grew,

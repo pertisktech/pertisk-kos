@@ -1729,7 +1729,14 @@ async fn run_resize_node(
         if !guest_ok {
             append_log(
                 log_path,
-                "grow-disk unavailable; restarting VM so boot grows EPHEMERAL…\n",
+                "grow-disk unavailable; trying offline EPHEMERAL grow via PROXMOX_SSH…\n",
+            )?;
+            guest_ok = offline_grow_ephemeral(state, vmid, log_path).await?;
+        }
+        if !guest_ok {
+            append_log(
+                log_path,
+                "offline grow unavailable; restarting VM so boot may grow EPHEMERAL…\n",
             )?;
             client
                 .restart_vm(&pve_node, vmid)
@@ -1757,6 +1764,72 @@ async fn run_resize_node(
     .await?;
     append_log(log_path, &format!("hardware updated for {name}\n"))?;
     Ok(())
+}
+
+/// Stop VM on Proxmox, expand GPT EPHEMERAL + resize2fs, start VM (needs PROXMOX_SSH).
+async fn offline_grow_ephemeral(
+    state: &AppState,
+    vmid: i64,
+    log_path: &str,
+) -> anyhow::Result<bool> {
+    let ssh = std::env::var("PROXMOX_SSH").unwrap_or_default();
+    if ssh.is_empty() {
+        append_log(
+            log_path,
+            "PROXMOX_SSH unset — cannot offline-grow EPHEMERAL (set PROXMOX_SSH=root@pve)\n",
+        )?;
+        return Ok(false);
+    }
+    let script = state
+        .cfg()
+        .lab_up
+        .parent()
+        .map(|d| d.join("proxmox-grow-ephemeral.sh"))
+        .filter(|p| p.exists())
+        .or_else(|| {
+            let p = PathBuf::from("./scripts/proxmox-grow-ephemeral.sh");
+            p.exists().then_some(p)
+        })
+        .or_else(|| {
+            let p = PathBuf::from("/usr/share/pertisk-mgmt/scripts/proxmox-grow-ephemeral.sh");
+            p.exists().then_some(p)
+        });
+    let Some(script) = script else {
+        append_log(log_path, "proxmox-grow-ephemeral.sh not found\n")?;
+        return Ok(false);
+    };
+    append_log(
+        log_path,
+        &format!(
+            "offline grow via {} --vmid {vmid} (SSH {ssh})\n",
+            script.display()
+        ),
+    )?;
+    let out = Command::new(&script)
+        .env("PROXMOX_SSH", &ssh)
+        .args(["--vmid", &vmid.to_string()])
+        .output()
+        .await;
+    match out {
+        Ok(o) => {
+            append_log(log_path, &String::from_utf8_lossy(&o.stdout))?;
+            append_log(log_path, &String::from_utf8_lossy(&o.stderr))?;
+            if o.status.success() {
+                append_log(log_path, "offline EPHEMERAL grow ok\n")?;
+                Ok(true)
+            } else {
+                append_log(
+                    log_path,
+                    &format!("offline grow failed (exit {})\n", o.status),
+                )?;
+                Ok(false)
+            }
+        }
+        Err(err) => {
+            append_log(log_path, &format!("offline grow spawn error: {err}\n"))?;
+            Ok(false)
+        }
+    }
 }
 
 /// Wait for guest :50000 then run `pertiskctl grow-disk`.
