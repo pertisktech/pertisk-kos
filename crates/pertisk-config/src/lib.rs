@@ -74,6 +74,14 @@ pub struct Dashboard {
     /// Omit to follow the probe (safer on Proxmox Serial).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utf8: Option<bool>,
+    /// Public web management URL shown on the serial console (e.g.
+    /// `https://ptkos.apps.thaidevops.co`). Also set via `MGMT_PUBLIC_URL`.
+    #[serde(
+        default,
+        alias = "mgmtUrl",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mgmt_url: Option<String>,
 }
 
 impl Dashboard {
@@ -96,6 +104,7 @@ impl Dashboard {
             cols: None,
             rows: None,
             utf8: None,
+            mgmt_url: None,
         }
     }
 }
@@ -549,6 +558,7 @@ machine:
     border: light
     cols: 140
     rows: 40
+    mgmt_url: https://ptkos.apps.thaidevops.co
 "#;
         let cfg = MachineConfig::from_yaml(yaml).unwrap();
         let dash = cfg.machine.dashboard.unwrap();
@@ -557,6 +567,10 @@ machine:
         assert_eq!(dash.cols, Some(140));
         assert_eq!(dash.rows, Some(40));
         assert_eq!(dash.utf8, None);
+        assert_eq!(
+            dash.mgmt_url.as_deref(),
+            Some("https://ptkos.apps.thaidevops.co")
+        );
     }
 
     #[test]
@@ -666,6 +680,36 @@ machine:
         assert_eq!(
             incoming.machine.dashboard.unwrap().theme.as_deref(),
             Some("wild-cherry")
+        );
+    }
+
+    #[test]
+    fn from_yaml_merged_adds_mgmt_url() {
+        let previous = r#"
+version: v1alpha1
+machine:
+  type: controlplane
+  network:
+    hostname: cp-1
+  dashboard:
+    theme: catppuccin
+    border: ascii
+cluster:
+  endpoint: https://10.1.1.1:6443
+"#;
+        let patch = r#"
+version: v1alpha1
+machine:
+  dashboard:
+    mgmt_url: https://ptkos.apps.thaidevops.co
+"#;
+        let cfg = MachineConfig::from_yaml_merged(patch, Some(previous)).unwrap();
+        assert_eq!(cfg.machine.machine_type, MachineType::Controlplane);
+        let dash = cfg.machine.dashboard.unwrap();
+        assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
+        assert_eq!(
+            dash.mgmt_url.as_deref(),
+            Some("https://ptkos.apps.thaidevops.co")
         );
     }
 

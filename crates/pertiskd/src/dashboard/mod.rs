@@ -65,12 +65,31 @@ pub fn apply_config(cfg: Option<&MachineConfig>) {
                     if utf8 { "1" } else { "0" },
                 );
             }
+            if let Some(url) = dash.mgmt_url.as_deref() {
+                set_var("MGMT_PUBLIC_URL", url);
+            }
         }
         None => {
             set_if_unset("PERTISK_DASHBOARD_THEME", DEFAULT_THEME);
             set_if_unset("PERTISK_DASHBOARD_BORDER", DEFAULT_BORDER);
         }
     }
+}
+
+/// Public management UI base URL for the serial console.
+///
+/// Prefer `machine.dashboard.mgmt_url` (applied into `MGMT_PUBLIC_URL`), else
+/// kernel/env `MGMT_PUBLIC_URL` / `PERTISK_MGMT_URL`.
+pub fn mgmt_public_url() -> Option<String> {
+    for key in ["MGMT_PUBLIC_URL", "PERTISK_MGMT_URL"] {
+        if let Ok(raw) = std::env::var(key) {
+            let url = raw.trim().trim_end_matches('/').to_string();
+            if !url.is_empty() {
+                return Some(url);
+            }
+        }
+    }
+    None
 }
 
 fn set_if_unset(key: &str, value: &str) {
@@ -104,6 +123,8 @@ mod tests {
                 "PERTISK_DASHBOARD_COLS",
                 "PERTISK_DASHBOARD_ROWS",
                 "PERTISK_DASHBOARD_UTF8",
+                "MGMT_PUBLIC_URL",
+                "PERTISK_MGMT_URL",
             ] {
                 std::env::remove_var(k);
             }
@@ -169,6 +190,7 @@ mod tests {
                     cols: Some(120),
                     rows: Some(40),
                     utf8: Some(true),
+                    mgmt_url: Some("https://ptkos.apps.thaidevops.co".into()),
                 }),
             },
             cluster: None,
@@ -182,6 +204,14 @@ mod tests {
         assert_eq!(std::env::var("PERTISK_DASHBOARD_COLS").unwrap(), "120");
         assert_eq!(std::env::var("PERTISK_DASHBOARD_ROWS").unwrap(), "40");
         assert_eq!(std::env::var("PERTISK_DASHBOARD_UTF8").unwrap(), "1");
+        assert_eq!(
+            std::env::var("MGMT_PUBLIC_URL").unwrap(),
+            "https://ptkos.apps.thaidevops.co"
+        );
+        assert_eq!(
+            mgmt_public_url().as_deref(),
+            Some("https://ptkos.apps.thaidevops.co")
+        );
         clear_dash_env();
     }
 }

@@ -18,17 +18,18 @@ use crate::dashboard::theme::{Chrome, Theme};
 pub struct Skin {
     pub theme: Theme,
     pub chrome: Chrome,
-    /// Detected geometry, shown in the node panel so a bad probe is visible
-    /// on the console instead of only in the logs.
-    pub badge: String,
+    /// Public web management URL (from `MGMT_PUBLIC_URL` / dashboard config).
+    pub mgmt_url: Option<String>,
 }
 
 /// (node, network, mid) — grow with the pane so a small font shows more.
 ///
 /// Everything left after these three goes to logs. Cap the top so a 50-row
 /// console still keeps a tall log pane.
-pub fn top_box_heights(frame_h: u16) -> (u16, u16, u16) {
-    let node = 3u16;
+///
+/// `extra_node_line` adds a second body row for the management URL.
+pub fn top_box_heights(frame_h: u16, extra_node_line: bool) -> (u16, u16, u16) {
+    let node = if extra_node_line { 4u16 } else { 3u16 };
     // Reserve at least 6 rows for the logs frame (2 borders + 4 body).
     let budget = frame_h.saturating_sub(node + 6);
     // cpu + memory + ≥1 disk need mid body ≥3 → panel height ≥5.
@@ -53,7 +54,11 @@ pub fn top_box_heights(frame_h: u16) -> (u16, u16, u16) {
 
 /// Log content rows (inside frame borders).
 pub fn log_inner_height(frame_h: u16) -> u16 {
-    let (node, net, mid) = top_box_heights(frame_h);
+    log_inner_height_for(frame_h, false)
+}
+
+pub fn log_inner_height_for(frame_h: u16, extra_node_line: bool) -> u16 {
+    let (node, net, mid) = top_box_heights(frame_h, extra_node_line);
     frame_h
         .saturating_sub(node + net + mid)
         .saturating_sub(2) // top + bottom border
@@ -254,7 +259,7 @@ fn render_block(frame: &mut Frame, area: Rect, block: Block, lines: Vec<Line<'st
 fn draw_node(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
     let theme = &skin.theme;
     let ready = if snap.ready { "ready" } else { "not-ready" };
-    let lines = vec![Line::from(vec![
+    let mut lines = vec![Line::from(vec![
         Span::styled(snap.hostname.clone(), theme.title_style()),
         label("  v", theme),
         value(snap.version.clone(), theme),
@@ -262,9 +267,13 @@ fn draw_node(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) 
         value(snap.machine_type.clone(), theme),
         label("  ", theme),
         Span::styled(ready.to_string(), theme.ready_style(snap.ready)),
-        label("  ", theme),
-        Span::styled(skin.badge.clone(), theme.label_style()),
     ])];
+    if let Some(url) = skin.mgmt_url.as_deref() {
+        lines.push(Line::from(vec![
+            label("mgmt ", theme),
+            value(url.to_string(), theme),
+        ]));
+    }
     render_into(frame, area, "node", lines, skin);
 }
 
@@ -568,7 +577,8 @@ fn draw_logs(frame: &mut Frame, area: Rect, recent: &[String], skin: &Skin) {
 /// Render node → network (IPs) → resources|services → logs.
 pub fn render_themed(frame: &mut Frame, snap: &StatusSnapshot, recent: &[String], skin: &Skin) {
     let area = frame.area();
-    let (node_h, net_h, mid_h) = top_box_heights(area.height);
+    let extra = skin.mgmt_url.is_some();
+    let (node_h, net_h, mid_h) = top_box_heights(area.height, extra);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -590,10 +600,11 @@ mod tests {
 
     #[test]
     fn layout_grows_with_taller_consoles() {
-        let (n24, net24, mid24) = top_box_heights(24);
-        let (n50, net50, mid50) = top_box_heights(50);
+        let (n24, net24, mid24) = top_box_heights(24, false);
+        let (n50, net50, mid50) = top_box_heights(50, false);
         assert_eq!(n24, 3);
         assert_eq!(n50, 3);
+        assert_eq!(top_box_heights(24, true).0, 4);
         assert!(net50 > net24, "network should grow: {net50} vs {net24}");
         assert!(mid50 >= mid24);
         assert!(mid24 >= 5, "mid needs room for cpu/memory/disk");

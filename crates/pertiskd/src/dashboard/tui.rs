@@ -97,7 +97,7 @@ fn run_tui_inner(
     // Paint immediately so Serial is never left empty after cursor-off.
     {
         let snap = StatusSnapshot::collect(cfg.as_ref(), &state, &state_root);
-        let log_rows = panels::log_inner_height(height).max(2) as usize;
+        let log_rows = panels::log_inner_height_for(height, skin.mgmt_url.is_some()).max(2) as usize;
         let recent = logs.tail(panels::log_tail_count(log_rows));
         terminal
             .draw(|frame| panels::render_themed(frame, &snap, &recent, &skin))
@@ -122,7 +122,10 @@ fn run_tui_inner(
         caps = probe::detect_refresh(caps);
         let next_skin = build_skin(caps.cols, caps.rows, caps.source, caps.utf8);
         let sig = config_signature(&caps, &next_skin);
-        if sig != last_sig {
+        // Always refresh mgmt_url — apply can set it without changing theme/size,
+        // and the old signature ignored that field so the node panel never updated.
+        let mgmt_changed = skin.mgmt_url != next_skin.mgmt_url;
+        if sig != last_sig || mgmt_changed {
             width = caps.cols;
             height = caps.rows;
             skin = next_skin;
@@ -136,12 +139,13 @@ fn run_tui_inner(
                 theme = skin.theme.name,
                 border = skin.chrome.name,
                 utf8 = caps.utf8,
+                mgmt_url = skin.mgmt_url.as_deref().unwrap_or(""),
                 "console TUI reloaded from config"
             );
         }
 
         let snap = StatusSnapshot::collect(cfg.as_ref(), &state, &state_root);
-        let log_rows = panels::log_inner_height(height).max(2) as usize;
+        let log_rows = panels::log_inner_height_for(height, skin.mgmt_url.is_some()).max(2) as usize;
         let recent = logs.tail(panels::log_tail_count(log_rows));
         terminal
             .draw(|frame| panels::render_themed(frame, &snap, &recent, &skin))
@@ -160,19 +164,24 @@ fn run_tui_inner(
     Ok(())
 }
 
-fn build_skin(width: u16, height: u16, source: &str, utf8: bool) -> panels::Skin {
+fn build_skin(_width: u16, _height: u16, _source: &str, utf8: bool) -> panels::Skin {
     let chrome = theme::chrome(utf8);
     panels::Skin {
         theme: theme::active(),
         chrome,
-        badge: format!("{width}x{height} {source}"),
+        mgmt_url: crate::dashboard::mgmt_public_url(),
     }
 }
 
 fn config_signature(caps: &probe::ConsoleCaps, skin: &panels::Skin) -> String {
     format!(
-        "{}|{}|{}|{}|{}",
-        caps.cols, caps.rows, caps.utf8, skin.theme.name, skin.chrome.name
+        "{}|{}|{}|{}|{}|{}",
+        caps.cols,
+        caps.rows,
+        caps.utf8,
+        skin.theme.name,
+        skin.chrome.name,
+        skin.mgmt_url.as_deref().unwrap_or(""),
     )
 }
 
@@ -353,7 +362,7 @@ mod tests {
         let skin = panels::Skin {
             theme: theme::DRACULA,
             chrome,
-            badge: format!("{width}x{height} test"),
+            mgmt_url: None,
         };
         terminal
             .draw(|f| panels::render_themed(f, &demo_snapshot(), logs, &skin))
@@ -457,7 +466,7 @@ mod tests {
         let skin = panels::Skin {
             theme: theme::WILD_CHERRY,
             chrome: theme::ASCII,
-            badge: "test".into(),
+            mgmt_url: Some("https://ptkos.apps.thaidevops.co".into()),
         };
         terminal
             .draw(|f| panels::render_themed(f, &snap, &demo_logs(), &skin))
@@ -470,6 +479,10 @@ mod tests {
             "absent must be red: {out:?}"
         );
         assert!(out.contains("kubelet"), "{out:?}");
+        assert!(
+            out.contains("mgmt") && out.contains("ptkos.apps.thaidevops.co"),
+            "mgmt URL missing: {out:?}"
+        );
     }
 
     #[test]

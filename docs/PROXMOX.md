@@ -143,6 +143,7 @@ machine:
     cols: 93           # optional — pin width (else probe, fallback 80)
     rows: 25           # optional — pin height (else probe, fallback 24)
     utf8: true         # optional — force Unicode borders on Serial
+    mgmt_url: https://ptkos.apps.thaidevops.co   # shown on node panel
 ```
 
 Built-in defaults (no YAML needed): `catppuccin` / `ascii`. Size and UTF-8 follow the console probe — only pin `cols`/`rows`/`utf8` when the probe is wrong (wrong size blanks the Serial console).
@@ -155,6 +156,7 @@ Built-in defaults (no YAML needed): `catppuccin` / `ascii`. Size and UTF-8 follo
 | `PERTISK_DASHBOARD_BORDER` | `ascii` (default), `rounded`, `auto`, `light`, `heavy`, `double` |
 | `PERTISK_DASHBOARD_COLS` / `_ROWS` | optional pin; else probe (fallback `80` / `24`) |
 | `PERTISK_DASHBOARD_UTF8` | optional; else follow the UTF-8 probe |
+| `MGMT_PUBLIC_URL` | optional public management UI URL (also `PERTISK_MGMT_URL` or `machine.dashboard.mgmt_url`) |
 
 `mono` drops all frame color and keeps only status colors. On Proxmox Serial the UTF-8 probe often fails; `auto` then picks ASCII. Explicit `double` / `heavy` without `utf8: true` use `=` / `#` ASCII stand-ins so the frame still renders. With `utf8: true` you get real box-drawing (`╔═╗`). Check the startup line for `border=double` vs `border=double-ascii`.
 
@@ -171,11 +173,10 @@ Borders default to ASCII (`+ - |`). For Unicode rules: `PERTISK_DASHBOARD_BORDER
 
 #### If the panel still looks too small for the window
 
-Read the badge in the node panel first — it tells you what the guest thinks the size is.
+Check the startup log line `console TUI WxH (source)` — it tells you what the guest thinks the size is.
 
-- **Badge says `80x24 default` or `80x24 ioctl`.** Both terminal queries went unanswered, so nothing was detected. Override: add `PERTISK_DASHBOARD_COLS=140 PERTISK_DASHBOARD_ROWS=40` to the kernel cmdline.
-- **Badge is smaller than the window looks.** xterm.js measured the pane before the browser finished laying it out. Reload the console tab and wait one resize check.
-
+- **Says `80x24 (default)` or `80x24 (ioctl)`.** Both terminal queries went unanswered, so nothing was detected. Override: add `PERTISK_DASHBOARD_COLS=140 PERTISK_DASHBOARD_ROWS=40` to the kernel cmdline.
+- **Smaller than the window looks.** xterm.js measured the pane before the browser finished laying it out. Reload the console tab and wait one resize check.
 Deploy scripts set `serial0=socket` and **`vga=serial0`**, so Proxmox **Console** opens serial/xterm.js. Guest cmdline ends with `console=ttyS0`; `pertiskd` also redirects stdio to `/dev/ttyS0`. Host: `qm terminal <vmid>`.
 
 IPs appear in the **network** panel.

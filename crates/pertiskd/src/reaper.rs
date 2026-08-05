@@ -81,6 +81,7 @@ mod unix_impl {
                             has_cluster = new_cfg.cluster.is_some(),
                             "reloading machine config after apply"
                         );
+                        crate::dashboard::apply_config(Some(&new_cfg));
                         let dual = new_cfg
                             .cluster
                             .as_ref()

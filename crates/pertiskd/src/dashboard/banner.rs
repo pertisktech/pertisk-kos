@@ -41,6 +41,9 @@ pub fn run_banner_loop(
             snap.machine_type,
             if snap.ready { "ready" } else { "not-ready" },
         ));
+        if let Some(url) = crate::dashboard::mgmt_public_url() {
+            out.push_str(&format!("mgmt {url}\r\n"));
+        }
 
         out.push_str("==== network ====\r\n");
         if snap.node_iface.is_empty() && snap.node_ip == "-" {
