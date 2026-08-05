@@ -39,6 +39,7 @@ mod linux_impl {
     /// `xfrm_user` is required even without IPSec: Cilium's netlink handle opens
     /// NETLINK_XFRM (`protocol not supported` without the module).
     /// `af_packet` (CONFIG_PACKET=m): kube-vip gratuitous ARP for the control-plane VIP.
+    /// NFS client (`sunrpc`…`nfsv4`): in-tree NFS PVs / nfs-subdir provisioner.
     const BOOT_MODULES: &[&str] = &[
         "failover",
         "net_failover",
@@ -127,6 +128,17 @@ mod linux_impl {
         "cls_bpf",
         "act_bpf",
         "sch_fq",
+        // NFS client (storage extension) — netfs/fscache before nfs (linux 6.6+)
+        "netfs",
+        "fscache",
+        "sunrpc",
+        "lockd",
+        "grace",
+        "auth_rpcgss",
+        "nfs",
+        "nfsv2",
+        "nfsv3",
+        "nfsv4",
     ];
 
     pub fn load_boot_modules() {

@@ -26,3 +26,13 @@ Secrets/ConfigMaps across namespaces. Installed by lab-up unless `--skip-addons`
 ```bash
 kubectl apply -f https://github.com/emberstack/kubernetes-reflector/releases/latest/download/reflector.yaml
 ```
+
+## Storage (NFS)
+
+Dynamic RWX volumes via external NFS + nfs-subdir-external-provisioner:
+
+→ [nfs/README.md](./nfs/README.md)
+
+Requires guest **nfs-client** image extension
+([image/extensions/nfs-client](../../image/extensions/nfs-client/)).
+Without it, mounts fail with `No such device`.

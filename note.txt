@@ -152,3 +152,10 @@ helm install cilium cilium/cilium \
   --set ipam.operator.clusterPoolIPv4MaskSize=24 \
   --set hubble.relay.hostNetwork=true \
   --set hubble.relay.dnsPolicy=ClusterFirstWithHostNet
+
+
+  ./scripts/deploy-mgmt-lab.sh --mgmt almalinux@10.1.1.150 \
+  --skip-rpm --skip-build --cp-gb 30 --worker-gb 60
+
+scp out/pertisk-cloud-amd64{,-30g,-60g}.qcow2 almalinux@10.1.1.150:/tmp/
+ssh almalinux@10.1.1.150 'sudo mv /tmp/pertisk-cloud-amd64*.qcow2 /var/lib/pertisk-mgmt/images/ && sudo chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images'

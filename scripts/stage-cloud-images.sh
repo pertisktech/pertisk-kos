@@ -66,6 +66,10 @@ fi
 resize_to() {
   local src="$1" dest="$2" gb="$3"
   echo "==> ${dest} (${gb}G)"
+  if [[ "$(cd "$(dirname "$src")" && pwd)/$(basename "$src")" == "$(cd "$(dirname "$dest")" && pwd)/$(basename "$dest")" ]]; then
+    echo "ERROR: resize src and dest are the same path: $dest" >&2
+    exit 1
+  fi
   cp -f "$src" "$dest"
   if command -v qemu-img >/dev/null 2>&1; then
     qemu-img resize "$dest" "${gb}G"
@@ -75,7 +79,12 @@ resize_to() {
   fi
 }
 
-cp -f "$BASE" "${DEST}/pertisk-cloud-${ARCH}.qcow2"
+# DEST often equals out/ — avoid `cp identical file` failing under set -e.
+if [[ "$(cd "$(dirname "$BASE")" && pwd)/$(basename "$BASE")" != "$(cd "$DEST" && pwd)/pertisk-cloud-${ARCH}.qcow2" ]]; then
+  cp -f "$BASE" "${DEST}/pertisk-cloud-${ARCH}.qcow2"
+else
+  echo "==> base already at ${DEST}/pertisk-cloud-${ARCH}.qcow2"
+fi
 resize_to "$BASE" "${DEST}/pertisk-cloud-${ARCH}-${CP_GB}g.qcow2" "$CP_GB"
 if [[ "$WORKER_GB" == "$CP_GB" ]]; then
   cp -f "${DEST}/pertisk-cloud-${ARCH}-${CP_GB}g.qcow2" \

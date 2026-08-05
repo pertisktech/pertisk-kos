@@ -92,9 +92,12 @@ FROM alpine:3.20 AS tools
 ARG TARGETARCH
 RUN apk add --no-cache sgdisk e2fsprogs e2fsprogs-extra dosfstools busybox parted util-linux ca-certificates \
     iptables iptables-legacy \
+    nfs-utils \
     && mkdir -p /tools/bin /tools/lib /tools/certs /tools/xtables \
     && cp /usr/bin/sgdisk /usr/sbin/partprobe /sbin/mkfs.ext4 /sbin/mkfs.vfat /usr/sbin/resize2fs /usr/sbin/tune2fs /sbin/blkid /bin/busybox /tools/bin/ \
     && cp /etc/ssl/certs/ca-certificates.crt /tools/certs/ \
+    # NFS client helpers (BusyBox mount -t nfs looks for /sbin/mount.nfs).
+    && cp /sbin/mount.nfs /sbin/mount.nfs4 /sbin/umount.nfs /sbin/umount.nfs4 /tools/bin/ \
     # Host iptables for Flannel/Calico CNI + kube-proxy (legacy; nft is incomplete on linux-virt).
     && (cp -a /sbin/xtables-legacy-multi /tools/bin/ 2>/dev/null \
         || cp -a /usr/sbin/xtables-legacy-multi /tools/bin/) \
@@ -105,9 +108,15 @@ RUN apk add --no-cache sgdisk e2fsprogs e2fsprogs-extra dosfstools busybox parte
     && ln -sf xtables-legacy-multi /tools/bin/ip6tables \
     && ln -sf xtables-legacy-multi /tools/bin/ip6tables-legacy \
     && cp -a /usr/lib/xtables/. /tools/xtables/ \
-    && for bin in /tools/bin/sgdisk /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/resize2fs /tools/bin/tune2fs /tools/bin/blkid /tools/bin/partprobe /tools/bin/xtables-legacy-multi; do \
+    && for bin in /tools/bin/sgdisk /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/resize2fs /tools/bin/tune2fs /tools/bin/blkid /tools/bin/partprobe /tools/bin/xtables-legacy-multi /tools/bin/mount.nfs /tools/bin/mount.nfs4 /tools/bin/umount.nfs /tools/bin/umount.nfs4; do \
          [ -f "$bin" ] || continue; \
          ldd "$bin" 2>/dev/null | awk '{print $3}' | grep -E '^/' | while read -r lib; do cp -n "$lib" /tools/lib/; done; \
+       done \
+    # nfs-utils also needs libtirpc / libmount / libblkid (ldd can miss some dlopen paths).
+    && for lib in /usr/lib/libtirpc.so.3* /lib/libtirpc.so.3* /usr/lib/libmount.so.1* /lib/libmount.so.1* \
+                  /usr/lib/libblkid.so.1* /lib/libblkid.so.1* /usr/lib/libuuid.so.1* /lib/libuuid.so.1*; do \
+         [ -e "$lib" ] || continue; \
+         cp -an "$lib" /tools/lib/ 2>/dev/null || cp -n "$lib" /tools/lib/; \
        done \
     && case "${TARGETARCH}" in \
          amd64) cp /lib/ld-musl-x86_64.so.1 /tools/lib/ ;; \
@@ -128,6 +137,8 @@ COPY --from=build /pertiskd ./init
 # DHCP leases apply via /usr/lib/pertisk/udhcpc-hook (Rust; no shell script).
 COPY --from=tools /tools/bin/sgdisk /tools/bin/partprobe /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/resize2fs /tools/bin/tune2fs /tools/bin/blkid ./usr/sbin/
 COPY --from=tools /tools/bin/busybox ./usr/sbin/udhcpc
+# NFS client (storage extension) — BusyBox mount -t nfs → /sbin/mount.nfs
+COPY --from=tools /tools/bin/mount.nfs /tools/bin/mount.nfs4 /tools/bin/umount.nfs /tools/bin/umount.nfs4 ./sbin/
 # iptables-legacy for Flannel/Calico CNI + kube-proxy (host-path lookups).
 COPY --from=tools /tools/bin/xtables-legacy-multi ./usr/sbin/xtables-legacy-multi
 COPY --from=tools /tools/xtables/ ./usr/lib/xtables/
@@ -151,6 +162,7 @@ RUN mkdir -p proc sys dev run tmp var system/state etc/pertisk sbin \
     && ln -sf /usr/sbin/iptables-legacy ./sbin/iptables-legacy
 COPY --from=build /pertisk-udhcpc-hook ./usr/lib/pertisk/udhcpc-hook
 RUN chmod +x ./init ./usr/sbin/* ./usr/lib/pertisk/udhcpc-hook \
+    && chmod +x ./sbin/mount.nfs ./sbin/mount.nfs4 ./sbin/umount.nfs ./sbin/umount.nfs4 \
     && ln -sf /usr/sbin/sgdisk ./sbin/sgdisk \
     && ln -sf /usr/sbin/mkfs.ext4 ./sbin/mkfs.ext4 \
     && ln -sf /usr/sbin/mkfs.vfat ./sbin/mkfs.vfat \

@@ -1,0 +1,49 @@
+# Temporary until guest images load netfs/fscache/nfs at boot (pertiskd).
+# Apply after cluster create if NFS mounts fail with "No such device":
+#   kubectl apply -f examples/addons/nfs/pertisk-nfs-modules-ds.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pertisk-nfs-modules
+  namespace: kube-system
+  labels:
+    app: pertisk-nfs-modules
+spec:
+  selector:
+    matchLabels:
+      app: pertisk-nfs-modules
+  template:
+    metadata:
+      labels:
+        app: pertisk-nfs-modules
+    spec:
+      hostPID: true
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: load
+          image: alpine:3.20
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command: ["sh", "-c"]
+          args:
+            - |
+              set +e
+              apk add --no-cache kmod >/dev/null
+              M=/host/lib/pertisk/modules
+              for m in netfs fscache sunrpc grace lockd auth_rpcgss nfs nfsv2 nfsv3 nfsv4; do
+                [ -f "$M/$m.ko" ] || { echo "missing $m"; continue; }
+                insmod "$M/$m.ko" 2>/dev/null || true
+              done
+              echo "filesystems:"; grep nfs /proc/filesystems || echo NONE
+              sleep infinity
+          volumeMounts:
+            - name: host
+              mountPath: /host
+      volumes:
+        - name: host
+          hostPath:
+            path: /
