@@ -44,11 +44,11 @@ make cloud ARCH=amd64
 # expect: source=Partition , ephemeral_mounted=true
 
 ## Bootstrap CP
-./out/bin/pertiskctl gen config lab-ha https://10.1.1.150:6443 -o ./out/cluster -k v1.36.3
-./out/bin/pertiskctl -e 10.1.1.150:50000 apply -f ./out/cluster/controlplane.yaml
-./out/bin/pertiskctl -e 10.1.1.150:50000 bootstrap
-./out/bin/pertiskctl -e 10.1.1.150:50000 kubeconfig -f ./out/cluster/admin.conf
-./out/bin/pertiskctl -e 10.1.1.150:50000 join-config -f ./out/cluster/worker.yaml
+./out/bin/pertiskctl gen config lab-ha https://10.1.1.12:6443 -o ./out/cluster -k v1.36.3
+./out/bin/pertiskctl -e 10.1.1.12:50000 apply -f ./out/cluster/controlplane.yaml
+./out/bin/pertiskctl -e 10.1.1.12:50000 bootstrap
+./out/bin/pertiskctl -e 10.1.1.12:50000 kubeconfig -f ./out/cluster/admin.conf
+./out/bin/pertiskctl -e 10.1.1.12:50000 join-config -f ./out/cluster/worker.yaml
 
 ## Join workers (after image with bootstrap finalize)
 # Bootstrap applies token Secret + node-rbac + labels CP (kubeadm-shaped).
@@ -154,14 +154,14 @@ helm install cilium cilium/cilium \
   --set hubble.relay.dnsPolicy=ClusterFirstWithHostNet
 
 
-  ./scripts/deploy-mgmt-lab.sh --mgmt almalinux@10.1.1.150 \
+  ./scripts/deploy-mgmt-lab.sh --mgmt almalinux@10.1.1.12 \
   --skip-rpm  --cp-gb 50 --worker-gb 75
 
-scp out/pertisk-cloud-amd64{,-50g,-75g}.qcow2 almalinux@10.1.1.150:/tmp/
-ssh almalinux@10.1.1.150 'sudo mv /tmp/pertisk-cloud-amd64*.qcow2 /var/lib/pertisk-mgmt/images/ && sudo chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images'
+scp out/pertisk-cloud-amd64{,-50g,-75g}.qcow2 almalinux@10.1.1.12:/tmp/
+ssh almalinux@10.1.1.12 'sudo mv /tmp/pertisk-cloud-amd64*.qcow2 /var/lib/pertisk-mgmt/images/ && sudo chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images'
 
 
-export NFS_SERVER=10.1.1.150 NFS_PATH=/mnt/nfs_share
+export NFS_SERVER=10.1.1.12 NFS_PATH=/mnt/nfs_share
 envsubst < examples/addons/nfs/nfs-subdir-external-provisioner.yaml | kubectl apply -f -
 kubectl apply -f examples/addons/nfs/pertisk-nfs-modules-ds.yaml
 
