@@ -587,6 +587,14 @@ machine:
 
   async function downloadKc() {
     setError('')
+    const clusterName = data?.cluster?.name || 'cluster'
+    const safeName = String(clusterName)
+      .trim()
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .replace(/^[.-]+|[.-]+$/g, '') || 'kubeconfig'
+    const filename = safeName.endsWith('.yaml') || safeName.endsWith('.yml')
+      ? safeName
+      : `${safeName}.yaml`
     try {
       const res = await fetch(`/api/clusters/${id}/kubeconfig`, {
         headers: { Authorization: `Bearer ${getToken()}` },
@@ -596,12 +604,16 @@ machine:
         throw new Error(body.error || res.statusText)
       }
       const text = await res.text()
-      const blob = new Blob([text], { type: 'application/yaml' })
+      const blob = new Blob([text], { type: 'application/x-yaml;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
-      a.href = URL.createObjectURL(blob)
-      a.download = `${data?.cluster?.name || 'cluster'}-admin.conf`
+      a.href = url
+      a.download = filename
+      a.rel = 'noopener'
+      document.body.appendChild(a)
       a.click()
-      URL.revokeObjectURL(a.href)
+      a.remove()
+      URL.revokeObjectURL(url)
     } catch (err) {
       setError(err.message)
     }
@@ -687,8 +699,8 @@ machine:
           <Link className="btn secondary btn-icon" to="/clusters">
             <Icon name="back" size={16} /> Back
           </Link>
-          <button type="button" className="secondary btn-icon" onClick={downloadKc}>
-            <Icon name="download" size={16} /> Kubeconfig
+          <button type="button" className="secondary btn-icon" onClick={downloadKc} title="Download kubeconfig YAML">
+            <Icon name="download" size={16} /> Download kubeconfig
           </button>
           <button type="button" className="danger btn-icon" onClick={del}>
             <Icon name="trash" size={16} /> Delete

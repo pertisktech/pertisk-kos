@@ -25,6 +25,9 @@ else
   CTL="${ROOT}/out/bin/pertiskctl"
 fi
 IP_TIMEOUT="${IP_TIMEOUT:-300}"
+# Once DHCP/ARP has an address, allow extra time for first-boot Machine API
+# (disk expand + services can exceed the remaining IP_TIMEOUT budget).
+API_AFTER_IP_TIMEOUT="${API_AFTER_IP_TIMEOUT:-900}"
 API_TIMEOUT="${API_TIMEOUT:-180}"
 
 ROLE="worker"
@@ -215,19 +218,28 @@ scan_api_subnet_for_mac() {
 
 api_reachable() {
   local ip="$1"
+  # Machine API is gRPC — must probe TCP, not HTTP (curl always fails).
   if command -v nc >/dev/null 2>&1; then
     nc -z -w 2 "$ip" 50000 >/dev/null 2>&1
   else
-    "${CURL[@]}" --connect-timeout 2 "http://${ip}:50000" >/dev/null 2>&1 || return 1
+    timeout 2 bash -c "echo >/dev/tcp/${ip}/50000" 2>/dev/null
   fi
 }
 
 wait_ip() {
-  local vmid="$1" label="$2" mac ip="" deadline nudged=0
+  local vmid="$1" label="$2" mac ip="" nudged=0 saw_ip=0 last_log=0
+  local ip_deadline api_deadline=0 deadline
   mac="$(vm_mac "$vmid")"
-  log "VM ${vmid} (${label}) MAC=${mac} — waiting for DHCP IP (timeout ${IP_TIMEOUT}s)"
-  deadline=$((SECONDS + IP_TIMEOUT))
-  while (( SECONDS < deadline )); do
+  log "VM ${vmid} (${label}) MAC=${mac} — waiting for DHCP IP (timeout ${IP_TIMEOUT}s; +${API_AFTER_IP_TIMEOUT}s after ARP for :50000)"
+  ip_deadline=$((SECONDS + IP_TIMEOUT))
+  while true; do
+    if (( saw_ip )); then
+      deadline=$api_deadline
+    else
+      deadline=$ip_deadline
+    fi
+    (( SECONDS < deadline )) || break
+
     ip="$(arp_ip_for_mac "$mac" || true)"
     if [[ -z "$ip" && -n "${LAB_SUBNET:-}" ]]; then
       if [[ "$nudged" == "0" ]] || (( SECONDS % 45 < 3 )); then
@@ -245,12 +257,28 @@ wait_ip() {
       return 0
     fi
     if [[ -n "$ip" ]]; then
-      log "VM ${vmid} ARP=${ip} but :50000 not ready yet..."
+      if (( !saw_ip )); then
+        saw_ip=1
+        api_deadline=$((SECONDS + API_AFTER_IP_TIMEOUT))
+        last_log=$SECONDS
+        log "VM ${vmid} ARP=${ip} — waiting for Machine API :50000 (timeout ${API_AFTER_IP_TIMEOUT}s)"
+      elif (( SECONDS - last_log >= 20 )); then
+        last_log=$SECONDS
+        local left=$((api_deadline - SECONDS))
+        (( left < 0 )) && left=0
+        log "VM ${vmid} ARP=${ip} but :50000 not ready yet... (${left}s left)"
+      fi
     else
-      log "VM ${vmid} waiting for DHCP..."
+      if (( SECONDS - last_log >= 15 )); then
+        last_log=$SECONDS
+        log "VM ${vmid} waiting for DHCP..."
+      fi
     fi
     sleep 3
   done
+  if (( saw_ip )); then
+    die "timed out waiting for Machine API :50000 on ${ip:-?} (VM ${vmid} MAC=${mac}; ARP was up but guest services slow — try IP_TIMEOUT/API_AFTER_IP_TIMEOUT)"
+  fi
   die "timed out waiting for IP/API for VM ${vmid} MAC=${mac} (PROXMOX_SSH=${PROXMOX_SSH:-unset} subnet=${LAB_SUBNET:-unset})"
 }
 

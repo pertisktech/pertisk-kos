@@ -1294,6 +1294,10 @@ async fn run_add_node(
         if provider.insecure != 0 {
             cmd.env("PROXMOX_INSECURE", "1");
         }
+        // First-boot EPHEMERAL mkfs on large worker disks can exceed 7+ minutes on
+        // older images; give wait_ip headroom proportional to disk size.
+        let api_after_ip = (disk_gb * 15).clamp(900, 1800);
+        cmd.env("API_AFTER_IP_TIMEOUT", api_after_ip.to_string());
         if let Some(idx) = cp_index {
             cmd.arg("--controlplane-index").arg(idx.to_string());
         }
@@ -1326,6 +1330,9 @@ async fn run_add_node(
             }
             Err(e) => {
                 let now = db::now_rfc3339();
+                // Keep the optimistic workers/CP bump + error node row so Remove
+                // can delete the orphaned Proxmox VM; a count rollback would reuse
+                // the same vmid while the guest still exists.
                 let _ = sqlx::query(
                     "UPDATE nodes SET status = 'error', updated_at = ? WHERE id = ?",
                 )

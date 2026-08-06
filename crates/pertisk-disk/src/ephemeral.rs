@@ -303,8 +303,10 @@ fn ensure_ephemeral_filesystem(part_dev: &Path, grew: bool) -> bool {
                 "-q",
                 "-L",
                 PARTLABEL_EPHEMERAL,
+                // lazy_* : return in seconds on large disks; kernel inits in background.
+                // nodiscard: skip TRIM during format (Proxmox/ZFS virtio is slow otherwise).
                 "-E",
-                "nodiscard",
+                "lazy_itable_init=1,lazy_journal_init=1,nodiscard",
                 &part_dev.to_string_lossy(),
             ])
             .status()

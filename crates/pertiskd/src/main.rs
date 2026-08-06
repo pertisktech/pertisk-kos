@@ -342,10 +342,25 @@ fn run() -> Result<()> {
         warn!("no machine config found; continuing without");
     }
 
+    // Bring Machine API up before EPHEMERAL mkfs — first-boot format of a 50–75G
+    // disk can take many minutes. DHCP is already up; add-node wait_ip needs :50000.
+    let tls = resolve_tls(&args);
+    if !args.skip_api {
+        if let Ok(mut st) = api_state.lock() {
+            st.set_message("API listening (EPHEMERAL pending)");
+        }
+        if let Err(err) = start_api_thread(api_state.clone(), &args.api_listen, tls) {
+            warn!(error = %err, "management API failed to start");
+        }
+    }
+
     if let Err(err) = linux::prepare_var() {
         warn!(error = %err, "/var prepare failed");
     }
     // Prefer disk-backed /var (container images, etcd, logs) over tmpfs.
+    if let Ok(mut st) = api_state.lock() {
+        st.set_message("preparing EPHEMERAL");
+    }
     let ephemeral = try_prepare_ephemeral();
     info!(
         ephemeral_mounted = ephemeral.is_some(),
@@ -418,12 +433,6 @@ fn run() -> Result<()> {
         }
     }
 
-    let tls = resolve_tls(&args);
-    if !args.skip_api {
-        if let Err(err) = start_api_thread(api_state.clone(), &args.api_listen, tls) {
-            warn!(error = %err, "management API failed to start");
-        }
-    }
     if !args.skip_metrics {
         let token = resolve_metrics_token(&args, &volume);
         if let Err(err) = start_metrics_thread(api_state.clone(), &args.metrics_listen, token) {

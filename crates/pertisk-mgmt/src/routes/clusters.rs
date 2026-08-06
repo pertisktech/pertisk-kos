@@ -606,19 +606,24 @@ async fn kubeconfig(
                 .execute(state.pool())
                 .await;
                 let content = crate::kubeconfig::rename_kubeconfig_context(&content, &name);
-                return Ok((
-                    [
-                        (
-                            axum::http::header::CONTENT_TYPE,
-                            "application/yaml",
-                        ),
-                        (
-                            axum::http::header::CONTENT_DISPOSITION,
-                            "attachment; filename=\"admin.conf\"",
-                        ),
-                    ],
-                    content,
-                ));
+                let filename = kubeconfig_download_name(&name);
+                let mut headers = axum::http::HeaderMap::new();
+                headers.insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("application/x-yaml; charset=utf-8"),
+                );
+                headers.insert(
+                    axum::http::header::CONTENT_DISPOSITION,
+                    axum::http::HeaderValue::from_str(&format!(
+                        "attachment; filename=\"{filename}\""
+                    ))
+                    .unwrap_or_else(|_| {
+                        axum::http::HeaderValue::from_static(
+                            "attachment; filename=\"kubeconfig.yaml\"",
+                        )
+                    }),
+                );
+                return Ok((headers, content));
             }
             Ok(_) => {
                 last_err = format!("{} exists but is not a valid kubeconfig", path.display());
@@ -631,6 +636,32 @@ async fn kubeconfig(
     Err(AppError::bad(format!(
         "kubeconfig not found for cluster {name} ({last_err})"
     )))
+}
+
+/// Safe download basename: `{cluster}.yaml` (kubectl / Lens / etc. accept YAML).
+fn kubeconfig_download_name(cluster_name: &str) -> String {
+    let mut s: String = cluster_name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    while s.contains("..") {
+        s = s.replace("..", ".");
+    }
+    s = s.trim_matches('.').trim_matches('-').to_string();
+    if s.is_empty() {
+        s = "kubeconfig".into();
+    }
+    if !s.ends_with(".yaml") && !s.ends_with(".yml") {
+        s.push_str(".yaml");
+    }
+    s
 }
 
 #[derive(Serialize, sqlx::FromRow)]

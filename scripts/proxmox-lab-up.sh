@@ -87,6 +87,8 @@ SKIP_BUILD=0
 SKIP_VMS=0
 SKIP_ADDONS=0
 IP_TIMEOUT="${IP_TIMEOUT:-300}"
+# Extra budget after DHCP/ARP for first-boot Machine API (disk expand can be slow).
+API_AFTER_IP_TIMEOUT="${API_AFTER_IP_TIMEOUT:-900}"
 API_TIMEOUT="${API_TIMEOUT:-300}"
 BOOTSTRAP_TIMEOUT="${BOOTSTRAP_TIMEOUT:-300}"
 LAB_SUBNET="${LAB_SUBNET:-}"  # optional CIDR for ping-sweep fallback, e.g. 10.1.1.0/24
@@ -396,20 +398,28 @@ ping_sweep_find() {
 
 api_reachable() {
   local ip="$1"
+  # Machine API is gRPC — must probe TCP, not HTTP (curl always fails).
   if command -v nc >/dev/null 2>&1; then
     nc -z -w 2 "$ip" 50000 >/dev/null 2>&1
   else
-    timeout 2 bash -c "echo >/dev/tcp/${ip}/50000" 2>/dev/null || \
-      "${CURL[@]}" --connect-timeout 2 "http://${ip}:50000" >/dev/null 2>&1 || return 1
+    timeout 2 bash -c "echo >/dev/tcp/${ip}/50000" 2>/dev/null
   fi
 }
 
 wait_ip() {
-  local vmid="$1" label="$2" mac ip="" deadline nudged=0
+  local vmid="$1" label="$2" mac ip="" nudged=0 saw_ip=0 last_log=0
+  local ip_deadline api_deadline=0 deadline
   mac="$(vm_mac "$vmid")"
-  log "VM ${vmid} (${label}) MAC=${mac} — waiting for DHCP IP (timeout ${IP_TIMEOUT}s)"
-  deadline=$((SECONDS + IP_TIMEOUT))
-  while (( SECONDS < deadline )); do
+  log "VM ${vmid} (${label}) MAC=${mac} — waiting for DHCP IP (timeout ${IP_TIMEOUT}s; +${API_AFTER_IP_TIMEOUT}s after ARP for :50000)"
+  ip_deadline=$((SECONDS + IP_TIMEOUT))
+  while true; do
+    if (( saw_ip )); then
+      deadline=$api_deadline
+    else
+      deadline=$ip_deadline
+    fi
+    (( SECONDS < deadline )) || break
+
     ip="$(arp_ip_for_mac "$mac" || true)"
     # Only sweep when we still have no IP — never re-sweep while waiting on :50000.
     if [[ -z "$ip" && -n "$LAB_SUBNET" ]]; then
@@ -424,12 +434,28 @@ wait_ip() {
       return 0
     fi
     if [[ -n "$ip" ]]; then
-      log "VM ${vmid} ARP=${ip} but :50000 not ready yet..."
+      if (( !saw_ip )); then
+        saw_ip=1
+        api_deadline=$((SECONDS + API_AFTER_IP_TIMEOUT))
+        last_log=$SECONDS
+        log "VM ${vmid} ARP=${ip} — waiting for Machine API :50000 (timeout ${API_AFTER_IP_TIMEOUT}s)"
+      elif (( SECONDS - last_log >= 20 )); then
+        last_log=$SECONDS
+        local left=$((api_deadline - SECONDS))
+        (( left < 0 )) && left=0
+        log "VM ${vmid} ARP=${ip} but :50000 not ready yet... (${left}s left)"
+      fi
     else
-      log "VM ${vmid} no ARP yet for ${mac}…"
+      if (( SECONDS - last_log >= 15 )); then
+        last_log=$SECONDS
+        log "VM ${vmid} no ARP yet for ${mac}…"
+      fi
     fi
     sleep 3
   done
+  if (( saw_ip )); then
+    die "timed out waiting for Machine API :50000 on ${ip:-?} (VM ${vmid} MAC=${mac}; ARP was up but guest services slow — try IP_TIMEOUT/API_AFTER_IP_TIMEOUT)"
+  fi
   die "timed out waiting for IP/API for VM ${vmid} MAC=${mac} (PROXMOX_SSH=${PROXMOX_SSH:-unset} subnet=${LAB_SUBNET:-unset})
 hint: without PROXMOX_SSH, mgmt must share L2 with guests (LAB_SUBNET ping-sweep).
       check: ip -4 neigh | grep -i ${mac}
