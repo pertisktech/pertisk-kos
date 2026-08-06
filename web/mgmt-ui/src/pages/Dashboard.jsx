@@ -143,7 +143,6 @@ export default function Dashboard() {
   const nav = useNavigate()
   const [clusters, setClusters] = useState([])
   const [providers, setProviders] = useState([])
-  const [health, setHealth] = useState(null)
   const [resources, setResources] = useState([])
   const [resourcesErr, setResourcesErr] = useState('')
 
@@ -151,11 +150,9 @@ export default function Dashboard() {
     Promise.all([
       api('/clusters').catch(() => []),
       api('/providers').catch(() => []),
-      fetch('/api/health').then((r) => r.json()).catch(() => null),
-    ]).then(([c, p, h]) => {
+    ]).then(([c, p]) => {
       setClusters(c)
       setProviders(p)
-      setHealth(h)
     })
   }, [])
 
@@ -191,15 +188,17 @@ export default function Dashboard() {
   const ready = clusters.filter((c) => c.status === 'ready').length
   const cps = clusters.reduce((n, c) => n + (c.controlplanes || 0), 0)
   const wks = clusters.reduce((n, c) => n + (c.workers || 0), 0)
+  const recent = clusters.slice(0, 8)
 
   return (
-    <div>
+    <div className="dash-page">
       <div className="page-head">
         <h1><Icon name="dashboard" size={22} /> Dashboard</h1>
         <Link className="btn btn-icon" to="/clusters/new">
           <Icon name="plus" size={16} /> Create cluster
         </Link>
       </div>
+
       <div className="grid-stats">
         <div className="stat"><div className="label">Clusters</div><div className="value">{clusters.length}</div></div>
         <div className="stat"><div className="label">Ready</div><div className="value">{ready}</div></div>
@@ -207,31 +206,41 @@ export default function Dashboard() {
         <div className="stat"><div className="label">Workers</div><div className="value">{wks}</div></div>
         <div className="stat"><div className="label">Providers</div><div className="value">{providers.length}</div></div>
       </div>
-      <div className="card">
-        <h2 className="card-title"><Icon name="play" size={18} /> API</h2>
-        <p className="muted">{health ? `status: ${health.status}` : 'unreachable'}</p>
-      </div>
 
       <div className="section-head dash-resources-head">
         <div>
           <h2 className="card-title" style={{ marginBottom: 0 }}>
-            <Icon name="cpu" size={18} /> Cluster resources
+            <Icon name="cpu" size={18} /> Clusters
           </h2>
-          <p className="muted">
-            CPU / memory from <code className="mono-inline">kubectl top</code>
-            {' '}· disk from node filesystem stats (poll {RESOURCES_POLL_MS / 1000}s)
+          <p className="muted dash-section-sub">
+            Live CPU, memory, and disk · updates every {RESOURCES_POLL_MS / 1000}s
           </p>
         </div>
-        <button type="button" className="secondary btn-icon" onClick={loadResources}>
-          <Icon name="play" size={14} /> Refresh
-        </button>
+        <div className="dash-resources-actions">
+          <Link className="secondary btn-icon" to="/clusters">
+            <Icon name="clusters" size={14} /> All clusters
+          </Link>
+          <button type="button" className="secondary btn-icon" onClick={loadResources}>
+            <Icon name="play" size={14} /> Refresh
+          </button>
+        </div>
       </div>
 
       {resourcesErr && <div className="error">{resourcesErr}</div>}
 
       {clusters.length === 0 ? (
-        <div className="card">
-          <p className="muted">No clusters yet. Configure a Proxmox provider, then create M CP + N workers.</p>
+        <div className="card dash-empty">
+          <p className="muted" style={{ margin: 0 }}>
+            No clusters yet. Add a provider, then create control planes and workers.
+          </p>
+          <div className="dash-empty-actions">
+            <Link className="btn btn-icon" to="/providers">
+              <Icon name="providers" size={16} /> Providers
+            </Link>
+            <Link className="btn btn-icon" to="/clusters/new">
+              <Icon name="plus" size={16} /> Create cluster
+            </Link>
+          </div>
         </div>
       ) : resources.length === 0 && !resourcesErr ? (
         <div className="card"><p className="muted">Loading resource summaries…</p></div>
@@ -247,17 +256,20 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="card">
-        <h2 className="card-title"><Icon name="clusters" size={18} /> Recent clusters</h2>
-        {clusters.length === 0 ? (
-          <p className="muted">No clusters yet.</p>
-        ) : (
+      {recent.length > 0 && (
+        <div className="card dash-recent">
+          <div className="section-head" style={{ marginBottom: '0.75rem' }}>
+            <h2 className="card-title" style={{ margin: 0 }}>
+              <Icon name="clusters" size={18} /> Recent
+            </h2>
+            <Link className="linkish" to="/clusters">View all</Link>
+          </div>
           <table>
             <thead>
               <tr><th>Name</th><th>Status</th><th>Topology</th></tr>
             </thead>
             <tbody>
-              {clusters.slice(0, 8).map((c) => {
+              {recent.map((c) => {
                 const to = `/clusters/${c.id}`
                 return (
                   <tr
@@ -281,8 +293,8 @@ export default function Dashboard() {
               })}
             </tbody>
           </table>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   )
 }

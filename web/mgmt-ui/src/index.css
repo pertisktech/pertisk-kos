@@ -244,6 +244,30 @@ label {
   gap: 1rem;
   margin: 0.25rem 0 0.85rem;
 }
+.dash-section-sub {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+}
+.dash-resources-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.dash-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  align-items: flex-start;
+}
+.dash-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+.dash-recent {
+  margin-top: 0.25rem;
+}
 .cluster-resource-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
