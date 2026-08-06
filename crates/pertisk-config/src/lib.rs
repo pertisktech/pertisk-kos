@@ -135,7 +135,7 @@ impl Dashboard {
     pub const DEFAULT_BORDER: &'static str = "bordered";
     /// Probe fallback only — never pinned unless YAML/env sets cols/rows.
     pub const DEFAULT_COLS: u16 = 80;
-    pub const DEFAULT_ROWS: u16 = 22;
+    pub const DEFAULT_ROWS: u16 = 24;
 
     /// Built-in console look (theme/border only).
     ///

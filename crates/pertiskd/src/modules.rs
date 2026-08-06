@@ -4,7 +4,9 @@
 //! them, Proxmox/QEMU virtio NICs never appear (no eth0). Without `sd_mod` and
 //! its deps (`t10-pi` → `crc64-rocksoft` → `crc64`), virtio-scsi disks never
 //! create `/dev/sd*` nodes — STATE/EPHEMERAL stay ephemeral and reboot wipes
-//! apply/bootstrap.
+//! apply/bootstrap. ESXi uses LSI Logic Parallel + e1000e/vmxnet3 — needs
+//! `mptspi` (+ `mptbase`/`mptscsih`/`scsi_transport_spi`) and `e1000e`/`vmxnet3`.
+//! Host Client VGA needs `simpledrm`/`vmwgfx` (linux-virt builds `CONFIG_FB=m`).
 
 use tracing::info;
 
@@ -41,13 +43,38 @@ mod linux_impl {
     /// `af_packet` (CONFIG_PACKET=m): kube-vip gratuitous ARP for the control-plane VIP.
     /// NFS client (`sunrpc`…`nfsv4`): in-tree NFS PVs / nfs-subdir provisioner.
     const BOOT_MODULES: &[&str] = &[
+        // Console first so ESXi Host Client leaves the frozen EFI stub line.
+        "fbdev",
+        "fb_io_fops",
+        "fb",
+        "fb_sys_fops",
+        "syscopyarea",
+        "sysfillrect",
+        "sysimgblt",
+        "drm_panel_orientation_quirks",
+        "i2c-core",
+        "drm",
+        "drm_kms_helper",
+        "drm_shmem_helper",
+        "simpledrm",
+        "ttm",
+        "drm_ttm_helper",
+        "vmwgfx",
         "failover",
         "net_failover",
         "virtio_net",
+        // ESXi: e1000e (CreateVM default) + vmxnet3 (paravirt NIC).
+        "e1000e",
+        "vmxnet3",
         // Early: kube-vip needs AF_PACKET as soon as the VIP static pod starts.
         "af_packet",
         "virtio_scsi",
         "virtio_blk",
+        // ESXi VirtualLsiLogicController → mptspi (Fusion SPI).
+        "scsi_transport_spi",
+        "mptbase",
+        "mptscsih",
+        "mptspi",
         "crc64",
         "crc64-rocksoft",
         "t10-pi",

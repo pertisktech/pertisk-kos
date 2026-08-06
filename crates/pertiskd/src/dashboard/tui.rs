@@ -87,9 +87,8 @@ fn run_tui_inner(
 
     // Never `\x1b[2J` — a clear that races boot `eprintln!` / failed paint
     // leaves Proxmox Serial blank. Full-frame home+\r\n paint overwrites.
-    let _ = io::stderr().write_all(UNSYNC.as_bytes());
-    let _ = io::stderr().write_all(CURSOR_OFF.as_bytes());
-    let _ = io::stderr().flush();
+    paint_console(UNSYNC.as_bytes());
+    paint_console(CURSOR_OFF.as_bytes());
 
     let mut writer = FrameWriter::default();
     let mut last_sig = config_signature(&caps, &skin);
@@ -159,8 +158,7 @@ fn run_tui_inner(
         dump_frame(&mut writer, terminal.backend(), skin.chrome.ascii_only)?;
     }
 
-    let _ = io::stderr().write_all(b"\x1b[?25h\x1b[?12h");
-    let _ = io::stderr().flush();
+    paint_console(b"\x1b[?25h\x1b[?12h");
     Ok(())
 }
 
@@ -204,17 +202,52 @@ fn dump_frame(
     ascii_only: bool,
 ) -> Result<(), String> {
     let Some(out) = writer.encode(backend.buffer(), ascii_only) else {
-        let _ = io::stderr().write_all(CURSOR_OFF.as_bytes());
-        let _ = io::stderr().flush();
+        paint_console(CURSOR_OFF.as_bytes());
         return Ok(());
     };
-    io::stderr()
-        .write_all(out.as_bytes())
-        .map_err(|e| format!("TUI write: {e}"))?;
-    io::stderr()
-        .flush()
-        .map_err(|e| format!("TUI flush: {e}"))?;
+    paint_console(out.as_bytes());
     Ok(())
+}
+
+/// Write the TUI to stderr (usually ttyS0 / Proxmox Serial) and mirror to
+/// `/dev/tty0` so ESXi Host Client VGA also shows the dashboard.
+fn paint_console(bytes: &[u8]) {
+    let _ = io::stderr().write_all(bytes);
+    let _ = io::stderr().flush();
+    mirror_vga(bytes);
+}
+
+fn mirror_vga(bytes: &[u8]) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::fs::OpenOptions;
+        use std::os::unix::io::AsRawFd;
+        let Ok(mut f) = OpenOptions::new().write(true).open("/dev/tty0") else {
+            return;
+        };
+        // Skip if stderr is already this VT (avoid double paint).
+        let tty0 = f.as_raw_fd();
+        let same = unsafe {
+            let mut s = std::mem::MaybeUninit::<libc::stat>::uninit();
+            let mut e = std::mem::MaybeUninit::<libc::stat>::uninit();
+            if libc::fstat(tty0, s.as_mut_ptr()) != 0 || libc::fstat(2, e.as_mut_ptr()) != 0 {
+                false
+            } else {
+                let s = s.assume_init();
+                let e = e.assume_init();
+                s.st_rdev == e.st_rdev && s.st_rdev != 0
+            }
+        };
+        if same {
+            return;
+        }
+        let _ = f.write_all(bytes);
+        let _ = f.flush();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bytes;
+    }
 }
 
 /// Full-frame Serial dump: home + one `\r\n` per row (same shape as the text

@@ -19,7 +19,12 @@ set -euo pipefail
 
 ROOT="${PERTISK_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 UPLOAD="${ROOT}/scripts/proxmox-upload-vm.sh"
-CREATE_VMS="${ROOT}/scripts/proxmox-create-cluster-vms.sh"
+PROVIDER_KIND="${PROVIDER_KIND:-proxmox}"
+if [[ "$PROVIDER_KIND" == "vsphere" ]]; then
+  CREATE_VMS="${CREATE_VMS:-${ROOT}/scripts/vsphere-create-cluster-vms.sh}"
+else
+  CREATE_VMS="${CREATE_VMS:-${ROOT}/scripts/proxmox-create-cluster-vms.sh}"
+fi
 # Prefer explicit binary from mgmt (RPM: /usr/bin/pertiskctl).
 if [[ -n "${PERTISKCTL:-}" && -x "${PERTISKCTL}" ]]; then
   CTL="${PERTISKCTL}"
@@ -230,6 +235,29 @@ load_proxmox_sh() {
   done <"$f"
 }
 
+if [[ "${PROVIDER_KIND}" == "vsphere" ]]; then
+  : "${VSPHERE_URL:?set VSPHERE_URL}"
+  : "${VSPHERE_USER:?set VSPHERE_USER}"
+  : "${VSPHERE_PASSWORD:?set VSPHERE_PASSWORD}"
+  : "${VSPHERE_DATASTORE:?set VSPHERE_DATASTORE}"
+  VSPHERE_NETWORK="${VSPHERE_NETWORK:-VM Network}"
+  export VSPHERE_INSECURE="${VSPHERE_INSECURE:-1}"
+  ESXI_HOST="$(echo "${VSPHERE_URL}" | sed -E 's|https?://([^/:]+).*|\1|')"
+  if [[ -z "${LAB_SUBNET}" && "${ESXI_HOST}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+    LAB_SUBNET="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.0/24"
+    echo "==> auto LAB_SUBNET=${LAB_SUBNET}"
+  fi
+  # Reuse DISK from VSPHERE_DISK if set.
+  if [[ -n "${VSPHERE_DISK:-}" ]]; then
+    DISK="${VSPHERE_DISK}"
+  fi
+  echo "==> provider=vsphere url=${VSPHERE_URL} datastore=${VSPHERE_DATASTORE} network=${VSPHERE_NETWORK}"
+  echo "==> images dir=${IMAGES_DIR} disk=${DISK}"
+  # Stub Proxmox vars so shared helpers that reference them don't explode.
+  PROXMOX_URL="${PROXMOX_URL:-${VSPHERE_URL}}"
+  PROXMOX_NODE="${PROXMOX_NODE:-esxi}"
+  unset PROXMOX_SSH || true
+else
 if [[ -z "${PROXMOX_URL:-}" ]]; then
   echo "==> loading Proxmox env from ${ROOT}/proxmox.sh"
   load_proxmox_sh "${ROOT}/proxmox.sh"
@@ -275,15 +303,26 @@ else
   echo "==> disk import via SSH ${PROXMOX_SSH}"
 fi
 echo "==> images dir=${IMAGES_DIR} disk=${DISK}"
+fi # PROVIDER_KIND != vsphere
 
-command -v jq >/dev/null || { echo "jq required" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl required" >&2; exit 1; }
+if [[ "${PROVIDER_KIND}" != "vsphere" ]]; then
+  command -v jq >/dev/null || { echo "jq required" >&2; exit 1; }
+fi
+command -v python3 >/dev/null || { echo "python3 required" >&2; exit 1; }
 
 CURL=(curl -sS)
-[[ "${PROXMOX_INSECURE:-0}" == "1" ]] && CURL+=(-k)
-AUTH="Authorization: PVEAPIToken=${PROXMOX_TOKEN_ID}=${PROXMOX_TOKEN_SECRET}"
-BASE="${PROXMOX_URL%/}/api2/json"
-NODE="${PROXMOX_NODE}"
+if [[ "${PROVIDER_KIND}" == "vsphere" ]]; then
+  [[ "${VSPHERE_INSECURE:-0}" == "1" ]] && CURL+=(-k)
+  AUTH=""
+  BASE=""
+  NODE="esxi"
+else
+  [[ "${PROXMOX_INSECURE:-0}" == "1" ]] && CURL+=(-k)
+  AUTH="Authorization: PVEAPIToken=${PROXMOX_TOKEN_ID}=${PROXMOX_TOKEN_SECRET}"
+  BASE="${PROXMOX_URL%/}/api2/json"
+  NODE="${PROXMOX_NODE}"
+fi
 
 api_get() {
   "${CURL[@]}" -H "${AUTH}" "${BASE}$1"
@@ -293,8 +332,22 @@ log() { printf '==> %s\n' "$*" >&2; }
 die() { echo "error: $*" >&2; exit 1; }
 
 # --- MAC / IP helpers ---
+# $1 = vmid, $2 = optional guest/VM name (e.g. lab-cp-1) for vsphere inventory lookup
 vm_mac() {
-  local vmid="$1" net0 mac
+  local vmid="$1" name="${2:-}" mac=""
+  if [[ "${PROVIDER_KIND}" == "vsphere" ]]; then
+    if [[ -n "$name" ]]; then
+      mac="$(vsphere_vm_mac "$name" 2>/dev/null || true)"
+    fi
+    # Legacy create used {prefix}-{vmid}; keep lookup for older VMs.
+    if [[ -z "$mac" ]]; then
+      mac="$(vsphere_vm_mac "${NAME_PREFIX}-${vmid}" 2>/dev/null || true)"
+    fi
+    [[ -n "$mac" ]] || die "VM ${name:-$vmid}: no MAC yet; power on once so ESXi assigns one"
+    echo "$mac" | tr 'A-F' 'a-f'
+    return 0
+  fi
+  local net0
   net0="$(api_get "/nodes/${NODE}/qemu/${vmid}/config" | jq -r '.data.net0 // empty')"
   [[ -n "$net0" ]] || die "VM ${vmid}: no net0"
   # net0 forms: virtio=AA:BB:...,bridge=vmbr0  OR  virtio,bridge=vmbr0 (no fixed MAC)
@@ -305,6 +358,77 @@ vm_mac() {
   fi
   # normalize lowercase
   echo "${mac}" | tr 'A-F' 'a-f'
+}
+
+vsphere_vm_mac() {
+  local name="$1" jar sdk base resp
+  base="${VSPHERE_URL%/}"
+  sdk="${base}/sdk"
+  jar="$(mktemp)"
+  local curl_args=(curl -sS -k -b "$jar" -c "$jar")
+  "${curl_args[@]}" -X POST "$sdk" \
+    -H 'Content-Type: text/xml; charset=UTF-8' \
+    -H 'SOAPAction: urn:vim25/8.0.3.0' \
+    --data-binary @- >/dev/null <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <Login xmlns="urn:vim25">
+      <_this type="SessionManager">ha-sessionmgr</_this>
+      <userName>${VSPHERE_USER}</userName>
+      <password>${VSPHERE_PASSWORD}</password>
+    </Login>
+  </soapenv:Body>
+</soapenv:Envelope>
+EOF
+  resp="$("${curl_args[@]}" -X POST "$sdk" \
+    -H 'Content-Type: text/xml; charset=UTF-8' \
+    -H 'SOAPAction: urn:vim25/8.0.3.0' \
+    --data-binary @- <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <RetrievePropertiesEx xmlns="urn:vim25">
+      <_this type="PropertyCollector">ha-property-collector</_this>
+      <specSet>
+        <propSet>
+          <type>VirtualMachine</type>
+          <all>false</all>
+          <pathSet>name</pathSet>
+          <pathSet>config.hardware.device</pathSet>
+        </propSet>
+        <objectSet>
+          <obj type="Folder">ha-folder-vm</obj>
+          <skip>false</skip>
+          <selectSet xsi:type="TraversalSpec" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <name>visitFolders</name>
+            <type>Folder</type>
+            <path>childEntity</path>
+            <skip>false</skip>
+            <selectSet><name>visitFolders</name></selectSet>
+          </selectSet>
+        </objectSet>
+      </specSet>
+      <options></options>
+    </RetrievePropertiesEx>
+  </soapenv:Body>
+</soapenv:Envelope>
+EOF
+)"
+  rm -f "$jar"
+  python3 -c "
+import sys,re
+xml=sys.stdin.read()
+want=$(printf '%s' "$name" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+for m in re.finditer(r'<obj[^>]*type=\"VirtualMachine\">([^<]+)</obj>(.*?)</objects>', xml, re.S):
+    block=m.group(2)
+    nm=re.search(r'<name>name</name>\s*<val[^>]*>([^<]*)</val>', block)
+    if not nm or nm.group(1)!=want: continue
+    mac=re.search(r'<macAddress>([^<]+)</macAddress>', block)
+    if mac:
+        print(mac.group(1).lower())
+        break
+" <<<"$resp"
 }
 
 arp_ip_for_mac() {
@@ -409,7 +533,7 @@ api_reachable() {
 wait_ip() {
   local vmid="$1" label="$2" mac ip="" nudged=0 saw_ip=0 last_log=0
   local ip_deadline api_deadline=0 deadline
-  mac="$(vm_mac "$vmid")"
+  mac="$(vm_mac "$vmid" "$label")"
   log "VM ${vmid} (${label}) MAC=${mac} — waiting for DHCP IP (timeout ${IP_TIMEOUT}s; +${API_AFTER_IP_TIMEOUT}s after ARP for :50000)"
   ip_deadline=$((SECONDS + IP_TIMEOUT))
   while true; do
@@ -672,11 +796,19 @@ step_vms() {
   if [[ "$DUAL_STACK" == "1" ]]; then
     export DUAL_STACK=1 PERTISK_DUAL_STACK=1
   fi
-  PROXMOX_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
+  if [[ "${PROVIDER_KIND}" == "vsphere" ]]; then
+    VSPHERE_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
+  else
+    PROXMOX_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
+  fi
 }
 
 # Apply memory/cores/disk-gb to existing VMs (qm set + qm resize).
 step_apply_vm_sizing() {
+  if [[ "${PROVIDER_KIND}" == "vsphere" ]]; then
+    log "skip Proxmox qm sizing on vsphere (recreate VMs with --cp-memory/--disk-gb instead)"
+    return 0
+  fi
   : "${PROXMOX_NODE:?PROXMOX_NODE required for VM sizing}"
   log "applying VM sizing (cp=${CP_MEMORY}MB/${CP_CORES}c/${CP_DISK_GB:--}G wk=${WORKER_MEMORY}MB/${WORKER_CORES}c/${WORKER_DISK_GB:--}G)"
   local i vid

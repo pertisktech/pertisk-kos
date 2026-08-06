@@ -1,12 +1,15 @@
-//! One-shot console size for Proxmox Serial.
+//! One-shot console size for Proxmox Serial and ESXi / VGA.
 //!
 //! Interactive CSI probes (`18 t`, cursor-extent, UTF-8 glyph) often leave
 //! xterm.js in a cleared/broken state, so they are **off by default**. Size
 //! comes from:
 //! 1. `PERTISK_DASHBOARD_COLS` / `_ROWS` (or `COLUMNS` / `LINES`)
 //! 2. Optional live probe when `PERTISK_DASHBOARD_PROBE=1`
-//! 3. `TIOCGWINSZ` if it looks sane
+//! 3. Best `TIOCGWINSZ` among `/dev/tty0` (VGA), `/dev/console`, `/dev/ttyS0`
 //! 4. 80×24 fallback
+//!
+//! Prefer the **largest** sane winsize so ESXi Host Client VGA is not stuck at
+//! the serial 80×24 stub (dashboard looking like ~¼ of the window).
 
 use std::os::unix::io::RawFd;
 use std::time::{Duration, Instant};
@@ -16,8 +19,9 @@ pub const FALLBACK_ROWS: u16 = pertisk_config::Dashboard::DEFAULT_ROWS;
 const MIN_COLS: u16 = 40;
 const MIN_ROWS: u16 = 12;
 /// Reject probe results above this — oversized frames wrap and look blank.
-const SAFE_MAX_COLS: u16 = 160;
-const SAFE_MAX_ROWS: u16 = 50;
+/// Raised for Host Client / fbcon (was 160×50; that still looked ~¼-screen).
+const SAFE_MAX_COLS: u16 = 240;
+const SAFE_MAX_ROWS: u16 = 80;
 const MAX_COLS: u16 = 300;
 const MAX_ROWS: u16 = 120;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(400);
@@ -103,19 +107,10 @@ pub fn detect() -> ConsoleCaps {
     }
 
     if caps.source == "default" {
-        if let Some(fd) = tty.as_ref().map(Tty::fd) {
-            if let Some((rows, cols)) = winsize(fd) {
-                // ioctl on Serial is usually the stale 80×24 — accept it as-is.
-                if cols >= MIN_COLS
-                    && rows >= MIN_ROWS
-                    && cols <= SAFE_MAX_COLS
-                    && rows <= SAFE_MAX_ROWS
-                {
-                    caps.rows = rows;
-                    caps.cols = cols;
-                    caps.source = "ioctl";
-                }
-            }
+        if let Some((rows, cols, src)) = best_winsize() {
+            caps.rows = rows;
+            caps.cols = cols;
+            caps.source = src;
         }
     }
 
@@ -134,25 +129,39 @@ pub fn detect() -> ConsoleCaps {
     caps
 }
 
-/// Cheap re-read for the TUI loop: env pins + UTF-8 only (no CSI, no winsize).
+/// Cheap re-read for the TUI loop: env pins, else refresh winsize (VGA may
+/// appear after `vmwgfx` loads — without this the frame stays 80×24 forever).
 pub fn detect_refresh(previous: ConsoleCaps) -> ConsoleCaps {
     let env_cols = env_u16("PERTISK_DASHBOARD_COLS").or_else(|| env_u16("COLUMNS"));
     let env_rows = env_u16("PERTISK_DASHBOARD_ROWS").or_else(|| env_u16("LINES"));
-    if env_cols.is_none() && env_rows.is_none() {
+    if env_cols.is_some() || env_rows.is_some() {
         let mut caps = previous;
+        if let Some(c) = env_cols {
+            caps.cols = c;
+        }
+        if let Some(r) = env_rows {
+            caps.rows = r;
+        }
+        caps.source = "env";
         caps.utf8 = utf8_from_env(caps.utf8);
+        clamp_to_tty(&mut caps);
+        let (cols, rows) = clamp_measured(caps.cols, caps.rows);
+        caps.cols = cols;
+        caps.rows = rows;
         return caps;
     }
+
     let mut caps = previous;
-    if let Some(c) = env_cols {
-        caps.cols = c;
-    }
-    if let Some(r) = env_rows {
-        caps.rows = r;
-    }
-    caps.source = "env";
     caps.utf8 = utf8_from_env(caps.utf8);
-    clamp_to_tty(&mut caps);
+    if let Some((rows, cols, src)) = best_winsize() {
+        // Grow (or shrink) to the live pane — never stay stuck on serial 80×24
+        // after Host Client VGA reports a real framebuffer size.
+        if cols != caps.cols || rows != caps.rows {
+            caps.cols = cols;
+            caps.rows = rows;
+            caps.source = src;
+        }
+    }
     let (cols, rows) = clamp_measured(caps.cols, caps.rows);
     caps.cols = cols;
     caps.rows = rows;
@@ -168,19 +177,14 @@ fn utf8_from_env(fallback: bool) -> bool {
 }
 
 fn clamp_to_tty(caps: &mut ConsoleCaps) {
-    let Some(fd) = open_tty().as_ref().map(Tty::fd) else {
+    let Some((rows, cols, _)) = best_winsize() else {
         return;
     };
-    let Some((rows, cols)) = winsize(fd) else {
-        return;
-    };
-    if cols >= MIN_COLS && rows >= MIN_ROWS && cols <= SAFE_MAX_COLS && rows <= SAFE_MAX_ROWS {
-        if caps.cols > cols {
-            caps.cols = cols;
-        }
-        if caps.rows > rows {
-            caps.rows = rows;
-        }
+    if caps.cols > cols {
+        caps.cols = cols;
+    }
+    if caps.rows > rows {
+        caps.rows = rows;
     }
 }
 
@@ -189,6 +193,39 @@ fn clamp_measured(cols: u16, rows: u16) -> (u16, u16) {
         cols.clamp(10, MAX_COLS.min(SAFE_MAX_COLS)),
         rows.clamp(8, MAX_ROWS.min(SAFE_MAX_ROWS)),
     )
+}
+
+/// Largest sane winsize among VGA / console / serial.
+///
+/// Returns `(rows, cols, source)`.
+fn best_winsize() -> Option<(u16, u16, &'static str)> {
+    let candidates: &[(&str, &'static str)] = &[
+        ("/dev/tty0", "ioctl-tty0"),
+        ("/dev/console", "ioctl-console"),
+        ("/dev/ttyS0", "ioctl-ttyS0"),
+    ];
+    let mut best: Option<(u16, u16, u32, &'static str)> = None;
+    for &(path, src) in candidates {
+        let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(path) else {
+            continue;
+        };
+        use std::os::unix::io::AsRawFd;
+        let Some((rows, cols)) = winsize(file.as_raw_fd()) else {
+            continue;
+        };
+        if cols < MIN_COLS || rows < MIN_ROWS || cols > SAFE_MAX_COLS || rows > SAFE_MAX_ROWS {
+            continue;
+        }
+        let area = u32::from(cols) * u32::from(rows);
+        let replace = match best {
+            None => true,
+            Some((_, _, a, _)) => area > a,
+        };
+        if replace {
+            best = Some((rows, cols, area, src));
+        }
+    }
+    best.map(|(rows, cols, _, src)| (rows, cols, src))
 }
 
 /// Re-query the pane size while the dashboard is running.

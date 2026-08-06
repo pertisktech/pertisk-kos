@@ -38,7 +38,9 @@ if [[ "${PERTISK_FORCE_KERNEL:-0}" != "1" ]]; then
   # af_packet: kube-vip gratuitous ARP (CONFIG_PACKET=m on linux-virt)
   # nfs.ko: in-tree NFS PVs / nfs-subdir-external-provisioner (ENODEV without it)
   # fscache+netfs: required deps for nfs on linux-virt 6.6+
-  [[ -f "${MODULES_OUT}/virtio_net.ko" && -f "${MODULES_OUT}/sd_mod.ko" && -f "${MODULES_OUT}/t10-pi.ko" && -f "${MODULES_OUT}/crc64.ko" && -f "${MODULES_OUT}/ext4.ko" && -f "${MODULES_OUT}/jbd2.ko" && -f "${MODULES_OUT}/overlay.ko" && -f "${MODULES_OUT}/vxlan.ko" && -f "${MODULES_OUT}/nf_tables.ko" && -f "${MODULES_OUT}/br_netfilter.ko" && -f "${MODULES_OUT}/x_tables.ko" && -f "${MODULES_OUT}/xt_tcpudp.ko" && -f "${MODULES_OUT}/xt_CT.ko" && -f "${MODULES_OUT}/xfrm_user.ko" && -f "${MODULES_OUT}/af_packet.ko" && -f "${MODULES_OUT}/nfs.ko" && -f "${MODULES_OUT}/nfsv3.ko" && -f "${MODULES_OUT}/nfsv4.ko" && -f "${MODULES_OUT}/sunrpc.ko" && -f "${MODULES_OUT}/fscache.ko" && -f "${MODULES_OUT}/netfs.ko" && -f "${MODULES_OUT}/version" ]] && NEED_MODULES=0
+  # vmwgfx/simpledrm: ESXi Host Client VGA (CONFIG_FB=m — without these the
+  # console freezes at "EFI stub: Loaded initrd..." even when the guest is fine)
+  [[ -f "${MODULES_OUT}/virtio_net.ko" && -f "${MODULES_OUT}/sd_mod.ko" && -f "${MODULES_OUT}/t10-pi.ko" && -f "${MODULES_OUT}/crc64.ko" && -f "${MODULES_OUT}/ext4.ko" && -f "${MODULES_OUT}/jbd2.ko" && -f "${MODULES_OUT}/overlay.ko" && -f "${MODULES_OUT}/vxlan.ko" && -f "${MODULES_OUT}/nf_tables.ko" && -f "${MODULES_OUT}/br_netfilter.ko" && -f "${MODULES_OUT}/x_tables.ko" && -f "${MODULES_OUT}/xt_tcpudp.ko" && -f "${MODULES_OUT}/xt_CT.ko" && -f "${MODULES_OUT}/xfrm_user.ko" && -f "${MODULES_OUT}/af_packet.ko" && -f "${MODULES_OUT}/nfs.ko" && -f "${MODULES_OUT}/nfsv3.ko" && -f "${MODULES_OUT}/nfsv4.ko" && -f "${MODULES_OUT}/sunrpc.ko" && -f "${MODULES_OUT}/fscache.ko" && -f "${MODULES_OUT}/netfs.ko" && -f "${MODULES_OUT}/mptspi.ko" && -f "${MODULES_OUT}/e1000e.ko" && -f "${MODULES_OUT}/vmxnet3.ko" && -f "${MODULES_OUT}/vmwgfx.ko" && -f "${MODULES_OUT}/simpledrm.ko" && -f "${MODULES_OUT}/version" ]] && NEED_MODULES=0
 fi
 
 # Kernel and modules must come from the same linux-virt package (vermagic).
@@ -99,7 +101,8 @@ docker run --rm --platform "${PLATFORM}" \
       done
     }
 
-    # Roots: NIC + SCSI/blk disk (Proxmox virtio-scsi / QEMU virtio-blk)
+    # Roots: NIC + SCSI/blk disk (Proxmox virtio-scsi / QEMU virtio-blk;
+    # ESXi LSI Logic Parallel via mptspi + e1000e/vmxnet3)
     # + ext4/vfat (STATE/EPHEMERAL/EFI mounts; linux-virt builds these as modules)
     # + overlay (containerd)
     # + Flannel/Calico/CNI bridge (llc/stp/bridge/br_netfilter/veth)
@@ -111,7 +114,11 @@ docker run --rm --platform "${PLATFORM}" \
     #   address family not supported by protocol" and VIP never reachable off-node)
     # + NFS client: kubernetes.io/nfs + nfs-subdir-external-provisioner
     #   (mount fails with "No such device" without nfs.ko / sunrpc)
+    # + ESXi/QEMU VGA: simpledrm + vmwgfx (CONFIG_FB=m; Host Client past EFI stub)
     for name in failover net_failover virtio_net virtio_scsi virtio_blk sd_mod \
+                scsi_transport_spi mptbase mptscsih mptspi \
+                e1000e vmxnet3 \
+                simpledrm vmwgfx \
                 ext4 crc32c_generic vfat nls_cp437 nls_iso8859-1 overlay \
                 llc stp bridge br_netfilter veth \
                 tunnel4 ipip \

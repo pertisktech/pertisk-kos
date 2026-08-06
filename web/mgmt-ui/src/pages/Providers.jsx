@@ -3,7 +3,8 @@ import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { useConfirm } from '../components/Confirm'
 
-const emptyForm = {
+const emptyProxmox = {
+  kind: 'proxmox',
   name: 'lab-pve',
   url: 'https://10.1.1.197:8006',
   token_id: '',
@@ -14,18 +15,37 @@ const emptyForm = {
   insecure: true,
 }
 
-function formatProbe(r) {
+const emptyVsphere = {
+  kind: 'vsphere',
+  name: 'lab-esxi',
+  url: 'https://10.1.1.20',
+  token_id: 'root',
+  token_secret: '',
+  node: 'localhost.lan',
+  storage: 'datastore1',
+  bridge: 'VM Network',
+  insecure: true,
+}
+
+function emptyForKind(kind) {
+  return kind === 'vsphere' ? { ...emptyVsphere } : { ...emptyProxmox }
+}
+
+function formatProbe(r, kind) {
+  const label = kind === 'vsphere' ? 'ESXi' : 'Proxmox'
   const nodes = (r.nodes || []).map((n) => n.node).join(', ') || '(none)'
   const parts = [
-    `Proxmox ${r.version || '?'} @ ${r.url}`,
-    `nodes: ${nodes}`,
-    r.node_ok ? `node OK (${r.node_message || 'ok'})` : `node FAIL: ${r.node_message || 'unknown'}`,
+    `${label} ${r.version || '?'} @ ${r.url}`,
+    `${kind === 'vsphere' ? 'hosts' : 'nodes'}: ${nodes}`,
+    r.node_ok
+      ? `${kind === 'vsphere' ? 'host' : 'node'} OK (${r.node_message || 'ok'})`
+      : `${kind === 'vsphere' ? 'host' : 'node'} FAIL: ${r.node_message || 'unknown'}`,
   ]
   if (r.storage) {
     parts.push(
       r.storage.ok
-        ? `storage OK: ${r.storage.storage} (${r.storage.type_ || r.storage.type || '?'})`
-        : `storage FAIL: ${r.storage.message}`,
+        ? `${kind === 'vsphere' ? 'datastore' : 'storage'} OK: ${r.storage.storage} (${r.storage.type_ || r.storage.type || '?'})`
+        : `${kind === 'vsphere' ? 'datastore' : 'storage'} FAIL: ${r.storage.message}`,
     )
   }
   return parts.join(' — ')
@@ -35,7 +55,7 @@ export default function Providers() {
   const confirm = useConfirm()
   const [list, setList] = useState([])
   const [editingId, setEditingId] = useState(null)
-  const [form, setForm] = useState({ ...emptyForm })
+  const [form, setForm] = useState({ ...emptyProxmox })
   const [storageOptions, setStorageOptions] = useState([])
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
@@ -51,12 +71,24 @@ export default function Providers() {
     setForm((f) => ({ ...f, [k]: v }))
   }
 
+  function setKind(kind) {
+    setStorageOptions([])
+    setForm((f) => {
+      const base = emptyForKind(kind)
+      return {
+        ...base,
+        name: f.name || base.name,
+        token_secret: f.token_secret,
+      }
+    })
+  }
+
   function startCreate() {
     setError('')
     setMsg('')
     setStorageOptions([])
     setEditingId('new')
-    setForm({ ...emptyForm })
+    setForm({ ...emptyProxmox })
   }
 
   function startEdit(p) {
@@ -65,13 +97,14 @@ export default function Providers() {
     setStorageOptions(p.storage ? [p.storage] : [])
     setEditingId(p.id)
     setForm({
+      kind: p.kind || 'proxmox',
       name: p.name,
       url: p.url,
       token_id: p.token_id,
       token_secret: '',
       node: p.node,
       storage: p.storage,
-      bridge: p.bridge || 'vmbr0',
+      bridge: p.bridge || (p.kind === 'vsphere' ? 'VM Network' : 'vmbr0'),
       insecure: !!p.insecure,
     })
   }
@@ -79,7 +112,7 @@ export default function Providers() {
   function cancelForm() {
     setEditingId(null)
     setStorageOptions([])
-    setForm({ ...emptyForm })
+    setForm({ ...emptyProxmox })
   }
 
   function applyProbeResult(r) {
@@ -95,7 +128,7 @@ export default function Providers() {
     } else if (r.storage?.storage) {
       setStorageOptions([r.storage.storage])
     }
-    const text = formatProbe(r)
+    const text = formatProbe(r, form.kind)
     if (r.ok) {
       setMsg(`OK — ${text}`)
       setError('')
@@ -112,7 +145,9 @@ export default function Providers() {
     setSaving(true)
     try {
       if (editingId === 'new') {
-        if (!form.token_secret) throw new Error('Token secret is required')
+        if (!form.token_secret) {
+          throw new Error(form.kind === 'vsphere' ? 'Password is required' : 'Token secret is required')
+        }
         await api('/providers', { method: 'POST', body: form })
         setMsg('Provider created')
       } else {
@@ -145,7 +180,15 @@ export default function Providers() {
     setTesting(true)
     try {
       const r = await api(`/providers/${id}/test`, { method: 'POST', body: {} })
-      applyProbeResult(r)
+      const p = list.find((x) => x.id === id)
+      const text = formatProbe(r, p?.kind || 'proxmox')
+      if (r.ok) {
+        setMsg(`OK — ${text}`)
+        setError('')
+      } else {
+        setMsg('')
+        setError(text)
+      }
     } catch (err) {
       setMsg('')
       setError(err.message)
@@ -160,15 +203,23 @@ export default function Providers() {
     setTesting(true)
     try {
       if (editingId === 'new' || form.token_secret) {
-        if (!form.token_secret) throw new Error('Token secret is required to test')
+        if (!form.token_secret) {
+          throw new Error(
+            form.kind === 'vsphere'
+              ? 'Password is required to test'
+              : 'Token secret is required to test',
+          )
+        }
         const r = await api('/providers/probe', {
           method: 'POST',
           body: {
+            kind: form.kind,
             url: form.url,
             token_id: form.token_id,
             token_secret: form.token_secret,
             node: form.node,
             storage: form.storage,
+            bridge: form.bridge,
             insecure: form.insecure,
           },
         })
@@ -176,7 +227,7 @@ export default function Providers() {
       } else {
         const r = await api(`/providers/${editingId}/test`, {
           method: 'POST',
-          body: { node: form.node, storage: form.storage },
+          body: { node: form.node, storage: form.storage, bridge: form.bridge },
         })
         applyProbeResult(r)
       }
@@ -206,7 +257,15 @@ export default function Providers() {
     }
   }
 
-  const formTitle = editingId === 'new' ? 'New Proxmox provider' : 'Edit Proxmox provider'
+  const isVsphere = form.kind === 'vsphere'
+  const formTitle =
+    editingId === 'new'
+      ? isVsphere
+        ? 'New vSphere (ESXi) provider'
+        : 'New Proxmox provider'
+      : isVsphere
+        ? 'Edit vSphere (ESXi) provider'
+        : 'Edit Proxmox provider'
   const storageList = storageOptions.length
     ? storageOptions
     : form.storage
@@ -223,7 +282,7 @@ export default function Providers() {
           </button>
         ) : (
           <button type="button" className="btn-icon" onClick={startCreate}>
-            <Icon name="plus" size={16} /> Add Proxmox
+            <Icon name="plus" size={16} /> Add provider
           </button>
         )}
       </div>
@@ -233,16 +292,54 @@ export default function Providers() {
         <form className="card" onSubmit={save}>
           <h2 className="card-title"><Icon name="edit" size={18} /> {formTitle}</h2>
           <p className="muted">
-            Lab Proxmox uses a self-signed cert — keep <strong>Insecure TLS = Yes</strong>.
-            Leave token secret blank when editing to keep the existing secret.
-            Use <strong>Test</strong> to validate connection, node, and storage before saving.
+            {isVsphere ? (
+              <>
+                Standalone ESXi uses a self-signed cert — keep <strong>Insecure TLS = Yes</strong>.
+                Leave password blank when editing to keep the existing secret.
+                Use <strong>Test</strong> to validate login, host, datastore, and network before saving.
+              </>
+            ) : (
+              <>
+                Lab Proxmox uses a self-signed cert — keep <strong>Insecure TLS = Yes</strong>.
+                Leave token secret blank when editing to keep the existing secret.
+                Use <strong>Test</strong> to validate connection, node, and storage before saving.
+              </>
+            )}
           </p>
           <div className="form-grid">
+            {editingId === 'new' && (
+              <div className="field">
+                <label>Kind</label>
+                <select value={form.kind} onChange={(e) => setKind(e.target.value)}>
+                  <option value="proxmox">Proxmox</option>
+                  <option value="vsphere">vSphere (ESXi)</option>
+                </select>
+              </div>
+            )}
             <div className="field"><label>Name</label><input value={form.name} onChange={(e) => set('name', e.target.value)} required /></div>
-            <div className="field"><label>URL</label><input value={form.url} onChange={(e) => set('url', e.target.value)} placeholder="https://10.1.1.197:8006" required /></div>
-            <div className="field"><label>Token ID</label><input value={form.token_id} onChange={(e) => set('token_id', e.target.value)} placeholder="root@pam!pertisk" required /></div>
             <div className="field">
-              <label>Token secret{editingId !== 'new' ? ' (leave blank to keep)' : ''}</label>
+              <label>URL</label>
+              <input
+                value={form.url}
+                onChange={(e) => set('url', e.target.value)}
+                placeholder={isVsphere ? 'https://10.1.1.20' : 'https://10.1.1.197:8006'}
+                required
+              />
+            </div>
+            <div className="field">
+              <label>{isVsphere ? 'Username' : 'Token ID'}</label>
+              <input
+                value={form.token_id}
+                onChange={(e) => set('token_id', e.target.value)}
+                placeholder={isVsphere ? 'root' : 'root@pam!pertisk'}
+                required
+              />
+            </div>
+            <div className="field">
+              <label>
+                {isVsphere ? 'Password' : 'Token secret'}
+                {editingId !== 'new' ? ' (leave blank to keep)' : ''}
+              </label>
               <input
                 type="password"
                 value={form.token_secret}
@@ -252,9 +349,12 @@ export default function Providers() {
                 autoComplete="new-password"
               />
             </div>
-            <div className="field"><label>Node</label><input value={form.node} onChange={(e) => set('node', e.target.value)} required /></div>
             <div className="field">
-              <label>Storage</label>
+              <label>{isVsphere ? 'Host' : 'Node'}</label>
+              <input value={form.node} onChange={(e) => set('node', e.target.value)} required />
+            </div>
+            <div className="field">
+              <label>{isVsphere ? 'Datastore' : 'Storage'}</label>
               {storageList.length > 1 ? (
                 <select value={form.storage} onChange={(e) => set('storage', e.target.value)} required>
                   {storageList.map((s) => (
@@ -274,9 +374,20 @@ export default function Providers() {
                   <option key={s} value={s} />
                 ))}
               </datalist>
-              <p className="hint muted">Run Test to discover storages that support images on this node.</p>
+              <p className="hint muted">
+                {isVsphere
+                  ? 'Run Test to discover datastores on this host.'
+                  : 'Run Test to discover storages that support images on this node.'}
+              </p>
             </div>
-            <div className="field"><label>Bridge</label><input value={form.bridge} onChange={(e) => set('bridge', e.target.value)} /></div>
+            <div className="field">
+              <label>{isVsphere ? 'Network' : 'Bridge'}</label>
+              <input
+                value={form.bridge}
+                onChange={(e) => set('bridge', e.target.value)}
+                placeholder={isVsphere ? 'VM Network' : 'vmbr0'}
+              />
+            </div>
             <div className="field">
               <label>Insecure TLS</label>
               <select value={form.insecure ? '1' : '0'} onChange={(e) => set('insecure', e.target.value === '1')}>
@@ -298,12 +409,13 @@ export default function Providers() {
       <div className="card">
         <table>
           <thead>
-            <tr><th>Name</th><th>URL</th><th>Node</th><th>Storage</th><th>TLS</th><th></th></tr>
+            <tr><th>Name</th><th>Kind</th><th>URL</th><th>{/* host/node */}Host / Node</th><th>Storage</th><th>TLS</th><th></th></tr>
           </thead>
           <tbody>
             {list.map((p) => (
               <tr key={p.id}>
                 <td>{p.name}</td>
+                <td>{p.kind || 'proxmox'}</td>
                 <td className="mono">{p.url}</td>
                 <td>{p.node}</td>
                 <td>{p.storage}</td>

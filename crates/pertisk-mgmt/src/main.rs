@@ -13,6 +13,7 @@ mod node_status;
 mod node_sync;
 mod proxmox;
 mod rbac;
+mod vsphere;
 mod routes;
 mod state;
 mod static_files;

@@ -11,13 +11,13 @@ pub struct ProxmoxClient {
     pub insecure: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxmoxNode {
     pub node: String,
     pub status: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxmoxStorage {
     pub storage: String,
     #[serde(rename = "type")]

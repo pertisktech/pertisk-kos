@@ -103,6 +103,12 @@ UI → Providers → add URL, API token, node, storage (same fields as [PROXMOX.
 
 Secrets are encrypted at rest with `MGMT_SECRET_KEY`. For lab self-signed TLS, set **Insecure TLS = Yes**.
 
+## vSphere (ESXi) provider
+
+UI → Providers → Kind **vSphere (ESXi)** → URL, username/password, host, datastore, network ([VSPHERE.md](./VSPHERE.md)).
+
+Uses SOAP `/sdk` (not REST). Cluster create runs `vsphere-lab-up.sh` / `vsphere-upload-vm.sh` (qcow2 → VMDK upload). Mgmt must share L2 with guests for MAC→IP (`LAB_SUBNET`).
+
 ## Clusters (HA)
 
 When `M > 1`, **VIP** is required (kube-vip). Use a **free** L2 IPv4. Guest images need `af_packet` for kube-vip ARP.

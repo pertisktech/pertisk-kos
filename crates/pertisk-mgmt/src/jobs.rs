@@ -311,7 +311,7 @@ async fn run_create_cluster(
     .await?;
 
     let provider = sqlx::query_as::<_, ProviderRow>(
-        "SELECT id, url, token_id, token_secret_enc, node, storage, bridge, insecure FROM providers WHERE id = ?",
+        "SELECT id, kind, url, token_id, token_secret_enc, node, storage, bridge, insecure FROM providers WHERE id = ?",
     )
     .bind(&cluster.provider_id)
     .fetch_one(state.pool())
@@ -330,7 +330,13 @@ async fn run_create_cluster(
     let cluster_out = kc_dir.join(&cluster.name);
     std::fs::create_dir_all(&cluster_out)?;
 
-    let mut cmd = Command::new(&state.cfg().lab_up);
+    let lab_up = if provider.kind == "vsphere" {
+        vsphere_lab_up_path(state)
+    } else {
+        state.cfg().lab_up.clone()
+    };
+
+    let mut cmd = Command::new(&lab_up);
     cmd.arg("--skip-build")
         .arg("--cluster")
         .arg(&cluster.name)
@@ -360,21 +366,34 @@ async fn run_create_cluster(
         .arg(&cluster.k8s_version)
         .arg("--max-pods")
         .arg(cluster.max_pods.to_string())
-        .env("PROXMOX_URL", &provider.url)
-        .env("PROXMOX_TOKEN_ID", &provider.token_id)
-        .env("PROXMOX_TOKEN_SECRET", &secret)
-        .env("PROXMOX_NODE", &provider.node)
-        .env("PROXMOX_STORAGE", &provider.storage)
-        .env("PROXMOX_BRIDGE", &provider.bridge)
         .env("CLUSTER_OUT", cluster_out.display().to_string())
         .env("K8S_VER", &cluster.k8s_version)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    apply_lab_env(&mut cmd, state, &provider.url);
-
-    if provider.insecure != 0 {
-        cmd.env("PROXMOX_INSECURE", "1");
+    if provider.kind == "vsphere" {
+        cmd.env("PROVIDER_KIND", "vsphere")
+            .env("VSPHERE_URL", &provider.url)
+            .env("VSPHERE_USER", &provider.token_id)
+            .env("VSPHERE_PASSWORD", &secret)
+            .env("VSPHERE_HOST", &provider.node)
+            .env("VSPHERE_DATASTORE", &provider.storage)
+            .env("VSPHERE_NETWORK", &provider.bridge);
+        if provider.insecure != 0 {
+            cmd.env("VSPHERE_INSECURE", "1");
+        }
+        apply_lab_env(&mut cmd, state, &provider.url);
+    } else {
+        cmd.env("PROXMOX_URL", &provider.url)
+            .env("PROXMOX_TOKEN_ID", &provider.token_id)
+            .env("PROXMOX_TOKEN_SECRET", &secret)
+            .env("PROXMOX_NODE", &provider.node)
+            .env("PROXMOX_STORAGE", &provider.storage)
+            .env("PROXMOX_BRIDGE", &provider.bridge);
+        apply_lab_env(&mut cmd, state, &provider.url);
+        if provider.insecure != 0 {
+            cmd.env("PROXMOX_INSECURE", "1");
+        }
     }
 
     let mode = cluster.network_mode.to_ascii_lowercase();
@@ -435,12 +454,12 @@ async fn run_create_cluster(
     )?;
 
     // If lab-up script missing: optional UI/dev stub, otherwise fail clearly.
-    if !state.cfg().lab_up.exists() {
+    if !lab_up.exists() {
         let allow_stub = std::env::var("MGMT_ALLOW_LAB_STUB")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         if !allow_stub {
-            let path = state.cfg().lab_up.display();
+            let path = lab_up.display();
             let _ = mark_nodes_status(state.pool(), cid, "provisioning", "error").await;
             let _ = mark_nodes_status(state.pool(), cid, "pending", "error").await;
             anyhow::bail!(
@@ -462,8 +481,8 @@ async fn run_create_cluster(
         let kc = cluster_out.join("admin.conf");
         std::fs::write(&kc, "# stub kubeconfig\n")?;
         let stub_msg = format!(
-            "dev stub: lab-up missing at {} — not a real Proxmox cluster",
-            state.cfg().lab_up.display()
+            "dev stub: lab-up missing at {} — not a real cluster",
+            lab_up.display()
         );
         sqlx::query(
             "UPDATE clusters SET status = 'ready', endpoint = ?, kubeconfig_path = ?, cp_vmid = ?, error = ?, updated_at = ? WHERE id = ?",
@@ -937,7 +956,7 @@ async fn touch_node_progress(
     status: &str,
     now: &str,
 ) -> anyhow::Result<()> {
-    // Prefer update by name; insert if missing (race with seed).
+    // Prefer update by name (seeded stubs use {cluster}-cp-N / -wk-N).
     let updated = sqlx::query(
         r#"UPDATE nodes SET
              role = ?,
@@ -958,29 +977,54 @@ async fn touch_node_progress(
     .await?
     .rows_affected();
 
-    if updated == 0 {
-        let id = Uuid::new_v4().to_string();
-        let _ = sqlx::query(
-            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, ip, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(cluster_id, name) DO UPDATE SET
-                 vmid = COALESCE(excluded.vmid, nodes.vmid),
-                 ip = COALESCE(excluded.ip, nodes.ip),
-                 status = excluded.status,
-                 updated_at = excluded.updated_at"#,
+    if updated > 0 {
+        return Ok(());
+    }
+
+    // Hypervisor name may be {cluster}-{vmid} while the stub is {cluster}-cp-1 —
+    // match the existing row by VMID so we do not create duplicates.
+    if let Some(v) = vmid {
+        let updated_vmid = sqlx::query(
+            r#"UPDATE nodes SET
+                 ip = COALESCE(?, ip),
+                 status = ?,
+                 updated_at = ?
+               WHERE cluster_id = ? AND vmid = ?"#,
         )
-        .bind(&id)
-        .bind(cluster_id)
-        .bind(name)
-        .bind(role)
-        .bind(vmid)
         .bind(ip)
         .bind(status)
         .bind(now)
-        .bind(now)
+        .bind(cluster_id)
+        .bind(v)
         .execute(pool)
-        .await;
+        .await?
+        .rows_affected();
+        if updated_vmid > 0 {
+            return Ok(());
+        }
     }
+
+    let id = Uuid::new_v4().to_string();
+    let _ = sqlx::query(
+        r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, ip, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(cluster_id, name) DO UPDATE SET
+             vmid = COALESCE(excluded.vmid, nodes.vmid),
+             ip = COALESCE(excluded.ip, nodes.ip),
+             status = excluded.status,
+             updated_at = excluded.updated_at"#,
+    )
+    .bind(&id)
+    .bind(cluster_id)
+    .bind(name)
+    .bind(role)
+    .bind(vmid)
+    .bind(ip)
+    .bind(status)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await;
     Ok(())
 }
 
@@ -1035,9 +1079,9 @@ pub async fn purge_cluster(state: &AppState, cid: &str, log_path: &str) -> anyho
     .execute(state.pool())
     .await;
 
-    // Best-effort Proxmox cleanup (failed creates may have 0 VMs).
+    // Best-effort hypervisor cleanup (failed creates may have 0 VMs).
     match sqlx::query_as::<_, ProviderRow>(
-        "SELECT id, url, token_id, token_secret_enc, node, storage, bridge, insecure FROM providers WHERE id = ?",
+        "SELECT id, kind, url, token_id, token_secret_enc, node, storage, bridge, insecure FROM providers WHERE id = ?",
     )
     .bind(&provider_id)
     .fetch_optional(state.pool())
@@ -1046,14 +1090,17 @@ pub async fn purge_cluster(state: &AppState, cid: &str, log_path: &str) -> anyho
         Ok(Some(provider)) => {
             match crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc) {
                 Ok(secret) => {
-                    let client = crate::proxmox::ProxmoxClient {
-                        url: provider.url,
-                        token_id: provider.token_id,
-                        token_secret: secret,
-                        insecure: provider.insecure != 0,
-                    };
-                    let nodes = sqlx::query_as::<_, (Option<i64>,)>(
-                        "SELECT vmid FROM nodes WHERE cluster_id = ?",
+                    let cluster_name: Option<String> =
+                        sqlx::query_scalar("SELECT name FROM clusters WHERE id = ?")
+                            .bind(&id)
+                            .fetch_optional(state.pool())
+                            .await
+                            .ok()
+                            .flatten();
+                    let prefix = cluster_name.as_deref();
+
+                    let nodes = sqlx::query_as::<_, (String, Option<i64>)>(
+                        "SELECT name, vmid FROM nodes WHERE cluster_id = ?",
                     )
                     .bind(&id)
                     .fetch_all(state.pool())
@@ -1061,9 +1108,8 @@ pub async fn purge_cluster(state: &AppState, cid: &str, log_path: &str) -> anyho
                     .unwrap_or_default();
 
                     let mut vmids: Vec<i64> =
-                        nodes.into_iter().filter_map(|(v,)| v).collect();
-                    // Only guess VMID range if we never recorded nodes (failed mid-create may
-                    // still have created some VMs — try the planned range).
+                        nodes.iter().filter_map(|(_, v)| *v).collect();
+                    let node_names: Vec<String> = nodes.iter().map(|(n, _)| n.clone()).collect();
                     if vmids.is_empty() {
                         if let Some(base) = cp_vmid {
                             for i in 0..(cps + workers) {
@@ -1071,17 +1117,59 @@ pub async fn purge_cluster(state: &AppState, cid: &str, log_path: &str) -> anyho
                             }
                         }
                     }
-                    // Dedup
                     vmids.sort_unstable();
                     vmids.dedup();
 
-                    for vmid in vmids {
-                        append_log(
-                            log_path,
-                            &format!("deleting VM {vmid} on {}\n", provider.node),
-                        )?;
-                        if let Err(e) = client.delete_vm(&provider.node, vmid).await {
-                            append_log(log_path, &format!("warn: delete {vmid}: {e}\n"))?;
+                    if provider.kind == "vsphere" {
+                        let client = crate::vsphere::VsphereClient::new(
+                            provider.url.clone(),
+                            provider.token_id.clone(),
+                            secret,
+                            provider.insecure != 0,
+                        );
+                        // Delete by DB node name first ({cluster}-cp-N), then by vmid
+                        // (covers legacy {cluster}-{vmid} inventory names).
+                        let mut tried = std::collections::HashSet::new();
+                        for name in &node_names {
+                            if !tried.insert(name.clone()) {
+                                continue;
+                            }
+                            append_log(
+                                log_path,
+                                &format!("deleting VM {name} on ESXi\n"),
+                            )?;
+                            if let Err(e) = client.delete_vm_by_name(name).await {
+                                append_log(log_path, &format!("warn: delete {name}: {e}\n"))?;
+                            }
+                        }
+                        for vmid in vmids {
+                            let legacy = crate::vsphere::VsphereClient::vm_name(prefix, vmid);
+                            if !tried.insert(legacy.clone()) {
+                                continue;
+                            }
+                            append_log(
+                                log_path,
+                                &format!("deleting VM {legacy} on ESXi (by vmid)\n"),
+                            )?;
+                            if let Err(e) = client.delete_vm(prefix, vmid).await {
+                                append_log(log_path, &format!("warn: delete {legacy}: {e}\n"))?;
+                            }
+                        }
+                    } else {
+                        let client = crate::proxmox::ProxmoxClient {
+                            url: provider.url,
+                            token_id: provider.token_id,
+                            token_secret: secret,
+                            insecure: provider.insecure != 0,
+                        };
+                        for vmid in vmids {
+                            append_log(
+                                log_path,
+                                &format!("deleting VM {vmid} on {}\n", provider.node),
+                            )?;
+                            if let Err(e) = client.delete_vm(&provider.node, vmid).await {
+                                append_log(log_path, &format!("warn: delete {vmid}: {e}\n"))?;
+                            }
                         }
                     }
                 }
@@ -1135,12 +1223,19 @@ async fn run_add_node(
     .await?;
 
     let provider = sqlx::query_as::<_, ProviderRow>(
-        "SELECT id, url, token_id, token_secret_enc, node, storage, bridge, insecure FROM providers WHERE id = ?",
+        "SELECT id, kind, url, token_id, token_secret_enc, node, storage, bridge, insecure FROM providers WHERE id = ?",
     )
     .bind(&cluster.provider_id)
     .fetch_one(state.pool())
     .await?;
     let secret = crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?;
+
+    if provider.kind == "vsphere" {
+        anyhow::bail!(
+            "adding nodes to a vsphere (ESXi) cluster is not supported yet — \
+             recreate the cluster with the desired control-plane/worker counts"
+        );
+    }
 
     let (def_mem, def_cores, def_disk) = if role == "controlplane" {
         (cluster.cp_memory, cluster.cp_cores, cluster.cp_disk_gb)
@@ -1639,10 +1734,47 @@ async fn remove_one_node(
     }
 
     if let Some(vmid) = node.2 {
-        if let Ok(client) = provider_client_for_cluster(state, cid).await {
-            let node_name = provider_node_for_cluster(state, cid).await?;
-            append_log(log_path, &format!("deleting VM {vmid} ({})\n", node.0))?;
-            let _ = client.delete_vm(&node_name, vmid).await;
+        if let Ok(provider) = provider_row_for_cluster(state, cid).await {
+            if let Ok(secret) =
+                crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)
+            {
+                let cluster_name: String =
+                    sqlx::query_scalar("SELECT name FROM clusters WHERE id = ?")
+                        .bind(cid)
+                        .fetch_one(state.pool())
+                        .await
+                        .unwrap_or_default();
+                if provider.kind == "vsphere" {
+                    append_log(log_path, &format!("deleting VM {}\n", node.0))?;
+                    let client = crate::vsphere::VsphereClient::new(
+                        provider.url,
+                        provider.token_id,
+                        secret,
+                        provider.insecure != 0,
+                    );
+                    if let Err(e) = client.delete_vm_by_name(&node.0).await {
+                        append_log(log_path, &format!("warn: delete {}: {e}\n", node.0))?;
+                    }
+                    // Legacy inventory name {cluster}-{vmid}
+                    let legacy =
+                        crate::vsphere::VsphereClient::vm_name(Some(&cluster_name), vmid);
+                    if legacy != node.0 {
+                        let _ = client.delete_vm(Some(&cluster_name), vmid).await;
+                    }
+                } else {
+                    append_log(
+                        log_path,
+                        &format!("deleting VM {vmid} ({})\n", node.0),
+                    )?;
+                    let client = crate::proxmox::ProxmoxClient {
+                        url: provider.url,
+                        token_id: provider.token_id,
+                        token_secret: secret,
+                        insecure: provider.insecure != 0,
+                    };
+                    let _ = client.delete_vm(&provider.node, vmid).await;
+                }
+            }
         }
     }
 
@@ -1697,30 +1829,9 @@ async fn run_resize_node(
     }
 
     let vmid = vmid.ok_or_else(|| anyhow::anyhow!("node {name} has no VMID"))?;
-    let client = provider_client_for_cluster(state, cid).await?;
-    let pve_node = provider_node_for_cluster(state, cid).await?;
-
-    // Prefer live Proxmox scsi0 size — DB can be ahead after a create that
-    // stored disk_gb but never grew the VM (missing *-Ng.qcow2 / no --disk-gb).
-    let proxmox_disk = client
-        .vm_disk_gb(&pve_node, vmid)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    if let Some(actual) = proxmox_disk {
-        append_log(
-            log_path,
-            &format!("Proxmox scsi0 size={actual} GiB (db disk_gb={cur_disk:?})\n"),
-        )?;
-    } else {
-        append_log(log_path, "Proxmox scsi0 size unknown\n")?;
-    }
-
-    append_log(
-        log_path,
-        &format!(
-            "resize {name} (vmid={vmid}): cores={want_cores:?} memory={want_mem:?}MB disk={apply_disk:?}GiB\n"
-        ),
-    )?;
+    let provider = provider_row_for_cluster(state, cid).await?;
+    let secret = crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?;
+    let vm_name = name.clone();
 
     let set_cores = if want_cores != cur_cores {
         want_cores
@@ -1729,53 +1840,120 @@ async fn run_resize_node(
     };
     let set_mem = if want_mem != cur_mem { want_mem } else { None };
     let cpu_mem_changed = set_cores.is_some() || set_mem.is_some();
-    // Disk was requested in the payload (even if Proxmox already at size — guest
-    // EPHEMERAL may still be stale after a previous Proxmox-only grow).
     let disk_requested = p.get("disk_gb").and_then(|v| v.as_i64()).is_some();
 
-    if cpu_mem_changed {
-        client
-            .set_vm_hardware(&pve_node, vmid, set_cores, set_mem)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        append_log(log_path, "updated Proxmox CPU/memory config\n")?;
-    }
+    append_log(
+        log_path,
+        &format!(
+            "resize {name} (vmid={vmid}): cores={want_cores:?} memory={want_mem:?}MB disk={apply_disk:?}GiB\n"
+        ),
+    )?;
 
-    let mut disk_grew_proxmox = false;
-    if let Some(want) = apply_disk {
-        let actual = proxmox_disk.or(cur_disk).unwrap_or(0);
-        if want > actual {
+    let mut disk_grew_hypervisor = false;
+
+    if provider.kind == "vsphere" {
+        let client = crate::vsphere::VsphereClient::new(
+            provider.url.clone(),
+            provider.token_id.clone(),
+            secret,
+            provider.insecure != 0,
+        );
+        if cpu_mem_changed {
             client
-                .grow_vm_disk(&pve_node, vmid, want)
+                .set_vm_hardware(&vm_name, set_cores, set_mem)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
+            append_log(log_path, "updated ESXi CPU/memory config\n")?;
+        }
+        if let Some(want) = apply_disk {
+            let actual = cur_disk.unwrap_or(0);
+            if want > actual {
+                client
+                    .grow_vm_disk(&vm_name, want)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                append_log(
+                    log_path,
+                    &format!("grew ESXi disk {actual} → {want} GiB\n"),
+                )?;
+                disk_grew_hypervisor = true;
+            } else if disk_requested {
+                append_log(
+                    log_path,
+                    &format!("ESXi disk already >= {want} GiB — will grow guest EPHEMERAL\n"),
+                )?;
+            }
+        }
+        if cpu_mem_changed {
+            append_log(log_path, "restarting VM so CPU/memory take effect…\n")?;
+            client
+                .restart_vm_by_name(&vm_name)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            append_log(log_path, "VM restarted\n")?;
+        }
+    } else {
+        let client = crate::proxmox::ProxmoxClient {
+            url: provider.url.clone(),
+            token_id: provider.token_id.clone(),
+            token_secret: secret,
+            insecure: provider.insecure != 0,
+        };
+        let pve_node = provider.node.clone();
+
+        let proxmox_disk = client
+            .vm_disk_gb(&pve_node, vmid)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if let Some(actual) = proxmox_disk {
             append_log(
                 log_path,
-                &format!("grew Proxmox disk {actual} → {want} GiB\n"),
+                &format!("Proxmox scsi0 size={actual} GiB (db disk_gb={cur_disk:?})\n"),
             )?;
-            disk_grew_proxmox = true;
-        } else if disk_requested {
-            append_log(
-                log_path,
-                &format!("Proxmox disk already >= {want} GiB — will grow guest EPHEMERAL\n"),
-            )?;
+        } else {
+            append_log(log_path, "Proxmox scsi0 size unknown\n")?;
+        }
+
+        if cpu_mem_changed {
+            client
+                .set_vm_hardware(&pve_node, vmid, set_cores, set_mem)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            append_log(log_path, "updated Proxmox CPU/memory config\n")?;
+        }
+
+        if let Some(want) = apply_disk {
+            let actual = proxmox_disk.or(cur_disk).unwrap_or(0);
+            if want > actual {
+                client
+                    .grow_vm_disk(&pve_node, vmid, want)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                append_log(
+                    log_path,
+                    &format!("grew Proxmox disk {actual} → {want} GiB\n"),
+                )?;
+                disk_grew_hypervisor = true;
+            } else if disk_requested {
+                append_log(
+                    log_path,
+                    &format!("Proxmox disk already >= {want} GiB — will grow guest EPHEMERAL\n"),
+                )?;
+            }
+        }
+
+        if cpu_mem_changed {
+            append_log(log_path, "restarting VM so CPU/memory take effect…\n")?;
+            client
+                .restart_vm(&pve_node, vmid)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            append_log(log_path, "VM restarted\n")?;
         }
     }
 
-    // CPU/memory pending config needs QEMU stop+start.
-    if cpu_mem_changed {
-        append_log(log_path, "restarting VM so CPU/memory take effect…\n")?;
-        client
-            .restart_vm(&pve_node, vmid)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        append_log(log_path, "VM restarted\n")?;
-    }
-
-    // Guest EPHEMERAL (/var) must expand after Proxmox disk grow. Prefer live
-    // `pertiskctl grow-disk` (works while mounted). Fall back to QEMU restart
-    // so boot-time grow runs on older images without the GrowDisk RPC.
-    if disk_requested || disk_grew_proxmox {
+    // Guest EPHEMERAL (/var) must expand after hypervisor disk grow.
+    if disk_requested || disk_grew_hypervisor {
         let ip: Option<String> =
             sqlx::query_scalar("SELECT ip FROM nodes WHERE id = ? AND cluster_id = ?")
                 .bind(node_id)
@@ -1809,10 +1987,31 @@ async fn run_resize_node(
                 log_path,
                 "offline grow unavailable; restarting VM so boot may grow EPHEMERAL…\n",
             )?;
-            client
-                .restart_vm(&pve_node, vmid)
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            if provider.kind == "vsphere" {
+                let client = crate::vsphere::VsphereClient::new(
+                    provider.url.clone(),
+                    provider.token_id.clone(),
+                    crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?,
+                    provider.insecure != 0,
+                );
+                client
+                    .restart_vm_by_name(&vm_name)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            } else {
+                let secret =
+                    crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?;
+                let client = crate::proxmox::ProxmoxClient {
+                    url: provider.url.clone(),
+                    token_id: provider.token_id.clone(),
+                    token_secret: secret,
+                    insecure: provider.insecure != 0,
+                };
+                client
+                    .restart_vm(&provider.node, vmid)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
             append_log(log_path, "VM restarted\n")?;
             if let Some(ref ip) = ip {
                 if state.cfg().pertiskctl.exists() {
@@ -2037,20 +2236,25 @@ async fn run_reboot_node(
     Ok(())
 }
 
-async fn provider_client_for_cluster(
-    state: &AppState,
-    cid: &str,
-) -> anyhow::Result<crate::proxmox::ProxmoxClient> {
+async fn provider_row_for_cluster(state: &AppState, cid: &str) -> anyhow::Result<ProviderRow> {
     let provider_id: String = sqlx::query_scalar("SELECT provider_id FROM clusters WHERE id = ?")
         .bind(cid)
         .fetch_one(state.pool())
         .await?;
     let provider = sqlx::query_as::<_, ProviderRow>(
-        "SELECT id, url, token_id, token_secret_enc, node, storage, bridge, insecure FROM providers WHERE id = ?",
+        "SELECT id, kind, url, token_id, token_secret_enc, node, storage, bridge, insecure FROM providers WHERE id = ?",
     )
     .bind(&provider_id)
     .fetch_one(state.pool())
     .await?;
+    Ok(provider)
+}
+
+async fn provider_client_for_cluster(
+    state: &AppState,
+    cid: &str,
+) -> anyhow::Result<crate::proxmox::ProxmoxClient> {
+    let provider = provider_row_for_cluster(state, cid).await?;
     let secret = crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?;
     Ok(crate::proxmox::ProxmoxClient {
         url: provider.url.clone(),
@@ -2061,15 +2265,19 @@ async fn provider_client_for_cluster(
 }
 
 async fn provider_node_for_cluster(state: &AppState, cid: &str) -> anyhow::Result<String> {
-    let provider_id: String = sqlx::query_scalar("SELECT provider_id FROM clusters WHERE id = ?")
-        .bind(cid)
-        .fetch_one(state.pool())
-        .await?;
-    let node: String = sqlx::query_scalar("SELECT node FROM providers WHERE id = ?")
-        .bind(&provider_id)
-        .fetch_one(state.pool())
-        .await?;
-    Ok(node)
+    Ok(provider_row_for_cluster(state, cid).await?.node)
+}
+
+fn vsphere_lab_up_path(state: &AppState) -> std::path::PathBuf {
+    let lab = &state.cfg().lab_up;
+    if let Some(dir) = lab.parent() {
+        let candidate = dir.join("vsphere-lab-up.sh");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    // Fall back to shared proxmox-lab-up.sh with PROVIDER_KIND=vsphere (jobs set the env).
+    lab.clone()
 }
 
 async fn run_upgrade(
@@ -2972,6 +3180,7 @@ struct ClusterRow {
 #[derive(Debug, sqlx::FromRow)]
 struct ProviderRow {
     id: String,
+    kind: String,
     url: String,
     token_id: String,
     token_secret_enc: String,

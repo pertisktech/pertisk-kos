@@ -400,8 +400,8 @@ async fn delete_check(
             .await
             .unwrap_or(0);
 
-    let provider = sqlx::query_as::<_, (String, String, String, String, String, i64)>(
-        "SELECT id, name, url, token_id, node, insecure FROM providers WHERE id = ?",
+    let provider = sqlx::query_as::<_, (String, String, String, String, String, String, i64)>(
+        "SELECT id, name, kind, url, token_id, node, insecure FROM providers WHERE id = ?",
     )
     .bind(&provider_id)
     .fetch_optional(state.pool())
@@ -413,7 +413,7 @@ async fn delete_check(
         "reachable": false,
     });
 
-    if let Some((pid, pname, url, token_id, node, insecure)) = provider {
+    if let Some((pid, pname, kind, url, token_id, node, insecure)) = provider {
         let secret_row: Option<String> =
             sqlx::query_scalar("SELECT token_secret_enc FROM providers WHERE id = ?")
                 .bind(&pid)
@@ -426,13 +426,24 @@ async fn delete_check(
         if let Some(enc) = secret_row {
             match crate::crypto::decrypt(&state.cfg().secret_key, &enc) {
                 Ok(secret) => {
-                    let client = crate::proxmox::ProxmoxClient {
-                        url: url.clone(),
-                        token_id: token_id.clone(),
-                        token_secret: secret,
-                        insecure: insecure != 0,
+                    let test = if kind == "vsphere" {
+                        let client = crate::vsphere::VsphereClient::new(
+                            url.clone(),
+                            token_id.clone(),
+                            secret,
+                            insecure != 0,
+                        );
+                        client.test_connection().await
+                    } else {
+                        let client = crate::proxmox::ProxmoxClient {
+                            url: url.clone(),
+                            token_id: token_id.clone(),
+                            token_secret: secret,
+                            insecure: insecure != 0,
+                        };
+                        client.test_connection().await
                     };
-                    match client.test_connection().await {
+                    match test {
                         Ok(r) => {
                             reachable = true;
                             version = Some(r.version);
@@ -451,7 +462,9 @@ async fn delete_check(
             "exists": true,
             "id": pid,
             "name": pname,
+            "kind": kind,
             "url": url,
+            "token_id": token_id,
             "node": node,
             "insecure": insecure != 0,
             "reachable": reachable,
@@ -819,19 +832,32 @@ async fn provider_check_vmids(
     cp_vmid: i64,
     count: i64,
 ) -> ApiResult<crate::proxmox::VmIdCheck> {
-    let row = sqlx::query_as::<_, (String, String, String, String, i64)>(
-        "SELECT url, token_id, token_secret_enc, node, insecure FROM providers WHERE id = ?",
+    let row = sqlx::query_as::<_, (String, String, String, String, String, i64)>(
+        "SELECT kind, url, token_id, token_secret_enc, node, insecure FROM providers WHERE id = ?",
     )
     .bind(provider_id)
     .fetch_optional(state.pool())
     .await?
     .ok_or_else(|| AppError::bad("provider not found"))?;
-    let secret = crypto::decrypt(&state.cfg().secret_key, &row.2).map_err(AppError::Anyhow)?;
-    let client = ProxmoxClient {
-        url: row.0,
-        token_id: row.1,
-        token_secret: secret,
-        insecure: row.4 != 0,
-    };
-    client.check_vmids(&row.3, cp_vmid, count).await
+    let secret = crypto::decrypt(&state.cfg().secret_key, &row.3).map_err(AppError::Anyhow)?;
+    if row.0 == "vsphere" {
+        let client = crate::vsphere::VsphereClient::new(
+            row.1,
+            row.2,
+            secret,
+            row.5 != 0,
+        );
+        // Prefix unknown at check time (cluster name not chosen yet). Match bare
+        // `{vmid}`, legacy `{prefix}-{vmid}`, and any inventory name ending in `-{vmid}`.
+        // Create uses `{cluster}-cp-N` / `{cluster}-wk-N` (same as Proxmox).
+        client.check_vmids(&row.4, cp_vmid, count, None).await
+    } else {
+        let client = ProxmoxClient {
+            url: row.1,
+            token_id: row.2,
+            token_secret: secret,
+            insecure: row.5 != 0,
+        };
+        client.check_vmids(&row.4, cp_vmid, count).await
+    }
 }

@@ -30,22 +30,28 @@ pub struct Skin {
 /// `extra_node_line` adds a second body row for the management URL.
 pub fn top_box_heights(frame_h: u16, extra_node_line: bool) -> (u16, u16, u16) {
     let node = if extra_node_line { 4u16 } else { 3u16 };
-    // Reserve at least 6 rows for the logs frame (2 borders + 4 body).
-    let budget = frame_h.saturating_sub(node + 6);
+    // Keep a taller logs pane — on small 80×22 frames the old budget left
+    // ~4 hard-to-read log lines; reserve at least 10 rows for the logs frame.
+    let log_reserve = match frame_h {
+        0..=24 => 8,
+        25..=36 => 10,
+        _ => 14,
+    };
+    let budget = frame_h.saturating_sub(node + log_reserve);
     // cpu + memory + ≥1 disk need mid body ≥3 → panel height ≥5.
     let mid = match frame_h {
-        0..=24 => 6,
-        25..=36 => 7,
-        _ => 9,
+        0..=24 => 5,
+        25..=36 => 6,
+        _ => 8,
     }
     .min(budget)
     .max(5);
     let net = match frame_h {
-        0..=24 => 5,
-        25..=30 => 6,
-        31..=40 => 8,
-        41..=56 => 10,
-        _ => 12,
+        0..=24 => 4,
+        25..=30 => 5,
+        31..=40 => 7,
+        41..=56 => 9,
+        _ => 11,
     }
     .min(budget.saturating_sub(mid))
     .max(4);
@@ -585,7 +591,7 @@ pub fn render_themed(frame: &mut Frame, snap: &StatusSnapshot, recent: &[String]
             Constraint::Length(node_h),
             Constraint::Length(net_h),
             Constraint::Length(mid_h),
-            Constraint::Min(4),
+            Constraint::Min(6),
         ])
         .split(area);
 
