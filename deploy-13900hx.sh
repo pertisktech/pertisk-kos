@@ -5,3 +5,4 @@
 scp out/pertisk-cloud-amd64{,-50g,-75g}.qcow2 almalinux@10.1.1.150:/tmp/
 ssh almalinux@10.1.1.150 'sudo mv /tmp/pertisk-cloud-amd64*.qcow2 /var/lib/pertisk-mgmt/images/ && sudo chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images'
 #scp out/rpm/pertisk-mgmt-0.1.22-1.x86_64.rpm almalinux@10.1.1.150:/tmp
+docker system prune -a -f
