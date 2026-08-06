@@ -54,6 +54,27 @@ Charts poll every ~4s and keep ~60 samples **in the browser** only. Soft errors 
 
 A **Logs** panel tails `pertiskd` / `containerd` / `kubelet` / `dmesg` via `pertiskctl logs`.
 
+## Cluster K8s tab
+
+When a cluster is **ready** (kubeconfig stored under `{data_dir}/kubeconfigs/{name}/`), the cluster detail **K8s** tab lists workloads via `kubectl` on the management host:
+
+| Kind | Actions |
+|------|---------|
+| Deployments | list, scale, rollout restart, delete |
+| StatefulSets / DaemonSets / Jobs / CronJobs | list, delete |
+| Pods | list, **Shell** (`kubectl exec` over WebSocket) |
+
+API (Bearer JWT; shell needs **operator/admin**):
+
+- `GET /api/clusters/{id}/k8s/namespaces`
+- `GET /api/clusters/{id}/k8s/workloads/{kind}?namespace=`
+- `POST /api/clusters/{id}/k8s/deployments/{ns}/{name}/scale`
+- `POST /api/clusters/{id}/k8s/deployments/{ns}/{name}/restart`
+- `DELETE /api/clusters/{id}/k8s/workloads/{kind}/{ns}/{name}`
+- `GET /api/clusters/{id}/k8s/exec?namespace=&pod=&container=&token=` (WebSocket; `token` = JWT)
+
+Requires `kubectl` on the mgmt host PATH (same as node sync / `kubectl top`).
+
 ## Proxmox provider
 
 UI → Providers → add URL, API token, node, storage (same fields as [PROXMOX.md](./PROXMOX.md)).

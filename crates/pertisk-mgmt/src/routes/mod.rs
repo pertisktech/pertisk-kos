@@ -1,6 +1,7 @@
 mod auth_routes;
 mod clusters;
 mod health;
+pub(crate) mod k8s;
 mod meta;
 pub(crate) mod nodes;
 mod providers;
@@ -24,6 +25,7 @@ pub fn router(state: AppState) -> Router {
         .merge(providers::routes())
         .merge(clusters::routes())
         .merge(nodes::routes())
+        .merge(k8s::routes())
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 
     Router::new()
@@ -43,6 +45,12 @@ async fn auth_middleware(
         || path == "/auth/mode"
         || path.starts_with("/auth/oidc/");
     if public {
+        return Ok(next.run(req).await);
+    }
+
+    // Pod exec WebSocket: JWT arrives as ?token= (browsers cannot set WS Authorization).
+    // Handler validates mutate role + token; skip middleware user injection.
+    if path.ends_with("/k8s/exec") {
         return Ok(next.run(req).await);
     }
 

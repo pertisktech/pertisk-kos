@@ -6,6 +6,7 @@ mod crypto;
 mod db;
 mod error;
 mod jobs;
+mod k8s;
 mod kubeconfig;
 mod node_status;
 mod node_sync;

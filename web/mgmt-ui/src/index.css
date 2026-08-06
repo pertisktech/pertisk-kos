@@ -1261,6 +1261,72 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   margin: 0.35rem 0 0;
 }
 
+.k8s-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+}
+.k8s-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: flex-end;
+}
+.k8s-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+}
+.k8s-field select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+  min-width: 10rem;
+}
+.k8s-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.k8s-kinds .tab-btn {
+  background: var(--bg-elevated);
+  color: var(--text-muted, var(--muted));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.k8s-kinds .tab-btn.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.k8s-shell-dock {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+.xterm-shell-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.xterm-shell-body {
+  height: min(360px, 42vh);
+  padding: 0.35rem;
+}
+
 @media (max-width: 900px) {
   .overview-grid { grid-template-columns: 1fr; }
 }

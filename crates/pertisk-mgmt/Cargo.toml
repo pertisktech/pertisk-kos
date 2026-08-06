@@ -13,7 +13,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 argon2 = "0.5"
-axum = { version = "0.8", features = ["macros", "multipart"] }
+axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
+portable-pty = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 clap = { workspace = true }
