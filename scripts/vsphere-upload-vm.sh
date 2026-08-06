@@ -487,15 +487,9 @@ TASK="$(echo "$CREATE_RESP" | task_moref)"
 }
 wait_task "$TASK" "CreateVM"
 
-if [[ "$START" == "1" ]]; then
-  # Find new MoRef
-  VM_MOREF="$(soap "urn:vim25/8.0.3.0" "<FindByDnsName xmlns=\"urn:vim25\">
-  <_this type=\"SearchIndex\">ha-searchindex</_this>
-  <vmSearch>true</vmSearch>
-  <dnsName>__unused__</dnsName>
-</FindByDnsName>" 2>/dev/null || true)"
-  # Prefer property scan by name
-  VM_MOREF="$(soap "urn:vim25/8.0.3.0" "<RetrievePropertiesEx xmlns=\"urn:vim25\">
+find_vm_moref() {
+  local want_name="$1"
+  soap "urn:vim25/8.0.3.0" "<RetrievePropertiesEx xmlns=\"urn:vim25\">
   <_this type=\"PropertyCollector\">ha-property-collector</_this>
   <specSet>
     <propSet><type>VirtualMachine</type><all>false</all><pathSet>name</pathSet></propSet>
@@ -512,22 +506,61 @@ if [[ "$START" == "1" ]]; then
 </RetrievePropertiesEx>" | python3 -c "
 import sys,re
 xml=sys.stdin.read()
-want=$(printf '%s' "$NAME" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+want=$(printf '%s' "$want_name" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
 for m in re.finditer(r'<obj[^>]*type=\"VirtualMachine\">([^<]+)</obj>(.*?)</objects>', xml, re.S):
     props=dict(re.findall(r'<name>([^<]+)</name>\s*<val[^>]*>([^<]*)</val>', m.group(2)))
     if props.get('name')==want:
         print(m.group(1)); break
-")"
-  [[ -n "$VM_MOREF" ]] || {
-    echo "created VM but could not resolve MoRef for power-on" >&2
-    exit 1
-  }
+"
+}
+
+# Register VM for host autostart after ESXi reboot (HostAutoStartManager).
+enable_vm_autostart() {
+  local moref="$1" order="$2"
+  echo "==> enable host autostart for ${NAME} (order=${order})"
+  local resp
+  resp="$(soap "urn:vim25/8.0.3.0" "<ReconfigureAutostart xmlns=\"urn:vim25\">
+  <_this type=\"HostAutoStartManager\">ha-autostart-mgr</_this>
+  <spec>
+    <defaults>
+      <enabled>true</enabled>
+      <startDelay>60</startDelay>
+      <stopDelay>60</stopDelay>
+      <waitForHeartbeat>false</waitForHeartbeat>
+      <stopAction>PowerOff</stopAction>
+    </defaults>
+    <powerInfo>
+      <key type=\"VirtualMachine\">$(xml_escape "$moref")</key>
+      <startOrder>${order}</startOrder>
+      <startDelay>-1</startDelay>
+      <waitForHeartbeat>systemDefault</waitForHeartbeat>
+      <startAction>powerOn</startAction>
+      <stopDelay>-1</stopDelay>
+      <stopAction>systemDefault</stopAction>
+    </powerInfo>
+  </spec>
+</ReconfigureAutostart>")"
+  if echo "$resp" | grep -qi 'Fault\|faultstring'; then
+    echo "warn: autostart configure failed: $resp" >&2
+  fi
+}
+
+VM_MOREF="$(find_vm_moref "$NAME")"
+[[ -n "$VM_MOREF" ]] || {
+  echo "created VM but could not resolve MoRef" >&2
+  exit 1
+}
+# Prefer VMID as start order so CP (lower id) comes up before workers.
+enable_vm_autostart "$VM_MOREF" "${VMID}"
+
+if [[ "$START" == "1" ]]; then
   echo "==> powering on ${NAME} (${VM_MOREF})"
   TASK="$(soap "urn:vim25/8.0.3.0" "<PowerOnVM_Task xmlns=\"urn:vim25\"><_this type=\"VirtualMachine\">$(xml_escape "$VM_MOREF")</_this></PowerOnVM_Task>" | task_moref)"
   wait_task "$TASK" "power-on"
 fi
 
 echo "==> done: ${NAME}"
+echo "    Autostart: enabled (powers on after ESXi host reboot)."
 echo "    Host Client often stays on 'EFI stub: Loaded initrd...' until vmwgfx/simpledrm load — that alone is not failure."
 echo "    Serial (if ESXi firewall allows): telnet <esxi-ip> $((${SERIAL_PORT:-$((23000 + VMID))}))"
 echo "    Prefer: wait for DHCP / :50000 / lab-up (first boot can take several minutes)."

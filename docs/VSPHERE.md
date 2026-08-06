@@ -73,7 +73,9 @@ export VSPHERE_INSECURE=1
 LAB_SUBNET=10.1.1.0/24 ./scripts/vsphere-lab-up.sh --skip-build --cp-vmid 210 --workers 1
 ```
 
-Upload flow: `qemu-img convert` qcow2 → **streamOptimized VMDK** (upload ≈ used data, not full virtual size) → datastore browser PUT → `CopyVirtualDisk` to thin VMFS → `CreateVM_Task` (UEFI, LSI Logic, e1000e) → power on.
+Upload flow: `qemu-img convert` qcow2 → **streamOptimized VMDK** (upload ≈ used data, not full virtual size) → datastore browser PUT → `CopyVirtualDisk` to thin VMFS → `CreateVM_Task` (UEFI, LSI Logic, e1000e) → **host autostart** (`ReconfigureAutostart`) → power on.
+
+New VMs are registered with ESXi **Autostart** (`startAction=powerOn`) and host defaults `enabled=true`, so they power on after an ESXi reboot. Start order uses the numeric VMID (lower first: CP before workers).
 
 ## IP discovery
 
