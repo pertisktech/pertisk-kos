@@ -115,6 +115,20 @@ export function Icon({ name, size = 18, className = '' }) {
           <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" />
         </svg>
       )
+    case 'memory':
+      return (
+        <svg {...props}>
+          <rect x="3" y="7" width="18" height="10" rx="2" />
+          <path d="M7 7v10M11 7v10M15 7v10M7 4v3M12 4v3M17 4v3M7 17v3M12 17v3M17 17v3" />
+        </svg>
+      )
+    case 'disk':
+      return (
+        <svg {...props}>
+          <ellipse cx="12" cy="6" rx="8" ry="3" />
+          <path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />
+        </svg>
+      )
     case 'worker':
       return (
         <svg {...props}>

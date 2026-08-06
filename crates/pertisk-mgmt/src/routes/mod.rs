@@ -6,6 +6,7 @@ pub(crate) mod k8s;
 mod meta;
 pub(crate) mod nodes;
 mod providers;
+mod settings;
 
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::request::Parts;
@@ -23,6 +24,7 @@ pub fn router(state: AppState) -> Router {
         .merge(health::routes())
         .merge(auth_routes::routes())
         .merge(meta::routes())
+        .merge(settings::routes())
         .merge(dashboard::routes())
         .merge(providers::routes())
         .merge(clusters::routes())

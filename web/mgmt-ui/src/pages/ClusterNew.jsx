@@ -87,7 +87,15 @@ export default function ClusterNew() {
   }, [form.provider_id, form.cp_vmid, form.controlplanes, form.workers])
 
   function set(k, v) {
-    setForm((f) => ({ ...f, [k]: v }))
+    setForm((f) => {
+      const next = { ...f, [k]: v }
+      // VIP is HA-only — clear when dropping to a single control plane.
+      if (k === 'controlplanes' && Number(v) <= 1) {
+        next.vip = ''
+        next.vip6 = ''
+      }
+      return next
+    })
   }
 
   const ha = Number(form.controlplanes) > 1
@@ -123,8 +131,9 @@ export default function ClusterNew() {
       controlplanes: Number(form.controlplanes),
       workers: Number(form.workers),
       network_mode: form.network_mode,
-      vip: mode === 'ipv6' ? null : (form.vip || null),
-      vip6: mode === 'ipv4' ? null : (form.vip6 || null),
+      // Single-CP talks to the node IP — never store / pass a VIP.
+      vip: ha && mode !== 'ipv6' ? (form.vip || null) : null,
+      vip6: ha && mode !== 'ipv4' ? (form.vip6 || null) : null,
       cni: form.cni,
       k8s_version: form.k8s_version,
       max_pods: Number(form.max_pods),
@@ -272,33 +281,34 @@ export default function ClusterNew() {
             ))}
           </div>
           <div className="form-grid" style={{ marginTop: '1rem' }}>
-            {(mode === 'ipv4' || mode === 'dual-stack') && (
+            {ha && (mode === 'ipv4' || mode === 'dual-stack') && (
               <div className="field">
-                <label>IPv4 VIP {ha ? '(required)' : '(optional)'}</label>
+                <label>IPv4 VIP (required)</label>
                 <input
                   value={form.vip}
                   onChange={(e) => set('vip', e.target.value)}
                   placeholder="10.1.1.200"
-                  required={ha && mode !== 'ipv6'}
+                  required
                 />
               </div>
             )}
-            {(mode === 'ipv6' || mode === 'dual-stack') && (
+            {ha && (mode === 'ipv6' || mode === 'dual-stack') && (
               <div className="field">
-                <label>IPv6 VIP {ha ? '(required)' : '(optional)'}</label>
+                <label>IPv6 VIP (required)</label>
                 <input
                   value={form.vip6}
                   onChange={(e) => set('vip6', e.target.value)}
                   placeholder="fd00:1::200"
-                  required={ha && mode !== 'ipv4'}
+                  required
                 />
               </div>
             )}
           </div>
           <p className="hint muted">
-            {mode === 'ipv4' && 'IPv4-only cluster endpoint (default lab path).'}
-            {mode === 'ipv6' && 'IPv6 VIP; enables --dual-stack networking. For HA, VIP6 is used as the API endpoint.'}
-            {mode === 'dual-stack' && 'Passes --dual-stack --vip --vip6 to lab-up (same as manual HA dual-stack).'}
+            {!ha && 'Single control plane: kubeconfig uses the CP node IP (no kube-vip).'}
+            {ha && mode === 'ipv4' && 'HA: kube-vip ARP VIP is the API endpoint.'}
+            {ha && mode === 'ipv6' && 'HA: IPv6 VIP is the API endpoint (--dual-stack).'}
+            {ha && mode === 'dual-stack' && 'HA dual-stack: passes --vip and --vip6 to lab-up.'}
           </p>
         </section>
 

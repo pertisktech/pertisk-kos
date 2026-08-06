@@ -382,14 +382,17 @@ async fn run_create_cluster(
     if dual {
         cmd.arg("--dual-stack");
     }
-    if let Some(vip) = &cluster.vip {
-        if !vip.is_empty() && mode != "ipv6" {
-            cmd.arg("--vip").arg(vip);
+    // VIP / kube-vip is HA-only (controlplanes > 1). Single-CP uses the node IP.
+    if cluster.controlplanes > 1 {
+        if let Some(vip) = &cluster.vip {
+            if !vip.is_empty() && mode != "ipv6" {
+                cmd.arg("--vip").arg(vip);
+            }
         }
-    }
-    if let Some(vip6) = &cluster.vip6 {
-        if !vip6.is_empty() && mode != "ipv4" {
-            cmd.arg("--vip6").arg(vip6);
+        if let Some(vip6) = &cluster.vip6 {
+            if !vip6.is_empty() && mode != "ipv4" {
+                cmd.arg("--vip6").arg(vip6);
+            }
         }
     }
 
@@ -518,10 +521,14 @@ async fn run_create_cluster(
     }
 
     let kc = resolve_kubeconfig(&cluster_out, &cluster.name, log_path)?;
-    let endpoint = cluster
-        .vip
-        .clone()
-        .filter(|v| !v.is_empty())
+    let endpoint = endpoint_from_kubeconfig(&kc)
+        .or_else(|| {
+            cluster
+                .vip
+                .clone()
+                .filter(|v| !v.is_empty())
+                .filter(|_| cluster.controlplanes > 1)
+        })
         .unwrap_or_else(|| "unknown".into());
     let now = db::now_rfc3339();
     sqlx::query(
@@ -596,6 +603,33 @@ fn rewrite_stored_kubeconfig(path: &std::path::Path, cluster_name: &str) -> anyh
         std::fs::write(path, rewritten)?;
     }
     Ok(())
+}
+
+/// Host from kubeconfig `server:` — preferred over DB VIP for the clusters.endpoint column.
+fn endpoint_from_kubeconfig(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    for line in text.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("server:") {
+            let server = rest.trim();
+            let hostport = server
+                .trim_start_matches("https://")
+                .trim_start_matches("http://");
+            if let Some(rest) = hostport.strip_prefix('[') {
+                return Some(
+                    rest.split(']')
+                        .next()
+                        .unwrap_or(rest)
+                        .to_string(),
+                );
+            }
+            let host = hostport.split(':').next().unwrap_or(hostport);
+            if !host.is_empty() {
+                return Some(host.to_string());
+            }
+        }
+    }
+    None
 }
 
 async fn seed_stub_nodes(

@@ -7,11 +7,18 @@ import { Icon } from '../components/Icons'
 const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 const RESOURCES_POLL_MS = 15000
 
-const GAUGE_COLORS = {
+const GAUGE_BASE = {
   cpu: 'var(--accent)',
   memory: 'var(--success)',
   disk: '#60a5fa',
   track: 'color-mix(in srgb, var(--border) 70%, transparent)',
+}
+
+function gaugeFill(base, percent, hasPct) {
+  if (!hasPct) return GAUGE_BASE.track
+  if (percent >= 90) return 'var(--danger)'
+  if (percent >= 75) return 'var(--warning)'
+  return base
 }
 
 function gaugeData(percent) {
@@ -22,18 +29,23 @@ function gaugeData(percent) {
   ]
 }
 
-function ResourceGauge({ label, metric, color }) {
+function ResourceGauge({ label, icon, metric, color }) {
   const pct = metric?.percent
   const hasPct = typeof pct === 'number' && Number.isFinite(pct)
   const data = useMemo(() => gaugeData(hasPct ? pct : 0), [hasPct, pct])
+  const fill = gaugeFill(color, pct, hasPct)
   const usedLabel = metric?.display_used || (metric?.used != null ? String(metric.used) : '—')
   const totalLabel = metric?.display_total || (metric?.total != null ? String(metric.total) : '—')
+  const level = !hasPct ? 'unknown' : pct >= 90 ? 'critical' : pct >= 75 ? 'warn' : 'ok'
 
   return (
-    <div className="resource-gauge">
-      <div className="resource-gauge-label">{label}</div>
+    <div className={`resource-gauge resource-gauge-${level}`}>
+      <div className="resource-gauge-label">
+        {icon && <Icon name={icon} size={12} />}
+        {label}
+      </div>
       <div className="resource-gauge-chart">
-        <ResponsiveContainer width="100%" height={100}>
+        <ResponsiveContainer width="100%" height={88}>
           <PieChart>
             <Pie
               data={data}
@@ -42,13 +54,15 @@ function ResourceGauge({ label, metric, color }) {
               cy="50%"
               startAngle={90}
               endAngle={-270}
-              innerRadius={30}
-              outerRadius={40}
+              innerRadius={28}
+              outerRadius={36}
+              paddingAngle={hasPct && pct > 0 && pct < 100 ? 2 : 0}
+              cornerRadius={4}
               stroke="none"
               isAnimationActive={false}
             >
-              <Cell fill={hasPct ? color : GAUGE_COLORS.track} />
-              <Cell fill={GAUGE_COLORS.track} />
+              <Cell fill={fill} />
+              <Cell fill={GAUGE_BASE.track} />
             </Pie>
           </PieChart>
         </ResponsiveContainer>
@@ -77,9 +91,12 @@ function formatK8sVersion(v) {
 
 function ClusterResourceCard({ summary, onOpen }) {
   const version = formatK8sVersion(summary.k8s_version)
+  const nodes = summary.node_count
+  const statusClass = summary.status || 'unknown'
+
   return (
     <article
-      className="card cluster-resource-card"
+      className={`card cluster-resource-card status-${statusClass}`}
       role="link"
       tabIndex={0}
       onClick={onOpen}
@@ -91,24 +108,32 @@ function ClusterResourceCard({ summary, onOpen }) {
       }}
     >
       <div className="cluster-resource-head">
-        <div className="cluster-resource-title">
-          <h3 className="cluster-resource-name">{summary.cluster_name}</h3>
-          {version && <span className="cluster-resource-version mono-inline">{version}</span>}
+        <div className="cluster-resource-identity">
+          <div className="cluster-resource-icon" aria-hidden>
+            <Icon name="clusters" size={18} />
+          </div>
+          <div className="cluster-resource-title">
+            <h3 className="cluster-resource-name">{summary.cluster_name}</h3>
+            <div className="cluster-resource-tags">
+              {version && <span className="cluster-resource-chip mono-inline">{version}</span>}
+              <span className="cluster-resource-chip">
+                {nodes} node{nodes === 1 ? '' : 's'}
+              </span>
+            </div>
+          </div>
         </div>
-        <div className="cluster-resource-head-meta">
-          <span className={`badge ${summary.status}`}>{summary.status}</span>
-          <span className="muted cluster-resource-nodes">
-            {summary.node_count} node{summary.node_count === 1 ? '' : 's'}
-          </span>
-        </div>
+        <span className={`badge ${statusClass}`}>{summary.status}</span>
       </div>
       <div className="resource-gauge-row">
-        <ResourceGauge label="CPU" metric={summary.cpu} color={GAUGE_COLORS.cpu} />
-        <ResourceGauge label="Memory" metric={summary.memory} color={GAUGE_COLORS.memory} />
-        <ResourceGauge label="Disk" metric={summary.disk} color={GAUGE_COLORS.disk} />
+        <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} />
+        <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} />
+        <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} />
       </div>
       {summary.error && summary.status === 'ready' && (
-        <p className="muted cluster-resource-soft-err" title={summary.error}>{summary.error}</p>
+        <p className="muted cluster-resource-soft-err" title={summary.error}>
+          <Icon name="alert" size={12} />
+          {summary.error}
+        </p>
       )}
     </article>
   )

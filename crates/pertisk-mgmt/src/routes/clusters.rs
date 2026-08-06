@@ -311,12 +311,12 @@ async fn create(
         }
     }
 
-    let vip = if mode == "ipv6" {
+    let vip = if body.controlplanes <= 1 || mode == "ipv6" {
         None
     } else {
         body.vip.clone()
     };
-    let vip6 = if mode == "ipv4" {
+    let vip6 = if body.controlplanes <= 1 || mode == "ipv4" {
         None
     } else {
         body.vip6.clone()
