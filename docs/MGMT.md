@@ -38,6 +38,17 @@ cd web/mgmt-ui && npm run dev   # http://127.0.0.1:5173 proxies /api → :8080
 
 Auth0 role claim: `https://pertisk.io/role` or `role` → `admin` \| `operator` \| `viewer`.
 
+## Dashboard
+
+Home (`/`) shows cluster counts plus a **Cluster resources** section: one card per cluster with CPU, memory, and disk donut charts.
+
+| Metric | Source |
+|--------|--------|
+| CPU / memory usage | `kubectl top nodes` (needs metrics-server) vs provisioned cores / memory from inventory |
+| Disk | kubelet stats summary (`/proxy/stats/summary` filesystem) when reachable; else provisioned `disk_gb` totals without % |
+
+Polls `GET /api/dashboard/resources` about every 15s. Click a card to open the cluster.
+
 ## Node detail
 
 Cluster → Nodes → click a node name → `/clusters/:id/nodes/:nid`.

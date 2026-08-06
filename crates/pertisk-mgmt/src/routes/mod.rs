@@ -1,5 +1,6 @@
 mod auth_routes;
 mod clusters;
+mod dashboard;
 mod health;
 pub(crate) mod k8s;
 mod meta;
@@ -22,6 +23,7 @@ pub fn router(state: AppState) -> Router {
         .merge(health::routes())
         .merge(auth_routes::routes())
         .merge(meta::routes())
+        .merge(dashboard::routes())
         .merge(providers::routes())
         .merge(clusters::routes())
         .merge(nodes::routes())

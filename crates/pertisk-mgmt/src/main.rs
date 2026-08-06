@@ -1,6 +1,7 @@
 //! Pertisk management control plane — axum API + embedded React UI.
 
 mod auth;
+mod cluster_resources;
 mod config;
 mod crypto;
 mod db;
