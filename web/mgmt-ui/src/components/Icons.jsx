@@ -170,6 +170,24 @@ export function Icon({ name, size = 18, className = '' }) {
           <path d="M6 9l6 6 6-6" />
         </svg>
       )
+    case 'menu':
+      return (
+        <svg {...props}>
+          <path d="M4 7h16M4 12h16M4 17h16" />
+        </svg>
+      )
+    case 'chevrons-left':
+      return (
+        <svg {...props}>
+          <path d="M11 6 5 12l6 6M19 6l-6 6 6 6" />
+        </svg>
+      )
+    case 'chevrons-right':
+      return (
+        <svg {...props}>
+          <path d="M13 6l6 6-6 6M5 6l6 6-6 6" />
+        </svg>
+      )
     default:
       return null
   }
