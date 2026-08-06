@@ -42,12 +42,10 @@ export function deleteWorkload(clusterId, kind, ns, name) {
   )
 }
 
-export function buildExecWsUrl(clusterId, namespace, pod, container) {
+/** Host OS shell WebSocket (mgmt server) with cluster KUBECONFIG. */
+export function buildHostShellWsUrl(clusterId) {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const url = new URL(`${proto}//${window.location.host}/api/clusters/${clusterId}/k8s/exec`)
-  url.searchParams.set('namespace', namespace)
-  url.searchParams.set('pod', pod)
-  if (container) url.searchParams.set('container', container)
+  const url = new URL(`${proto}//${window.location.host}/api/clusters/${clusterId}/k8s/shell`)
   const token = getToken()
   if (token) url.searchParams.set('token', token)
   return url.toString()

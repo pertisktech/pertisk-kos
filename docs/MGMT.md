@@ -62,7 +62,18 @@ When a cluster is **ready** (kubeconfig stored under `{data_dir}/kubeconfigs/{na
 |------|---------|
 | Deployments | list, scale, rollout restart, delete |
 | StatefulSets / DaemonSets / Jobs / CronJobs | list, delete |
-| Pods | list, **Shell** (`kubectl exec` over WebSocket) |
+| Pods | list |
+
+## Cluster Shell tab
+
+**Shell** opens an interactive OS shell **on the management host** (not a guest pod). `KUBECONFIG` is set to this cluster’s admin.conf so you can install apps with:
+
+```bash
+kubectl get ns
+helm install …
+```
+
+Requires `kubectl` and (optionally) `helm` on the mgmt host PATH. Operator/admin only.
 
 API (Bearer JWT; shell needs **operator/admin**):
 
@@ -71,7 +82,7 @@ API (Bearer JWT; shell needs **operator/admin**):
 - `POST /api/clusters/{id}/k8s/deployments/{ns}/{name}/scale`
 - `POST /api/clusters/{id}/k8s/deployments/{ns}/{name}/restart`
 - `DELETE /api/clusters/{id}/k8s/workloads/{kind}/{ns}/{name}`
-- `GET /api/clusters/{id}/k8s/exec?namespace=&pod=&container=&token=` (WebSocket; `token` = JWT)
+- `GET /api/clusters/{id}/k8s/shell?token=` (WebSocket host PTY; `token` = JWT)
 
 Requires `kubectl` on the mgmt host PATH (same as node sync / `kubectl top`).
 

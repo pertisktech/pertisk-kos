@@ -1,4 +1,4 @@
-//! Cluster-scoped Kubernetes workload API + authenticated pod exec WebSocket.
+//! Cluster-scoped Kubernetes workload API + authenticated host shell WebSocket.
 
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -25,8 +25,6 @@ use crate::rbac::require_mutate;
 use crate::routes::CurrentUser;
 use crate::state::AppState;
 
-const PREFERRED_SHELL: &str = "if [ -x /bin/zsh ]; then exec /bin/zsh -il; elif command -v zsh >/dev/null 2>&1; then exec zsh -il; elif [ -x /bin/bash ]; then exec /bin/bash -il; elif command -v bash >/dev/null 2>&1; then exec bash -il; else exec /bin/sh -i; fi";
-
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/clusters/{id}/k8s/namespaces", get(list_namespaces))
@@ -43,7 +41,9 @@ pub fn routes() -> Router<AppState> {
             "/clusters/{id}/k8s/deployments/{ns}/{name}/restart",
             post(restart_deployment),
         )
-        .route("/clusters/{id}/k8s/exec", get(exec_ws))
+        // Host OS shell on the mgmt server with KUBECONFIG pointed at this cluster
+        // (kubectl / helm for app install). Not pod exec.
+        .route("/clusters/{id}/k8s/shell", get(host_shell_ws))
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,18 +176,15 @@ async fn delete_workload(
 }
 
 #[derive(Debug, Deserialize)]
-struct ExecQuery {
-    namespace: String,
-    pod: String,
-    container: Option<String>,
+struct ShellQuery {
     /// JWT (WebSocket cannot set Authorization easily).
     token: String,
 }
 
-async fn exec_ws(
+async fn host_shell_ws(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Query(q): Query<ExecQuery>,
+    Query(q): Query<ShellQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, AppError> {
     let claims = decode_token(state.cfg(), &q.token)?;
@@ -197,29 +194,26 @@ async fn exec_ws(
         role: claims.role,
     };
     require_mutate(&user)?;
-    if q.namespace.trim().is_empty() || q.pod.trim().is_empty() {
-        return Err(AppError::bad("namespace and pod are required"));
-    }
-    let (kc, _) = resolve_ready_kubeconfig(&state, &id).await?;
+    let (kc, cluster_name) = resolve_ready_kubeconfig(&state, &id).await?;
     let kc = Arc::new(kc);
-    let q = Arc::new(q);
-    Ok(ws.on_upgrade(move |socket| handle_exec_socket(socket, kc, q)))
+    let cluster_name = Arc::new(cluster_name);
+    Ok(ws.on_upgrade(move |socket| handle_host_shell(socket, kc, cluster_name)))
 }
 
-async fn handle_exec_socket(
+async fn handle_host_shell(
     socket: WebSocket,
     kubeconfig: Arc<std::path::PathBuf>,
-    query: Arc<ExecQuery>,
+    cluster_name: Arc<String>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
 
-    let session = match spawn_pod_exec(&kubeconfig, &query, &out_tx).await {
+    let session = match spawn_host_shell(&kubeconfig, &cluster_name, &out_tx).await {
         Some(s) => s,
         None => {
             let _ = ws_tx
                 .send(Message::Text(
-                    "\r\n\u{1b}[1;31mFailed to start kubectl exec\u{1b}[0m\r\n".into(),
+                    "\r\n\u{1b}[1;31mFailed to start host shell\u{1b}[0m\r\n".into(),
                 ))
                 .await;
             let _ = ws_tx.close().await;
@@ -233,7 +227,6 @@ async fn handle_exec_socket(
     let writer = Arc::new(std::sync::Mutex::new(writer));
     let master = Arc::new(std::sync::Mutex::new(master));
 
-    // PTY → channel
     let out_tx2 = out_tx.clone();
     tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 4096];
@@ -251,7 +244,6 @@ async fn handle_exec_socket(
         }
     });
 
-    // channel → websocket
     let forward = tokio::spawn(async move {
         while let Some(chunk) = out_rx.recv().await {
             if ws_tx.send(Message::Text(chunk.into())).await.is_err() {
@@ -261,7 +253,6 @@ async fn handle_exec_socket(
         let _ = ws_tx.close().await;
     });
 
-    // websocket → PTY
     let writer_in = writer.clone();
     let master_in = master.clone();
     while let Some(Ok(msg)) = ws_rx.next().await {
@@ -311,9 +302,18 @@ struct PtySession {
     writer: Box<dyn Write + Send>,
 }
 
-async fn spawn_pod_exec(
+fn pick_shell_bin() -> &'static str {
+    for cand in ["/bin/bash", "/usr/bin/bash", "/bin/zsh", "/usr/bin/zsh", "/bin/sh"] {
+        if std::path::Path::new(cand).is_file() {
+            return cand;
+        }
+    }
+    "/bin/sh"
+}
+
+async fn spawn_host_shell(
     kubeconfig: &std::path::Path,
-    query: &ExecQuery,
+    cluster_name: &str,
     tx: &mpsc::Sender<String>,
 ) -> Option<PtySession> {
     let pty_system = NativePtySystem::default();
@@ -334,31 +334,31 @@ async fn spawn_pod_exec(
         }
     };
 
-    let mut cmd = CommandBuilder::new("kubectl");
-    cmd.arg("--kubeconfig");
-    cmd.arg(kubeconfig);
-    cmd.arg("exec");
-    cmd.arg("-i");
-    cmd.arg("-t");
-    cmd.arg("-n");
-    cmd.arg(&query.namespace);
-    cmd.arg(&query.pod);
-    if let Some(c) = &query.container {
-        if !c.is_empty() {
-            cmd.arg("-c");
-            cmd.arg(c);
-        }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+    let path = std::env::var("PATH").unwrap_or_else(|_| {
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()
+    });
+    // Prefer login-capable shells so profile / helm completions load when present.
+    let shell = pick_shell_bin();
+    let mut cmd = CommandBuilder::new(shell);
+    if shell.ends_with("bash") || shell.ends_with("zsh") {
+        cmd.arg("-il");
+    } else {
+        cmd.arg("-i");
     }
-    cmd.arg("--");
-    cmd.arg("/bin/sh");
-    cmd.arg("-lc");
-    cmd.arg(PREFERRED_SHELL);
+    cmd.env("HOME", &home);
     cmd.env("TERM", "xterm-256color");
+    cmd.env("LANG", std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into()));
+    cmd.env("PATH", &path);
+    cmd.env("KUBECONFIG", kubeconfig);
+    cmd.env("PERTISK_CLUSTER", cluster_name);
+    // Helm reads KUBECONFIG the same way.
+    cmd.env("HELM_KUBECONTEXT", "");
 
     if let Err(err) = pair.slave.spawn_command(cmd) {
         let _ = tx
             .send(format!(
-                "\r\n\u{1b}[1;31mFailed to start kubectl exec: {err}\u{1b}[0m\r\n"
+                "\r\n\u{1b}[1;31mFailed to start host shell: {err}\u{1b}[0m\r\n"
             ))
             .await;
         return None;
@@ -366,6 +366,16 @@ async fn spawn_pod_exec(
 
     let reader = pair.master.try_clone_reader().ok()?;
     let writer = pair.master.take_writer().ok()?;
+    // Banner after spawn — write via a short delay so the shell owns the TTY first.
+    let _ = tx
+        .send(format!(
+            "\r\n\u{1b}[1;36mpertisk shell\u{1b}[0m · cluster \u{1b}[1m{cluster_name}\u{1b}[0m\r\n\
+             KUBECONFIG={}\r\n\
+             Use \u{1b}[1mkubectl\u{1b}[0m / \u{1b}[1mhelm\u{1b}[0m to install apps.\r\n\r\n",
+            kubeconfig.display()
+        ))
+        .await;
+
     Some(PtySession {
         master: pair.master,
         reader,

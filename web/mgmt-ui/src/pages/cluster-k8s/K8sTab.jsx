@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Icon } from '../../components/Icons'
 import { useConfirm } from '../../components/Confirm'
-import Xterm from '../../components/Xterm'
 import {
   WORKLOAD_KINDS,
   deleteWorkload,
@@ -22,14 +21,13 @@ export default function K8sTab({ clusterId, ready }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [shell, setShell] = useState(null)
 
   const loadNs = useCallback(async () => {
     if (!ready || !clusterId) return
     try {
       const res = await listNamespaces(clusterId)
       setNamespaces(res.data || [])
-    } catch (e) {
+    } catch {
       /* namespaces optional */
     }
   }, [clusterId, ready])
@@ -105,15 +103,6 @@ export default function K8sTab({ clusterId, ready }) {
     }
   }
 
-  function onShell(row) {
-    const containers = row.containers || []
-    setShell({
-      namespace: row.namespace,
-      podName: row.name,
-      containerName: containers.length === 1 ? containers[0] : containers[0] || undefined,
-    })
-  }
-
   if (!ready) {
     return (
       <div className="tab-body">
@@ -168,23 +157,10 @@ export default function K8sTab({ clusterId, ready }) {
       <WorkloadTable
         kind={kind}
         rows={rows}
-        onShell={onShell}
         onScale={onScale}
         onRestart={onRestart}
         onDelete={onDelete}
       />
-
-      {shell && (
-        <div className="k8s-shell-dock">
-          <Xterm
-            clusterId={clusterId}
-            namespace={shell.namespace}
-            podName={shell.podName}
-            containerName={shell.containerName}
-            onClose={() => setShell(null)}
-          />
-        </div>
-      )}
     </div>
   )
 }

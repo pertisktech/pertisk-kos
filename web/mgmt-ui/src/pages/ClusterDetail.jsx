@@ -7,11 +7,13 @@ import Checkbox from '../components/Checkbox'
 import Modal from '../components/Modal'
 import K8sVersionSelect from '../components/K8sVersionSelect'
 import K8sTab from './cluster-k8s/K8sTab'
+import ShellTab from './cluster-k8s/ShellTab'
 
 const TABS = [
   { id: 'overview', label: 'Overview', icon: 'dashboard' },
   { id: 'nodes', label: 'Nodes', icon: 'worker' },
   { id: 'k8s', label: 'K8s', icon: 'cpu' },
+  { id: 'shell', label: 'Shell', icon: 'play' },
   { id: 'config', label: 'Config', icon: 'edit' },
   { id: 'upgrade', label: 'Upgrade', icon: 'play' },
   { id: 'jobs', label: 'Jobs', icon: 'providers' },
@@ -971,6 +973,14 @@ machine:
 
           {tab === 'k8s' && (
             <K8sTab clusterId={id} ready={c.status === 'ready' && !hollowReady} />
+          )}
+
+          {tab === 'shell' && (
+            <ShellTab
+              clusterId={id}
+              clusterName={c.name}
+              ready={c.status === 'ready' && !hollowReady}
+            />
           )}
 
           {tab === 'config' && (

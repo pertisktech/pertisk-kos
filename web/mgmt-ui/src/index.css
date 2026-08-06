@@ -1326,6 +1326,32 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   height: min(360px, 42vh);
   padding: 0.35rem;
 }
+.xterm-shell-body-tall {
+  height: min(560px, 65vh);
+}
+.k8s-shell-dock-fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.k8s-shell-dock-fill .xterm-shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.k8s-shell-dock-fill .xterm-shell-body {
+  flex: 1;
+  height: auto;
+  min-height: 280px;
+}
+.shell-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+}
 
 @media (max-width: 900px) {
   .overview-grid { grid-template-columns: 1fr; }

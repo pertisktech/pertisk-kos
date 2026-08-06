@@ -48,9 +48,8 @@ async fn auth_middleware(
         return Ok(next.run(req).await);
     }
 
-    // Pod exec WebSocket: JWT arrives as ?token= (browsers cannot set WS Authorization).
-    // Handler validates mutate role + token; skip middleware user injection.
-    if path.ends_with("/k8s/exec") {
+    // Host shell WebSocket: JWT arrives as ?token= (browsers cannot set WS Authorization).
+    if path.ends_with("/k8s/shell") {
         return Ok(next.run(req).await);
     }
 

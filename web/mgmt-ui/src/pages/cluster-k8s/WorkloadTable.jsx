@@ -3,7 +3,6 @@ import { Icon } from '../../components/Icons'
 export default function WorkloadTable({
   kind,
   rows,
-  onShell,
   onScale,
   onRestart,
   onDelete,
@@ -54,16 +53,6 @@ export default function WorkloadTable({
               {kind === 'cronjobs' && <td className="mono-inline">{r.schedule || r.ready}</td>}
               <td className="muted">{r.age}</td>
               <td className="row-actions">
-                {isPods && (
-                  <button
-                    type="button"
-                    className="secondary btn-icon"
-                    title="Shell"
-                    onClick={() => onShell?.(r)}
-                  >
-                    <Icon name="play" size={14} /> Shell
-                  </button>
-                )}
                 {isDeploy && (
                   <>
                     <button

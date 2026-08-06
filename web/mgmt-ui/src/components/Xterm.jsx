@@ -3,18 +3,12 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { buildExecWsUrl } from '../pages/cluster-k8s/api'
+import { buildHostShellWsUrl } from '../pages/cluster-k8s/api'
 
 /**
- * Pod shell via authenticated WebSocket → kubectl exec.
+ * Host OS shell on the management server (KUBECONFIG set for this cluster).
  */
-export default function Xterm({
-  clusterId,
-  namespace,
-  podName,
-  containerName,
-  onClose,
-}) {
+export default function Xterm({ clusterId, clusterName, onClose }) {
   const terminalRef = useRef(null)
   const xtermRef = useRef(null)
   const wsRef = useRef(null)
@@ -23,7 +17,7 @@ export default function Xterm({
   const resizeTimer = useRef(null)
 
   useEffect(() => {
-    if (!terminalRef.current || !clusterId || !namespace || !podName) return undefined
+    if (!terminalRef.current || !clusterId) return undefined
 
     const style = getComputedStyle(document.documentElement)
     const bg = style.getPropertyValue('--bg-elevated').trim() || '#131421'
@@ -47,7 +41,7 @@ export default function Xterm({
     xtermRef.current = xterm
     fitAddonRef.current = fit
 
-    const wsUrl = buildExecWsUrl(clusterId, namespace, podName, containerName)
+    const wsUrl = buildHostShellWsUrl(clusterId)
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
@@ -62,7 +56,6 @@ export default function Xterm({
     }
 
     ws.onopen = () => {
-      xterm.writeln(`\x1b[90mconnected → ${namespace}/${podName}\x1b[0m`)
       sendResize()
     }
     ws.onmessage = (ev) => {
@@ -101,14 +94,13 @@ export default function Xterm({
       xtermRef.current = null
       wsRef.current = null
     }
-  }, [clusterId, namespace, podName, containerName])
+  }, [clusterId])
 
   return (
     <div className="xterm-shell">
       <div className="xterm-shell-bar">
         <span className="mono-inline">
-          {namespace}/{podName}
-          {containerName ? ` · ${containerName}` : ''}
+          host shell{clusterName ? ` · ${clusterName}` : ''} · kubectl / helm
         </span>
         {onClose && (
           <button type="button" className="secondary btn-icon" onClick={onClose}>
@@ -116,7 +108,7 @@ export default function Xterm({
           </button>
         )}
       </div>
-      <div className="xterm-shell-body" ref={terminalRef} />
+      <div className="xterm-shell-body xterm-shell-body-tall" ref={terminalRef} />
     </div>
   )
 }
