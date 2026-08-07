@@ -4,6 +4,27 @@ import { api } from '../api'
 import { Icon } from '../components/Icons'
 import K8sVersionSelect from '../components/K8sVersionSelect'
 
+function VerifyRow({ state, label, message }) {
+  let icon = null
+  if (state === 'loading') {
+    icon = <span className="spinner" aria-hidden />
+  } else if (state === 'ok') {
+    icon = <Icon name="check" size={14} />
+  } else if (state === 'error') {
+    icon = <Icon name="alert" size={14} />
+  } else if (state === 'skipped') {
+    icon = <Icon name="check" size={14} />
+  }
+
+  return (
+    <li className={`verify-row ${state}`} aria-live={state === 'loading' ? 'polite' : undefined}>
+      <span className="verify-row-icon">{icon}</span>
+      <span className="verify-row-label">{label}</span>
+      <p className="verify-row-msg">{message}</p>
+    </li>
+  )
+}
+
 export default function ClusterNew() {
   const nav = useNavigate()
   const [providers, setProviders] = useState([])
@@ -53,6 +74,7 @@ export default function ClusterNew() {
     const count = cps + workers
     if (!providerId || !Number.isFinite(cpVmid) || cpVmid < 1 || count < 1) {
       setVmidCheck(null)
+      setVmidChecking(false)
       return
     }
     let cancelled = false
@@ -98,6 +120,7 @@ export default function ClusterNew() {
     const mode = form.network_mode
     if (cps <= 1) {
       setVipCheck(null)
+      setVipChecking(false)
       return
     }
     const vip =
@@ -106,6 +129,7 @@ export default function ClusterNew() {
       mode === 'ipv6' || mode === 'dual-stack' ? String(form.vip6 || '').trim() : ''
     if (!vip && !vip6) {
       setVipCheck(null)
+      setVipChecking(false)
       return
     }
     let cancelled = false
@@ -157,6 +181,68 @@ export default function ClusterNew() {
   const mode = form.network_mode
   const vmidBlocked = vmidCheck && !vmidCheck.ok
   const vipBlocked = ha && vipCheck && !vipCheck.ok
+  const verifying = vmidChecking || (ha && vipChecking)
+  const selectedProvider = providers.find((p) => p.id === form.provider_id)
+
+  const providerVerify = !form.provider_id
+    ? { state: 'idle', message: 'Select a provider' }
+    : {
+        state: 'ok',
+        message: selectedProvider
+          ? `${selectedProvider.name} (${form.arch})`
+          : 'Provider selected',
+      }
+
+  const k8sVerify = !String(form.k8s_version || '').trim()
+    ? { state: 'idle', message: 'Select a Kubernetes version' }
+    : { state: 'ok', message: form.k8s_version }
+
+  let vmidVerify = { state: 'idle', message: 'Waiting for provider / base VMID' }
+  if (!form.provider_id) {
+    vmidVerify = { state: 'idle', message: 'Waiting for provider' }
+  } else if (vmidChecking) {
+    vmidVerify = { state: 'loading', message: 'Checking VMIDs on provider…' }
+  } else if (vmidCheck?.ok) {
+    vmidVerify = {
+      state: 'ok',
+      message: `VMIDs ${vmidCheck.range_start}–${vmidCheck.range_end} free on ${vmidCheck.node}`,
+    }
+  } else if (vmidCheck && !vmidCheck.ok) {
+    const conflicts =
+      vmidCheck.conflicts?.length > 0
+        ? ` In use: ${vmidCheck.conflicts
+            .map((c) => `${c.vmid}${c.name ? ` (${c.name})` : ''}`)
+            .join(', ')}`
+        : ''
+    vmidVerify = {
+      state: 'error',
+      message: `${vmidCheck.message || 'VMID range unavailable'}${conflicts}`,
+    }
+  }
+
+  let vipVerify
+  if (!ha) {
+    vipVerify = { state: 'skipped', message: 'Skipped — single control plane' }
+  } else {
+    const vip =
+      mode === 'ipv4' || mode === 'dual-stack' ? String(form.vip || '').trim() : ''
+    const vip6 =
+      mode === 'ipv6' || mode === 'dual-stack' ? String(form.vip6 || '').trim() : ''
+    if (!vip && !vip6) {
+      vipVerify = { state: 'idle', message: 'Enter VIP for HA' }
+    } else if (vipChecking) {
+      vipVerify = { state: 'loading', message: 'Checking VIP on the LAN…' }
+    } else if (vipCheck?.ok) {
+      vipVerify = { state: 'ok', message: vipCheck.message || 'VIP is available' }
+    } else if (vipCheck && !vipCheck.ok) {
+      vipVerify = {
+        state: 'error',
+        message: vipCheck.message || 'VIP is not available',
+      }
+    } else {
+      vipVerify = { state: 'idle', message: 'Waiting for VIP check' }
+    }
+  }
 
   async function submit(e) {
     e.preventDefault()
@@ -215,6 +301,17 @@ export default function ClusterNew() {
     } finally {
       setSaving(false)
     }
+  }
+
+  const createDisabled = saving || verifying || vmidBlocked || vipBlocked
+  let createLabel = 'Create cluster'
+  let createIcon = <Icon name="play" size={16} />
+  if (saving) {
+    createLabel = 'Creating…'
+    createIcon = <span className="spinner spinner-btn" aria-hidden />
+  } else if (verifying) {
+    createLabel = 'Verifying…'
+    createIcon = <span className="spinner spinner-btn" aria-hidden />
   }
 
   return (
@@ -310,7 +407,6 @@ export default function ClusterNew() {
               ) : (
                 <p className="hint muted">First control-plane QEMU ID on Proxmox; workers follow sequentially.</p>
               )}
-              {vmidChecking && <p className="hint muted">Checking VMIDs on provider…</p>}
               {!vmidChecking && vmidCheck?.ok && (
                 <p className="hint muted">
                   VMIDs {vmidCheck.range_start}–{vmidCheck.range_end} are free on {vmidCheck.node}.
@@ -384,7 +480,6 @@ export default function ClusterNew() {
               </div>
             )}
           </div>
-          {ha && vipChecking && <p className="hint muted">Checking VIP on the LAN…</p>}
           {ha && !vipChecking && vipCheck?.ok && (
             <p className="hint muted">{vipCheck.message}</p>
           )}
@@ -441,10 +536,22 @@ export default function ClusterNew() {
           </section>
         </div>
 
+        <section className="card verify-panel" aria-label="Verification">
+          <h2 className="card-title">
+            <Icon name="check" size={18} /> Verification
+          </h2>
+          <ul className="verify-list">
+            <VerifyRow state={providerVerify.state} label="Provider" message={providerVerify.message} />
+            <VerifyRow state={k8sVerify.state} label="K8s version" message={k8sVerify.message} />
+            <VerifyRow state={vmidVerify.state} label="VMID range" message={vmidVerify.message} />
+            <VerifyRow state={vipVerify.state} label="VIP" message={vipVerify.message} />
+          </ul>
+        </section>
+
         <div className="form-footer">
-          <button type="submit" className="btn-icon" disabled={saving || vmidBlocked || vmidChecking || vipBlocked || vipChecking}>
-            <Icon name="play" size={16} />
-            {saving ? 'Creating…' : 'Create cluster'}
+          <button type="submit" className="btn-icon" disabled={createDisabled}>
+            {createIcon}
+            {createLabel}
           </button>
         </div>
       </form>
