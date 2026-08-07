@@ -306,28 +306,54 @@ FOLDER_URL="${BASE}/folder/$(python3 -c "import urllib.parse; print(urllib.parse
 echo "==> ensuring datastore folder ${NAME}"
 "${CURL[@]}" -X MKCOL "${FOLDER_URL}" >/dev/null 2>&1 || true
 
-# Best-effort delete leftover disks from a prior failed run (missing = ok).
-delete_ds_file() {
+# Best-effort delete leftover disks from a prior failed run.
+# Never call FileManager.deleteFile on guessed *-flat.vmdk paths — streamOptimized
+# uploads and already-cleaned thin disks have no flat, and ESXi records a Failed
+# task in Host Client even when our script treats "not found" as OK.
+# Probe via datastore HTTP before DeleteVirtualDisk so we don't enqueue no-op fails.
+ds_http_url() {
+  local dest_name="$1"
+  printf '%s' "${BASE}/folder/$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${NAME}''', safe=''))")/$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${dest_name}''', safe=''))")?dcPath=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${DC_PATH}'''))")&dsName=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${DATASTORE}'''))")"
+}
+
+ds_file_exists() {
+  local dest_name="$1" code
+  code="$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X HEAD "$(ds_http_url "$dest_name")" 2>/dev/null || echo 000)"
+  # Some ESXi builds reject HEAD → try a 1-byte GET.
+  if [[ "$code" != "200" && "$code" != "204" ]]; then
+    code="$("${CURL[@]}" -o /dev/null -w '%{http_code}' -r 0-0 "$(ds_http_url "$dest_name")" 2>/dev/null || echo 000)"
+  fi
+  [[ "$code" == "200" || "$code" == "206" || "$code" == "204" ]]
+}
+
+delete_vmdk() {
   local path="$1"
   local resp task
-  resp="$(soap "urn:vim25/8.0.3.0" "<DeleteDatastoreFile_Task xmlns=\"urn:vim25\">
-  <_this type=\"FileManager\">ha-nfc-file-manager</_this>
+  resp="$(soap "urn:vim25/8.0.3.0" "<DeleteVirtualDisk_Task xmlns=\"urn:vim25\">
+  <_this type=\"VirtualDiskManager\">ha-vdiskmanager</_this>
   <name>$(xml_escape "$path")</name>
   <datacenter type=\"Datacenter\">ha-datacenter</datacenter>
-</DeleteDatastoreFile_Task>" 2>/dev/null || true)"
+</DeleteVirtualDisk_Task>" 2>/dev/null || true)"
   task="$(echo "$resp" | task_moref || true)"
   if [[ -n "$task" ]]; then
-    wait_task "$task" "delete $(basename "$path")" 1 || true
+    wait_task "$task" "delete-vmdk $(basename "$path")" 1 || true
   fi
 }
-delete_ds_file "[${DATASTORE}] ${NAME}/${NAME}.vmdk"
-delete_ds_file "[${DATASTORE}] ${NAME}/${NAME}-flat.vmdk"
-delete_ds_file "[${DATASTORE}] ${NAME}/${NAME}-upload.vmdk"
-delete_ds_file "[${DATASTORE}] ${NAME}/${NAME}-upload-flat.vmdk"
+
+delete_vmdk_if_present() {
+  local dest_name="$1"
+  if ds_file_exists "$dest_name"; then
+    delete_vmdk "[${DATASTORE}] ${NAME}/${dest_name}"
+  fi
+}
+
+delete_vmdk_if_present "${NAME}.vmdk"
+delete_vmdk_if_present "${NAME}-upload.vmdk"
 
 upload_file() {
   local src="$1" dest_name="$2"
-  local url="${BASE}/folder/$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${NAME}''', safe=''))")/$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${dest_name}''', safe=''))")?dcPath=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${DC_PATH}'''))")&dsName=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${DATASTORE}'''))")"
+  local url
+  url="$(ds_http_url "$dest_name")"
   local bytes
   bytes="$(stat -c%s "${src}" 2>/dev/null || stat -f%z "${src}")"
   echo "==> uploading ${dest_name} (${bytes} bytes)"
@@ -357,6 +383,8 @@ COPY_TASK="$(echo "$COPY_RESP" | task_moref)"
   exit 1
 }
 wait_task "$COPY_TASK" "CopyVirtualDisk"
+# Drop streamOptimized upload source (single file; DeleteVirtualDisk, no FileManager).
+delete_vmdk_if_present "${NAME}-upload.vmdk"
 
 # Resolve network MoRef by name.
 NET_MOREF="$(soap "urn:vim25/8.0.3.0" "<RetrievePropertiesEx xmlns=\"urn:vim25\">

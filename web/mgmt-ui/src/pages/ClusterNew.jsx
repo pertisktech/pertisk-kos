@@ -230,6 +230,14 @@ export default function ClusterNew() {
             <div className="field">
               <label>Base VMID</label>
               <input type="number" value={form.cp_vmid} onChange={(e) => set('cp_vmid', e.target.value)} />
+              {providers.find((p) => p.id === form.provider_id)?.kind === 'vsphere' ? (
+                <p className="hint muted">
+                  Inventory IDs only (cp={form.cp_vmid}, then +1…). ESXi Host Client URLs use a different
+                  MoRef (e.g. <code>/ui/#/host/vms/31</code>) — that is not the Base VMID.
+                </p>
+              ) : (
+                <p className="hint muted">First control-plane QEMU ID on Proxmox; workers follow sequentially.</p>
+              )}
               {vmidChecking && <p className="hint muted">Checking VMIDs on provider…</p>}
               {!vmidChecking && vmidCheck?.ok && (
                 <p className="hint muted">

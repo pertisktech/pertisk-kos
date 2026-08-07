@@ -45,6 +45,10 @@ make cloud ARCH=amd64            # or your usual stage-images path
 | Network | `bridge` | `VM Network` |
 | Kind | `kind` | `vsphere` |
 
+## VMID vs ESXi MoRef
+
+**Base VMID** (default `210`) is Pertisk inventory only — same numbering as Proxmox (`210` = first CP, `211` = second, …). ESXi assigns its own MoRef when the VM is created (`31`, `32`, …). Host Client URLs look like `https://esxi/ui/#/host/vms/31`; that **31 is not** the Base VMID. Match VMs by **name** (`{cluster}-cp-1`, …).
+
 ## UI
 
 1. **Providers → Add provider → Kind: vSphere (ESXi)**
