@@ -651,13 +651,14 @@ fn ensure_control_plane_node_role(
     }
 
     // Verify label stuck (node recreate / patch no-op races).
+    // JSON Pointer: `/` in a key must be escaped as `~1` (RFC 6901).
     let (status, body) = client.get(&path)?;
     if status != 200 {
         bail!("re-get node {node_name} after label failed HTTP {status}");
     }
     let v: serde_json::Value = serde_json::from_str(&body).context("parse node after label")?;
     let has = v
-        .pointer("/metadata/labels/node-role.kubernetes.io/control-plane")
+        .pointer("/metadata/labels/node-role.kubernetes.io~1control-plane")
         .is_some();
     if !has {
         bail!("node {node_name} missing control-plane label after patch");
@@ -669,6 +670,25 @@ fn ensure_control_plane_node_role(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_plane_label_json_pointer_escapes_slash() {
+        let v = serde_json::json!({
+            "metadata": {
+                "labels": {
+                    "node-role.kubernetes.io/control-plane": "",
+                    "kubernetes.io/hostname": "cp-3"
+                }
+            }
+        });
+        // Unescaped `/` walks nested objects and misses the label key.
+        assert!(v
+            .pointer("/metadata/labels/node-role.kubernetes.io/control-plane")
+            .is_none());
+        assert!(v
+            .pointer("/metadata/labels/node-role.kubernetes.io~1control-plane")
+            .is_some());
+    }
 
     #[test]
     fn gen_config_writes_token() {

@@ -726,20 +726,27 @@ EOF
 }
 
 # Ensure every control-plane has the role label (join finalize can miss CP3+).
+# Empty-string label values are valid — do not use `grep -q .` on jsonpath.
 ensure_control_plane_roles() {
-  local kc="$1" n="$2" i node
+  local kc="$1" n="$2" i node deadline
   for ((i = 1; i <= n; i++)); do
     node="${CLUSTER_NAME}-cp-${i}"
-    if ! kubectl --kubeconfig "$kc" get node "$node" >/dev/null 2>&1; then
-      log "WARNING: node ${node} not found yet — skip role ensure"
-      continue
-    fi
-    if kubectl --kubeconfig "$kc" get node "$node" -o jsonpath='{.metadata.labels.node-role\.kubernetes\.io/control-plane}' 2>/dev/null | grep -q .; then
+    deadline=$((SECONDS + 180))
+    until kubectl --kubeconfig "$kc" get node "$node" >/dev/null 2>&1; do
+      (( SECONDS < deadline )) || die "node ${node} not registered for control-plane role ensure"
+      sleep 3
+    done
+    if kubectl --kubeconfig "$kc" get node "$node" -o json 2>/dev/null \
+      | grep -Fq '"node-role.kubernetes.io/control-plane"'; then
       continue
     fi
     log "WARNING: ${node} missing control-plane role — labeling + tainting"
-    kubectl --kubeconfig "$kc" label node "$node" 'node-role.kubernetes.io/control-plane=' --overwrite
+    kubectl --kubeconfig "$kc" label node "$node" 'node-role.kubernetes.io/control-plane=' --overwrite \
+      || die "failed to label ${node} control-plane"
     kubectl --kubeconfig "$kc" taint node "$node" 'node-role.kubernetes.io/control-plane=:NoSchedule' --overwrite || true
+    kubectl --kubeconfig "$kc" get node "$node" -o json 2>/dev/null \
+      | grep -Fq '"node-role.kubernetes.io/control-plane"' \
+      || die "node ${node} still missing control-plane role after label"
   done
 }
 
@@ -1162,6 +1169,13 @@ step_cluster() {
   # Wait for apiserver on a CP node IP first (VIP needs kube-vip leader election).
   wait_apiserver_ready "$CLUSTER_OUT/admin.conf" "$CP_IP" "$API_ENDPOINT"
   ensure_bootstrap_token_secret "$CLUSTER_OUT/admin.conf" "$CLUSTER_OUT/worker.yaml"
+
+  # Wait for all CP nodes Ready before role ensure (CP3 registers late).
+  local cp_hosts=()
+  for ((i = 1; i <= CONTROLPLANES; i++)); do
+    cp_hosts+=("${CLUSTER_NAME}-cp-${i}")
+  done
+  wait_nodes_ready "$CLUSTER_OUT/admin.conf" "${cp_hosts[@]}"
   ensure_control_plane_roles "$CLUSTER_OUT/admin.conf" "$CONTROLPLANES"
 
   local wyaml worker_hosts=()

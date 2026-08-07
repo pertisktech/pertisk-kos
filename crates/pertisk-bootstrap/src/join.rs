@@ -69,8 +69,20 @@ pub async fn join_control_plane(
     }
 
     let paths = BootstrapPaths::default_state(state_root);
+    let hostname = cfg
+        .machine
+        .network
+        .hostname
+        .clone()
+        .unwrap_or_else(|| "pertisk-cp".into());
     if paths.is_bootstrapped() {
         let _ = crate::restore_control_plane(state_root);
+        // Prior joins could write BOOTSTRAPPED before the CP role label stuck
+        // (especially CP3). Re-run finalize so retries actually fix ROLES=<none>.
+        let admin_path = paths.admin_kubeconfig();
+        finalize_bootstrap_when_ready(&admin_path, None, &hostname).with_context(|| {
+            format!("already-joined control-plane missing finalize/label for {hostname}")
+        })?;
         return Ok(JoinControlPlaneResult {
             already_joined: true,
             message: "already bootstrapped / joined".into(),
@@ -83,12 +95,6 @@ pub async fn join_control_plane(
         .filter(|s| !s.is_empty())
         .or_else(detect_advertise_ip)
         .context("could not determine advertise address")?;
-    let hostname = cfg
-        .machine
-        .network
-        .hostname
-        .clone()
-        .unwrap_or_else(|| "pertisk-cp".into());
     let endpoint_host = endpoint_host(&cluster.endpoint);
     let k8s_ver = cluster
         .kubernetes_version
@@ -220,13 +226,15 @@ pub async fn join_control_plane(
     }
 
     fs::create_dir_all("/var/lib/etcd").ok();
+    // Marker after join material is on disk so reboot restore works; finalize may
+    // still fail (slow CP3). Retries hit already_joined and re-run finalize/label.
     fs::write(
         paths.marker(),
         format!("joined control-plane at {}\n", chrono_like_now()),
     )?;
 
     // Label this CP node once local apiserver is up (skip token/RBAC/addons).
-    // Must succeed: unlabeled joined CPs show as workers in `kubectl get nodes`.
+    // Must succeed: unlabeled joined CPs show ROLES=<none> in `kubectl get nodes`.
     let admin_path = paths.admin_kubeconfig();
     let node_name = hostname.clone();
     finalize_bootstrap_when_ready(&admin_path, None, &node_name)
