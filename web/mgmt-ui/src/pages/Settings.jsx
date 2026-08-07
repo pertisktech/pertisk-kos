@@ -107,6 +107,10 @@ export default function Settings() {
             <div>
               <dt>Public URL</dt>
               <dd><code className="mono-inline">{cfg.public_url}</code></dd>
+              <p className="hint muted" style={{ marginTop: 6 }}>
+                From <code>MGMT_PUBLIC_URL</code>. Applied on cluster create as{' '}
+                <code>machine.dashboard.mgmt_url</code> (serial console).
+              </p>
             </div>
             <div>
               <dt>JWT TTL</dt>

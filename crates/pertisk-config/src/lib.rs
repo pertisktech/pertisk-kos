@@ -151,6 +151,15 @@ impl Dashboard {
             mgmt_url: None,
         }
     }
+
+    /// [`builtin`](Self::builtin) plus optional public management URL for the console.
+    pub fn builtin_with_mgmt_url(url: Option<&str>) -> Self {
+        let mut d = Self::builtin();
+        if let Some(u) = url.map(str::trim).filter(|s| !s.is_empty()) {
+            d.mgmt_url = Some(u.to_string());
+        }
+        d
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

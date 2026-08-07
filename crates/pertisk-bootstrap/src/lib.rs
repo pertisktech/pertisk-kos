@@ -690,6 +690,25 @@ mod tests {
     }
 
     #[test]
+    fn gen_config_includes_mgmt_url() {
+        let net = GenNetworkOpts {
+            mgmt_url: Some("https://ptkos.apps.thaidevops.co".into()),
+            ..Default::default()
+        };
+        let g = gen_config_with_network(
+            "lab",
+            "https://10.1.1.10:6443",
+            DEFAULT_K8S_VERSION,
+            DEFAULT_POD_SUBNET,
+            DEFAULT_SERVICE_SUBNET,
+            &net,
+        )
+        .unwrap();
+        assert!(g.controlplane_yaml.contains("mgmt_url: https://ptkos.apps.thaidevops.co"));
+        assert!(g.worker_yaml.contains("mgmt_url: https://ptkos.apps.thaidevops.co"));
+    }
+
+    #[test]
     fn patch_worker_ca_fills_builtin_dashboard() {
         let yaml = r#"
 version: v1alpha1

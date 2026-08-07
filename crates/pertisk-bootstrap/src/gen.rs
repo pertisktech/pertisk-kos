@@ -57,6 +57,8 @@ pub struct GenNetworkOpts {
     pub vip6: Option<String>,
     /// Optional kubelet maxPods (`machine.kubelet.extraConfig.maxPods`).
     pub max_pods: Option<u32>,
+    /// Public mgmt URL for `machine.dashboard.mgmt_url` (serial console).
+    pub mgmt_url: Option<String>,
 }
 
 impl Default for GenNetworkOpts {
@@ -67,12 +69,17 @@ impl Default for GenNetworkOpts {
             service_cidr_ipv6: None,
             vip6: None,
             max_pods: None,
+            mgmt_url: None,
         }
     }
 }
 
 fn kubelet_opts(max_pods: Option<u32>) -> Option<MachineKubelet> {
     max_pods.map(MachineKubelet::with_max_pods)
+}
+
+fn dashboard_for_gen(net: &GenNetworkOpts) -> Option<Dashboard> {
+    Some(Dashboard::builtin_with_mgmt_url(net.mgmt_url.as_deref()))
 }
 
 fn base_cluster(
@@ -180,7 +187,7 @@ pub fn gen_config_with_network(
                 nameservers: vec!["1.1.1.1".into()],
             },
             install: None,
-            dashboard: Some(Dashboard::builtin()),
+            dashboard: dashboard_for_gen(net),
             kubelet: kubelet_opts(net.max_pods),
         },
         cluster: Some(base_cluster(
@@ -210,7 +217,7 @@ pub fn gen_config_with_network(
                 nameservers: vec!["1.1.1.1".into()],
             },
             install: None,
-            dashboard: Some(Dashboard::builtin()),
+            dashboard: dashboard_for_gen(net),
             kubelet: kubelet_opts(net.max_pods),
         },
         cluster: Some(base_cluster(
@@ -291,7 +298,7 @@ pub fn gen_config_ha_with_network(
                     nameservers: vec!["1.1.1.1".into()],
                 },
                 install: None,
-                dashboard: Some(Dashboard::builtin()),
+                dashboard: dashboard_for_gen(net),
                 kubelet: kubelet_opts(net.max_pods),
             },
             cluster: Some(base_cluster(
@@ -328,7 +335,7 @@ pub fn gen_config_ha_with_network(
                 nameservers: vec!["1.1.1.1".into()],
             },
             install: None,
-            dashboard: Some(Dashboard::builtin()),
+            dashboard: dashboard_for_gen(net),
             kubelet: kubelet_opts(net.max_pods),
         },
         cluster: Some(base_cluster(

@@ -11,6 +11,8 @@ export default function ClusterNew() {
   const [saving, setSaving] = useState(false)
   const [vmidCheck, setVmidCheck] = useState(null)
   const [vmidChecking, setVmidChecking] = useState(false)
+  const [vipCheck, setVipCheck] = useState(null)
+  const [vipChecking, setVipChecking] = useState(false)
   const [form, setForm] = useState({
     name: 'lab-ha',
     provider_id: '',
@@ -86,6 +88,50 @@ export default function ClusterNew() {
     }
   }, [form.provider_id, form.cp_vmid, form.controlplanes, form.workers])
 
+  // Live VIP free check (ping / :6443 / other clusters) when HA.
+  useEffect(() => {
+    const cps = Number(form.controlplanes)
+    const mode = form.network_mode
+    if (cps <= 1) {
+      setVipCheck(null)
+      return
+    }
+    const vip =
+      mode === 'ipv4' || mode === 'dual-stack' ? String(form.vip || '').trim() : ''
+    const vip6 =
+      mode === 'ipv6' || mode === 'dual-stack' ? String(form.vip6 || '').trim() : ''
+    if (!vip && !vip6) {
+      setVipCheck(null)
+      return
+    }
+    let cancelled = false
+    setVipChecking(true)
+    const t = setTimeout(() => {
+      api('/clusters/check-vip', {
+        method: 'POST',
+        body: {
+          vip: vip || null,
+          vip6: vip6 || null,
+        },
+      })
+        .then((r) => {
+          if (!cancelled) setVipCheck(r)
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setVipCheck({ ok: false, message: err.message, conflicts: [] })
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setVipChecking(false)
+        })
+    }, 400)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [form.controlplanes, form.network_mode, form.vip, form.vip6])
+
   function set(k, v) {
     setForm((f) => {
       const next = { ...f, [k]: v }
@@ -101,6 +147,7 @@ export default function ClusterNew() {
   const ha = Number(form.controlplanes) > 1
   const mode = form.network_mode
   const vmidBlocked = vmidCheck && !vmidCheck.ok
+  const vipBlocked = ha && vipCheck && !vipCheck.ok
 
   async function submit(e) {
     e.preventDefault()
@@ -122,6 +169,10 @@ export default function ClusterNew() {
     }
     if (vmidBlocked) {
       setError(vmidCheck.message || 'Selected VMID range is already in use')
+      return
+    }
+    if (vipBlocked) {
+      setError(vipCheck.message || 'Selected VIP is not available')
       return
     }
 
@@ -312,11 +363,20 @@ export default function ClusterNew() {
               </div>
             )}
           </div>
+          {ha && vipChecking && <p className="hint muted">Checking VIP on the LAN…</p>}
+          {ha && !vipChecking && vipCheck?.ok && (
+            <p className="hint muted">{vipCheck.message}</p>
+          )}
+          {ha && !vipChecking && vipBlocked && (
+            <p className="hint" style={{ color: 'var(--danger, #b91c1c)' }}>
+              {vipCheck.message}
+            </p>
+          )}
           <p className="hint muted">
             {!ha && 'Single control plane: kubeconfig uses the CP node IP (no kube-vip).'}
-            {ha && mode === 'ipv4' && 'HA: kube-vip ARP VIP is the API endpoint.'}
-            {ha && mode === 'ipv6' && 'HA: IPv6 VIP is the API endpoint (--dual-stack).'}
-            {ha && mode === 'dual-stack' && 'HA dual-stack: passes --vip and --vip6 to lab-up.'}
+            {ha && mode === 'ipv4' && 'HA: kube-vip ARP VIP is the API endpoint — must be free on the LAN.'}
+            {ha && mode === 'ipv6' && 'HA: IPv6 VIP is the API endpoint — must be free on the LAN.'}
+            {ha && mode === 'dual-stack' && 'HA dual-stack: both VIPs must be free (ping / :6443 / other clusters).'}
           </p>
         </section>
 
@@ -361,7 +421,7 @@ export default function ClusterNew() {
         </div>
 
         <div className="form-footer">
-          <button type="submit" className="btn-icon" disabled={saving || vmidBlocked || vmidChecking}>
+          <button type="submit" className="btn-icon" disabled={saving || vmidBlocked || vmidChecking || vipBlocked || vipChecking}>
             <Icon name="play" size={16} />
             {saving ? 'Creating…' : 'Create cluster'}
           </button>

@@ -106,6 +106,9 @@ enum Commands {
         /// kubelet maxPods (machine.kubelet.extraConfig.maxPods).
         #[arg(long)]
         max_pods: Option<u32>,
+        /// Public management URL → machine.dashboard.mgmt_url (serial console).
+        #[arg(long)]
+        mgmt_url: Option<String>,
     },
     /// Bootstrap the first control-plane (PKI + static pods).
     Bootstrap {
@@ -206,6 +209,9 @@ enum GenCommands {
         /// kubelet maxPods (machine.kubelet.extraConfig.maxPods).
         #[arg(long)]
         max_pods: Option<u32>,
+        /// Public management URL → machine.dashboard.mgmt_url (serial console).
+        #[arg(long)]
+        mgmt_url: Option<String>,
     },
 }
 
@@ -297,6 +303,7 @@ async fn main() -> Result<()> {
                     ref service_cidr_ipv6,
                     ref vip6,
                     max_pods,
+                    ref mgmt_url,
                 },
         }
         | Commands::GenConfig {
@@ -312,6 +319,7 @@ async fn main() -> Result<()> {
             ref service_cidr_ipv6,
             ref vip6,
             max_pods,
+            ref mgmt_url,
         } => {
             let net = GenNetworkOpts {
                 dual_stack,
@@ -323,6 +331,10 @@ async fn main() -> Result<()> {
                 }),
                 vip6: vip6.clone(),
                 max_pods,
+                mgmt_url: mgmt_url
+                    .clone()
+                    .or_else(|| std::env::var("MGMT_PUBLIC_URL").ok())
+                    .filter(|s| !s.trim().is_empty()),
             };
             if controlplanes <= 1 {
                 let gen = gen_config_with_network(

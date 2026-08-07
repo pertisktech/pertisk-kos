@@ -369,7 +369,11 @@ pub fn get_join_config(
                 nameservers: vec!["1.1.1.1".into()],
             },
             install: None,
-            dashboard: Some(Dashboard::builtin()),
+            dashboard: applied
+                .machine
+                .dashboard
+                .clone()
+                .or_else(|| Some(Dashboard::builtin())),
             kubelet: applied.machine.kubelet.clone(),
         },
         cluster: Some(Cluster {
@@ -407,7 +411,11 @@ pub fn get_join_config(
                 nameservers: vec!["1.1.1.1".into()],
             },
             install: None,
-            dashboard: Some(Dashboard::builtin()),
+            dashboard: applied
+                .machine
+                .dashboard
+                .clone()
+                .or_else(|| Some(Dashboard::builtin())),
             kubelet: applied.machine.kubelet.clone(),
         },
         cluster: Some(Cluster {

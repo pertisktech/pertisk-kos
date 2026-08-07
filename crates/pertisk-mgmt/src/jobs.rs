@@ -15,6 +15,11 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) {
     let _ = std::fs::create_dir_all(&cfg.images_dir);
     cmd.env("PERTISK_IMAGES_DIR", cfg.images_dir.display().to_string());
     cmd.env("PERTISKCTL", cfg.pertiskctl.display().to_string());
+    // Settings → Public URL → machine.dashboard.mgmt_url on gen/apply.
+    let public_url = cfg.public_url.trim();
+    if !public_url.is_empty() {
+        cmd.env("MGMT_PUBLIC_URL", public_url);
+    }
     if let Some(root) = cfg.lab_up.parent().and_then(|p| p.parent()) {
         cmd.env("PERTISK_ROOT", root.display().to_string());
     }

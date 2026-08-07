@@ -746,6 +746,75 @@ set_hostname_yaml() {
   ' "$src" >"$dest"
 }
 
+# Ensure machine.dashboard.mgmt_url (Public URL) is set in generated YAML.
+set_mgmt_url_yaml() {
+  local src="$1" dest="$2" url="$3"
+  python3 - "$src" "$dest" "$url" <<'PY'
+import sys
+src, dest, url = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    import yaml
+except ImportError:
+    # Minimal fallback: inject under machine.dashboard without PyYAML.
+    text = open(src).read()
+    if "mgmt_url:" in text or "mgmtUrl:" in text:
+        import re
+        text2, n = re.subn(
+            r"(?m)^([ \t]*mgmt_url:[ \t]*).*$",
+            r"\1" + url,
+            text,
+            count=1,
+        )
+        if n == 0:
+            text2, n = re.subn(
+                r"(?m)^([ \t]*mgmtUrl:[ \t]*).*$",
+                r"\1" + url,
+                text,
+                count=1,
+            )
+        if n:
+            open(dest, "w").write(text2)
+            raise SystemExit(0)
+        open(dest, "w").write(text)
+        raise SystemExit(0)
+    lines = text.splitlines(True)
+    out = []
+    i = 0
+    injected = False
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        if (not injected) and line.startswith("  dashboard:"):
+            # Insert mgmt_url as first child of dashboard.
+            out.append(f"    mgmt_url: {url}\n")
+            injected = True
+        i += 1
+    if not injected:
+        # Insert dashboard block after machine:
+        out2 = []
+        for line in out:
+            out2.append(line)
+            if line.startswith("machine:"):
+                out2.append("  dashboard:\n")
+                out2.append(f"    mgmt_url: {url}\n")
+                injected = True
+        out = out2
+    open(dest, "w").write("".join(out))
+    raise SystemExit(0)
+
+with open(src) as f:
+    doc = yaml.safe_load(f)
+machine = doc.setdefault("machine", {})
+dash = machine.setdefault("dashboard", {})
+if not isinstance(dash, dict):
+    dash = {}
+    machine["dashboard"] = dash
+dash["mgmt_url"] = url
+with open(dest, "w") as f:
+    yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
+PY
+}
+
 # --- steps ---
 # Fast cloud build: populate ~4G, convert, qemu-img resize to role size.
 # EPHEMERAL filesystem is expanded on first guest boot (pertisk-disk).
@@ -980,6 +1049,12 @@ step_cluster() {
   if [[ -n "$MAX_PODS" ]]; then
     gen_args+=(--max-pods "$MAX_PODS")
   fi
+  if [[ -n "${MGMT_PUBLIC_URL:-}" ]]; then
+    if "$CTL" gen config --help 2>&1 | grep -q -- '--mgmt-url'; then
+      gen_args+=(--mgmt-url "$MGMT_PUBLIC_URL")
+    fi
+    log "dashboard mgmt_url=${MGMT_PUBLIC_URL}"
+  fi
   if [[ "$DUAL_STACK" == "1" ]]; then
     gen_args+=(--dual-stack)
     [[ -n "$VIP6" ]] && gen_args+=(--vip6 "$VIP6")
@@ -989,6 +1064,14 @@ step_cluster() {
   # Ensure CP1 hostname matches lab convention
   set_hostname_yaml "$CLUSTER_OUT/controlplane.yaml" "$CLUSTER_OUT/controlplane.yaml.tmp" "${CLUSTER_NAME}-cp-1"
   mv "$CLUSTER_OUT/controlplane.yaml.tmp" "$CLUSTER_OUT/controlplane.yaml"
+  # Belt-and-suspenders for older pertiskctl without --mgmt-url.
+  if [[ -n "${MGMT_PUBLIC_URL:-}" ]]; then
+    for f in "$CLUSTER_OUT"/controlplane.yaml "$CLUSTER_OUT"/worker.yaml "$CLUSTER_OUT"/controlplane-*.yaml; do
+      [[ -f "$f" ]] || continue
+      set_mgmt_url_yaml "$f" "$f.tmp" "$MGMT_PUBLIC_URL"
+      mv "$f.tmp" "$f"
+    done
+  fi
 
   wait_api "$CP_IP"
   log "apply controlplane → ${CP_IP}"
@@ -1011,6 +1094,10 @@ step_cluster() {
       -o "$cpyaml"
     set_hostname_yaml "$cpyaml" "${cpyaml}.tmp" "$host"
     mv "${cpyaml}.tmp" "$cpyaml"
+    if [[ -n "${MGMT_PUBLIC_URL:-}" ]]; then
+      set_mgmt_url_yaml "$cpyaml" "${cpyaml}.tmp" "$MGMT_PUBLIC_URL"
+      mv "${cpyaml}.tmp" "$cpyaml"
+    fi
     wait_api "$ip"
     log "apply + join-controlplane ${host} @ ${ip}"
     "$CTL" -e "${ip}:50000" apply -f "$cpyaml"
@@ -1033,6 +1120,10 @@ step_cluster() {
 
   log "join-config (fill CA)"
   "$CTL" -e "${CP_IP}:50000" join-config -f "$CLUSTER_OUT/worker.yaml"
+  if [[ -n "${MGMT_PUBLIC_URL:-}" ]]; then
+    set_mgmt_url_yaml "$CLUSTER_OUT/worker.yaml" "$CLUSTER_OUT/worker.yaml.tmp" "$MGMT_PUBLIC_URL"
+    mv "$CLUSTER_OUT/worker.yaml.tmp" "$CLUSTER_OUT/worker.yaml"
+  fi
 
   # Wait for apiserver on a CP node IP first (VIP needs kube-vip leader election).
   wait_apiserver_ready "$CLUSTER_OUT/admin.conf" "$CP_IP" "$API_ENDPOINT"
@@ -1078,14 +1169,29 @@ ensure_api_endpoint_reachable() {
     || die "apiserver still unreachable after fallback to ${cp_ip}:6443"
 }
 
-# Before HA create: refuse a VIP that already answers ICMP (almost certainly in use).
-warn_if_vip_busy() {
-  local vip="$1"
+# Before HA create: refuse a VIP that already answers ICMP / :6443.
+require_vip_free() {
+  local vip="$1" label="${2:-VIP}"
   [[ -n "$vip" ]] || return 0
-  if ping -c 1 -W 1 "$vip" >/dev/null 2>&1; then
-    log "WARNING: ${vip} already responds to ping — likely in use on the LAN."
-    log "         kube-vip ARP will fight that host; pick a free VIP (e.g. 10.1.1.250)."
+  log "checking ${label} ${vip} is free on the LAN"
+  if ping -c 1 -W 1 "$vip" >/dev/null 2>&1 \
+    || ping -c 1 -W 1 -6 "$vip" >/dev/null 2>&1; then
+    die "${label} ${vip} already responds to ping — kube-vip cannot use a busy address. Pick a free VIP."
   fi
+  # Bracket IPv6 for URL.
+  local host="$vip"
+  if [[ "$vip" == *:* ]]; then
+    host="[${vip}]"
+  fi
+  if curl -sk --connect-timeout 1 "https://${host}:6443/readyz" >/dev/null 2>&1; then
+    die "${label} ${vip}:6443 already serves an apiserver — pick a free VIP."
+  fi
+  log "${label} ${vip} looks free"
+}
+
+warn_if_vip_busy() {
+  # Back-compat alias — create path uses require_vip_free (hard fail).
+  require_vip_free "$@"
 }
 
 step_cni() {
@@ -1388,7 +1494,10 @@ fi
 export K8S_VER
 
 log "lab-up cluster=${CLUSTER_NAME} cp-vmid=${CP_VMID} controlplanes=${CONTROLPLANES} workers=${WORKERS} cni=${CNI} k8s=${K8S_VER} vip=${VIP:-none}"
-warn_if_vip_busy "${VIP:-}"
+if [[ "$CONTROLPLANES" -gt 1 ]]; then
+  require_vip_free "${VIP:-}" "IPv4 VIP"
+  require_vip_free "${VIP6:-}" "IPv6 VIP"
+fi
 step_build
 step_vms
 step_resolve_ips

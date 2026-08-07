@@ -18,6 +18,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/clusters", get(list).post(create))
         .route("/clusters/check-vmids", axum::routing::post(check_vmids))
+        .route("/clusters/check-vip", axum::routing::post(check_vip))
         .route(
             "/clusters/{id}",
             get(get_one).delete(delete),
@@ -283,6 +284,24 @@ async fn create(
         }
         if matches!(mode.as_str(), "ipv6" | "dual-stack") && vip6.is_empty() {
             return Err(AppError::bad("vip6 required when controlplanes > 1 (ipv6/dual-stack)"));
+        }
+        let vip_check = validate_vips(
+            &state,
+            if matches!(mode.as_str(), "ipv4" | "dual-stack") {
+                Some(vip)
+            } else {
+                None
+            },
+            if matches!(mode.as_str(), "ipv6" | "dual-stack") {
+                Some(vip6)
+            } else {
+                None
+            },
+            None,
+        )
+        .await?;
+        if !vip_check.ok {
+            return Err(AppError::bad(vip_check.message));
         }
     }
     if body.workers < 0 {
@@ -824,6 +843,158 @@ async fn check_vmids(
     }
     let check = provider_check_vmids(&state, &body.provider_id, body.cp_vmid, count).await?;
     Ok(Json(check))
+}
+
+#[derive(Deserialize)]
+struct CheckVipIn {
+    #[serde(default)]
+    vip: Option<String>,
+    #[serde(default)]
+    vip6: Option<String>,
+    /// Optional cluster id to exclude (re-check while editing an existing cluster).
+    #[serde(default)]
+    exclude_cluster_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct VipConflict {
+    address: String,
+    reason: String,
+    cluster_id: Option<String>,
+    cluster_name: Option<String>,
+}
+
+#[derive(Serialize)]
+struct VipCheck {
+    ok: bool,
+    message: String,
+    conflicts: Vec<VipConflict>,
+}
+
+async fn check_vip(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Json(body): Json<CheckVipIn>,
+) -> ApiResult<Json<VipCheck>> {
+    let vip = body.vip.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let vip6 = body.vip6.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if vip.is_none() && vip6.is_none() {
+        return Ok(Json(VipCheck {
+            ok: true,
+            message: "no VIP to check".into(),
+            conflicts: vec![],
+        }));
+    }
+    let check = validate_vips(&state, vip, vip6, body.exclude_cluster_id.as_deref()).await?;
+    Ok(Json(check))
+}
+
+async fn validate_vips(
+    state: &AppState,
+    vip: Option<&str>,
+    vip6: Option<&str>,
+    exclude_cluster_id: Option<&str>,
+) -> ApiResult<VipCheck> {
+    let mut conflicts = Vec::new();
+
+    for addr in [vip, vip6].into_iter().flatten() {
+        // Another Pertisk cluster already claims this VIP.
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            r#"SELECT id, name, status FROM clusters
+               WHERE (vip = ? OR vip6 = ?)
+                 AND status NOT IN ('deleting', 'deleted')
+                 AND (? IS NULL OR id != ?)"#,
+        )
+        .bind(addr)
+        .bind(addr)
+        .bind(exclude_cluster_id)
+        .bind(exclude_cluster_id)
+        .fetch_all(state.pool())
+        .await?;
+        for (id, name, status) in rows {
+            conflicts.push(VipConflict {
+                address: addr.to_string(),
+                reason: format!("claimed by cluster {name} ({status})"),
+                cluster_id: Some(id),
+                cluster_name: Some(name),
+            });
+        }
+
+        if address_answers_ping(addr).await {
+            conflicts.push(VipConflict {
+                address: addr.to_string(),
+                reason: "answers ICMP ping on the LAN".into(),
+                cluster_id: None,
+                cluster_name: None,
+            });
+        } else if address_has_apiserver(addr).await {
+            conflicts.push(VipConflict {
+                address: addr.to_string(),
+                reason: "HTTPS :6443 already responds (apiserver/kube-vip in use)".into(),
+                cluster_id: None,
+                cluster_name: None,
+            });
+        }
+    }
+
+    let ok = conflicts.is_empty();
+    let message = if ok {
+        let mut parts = Vec::new();
+        if let Some(v) = vip {
+            parts.push(format!("{v} free"));
+        }
+        if let Some(v) = vip6 {
+            parts.push(format!("{v} free"));
+        }
+        format!("VIP OK ({})", parts.join(", "))
+    } else {
+        let detail = conflicts
+            .iter()
+            .map(|c| format!("{}: {}", c.address, c.reason))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!("VIP not available — {detail}")
+    };
+    Ok(VipCheck {
+        ok,
+        message,
+        conflicts,
+    })
+}
+
+async fn address_answers_ping(addr: &str) -> bool {
+    let is_v6 = addr.contains(':');
+    let mut cmd = tokio::process::Command::new("ping");
+    cmd.arg("-c").arg("1").arg("-W").arg("1");
+    if is_v6 {
+        cmd.arg("-6");
+    }
+    cmd.arg(addr)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    match cmd.status().await {
+        Ok(st) => st.success(),
+        Err(_) => false,
+    }
+}
+
+async fn address_has_apiserver(addr: &str) -> bool {
+    let host = if addr.contains(':') {
+        format!("[{addr}]")
+    } else {
+        addr.to_string()
+    };
+    let url = format!("https://{host}:6443/readyz");
+    let client = match reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(2))
+        .connect_timeout(std::time::Duration::from_secs(1))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    matches!(client.get(&url).send().await, Ok(resp) if resp.status().is_success())
 }
 
 async fn provider_check_vmids(
