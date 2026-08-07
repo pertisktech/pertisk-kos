@@ -480,7 +480,10 @@ pub(crate) fn finalize_bootstrap_when_ready(
     }
 
     ensure_node_join_rbac(&client)?;
-    ensure_control_plane_node_role(&client, node_name, deadline)?;
+    // Fresh deadline: waiting for local apiserver/images can consume most of the
+    // original window; CP3 join especially was left unlabeled (looked like a worker).
+    let label_deadline = Instant::now() + Duration::from_secs(300);
+    ensure_control_plane_node_role(&client, node_name, label_deadline)?;
     // Basic addons: CoreDNS + metrics-server (usable cluster after CNI is up).
     if let Err(err) = addons::ensure_basic_addons(&client) {
         tracing::warn!(
@@ -620,13 +623,21 @@ fn ensure_control_plane_node_role(
         bail!("node {node_name} not registered before timeout (HTTP {status})");
     }
 
-    // kubeadm-equivalent control-plane identity (label; NoSchedule taint).
-    let patch = serde_json::json!({
+    // Label via merge-patch (empty-string role labels are reliable this way).
+    let label_patch = serde_json::json!({
         "metadata": {
             "labels": {
                 "node-role.kubernetes.io/control-plane": ""
             }
-        },
+        }
+    });
+    let (status, resp) = client.patch_merge(&path, &label_patch.to_string())?;
+    if status != 200 {
+        bail!("label node {node_name} failed HTTP {status}: {resp}");
+    }
+
+    // Taint via strategic merge (merge key = key+effect).
+    let taint_patch = serde_json::json!({
         "spec": {
             "taints": [{
                 "key": "node-role.kubernetes.io/control-plane",
@@ -634,13 +645,25 @@ fn ensure_control_plane_node_role(
             }]
         }
     });
-    let (status, resp) = client.patch_strategic(&path, &patch.to_string())?;
-    if status == 200 {
-        info!(node = %node_name, "labeled control-plane (+ NoSchedule taint)");
-        Ok(())
-    } else {
-        bail!("label node {node_name} failed HTTP {status}: {resp}");
+    let (status, resp) = client.patch_strategic(&path, &taint_patch.to_string())?;
+    if status != 200 {
+        bail!("taint node {node_name} failed HTTP {status}: {resp}");
     }
+
+    // Verify label stuck (node recreate / patch no-op races).
+    let (status, body) = client.get(&path)?;
+    if status != 200 {
+        bail!("re-get node {node_name} after label failed HTTP {status}");
+    }
+    let v: serde_json::Value = serde_json::from_str(&body).context("parse node after label")?;
+    let has = v
+        .pointer("/metadata/labels/node-role.kubernetes.io/control-plane")
+        .is_some();
+    if !has {
+        bail!("node {node_name} missing control-plane label after patch");
+    }
+    info!(node = %node_name, "labeled control-plane (+ NoSchedule taint)");
+    Ok(())
 }
 
 #[cfg(test)]

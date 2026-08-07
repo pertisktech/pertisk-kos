@@ -226,11 +226,11 @@ pub async fn join_control_plane(
     )?;
 
     // Label this CP node once local apiserver is up (skip token/RBAC/addons).
+    // Must succeed: unlabeled joined CPs show as workers in `kubectl get nodes`.
     let admin_path = paths.admin_kubeconfig();
     let node_name = hostname.clone();
-    if let Err(err) = finalize_bootstrap_when_ready(&admin_path, None, &node_name) {
-        tracing::warn!(error = %err, "post-join API finalize incomplete");
-    }
+    finalize_bootstrap_when_ready(&admin_path, None, &node_name)
+        .with_context(|| format!("post-join finalize failed for {node_name}"))?;
 
     Ok(JoinControlPlaneResult {
         already_joined: false,

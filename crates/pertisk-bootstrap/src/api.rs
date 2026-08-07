@@ -103,6 +103,15 @@ impl KubeClient {
             Some(body),
         )
     }
+
+    pub fn patch_merge(&self, path: &str, body: &str) -> Result<(u16, String)> {
+        self.request(
+            "PATCH",
+            path,
+            Some("application/merge-patch+json"),
+            Some(body),
+        )
+    }
 }
 
 fn parse_http_response(raw: &str) -> Result<(u16, String)> {

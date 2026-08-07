@@ -692,15 +692,31 @@ stringData:
 EOF
 }
 
-# Ensure first control-plane has the control-plane role label (finalize can miss CP1).
-ensure_cp1_control_plane_role() {
-  local kc="$1" node="$2"
-  if kubectl --kubeconfig "$kc" get node "$node" -o jsonpath='{.metadata.labels.node-role\.kubernetes\.io/control-plane}' 2>/dev/null | grep -q .; then
-    return 0
-  fi
-  log "WARNING: ${node} missing control-plane role — labeling + tainting"
-  kubectl --kubeconfig "$kc" label node "$node" 'node-role.kubernetes.io/control-plane=' --overwrite
-  kubectl --kubeconfig "$kc" taint node "$node" 'node-role.kubernetes.io/control-plane=:NoSchedule' --overwrite || true
+# Ensure every control-plane has the role label (join finalize can miss CP3+).
+ensure_control_plane_roles() {
+  local kc="$1" n="$2" i node
+  for ((i = 1; i <= n; i++)); do
+    node="${CLUSTER_NAME}-cp-${i}"
+    if ! kubectl --kubeconfig "$kc" get node "$node" >/dev/null 2>&1; then
+      log "WARNING: node ${node} not found yet — skip role ensure"
+      continue
+    fi
+    if kubectl --kubeconfig "$kc" get node "$node" -o jsonpath='{.metadata.labels.node-role\.kubernetes\.io/control-plane}' 2>/dev/null | grep -q .; then
+      continue
+    fi
+    log "WARNING: ${node} missing control-plane role — labeling + tainting"
+    kubectl --kubeconfig "$kc" label node "$node" 'node-role.kubernetes.io/control-plane=' --overwrite
+    kubectl --kubeconfig "$kc" taint node "$node" 'node-role.kubernetes.io/control-plane=:NoSchedule' --overwrite || true
+  done
+}
+
+ensure_worker_roles() {
+  local kc="$1" n="$2" i node
+  for ((i = 1; i <= n; i++)); do
+    node="${CLUSTER_NAME}-wk-${i}"
+    kubectl --kubeconfig "$kc" get node "$node" >/dev/null 2>&1 || continue
+    kubectl --kubeconfig "$kc" label node "$node" 'node-role.kubernetes.io/worker=' --overwrite >/dev/null
+  done
 }
 
 wait_nodes_ready() {
@@ -1021,7 +1037,7 @@ step_cluster() {
   # Wait for apiserver on a CP node IP first (VIP needs kube-vip leader election).
   wait_apiserver_ready "$CLUSTER_OUT/admin.conf" "$CP_IP" "$API_ENDPOINT"
   ensure_bootstrap_token_secret "$CLUSTER_OUT/admin.conf" "$CLUSTER_OUT/worker.yaml"
-  ensure_cp1_control_plane_role "$CLUSTER_OUT/admin.conf" "${CLUSTER_NAME}-cp-1"
+  ensure_control_plane_roles "$CLUSTER_OUT/admin.conf" "$CONTROLPLANES"
 
   local wyaml worker_hosts=()
   for i in $(seq 1 "$WORKERS"); do
@@ -1036,7 +1052,10 @@ step_cluster() {
   done
   if ((${#worker_hosts[@]} > 0)); then
     wait_nodes_ready "$CLUSTER_OUT/admin.conf" "${worker_hosts[@]}"
+    ensure_worker_roles "$CLUSTER_OUT/admin.conf" "$WORKERS"
   fi
+  # Re-check after workers (late CP node registration can miss join-time label).
+  ensure_control_plane_roles "$CLUSTER_OUT/admin.conf" "$CONTROLPLANES"
 }
 
 # If the kube-vip ARP VIP became unreachable (busy IP, missing af_packet, …),
