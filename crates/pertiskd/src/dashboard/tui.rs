@@ -27,13 +27,15 @@ const REFRESH_MS: u64 = 2000;
 
 /// How often to force a full Serial repaint even when nothing changed.
 /// Proxmox xterm.js starts blank when you open/switch the console; without a
-/// forced dump the client never sees the last frame (we skip identical paints).
-const FORCE_REPAINT_EVERY: u32 = 1;
+/// periodic dump the client never sees the last frame. Keep this >> 1 —
+/// every-tick invalidate made the pane look like a blinking cursor.
+const FORCE_REPAINT_EVERY: u32 = 15;
 
-/// Hide cursor + disable blink (xterm).
+/// Hide cursor + disable blink (xterm / Proxmox Serial).
 ///
 /// Do **not** send DECSCUSR (`CSI 2 SP q`) — Proxmox Serial / xterm.js often
 /// fails to parse the space, and a literal `q` appears on screen.
+/// Re-assert often: xterm.js re-enables the cursor on focus / some CSI.
 const CURSOR_OFF: &str = "\x1b[?25l\x1b[?12l";
 
 /// Clear any stuck synchronized-update mode from a previous build.
@@ -110,6 +112,9 @@ fn run_tui_inner(
             if stop.load(Ordering::SeqCst) {
                 break;
             }
+            // Proxmox Serial / xterm.js often re-shows the cursor on focus;
+            // keep asserting hide between paints.
+            paint_console(CURSOR_OFF.as_bytes());
             thread::sleep(Duration::from_millis(100));
         }
         if stop.load(Ordering::SeqCst) {
@@ -150,8 +155,7 @@ fn run_tui_inner(
             .draw(|frame| panels::render_themed(frame, &snap, &recent, &skin))
             .map_err(|e| format!("TUI draw: {e}"))?;
         ticks = ticks.wrapping_add(1);
-        // Always re-send periodically so a newly opened Proxmox Serial tab
-        // is not stuck on a blank pane waiting for state to change.
+        // Periodic re-send so a newly opened Proxmox Serial tab is not blank.
         if ticks % FORCE_REPAINT_EVERY == 0 {
             writer.invalidate();
         }
@@ -266,15 +270,25 @@ impl FrameWriter {
 
     fn encode(&mut self, buf: &ratatui::buffer::Buffer, ascii_only: bool) -> Option<String> {
         let area = buf.area();
-        let mut out = String::with_capacity((area.width as usize + 8) * area.height as usize);
+        let mut out = String::with_capacity((area.width as usize + 16) * area.height as usize);
+        // Hide before home — Proxmox otherwise flashes a blink on the title border.
         out.push_str(CURSOR_OFF);
         out.push_str("\x1b[H");
+        out.push_str(CURSOR_OFF);
         for y in 0..area.height {
+            // Re-hide each row: xterm.js can re-show the cursor mid-frame.
+            out.push_str(CURSOR_OFF);
             out.push_str(&encode_row(buf, y, ascii_only));
-            out.push_str("\x1b[0m\x1b[K\r\n");
+            // Last row: no trailing \r\n (avoids scroll). Never CUP back to home.
+            if y + 1 < area.height {
+                out.push_str("\x1b[0m\x1b[K\r\n");
+            } else {
+                out.push_str("\x1b[0m\x1b[K");
+            }
         }
+        // Park bottom-right (not home) so a failed hide does not blink on top.
         out.push_str(CURSOR_OFF);
-        out.push_str("\x1b[H");
+        out.push_str(&format!("\x1b[{};{}H", area.height, area.width));
         out.push_str(CURSOR_OFF);
         if out == self.last {
             return None;
@@ -531,6 +545,15 @@ mod tests {
         let out = render_demo(80, 24, theme::ASCII);
         assert!(out.contains("\x1b[?25l"));
         assert!(!out.contains("\x1b[?25h"));
+        // Park bottom-right — not CUP home after paint (blinks on title if hide fails).
+        assert!(
+            out.contains("\x1b[24;80H"),
+            "expected cursor park at bottom-right: {out:?}"
+        );
+        assert!(
+            !out.ends_with("\x1b[H\x1b[?25l\x1b[?12l"),
+            "must not leave cursor at home"
+        );
     }
 
     #[test]
