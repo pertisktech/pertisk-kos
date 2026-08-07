@@ -532,6 +532,7 @@ impl VsphereClient {
         }
 
         let ok = node_ok && storage_ok;
+        // Standalone ESXi is almost always x86_64; leave override to the provider form.
         Ok(ProbeResult {
             ok,
             version: inv.version,
@@ -541,6 +542,7 @@ impl VsphereClient {
             node_ok,
             node_message,
             storage: storage_check,
+            arch: Some("amd64".into()),
         })
     }
 

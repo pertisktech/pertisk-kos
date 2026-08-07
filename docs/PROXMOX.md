@@ -6,7 +6,7 @@ Do **not** put Proxmox root passwords in git, chat, or scripts. Use an **API tok
 
 ## 1. Build a cloud disk
 
-On your build machine (Docker required):
+On your build machine (Docker required). Guest arch is `amd64` (default) or `arm64`:
 
 ```bash
 ./image/fetch-kernel.sh
@@ -20,7 +20,7 @@ PERTISK_EMBED_BOOT=1 PERTISK_EMBED_RUNTIME=1 ./image/build-initramfs.sh
 # → out/pertisk-cloud-amd64.qcow2
 ```
 
-Or: `make cloud ARCH=amd64` (fetches/embeds boot + containerd/kubelet, then builds qcow2).
+Or: `make cloud ARCH=amd64` / `make cloud ARCH=arm64` (fetches/embeds boot + containerd/kubelet, then builds qcow2).
 
 ## 2. Create a Proxmox API token
 
@@ -66,6 +66,10 @@ export PROXMOX_INSECURE=1
   --memory 4096 \
   --cores 2 \
   --bridge vmbr0
+
+# arm64 guest (PVE arm64 host, or amd64 host with pve-edk2-firmware-aarch64):
+ARCH=arm64 ./scripts/proxmox-upload-vm.sh \
+  --vmid 9200 --name lab-cp-1 --disk out/pertisk-cloud-arm64.qcow2
 ```
 
 Defaults: **4096 MB** / **2 vCPUs**. Role overrides: `--cp-memory` / `--cp-cores` / `--worker-memory` / `--worker-cores` and `--cp-disk-gb` / `--worker-disk-gb`.
@@ -75,10 +79,22 @@ Defaults: **4096 MB** / **2 vCPUs**. Role overrides: `--cp-memory` / `--cp-cores
 The script:
 
 1. Uploads the qcow2 to the datastore as an importable disk
-2. Creates a **q35** VM with **OVMF (UEFI)** and virtio NIC/disk
+2. Creates a UEFI VM: **amd64** → `arch=x86_64` / `machine=q35` / OVMF; **arm64** → `arch=aarch64` / `machine=virt` / AAVMF
 3. Attaches the imported disk and starts the VM (unless `--no-start`)
 
-Manual UI alternative: upload `pertisk-cloud-amd64.qcow2` to storage → Create VM (UEFI, q35) → attach disk → start.
+Arch is taken from `--arch`, `ARCH` / `PERTISK_ARCH`, or the disk filename (`*-arm64*` / `*-amd64*`).
+
+Manual UI alternative: upload `pertisk-cloud-amd64.qcow2` → Create VM (UEFI, q35) → attach disk → start. For arm64: UEFI + machine type **virt** (AAVMF).
+
+### arm64 notes
+
+- Build: `make cloud ARCH=arm64` → `out/pertisk-cloud-arm64.qcow2`
+- Lab / create-cluster: `--arch arm64` or `ARCH=arm64` / `PERTISK_ARCH=arm64`
+- Mgmt jobs forward `ARCH` / `PERTISK_ARCH` from the host environment into lab-up / add-node (`--arch`)
+- **Proxmox API tokens cannot set `arch=`** (`only root can set 'arch' config`). amd64 omits it (default x86_64). For arm64 pick one:
+  - **No SSH (like amd64):** one-time root template → `PROXMOX_ARM64_TEMPLATE=8900` → API clone (`scripts/proxmox-ensure-arm64-template.sh` on the PVE node)
+  - **SSH:** `PROXMOX_SSH=root@<pve>` so upload can `qm create --arch aarch64` (unset `PROXMOX_NO_SSH` / use deploy `--with-ssh`)
+- On **amd64** Proxmox hosts running aarch64 guests, install `pve-edk2-firmware-aarch64` and use **`cpu=max`** (not `cpu=host` — host CPU passthrough is same-arch only and causes guest kernel panic)
 
 ### Boot menu
 
@@ -235,10 +251,13 @@ Same qcow2 for control-plane and workers. Prefer VMIDs **210+** so lab VM 200 is
 ### 4a. Create VMs
 
 ```bash
-make cloud ARCH=amd64   # embed boot + runtime as usual
+make cloud ARCH=amd64   # or ARCH=arm64
 # Uses ./proxmox.sh for PROXMOX_* if not already exported (does not run its exec).
 ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
 # → 210 pertisk-cp-1, 211 pertisk-wk-1, 212 pertisk-wk-2
+
+# arm64 guests on Proxmox:
+./scripts/proxmox-create-cluster-vms.sh --arch arm64 --cp-vmid 210 --workers 2
 
 # HA (3 CP + 2 workers): VMIDs 210–212 CP, 213–214 workers
 ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --controlplanes 3 --workers 2 --no-lab-up
@@ -260,6 +279,8 @@ make cloud ARCH=amd64   # embed boot + runtime as usual
 # Needs ./proxmox.sh + ideally PROXMOX_SSH=root@<pve> for MAC→ARP IP lookup.
 # Optional: --subnet 10.1.1.0/24 for nmap ping-sweep fallback.
 make lab-up ARCH=amd64
+# arm64:
+make lab-up ARCH=arm64
 # or skip rebuild / reuse VMs:
 ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cp-vmid 210 --workers 2 --cni cilium
 # HA (pick a free L2 IP for kube-vip):

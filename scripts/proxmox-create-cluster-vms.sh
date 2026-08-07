@@ -7,6 +7,7 @@
 #
 # Examples:
 #   ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
+#   ./scripts/proxmox-create-cluster-vms.sh --arch arm64 --cp-vmid 210 --workers 2
 #   ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --controlplanes 3 --workers 2 --no-lab-up
 #   CNI=cilium ./scripts/proxmox-create-cluster-vms.sh --cp-vmid 210 --workers 2
 set -euo pipefail
@@ -48,7 +49,15 @@ CP_VMID="${CP_VMID:-210}"
 CONTROLPLANES="${CONTROLPLANES:-1}"
 WORKERS="${WORKERS:-2}"
 NAME_PREFIX="${NAME_PREFIX:-pertisk}"
-DISK="${PROXMOX_DISK:-${ROOT}/out/pertisk-cloud-amd64.qcow2}"
+# Guest arch: ARCH / PERTISK_ARCH (amd64|arm64). Default amd64.
+ARCH="${PERTISK_ARCH:-${ARCH:-amd64}}"
+case "$(printf '%s' "$ARCH" | tr '[:upper:]' '[:lower:]')" in
+  amd64|x86_64|x64) ARCH=amd64 ;;
+  arm64|aarch64) ARCH=arm64 ;;
+  *) echo "unsupported ARCH=${ARCH} (use amd64|arm64)" >&2; exit 1 ;;
+esac
+export PERTISK_ARCH="$ARCH"
+DISK="${PROXMOX_DISK:-${ROOT}/out/pertisk-cloud-${ARCH}.qcow2}"
 CP_DISK="${PROXMOX_CP_DISK:-}"
 WORKER_DISK="${PROXMOX_WORKER_DISK:-}"
 # Chain into bootstrap/join/CNI after VMs exist (disable with --no-lab-up).
@@ -61,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --controlplanes) CONTROLPLANES="$2"; shift 2 ;;
     --workers) WORKERS="$2"; shift 2 ;;
     --prefix) NAME_PREFIX="$2"; shift 2 ;;
+    --arch) ARCH="$2"; PERTISK_ARCH="$2"; shift 2 ;;
     --disk) DISK="$2"; shift 2 ;;
     --cp-disk) CP_DISK="$2"; shift 2 ;;
     --worker-disk) WORKER_DISK="$2"; shift 2 ;;
@@ -92,6 +102,7 @@ while [[ $# -gt 0 ]]; do
       cat <<EOF
 
 Sizing (prefer role-sized qcow2 via --cp-disk/--worker-disk; --*-disk-gb only grows):
+  --arch amd64|arm64                   guest arch (default ${ARCH}; env ARCH/PERTISK_ARCH)
   --memory MB / --cores N              defaults for both roles
   --cp-memory / --cp-cores             control-plane
   --worker-memory / --worker-cores     workers
@@ -100,12 +111,25 @@ Sizing (prefer role-sized qcow2 via --cp-disk/--worker-disk; --*-disk-gb only gr
   --disk-gb N                          grow scsi0 after import (env PROXMOX_DISK_GB)
   --cp-disk-gb N                       control-plane grow GiB (env PROXMOX_CP_DISK_GB)
   --worker-disk-gb N                   worker grow GiB (env PROXMOX_WORKER_DISK_GB)
+
+arm64: uses machine=virt + arch=aarch64 (AAVMF). Build: make cloud ARCH=arm64
 EOF
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
+
+case "$(printf '%s' "$ARCH" | tr '[:upper:]' '[:lower:]')" in
+  amd64|x86_64|x64) ARCH=amd64 ;;
+  arm64|aarch64) ARCH=arm64 ;;
+  *) echo "unsupported ARCH=${ARCH}" >&2; exit 1 ;;
+esac
+export PERTISK_ARCH="$ARCH"
+# If --disk was not set and still points at wrong-arch default, re-resolve.
+if [[ -z "${PROXMOX_DISK:-}" && "$DISK" == *pertisk-cloud-* && "$DISK" != *"pertisk-cloud-${ARCH}"* ]]; then
+  DISK="${ROOT}/out/pertisk-cloud-${ARCH}.qcow2"
+fi
 
 CP_MEMORY="${CP_MEMORY:-$MEMORY}"
 CP_CORES="${CP_CORES:-$CORES}"
@@ -122,11 +146,11 @@ if [[ -z "${PROXMOX_URL:-}" ]]; then
 fi
 
 if [[ ! -f "$CP_DISK" ]]; then
-  echo "CP disk not found: $CP_DISK (build with: make cloud ARCH=amd64 / lab-up without --skip-build)" >&2
+  echo "CP disk not found: $CP_DISK (build with: make cloud ARCH=${ARCH} / lab-up without --skip-build)" >&2
   exit 1
 fi
 if [[ ! -f "$WORKER_DISK" ]]; then
-  echo "worker disk not found: $WORKER_DISK (build with: make cloud ARCH=amd64 / lab-up without --skip-build)" >&2
+  echo "worker disk not found: $WORKER_DISK (build with: make cloud ARCH=${ARCH} / lab-up without --skip-build)" >&2
   exit 1
 fi
 if [[ ! -x "$UPLOAD" ]]; then
@@ -138,10 +162,12 @@ if [[ "$CONTROLPLANES" -lt 1 ]]; then
   exit 1
 fi
 
+echo "==> Proxmox create-cluster arch=${ARCH} prefix=${NAME_PREFIX}"
+
 for i in $(seq 1 "$CONTROLPLANES"); do
   cvid=$((CP_VMID + i - 1))
   echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${CP_DISK} mem=${CP_MEMORY} cores=${CP_CORES} disk-gb=${CP_DISK_GB:-image}"
-  UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$CP_DISK" --memory "$CP_MEMORY" --cores "$CP_CORES")
+  UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$CP_DISK" --arch "$ARCH" --memory "$CP_MEMORY" --cores "$CP_CORES")
   [[ -n "$CP_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$CP_DISK_GB")
   "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
@@ -149,7 +175,7 @@ done
 for i in $(seq 1 "$WORKERS"); do
   wvid=$((CP_VMID + CONTROLPLANES + i - 1))
   echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i} disk=${WORKER_DISK} mem=${WORKER_MEMORY} cores=${WORKER_CORES} disk-gb=${WORKER_DISK_GB:-image}"
-  UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$WORKER_DISK" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
+  UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$WORKER_DISK" --arch "$ARCH" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
   [[ -n "$WORKER_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$WORKER_DISK_GB")
   "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
@@ -174,6 +200,7 @@ LAB_ARGS=(
   --controlplanes "$CONTROLPLANES"
   --workers "$WORKERS"
   --prefix "$NAME_PREFIX"
+  --arch "$ARCH"
   --disk "$DISK"
   --cp-memory "$CP_MEMORY"
   --cp-cores "$CP_CORES"

@@ -23,20 +23,26 @@ use crate::dashboard::snapshot::StatusSnapshot;
 use crate::dashboard::{panels, probe, theme};
 use crate::log_ring::LogRing;
 
-const REFRESH_MS: u64 = 2000;
+/// Status refresh interval. Keep this slow: Proxmox Serial often ignores
+/// DECTCEM (`?25l`), so any full-frame paint walks a visible cursor.
+const REFRESH_MS: u64 = 5000;
 
 /// How often to force a full Serial repaint even when nothing changed.
 /// Proxmox xterm.js starts blank when you open/switch the console; without a
 /// periodic dump the client never sees the last frame. Keep this >> 1 —
 /// every-tick invalidate made the pane look like a blinking cursor.
-const FORCE_REPAINT_EVERY: u32 = 15;
+const FORCE_REPAINT_EVERY: u32 = 12;
 
 /// Hide cursor + disable blink (xterm / Proxmox Serial).
 ///
 /// Do **not** send DECSCUSR (`CSI 2 SP q`) — Proxmox Serial / xterm.js often
 /// fails to parse the space, and a literal `q` appears on screen.
-/// Re-assert often: xterm.js re-enables the cursor on focus / some CSI.
+/// Do **not** send OSC 12 (`ESC ] 12 ; … BEL`) — Proxmox prints `#1a1a1a`
+/// and rings the bell.
 const CURSOR_OFF: &str = "\x1b[?25l\x1b[?12l";
+/// Park far off-screen. Proxmox often ignores hide; parking is what keeps the
+/// blink from sitting on the dashboard chrome between paints.
+const CURSOR_PARK: &str = "\x1b[999;999H";
 
 /// Clear any stuck synchronized-update mode from a previous build.
 const UNSYNC: &str = "\x1b[?2026l";
@@ -112,9 +118,9 @@ fn run_tui_inner(
             if stop.load(Ordering::SeqCst) {
                 break;
             }
-            // Proxmox Serial / xterm.js often re-shows the cursor on focus;
-            // keep asserting hide between paints.
-            paint_console(CURSOR_OFF.as_bytes());
+            // Keep cursor parked off-screen between paints. Hide alone is not
+            // enough on Proxmox Serial (DECTCEM often ignored).
+            paint_console(format!("{CURSOR_OFF}{CURSOR_PARK}").as_bytes());
             thread::sleep(Duration::from_millis(100));
         }
         if stop.load(Ordering::SeqCst) {
@@ -254,46 +260,72 @@ fn mirror_vga(bytes: &[u8]) {
     }
 }
 
-/// Full-frame Serial dump: home + one `\r\n` per row (same shape as the text
-/// banner). Per-row CUP left Proxmox xterm.js blank on some builds; the
-/// newline walk is slightly blinkier but always visible with the cursor off.
+/// Serial dump for Proxmox xterm.js.
+///
+/// Prefer **per-row CUP** with an immediate off-screen park after each row.
+/// A home+\r\n walk leaves a visible cursor marching top→bottom when Proxmox
+/// ignores DECTCEM. Full home-walk is kept only as a fallback path via
+/// [`FrameWriter::invalidate`] (console reconnect).
 #[derive(Default)]
 struct FrameWriter {
-    last: String,
+    last_rows: Vec<String>,
+    force_full: bool,
 }
 
 impl FrameWriter {
     /// Forget the last frame so the next encode always emits (console reconnect).
     fn invalidate(&mut self) {
-        self.last.clear();
+        self.last_rows.clear();
+        self.force_full = true;
     }
 
     fn encode(&mut self, buf: &ratatui::buffer::Buffer, ascii_only: bool) -> Option<String> {
         let area = buf.area();
-        let mut out = String::with_capacity((area.width as usize + 16) * area.height as usize);
-        // Hide before home — Proxmox otherwise flashes a blink on the title border.
-        out.push_str(CURSOR_OFF);
-        out.push_str("\x1b[H");
-        out.push_str(CURSOR_OFF);
-        for y in 0..area.height {
-            // Re-hide each row: xterm.js can re-show the cursor mid-frame.
-            out.push_str(CURSOR_OFF);
-            out.push_str(&encode_row(buf, y, ascii_only));
-            // Last row: no trailing \r\n (avoids scroll). Never CUP back to home.
-            if y + 1 < area.height {
-                out.push_str("\x1b[0m\x1b[K\r\n");
-            } else {
-                out.push_str("\x1b[0m\x1b[K");
-            }
-        }
-        // Park bottom-right (not home) so a failed hide does not blink on top.
-        out.push_str(CURSOR_OFF);
-        out.push_str(&format!("\x1b[{};{}H", area.height, area.width));
-        out.push_str(CURSOR_OFF);
-        if out == self.last {
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| encode_row(buf, y, ascii_only))
+            .collect();
+        let full = self.force_full || self.last_rows.len() != rows.len();
+        if !full && rows == self.last_rows {
             return None;
         }
-        self.last = out.clone();
+
+        let mut out = String::with_capacity((area.width as usize + 24) * area.height as usize);
+        out.push_str(CURSOR_OFF);
+        if full {
+            // Reconnect / resize: one home + newline walk, then park.
+            out.push_str("\x1b[H");
+            out.push_str(CURSOR_OFF);
+            for (i, row) in rows.iter().enumerate() {
+                out.push_str(CURSOR_OFF);
+                out.push_str(row);
+                if i + 1 < rows.len() {
+                    out.push_str("\x1b[0m\x1b[K\r\n");
+                } else {
+                    out.push_str("\x1b[0m\x1b[K");
+                }
+            }
+        } else {
+            // Incremental: only rewrite dirty rows, park after each so a failed
+            // hide never leaves the cursor mid-panel.
+            for (i, row) in rows.iter().enumerate() {
+                if self.last_rows.get(i) == Some(row) {
+                    continue;
+                }
+                let y = i as u16 + 1;
+                out.push_str(CURSOR_OFF);
+                out.push_str(&format!("\x1b[{y};1H"));
+                out.push_str(row);
+                out.push_str("\x1b[0m\x1b[K");
+                out.push_str(CURSOR_OFF);
+                out.push_str(CURSOR_PARK);
+            }
+        }
+        out.push_str(CURSOR_OFF);
+        out.push_str(CURSOR_PARK);
+        out.push_str(CURSOR_OFF);
+
+        self.last_rows = rows;
+        self.force_full = false;
         Some(out)
     }
 }
@@ -545,10 +577,10 @@ mod tests {
         let out = render_demo(80, 24, theme::ASCII);
         assert!(out.contains("\x1b[?25l"));
         assert!(!out.contains("\x1b[?25h"));
-        // Park bottom-right — not CUP home after paint (blinks on title if hide fails).
+        // Park off-screen — not CUP home after paint (blinks on title if hide fails).
         assert!(
-            out.contains("\x1b[24;80H"),
-            "expected cursor park at bottom-right: {out:?}"
+            out.contains("\x1b[999;999H"),
+            "expected cursor park off-screen: {out:?}"
         );
         assert!(
             !out.ends_with("\x1b[H\x1b[?25l\x1b[?12l"),
@@ -577,20 +609,25 @@ mod tests {
     }
 
     #[test]
-    fn changed_log_repaints_full_frame() {
+    fn changed_log_repaints_dirty_rows() {
         let mut writer = FrameWriter::default();
         let first = draw_demo(80, 24, theme::ASCII, &demo_logs());
-        writer.encode(first.backend().buffer(), true).unwrap();
+        let full = writer.encode(first.backend().buffer(), true).unwrap();
+        assert!(full.contains("\x1b[H"), "first paint is full-frame");
 
         let mut logs = demo_logs();
         logs.push("INFO one more line".into());
         let second = draw_demo(80, 24, theme::ASCII, &logs);
         let out = writer.encode(second.backend().buffer(), true).unwrap();
         assert!(
-            out.contains("pertisk-node-01"),
-            "full-frame dump still includes node"
+            !out.contains("\x1b[H"),
+            "incremental paint must not home-walk: {out:?}"
         );
         assert!(out.contains("one more line"), "new log missing: {out:?}");
+        assert!(
+            out.contains("\x1b[999;999H"),
+            "incremental must park off-screen"
+        );
     }
 
     fn strip_escapes(line: &str) -> String {

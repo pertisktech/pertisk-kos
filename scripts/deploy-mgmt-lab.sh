@@ -39,6 +39,7 @@ Flags:
   --subnet CIDR        LAB_SUBNET for MAC→IP without SSH (default ${LAB_SUBNET})
   --cp-gb N            (default ${CP_GB})
   --worker-gb N        (default ${WORKER_GB})
+  --arch ARCH          amd64|arm64 (default ${ARCH}; env ARCH/PERTISK_ARCH)
   -h, --help
 EOF
   exit 0
@@ -56,10 +57,18 @@ while [[ $# -gt 0 ]]; do
     --with-ssh) WITH_SSH=1; shift ;;
     --cp-gb) CP_GB="$2"; shift 2 ;;
     --worker-gb) WORKER_GB="$2"; shift 2 ;;
+    --arch) ARCH="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
 done
+
+case "$(printf '%s' "$ARCH" | tr '[:upper:]' '[:lower:]')" in
+  amd64|x86_64|x64) ARCH=amd64 ;;
+  arm64|aarch64) ARCH=arm64 ;;
+  *) echo "unsupported --arch=${ARCH} (use amd64|arm64)" >&2; exit 1 ;;
+esac
+export PERTISK_ARCH="$ARCH" ARCH="$ARCH"
 
 [[ -n "$MGMT_HOST" ]] || { echo "ERROR: set --mgmt USER@HOST" >&2; exit 1; }
 if [[ "$WITH_SSH" == "1" && -z "$PVE_HOST" ]]; then
@@ -179,11 +188,13 @@ mgmt:     ${MGMT_HOST}
 images:   /var/lib/pertisk-mgmt/images/pertisk-cloud-${ARCH}*.qcow2
 disk:     Proxmox API upload → local → import-from → provider storage
           (no scp to PVE; like Omni infra provider)
+$([ "$WITH_SSH" == "1" ] && echo "ssh:      PROXMOX_SSH=${PVE_SSH} (arm64 qm create / arch=aarch64)" || true)
 
 Next:
-  1. UI → Providers → add Proxmox (URL / API token / node / storage)
+  1. UI → Providers → add Proxmox (URL / API token / node / storage / guest arch)
      Ensure storage "local" allows content type Import (Datacenter → Storage).
-  2. Clusters → Create (use a free VIP if CP>1)
-  3. Job log should show: API upload content=import → storage=local
+  2. For arm64: verify  sudo -u pertisk-mgmt -H ssh -o BatchMode=yes root@<pve> true
+  3. Clusters → Create
+  4. Job log: arch=arm64 + qm create via SSH (or API upload for amd64)
 
 EOF

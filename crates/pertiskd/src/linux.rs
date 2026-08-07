@@ -403,7 +403,20 @@ mod linux_impl {
     pub fn redirect_stdio_serial() -> Result<()> {
         use std::os::unix::io::AsRawFd;
 
-        for path in ["/dev/ttyS0", "/dev/console", "/dev/tty0"] {
+        // Order matters: on aarch64 `virt`, the real console is PL011 (ttyAMA0).
+        // The 8250 driver still creates /dev/ttyS0, so preferring ttyS0 sends all
+        // eprintln!/panic output to a dead UART while Proxmox Serial stays silent.
+        #[cfg(target_arch = "aarch64")]
+        const CANDIDATES: &[&str] = &[
+            "/dev/ttyAMA0",
+            "/dev/console",
+            "/dev/ttyS0",
+            "/dev/tty0",
+        ];
+        #[cfg(not(target_arch = "aarch64"))]
+        const CANDIDATES: &[&str] = &["/dev/ttyS0", "/dev/console", "/dev/tty0"];
+
+        for path in CANDIDATES {
             let Ok(file) = fs::OpenOptions::new().read(true).write(true).open(path) else {
                 continue;
             };
@@ -418,7 +431,7 @@ mod linux_impl {
             eprintln!("pertiskd: stdio -> {path}");
             return Ok(());
         }
-        eprintln!("pertiskd: no ttyS0/console for stdio redirect");
+        eprintln!("pertiskd: no serial/console tty for stdio redirect");
         Ok(())
     }
 

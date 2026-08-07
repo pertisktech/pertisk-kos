@@ -37,6 +37,7 @@ MEMORY=8192
 CORES=4
 DISK_GB=""
 DISK=""
+ARCH=""
 CLUSTER_OUT=""
 CLUSTER_NAME=""
 CP_IP=""
@@ -55,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --cores) CORES="$2"; shift 2 ;;
     --disk-gb) DISK_GB="$2"; shift 2 ;;
     --disk) DISK="$2"; shift 2 ;;
+    --arch) ARCH="$2"; shift 2 ;;
     --cluster-out) CLUSTER_OUT="$2"; shift 2 ;;
     --cluster-name) CLUSTER_NAME="$2"; shift 2 ;;
     --cp-ip) CP_IP="$2"; shift 2 ;;
@@ -62,6 +64,10 @@ while [[ $# -gt 0 ]]; do
     --bridge) BRIDGE="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,18p' "$0"
+      cat <<EOF
+
+  --arch amd64|arm64   guest arch (default from ARCH/PERTISK_ARCH or amd64)
+EOF
       exit 0
       ;;
     *) die "unknown arg: $1" ;;
@@ -79,7 +85,13 @@ done
 : "${PROXMOX_TOKEN_SECRET:?set PROXMOX_TOKEN_SECRET}"
 : "${PROXMOX_NODE:?set PROXMOX_NODE}"
 
-ARCH="${PERTISK_ARCH:-amd64}"
+ARCH="${ARCH:-${PERTISK_ARCH:-amd64}}"
+case "$(printf '%s' "$ARCH" | tr '[:upper:]' '[:lower:]')" in
+  amd64|x86_64|x64) ARCH=amd64 ;;
+  arm64|aarch64) ARCH=arm64 ;;
+  *) die "unsupported --arch=${ARCH} (use amd64|arm64)" ;;
+esac
+export PERTISK_ARCH="$ARCH"
 IMAGES_DIR="${PERTISK_IMAGES_DIR:-${PROXMOX_IMAGES_DIR:-}}"
 if [[ -z "$IMAGES_DIR" ]]; then
   for _img_d in /var/lib/pertisk-mgmt/images "${ROOT}/out" "${ROOT}/images"; do
@@ -115,8 +127,8 @@ if [[ -z "$DISK" ]]; then
   DISK="${DISK:-${IMAGES_DIR}/pertisk-cloud-${ARCH}.qcow2}"
 fi
 unset _cand
-[[ -f "$DISK" ]] || die "disk not found: $DISK (set PROXMOX_DISK or copy qcow2 into ${IMAGES_DIR}/)"
-log "disk=${DISK}"
+[[ -f "$DISK" ]] || die "disk not found: $DISK (set PROXMOX_DISK or copy qcow2 into ${IMAGES_DIR}/; make cloud ARCH=${ARCH})"
+log "arch=${ARCH} disk=${DISK}"
 
 # Auto subnet / optional SSH (API disk import by default — same as lab-up).
 PVE_HOST="${PROXMOX_URL#*://}"
@@ -306,11 +318,12 @@ set_hostname_yaml() {
 mkdir -p "$CLUSTER_OUT"
 command -v jq >/dev/null || die "jq required"
 
-log "create ${ROLE} VMID=${VMID} name=${NAME} mem=${MEMORY} cores=${CORES} disk=${DISK} disk-gb=${DISK_GB:-image}"
+log "create ${ROLE} VMID=${VMID} name=${NAME} arch=${ARCH} mem=${MEMORY} cores=${CORES} disk=${DISK} disk-gb=${DISK_GB:-image}"
 UPLOAD_ARGS=(
   --vmid "$VMID"
   --name "$NAME"
   --disk "$DISK"
+  --arch "$ARCH"
   --memory "$MEMORY"
   --cores "$CORES"
   --bridge "$BRIDGE"

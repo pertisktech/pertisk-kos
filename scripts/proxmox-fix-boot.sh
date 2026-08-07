@@ -7,6 +7,8 @@ set -euo pipefail
 
 VMID="${1:?usage: $0 <vmid>}"
 SSH_HOST="${PROXMOX_SSH:-}"
+# Guest arch: env or inferred from existing qm config (arch: aarch64 → arm64).
+ARCH="${PERTISK_ARCH:-${ARCH:-}}"
 
 # Run a whole script on the node in one SSH session (one password prompt).
 remote_bash() {
@@ -26,6 +28,7 @@ echo "==> fixing boot for VM ${VMID}"
 remote_bash "
 VMID=${VMID}
 STORAGE=${PROXMOX_STORAGE:-local-zfs}
+ARCH_HINT=${ARCH}
 
 qm stop \"\${VMID}\" >/dev/null 2>&1 || true
 for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -35,6 +38,22 @@ done
 
 CONF=\$(qm config \"\${VMID}\")
 echo \"\$CONF\" | sed -n '1,40p'
+
+# Resolve machine type from guest arch (arm64 → virt/AAVMF; amd64 → q35/OVMF).
+GUEST_ARCH=\$(echo \"\$CONF\" | sed -n 's/^arch: *//p' | head -1)
+if [[ -z \"\$GUEST_ARCH\" && -n \"\$ARCH_HINT\" ]]; then
+  case \"\$(printf '%s' \"\$ARCH_HINT\" | tr '[:upper:]' '[:lower:]')\" in
+    arm64|aarch64) GUEST_ARCH=aarch64 ;;
+    *) GUEST_ARCH=x86_64 ;;
+  esac
+fi
+GUEST_ARCH=\${GUEST_ARCH:-x86_64}
+if [[ \"\$GUEST_ARCH\" == \"aarch64\" ]]; then
+  PVE_MACHINE=virt
+else
+  PVE_MACHINE=q35
+fi
+echo \"==> arch=\${GUEST_ARCH} machine=\${PVE_MACHINE}\"
 
 # Attach largest unused disk as scsi0 if scsi0 is missing OR scsi0 is tiny (<1GiB).
 SCSI0=\$(echo \"\$CONF\" | sed -n 's/^scsi0: \\([^,]*\\).*/\\1/p')
@@ -75,7 +94,7 @@ if [[ \"\$NEED_ATTACH\" == \"1\" ]]; then
   fi
 fi
 
-qm set \"\${VMID}\" --bios ovmf --machine q35
+qm set \"\${VMID}\" --bios ovmf --machine \"\${PVE_MACHINE}\"
 qm set \"\${VMID}\" --scsihw virtio-scsi-single
 qm set \"\${VMID}\" --boot order=scsi0
 qm set \"\${VMID}\" --serial0 socket --vga serial0
@@ -92,7 +111,7 @@ else
 fi
 
 echo \"==> final config (disks/boot):\"
-qm config \"\${VMID}\" | grep -E '^(scsi|unused|efidisk|boot|bios|machine|serial|vga):' || true
+qm config \"\${VMID}\" | grep -E '^(scsi|unused|efidisk|boot|bios|machine|serial|vga|arch):' || true
 
 qm start \"\${VMID}\"
 echo \"==> started \${VMID}\"

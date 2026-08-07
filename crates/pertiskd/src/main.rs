@@ -37,6 +37,28 @@ use services::NodeServices;
 
 static LOG_RING: OnceLock<LogRing> = OnceLock::new();
 
+fn parse_args_safe() -> Args {
+    let filtered: Vec<std::ffi::OsString> = std::env::args_os()
+        .enumerate()
+        .filter(|(i, a)| {
+            if *i == 0 {
+                return true;
+            }
+            let s = a.to_string_lossy();
+            // Our flags are `--foo`; kernel leftovers look like `key=value`.
+            s.starts_with('-')
+        })
+        .map(|(_, a)| a)
+        .collect();
+    match Args::try_parse_from(&filtered) {
+        Ok(a) => a,
+        Err(_) => {
+            eprintln!("pertiskd: arg parse warning (using defaults)");
+            Args::parse_from(["pertiskd"])
+        }
+    }
+}
+
 fn log_ring() -> &'static LogRing {
     LOG_RING.get_or_init(LogRing::default)
 }
@@ -116,19 +138,55 @@ struct Args {
 
 fn main() {
     let pid = process::id();
-    if let Err(err) = run() {
-        eprintln!("pertiskd fatal: {err:#}");
-        if pid != 1 {
-            process::exit(1);
+    // Fan out panic text to every console path before stdio redirect — otherwise
+    // aarch64 virt (ttyAMA0) never shows Rust's default stderr panic (exit 101).
+    install_console_panic_hook();
+    let run_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+    match run_result {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            eprintln!("pertiskd fatal: {err:#}");
+            if pid != 1 {
+                process::exit(1);
+            }
+            // PID 1 must never exit — that becomes "Attempted to kill init".
+            eprintln!("pertiskd: staying alive as PID 1 after fatal error");
         }
-        // PID 1 must never exit — that becomes "Attempted to kill init".
-        eprintln!("pertiskd: staying alive as PID 1 after fatal error");
+        Err(_) => {
+            eprintln!("pertiskd: panicked (see panic hook output)");
+            if pid != 1 {
+                process::exit(101);
+            }
+            eprintln!("pertiskd: staying alive as PID 1 after panic");
+        }
     }
     if pid == 1 {
         loop {
             thread::sleep(std::time::Duration::from_secs(3600));
         }
     }
+}
+
+fn install_console_panic_hook() {
+    use std::io::Write;
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = format!("pertiskd PANIC: {info}\n");
+        for path in [
+            "/dev/ttyAMA0",
+            "/dev/console",
+            "/dev/ttyS0",
+            "/dev/tty0",
+        ] {
+            if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(path) {
+                let _ = f.write_all(msg.as_bytes());
+                let _ = f.flush();
+            }
+        }
+        // Still print via stderr in case it is already redirected.
+        let _ = std::io::stderr().write_all(msg.as_bytes());
+        default(info);
+    }));
 }
 
 fn run() -> Result<()> {
@@ -138,7 +196,10 @@ fn run() -> Result<()> {
     if pid == 1 {
         // Kernel starts init with an empty PATH; udhcpc lives in /usr/sbin.
         if std::env::var_os("PATH").is_none() {
-            std::env::set_var("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
+            // SAFETY: single-threaded PID 1 boot; no concurrent env readers yet.
+            unsafe {
+                std::env::set_var("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
+            }
         }
         if let Err(err) = linux::prepare_filesystem() {
             eprintln!("pertiskd: filesystem prepare failed: {err:#}");
@@ -157,14 +218,11 @@ fn run() -> Result<()> {
 
     init_tracing();
 
-    // Kernel may forward leftover cmdline tokens; never let clap exit PID 1.
-    let args = match Args::try_parse() {
-        Ok(a) => a,
-        Err(err) => {
-            eprintln!("pertiskd: arg parse warning (using defaults): {err}");
-            Args::parse_from(["pertiskd"])
-        }
-    };
+    // Kernel forwards unrecognized cmdline tokens to PID 1 as argv (e.g.
+    // `console=ttyAMA0`). Clap treats those as unknown args; formatting the
+    // error can panic inside clap (exit 101 → "Attempted to kill init").
+    // Keep argv0 + dash-options only.
+    let args = parse_args_safe();
     let is_pid1 = pid == 1 || args.force_init;
 
     info!(

@@ -2,12 +2,27 @@
 # Re-attach Pertisk cloud disk to an existing Proxmox VM (when scsi0 is missing).
 #
 #   PROXMOX_SSH=root@10.1.1.197 ./scripts/proxmox-reattach-disk.sh 9100 out/pertisk-cloud-amd64.qcow2
+#   ARCH=arm64 PROXMOX_SSH=root@pve ./scripts/proxmox-reattach-disk.sh 9200 out/pertisk-cloud-arm64.qcow2
 set -euo pipefail
 
 VMID="${1:?usage: $0 <vmid> <disk.qcow2>}"
 DISK="${2:?usage: $0 <vmid> <disk.qcow2>}"
 SSH_HOST="${PROXMOX_SSH:?set PROXMOX_SSH=root@host}"
 STORAGE="${PROXMOX_STORAGE:-local-zfs}"
+ARCH="${PERTISK_ARCH:-${ARCH:-}}"
+if [[ -z "$ARCH" ]]; then
+  base="$(basename "$DISK")"
+  if [[ "$base" == *arm64* || "$base" == *aarch64* ]]; then
+    ARCH=arm64
+  else
+    ARCH=amd64
+  fi
+fi
+case "$(printf '%s' "$ARCH" | tr '[:upper:]' '[:lower:]')" in
+  amd64|x86_64|x64) ARCH=amd64; PVE_MACHINE=q35; PVE_ARCH=x86_64 ;;
+  arm64|aarch64) ARCH=arm64; PVE_MACHINE=virt; PVE_ARCH=aarch64 ;;
+  *) echo "unsupported ARCH=${ARCH}" >&2; exit 1 ;;
+esac
 
 [[ -f "${DISK}" ]] || {
   echo "missing ${DISK}" >&2
@@ -16,7 +31,7 @@ STORAGE="${PROXMOX_STORAGE:-local-zfs}"
 
 REMOTE="/var/tmp/pertisk-${VMID}.qcow2"
 
-echo "==> stop VM ${VMID}"
+echo "==> stop VM ${VMID} (arch=${ARCH} machine=${PVE_MACHINE})"
 ssh -o StrictHostKeyChecking=accept-new "${SSH_HOST}" "qm stop ${VMID} >/dev/null 2>&1 || true; sleep 2"
 
 echo "==> scp $(basename "${DISK}") → ${SSH_HOST}:${REMOTE}"
@@ -28,6 +43,8 @@ set -euo pipefail
 VMID=${VMID}
 STORAGE=${STORAGE}
 REMOTE=${REMOTE}
+PVE_MACHINE=${PVE_MACHINE}
+PVE_ARCH=${PVE_ARCH}
 
 qm importdisk "\${VMID}" "\${REMOTE}" "\${STORAGE}" --format qcow2
 rm -f "\${REMOTE}"
@@ -65,7 +82,7 @@ qm set "\${VMID}" --scsihw virtio-scsi-single
 qm set "\${VMID}" --scsi0 "\${UVAL}"
 qm set "\${VMID}" --delete "\${UKEY}" || true
 qm set "\${VMID}" --boot order=scsi0
-qm set "\${VMID}" --bios ovmf --machine q35
+qm set "\${VMID}" --arch "\${PVE_ARCH}" --bios ovmf --machine "\${PVE_MACHINE}"
 qm set "\${VMID}" --serial0 socket --vga serial0
 
 # Ensure EFI vars without Secure Boot MS keys

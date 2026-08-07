@@ -52,6 +52,7 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             bridge TEXT NOT NULL DEFAULT 'vmbr0',
             insecure INTEGER NOT NULL DEFAULT 0,
             defaults_json TEXT NOT NULL DEFAULT '{}',
+            arch TEXT NOT NULL DEFAULT 'amd64',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -79,6 +80,7 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             error TEXT,
             network_mode TEXT NOT NULL DEFAULT 'ipv4',
             max_pods INTEGER NOT NULL DEFAULT 250,
+            arch TEXT NOT NULL DEFAULT 'amd64',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -124,6 +126,16 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     .await;
     let _ = sqlx::query(
         "ALTER TABLE clusters ADD COLUMN max_pods INTEGER NOT NULL DEFAULT 250",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "ALTER TABLE clusters ADD COLUMN arch TEXT NOT NULL DEFAULT 'amd64'",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "ALTER TABLE providers ADD COLUMN arch TEXT NOT NULL DEFAULT 'amd64'",
     )
     .execute(pool)
     .await;

@@ -40,7 +40,7 @@ if [[ "${PERTISK_FORCE_KERNEL:-0}" != "1" ]]; then
   # fscache+netfs: required deps for nfs on linux-virt 6.6+
   # vmwgfx/simpledrm: ESXi Host Client VGA (CONFIG_FB=m — without these the
   # console freezes at "EFI stub: Loaded initrd..." even when the guest is fine)
-  [[ -f "${MODULES_OUT}/virtio_net.ko" && -f "${MODULES_OUT}/sd_mod.ko" && -f "${MODULES_OUT}/t10-pi.ko" && -f "${MODULES_OUT}/crc64.ko" && -f "${MODULES_OUT}/ext4.ko" && -f "${MODULES_OUT}/jbd2.ko" && -f "${MODULES_OUT}/overlay.ko" && -f "${MODULES_OUT}/vxlan.ko" && -f "${MODULES_OUT}/nf_tables.ko" && -f "${MODULES_OUT}/br_netfilter.ko" && -f "${MODULES_OUT}/x_tables.ko" && -f "${MODULES_OUT}/xt_tcpudp.ko" && -f "${MODULES_OUT}/xt_CT.ko" && -f "${MODULES_OUT}/xfrm_user.ko" && -f "${MODULES_OUT}/af_packet.ko" && -f "${MODULES_OUT}/nfs.ko" && -f "${MODULES_OUT}/nfsv3.ko" && -f "${MODULES_OUT}/nfsv4.ko" && -f "${MODULES_OUT}/sunrpc.ko" && -f "${MODULES_OUT}/fscache.ko" && -f "${MODULES_OUT}/netfs.ko" && -f "${MODULES_OUT}/mptspi.ko" && -f "${MODULES_OUT}/e1000e.ko" && -f "${MODULES_OUT}/vmxnet3.ko" && -f "${MODULES_OUT}/vmwgfx.ko" && -f "${MODULES_OUT}/simpledrm.ko" && -f "${MODULES_OUT}/version" ]] && NEED_MODULES=0
+  [[ -f "${MODULES_OUT}/virtio_net.ko" && -f "${MODULES_OUT}/scsi_common.ko" && -f "${MODULES_OUT}/scsi_mod.ko" && -f "${MODULES_OUT}/virtio_scsi.ko" && -f "${MODULES_OUT}/sd_mod.ko" && -f "${MODULES_OUT}/t10-pi.ko" && -f "${MODULES_OUT}/crc64.ko" && -f "${MODULES_OUT}/ext4.ko" && -f "${MODULES_OUT}/jbd2.ko" && -f "${MODULES_OUT}/overlay.ko" && -f "${MODULES_OUT}/vxlan.ko" && -f "${MODULES_OUT}/nf_tables.ko" && -f "${MODULES_OUT}/br_netfilter.ko" && -f "${MODULES_OUT}/x_tables.ko" && -f "${MODULES_OUT}/xt_tcpudp.ko" && -f "${MODULES_OUT}/xt_CT.ko" && -f "${MODULES_OUT}/xfrm_user.ko" && -f "${MODULES_OUT}/af_packet.ko" && -f "${MODULES_OUT}/nfs.ko" && -f "${MODULES_OUT}/nfsv3.ko" && -f "${MODULES_OUT}/nfsv4.ko" && -f "${MODULES_OUT}/sunrpc.ko" && -f "${MODULES_OUT}/fscache.ko" && -f "${MODULES_OUT}/netfs.ko" && -f "${MODULES_OUT}/mptspi.ko" && -f "${MODULES_OUT}/e1000e.ko" && -f "${MODULES_OUT}/vmxnet3.ko" && -f "${MODULES_OUT}/vmwgfx.ko" && -f "${MODULES_OUT}/simpledrm.ko" && -f "${MODULES_OUT}/version" ]] && NEED_MODULES=0
 fi
 
 # Kernel and modules must come from the same linux-virt package (vermagic).
@@ -115,7 +115,8 @@ docker run --rm --platform "${PLATFORM}" \
     # + NFS client: kubernetes.io/nfs + nfs-subdir-external-provisioner
     #   (mount fails with "No such device" without nfs.ko / sunrpc)
     # + ESXi/QEMU VGA: simpledrm + vmwgfx (CONFIG_FB=m; Host Client past EFI stub)
-    for name in failover net_failover virtio_net virtio_scsi virtio_blk sd_mod \
+    for name in failover net_failover virtio_net \
+                scsi_common scsi_mod virtio_scsi virtio_blk sd_mod \
                 scsi_transport_spi mptbase mptscsih mptspi \
                 e1000e vmxnet3 \
                 simpledrm vmwgfx \

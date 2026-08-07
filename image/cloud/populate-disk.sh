@@ -129,9 +129,19 @@ cp "${BOOT_ASSETS}/initramfs" /mnt/pertisk-efi/pertisk/A/initramfs
 cp "${BOOT_ASSETS}/kernel" /mnt/pertisk-boot-a/kernel
 cp "${BOOT_ASSETS}/initramfs" /mnt/pertisk-boot-a/initramfs
 
-# Last console= becomes /dev/console for userspace — keep ttyS0 last for Proxmox serial.
-# IPv4-only vs dual-stack is decided at runtime (sysctl), not via cmdline.
-CMDLINE="${PERTISK_CMDLINE:-console=tty0 console=ttyS0 rdinit=/init}"
+# Last console= becomes /dev/console for userspace.
+# amd64/Proxmox serial: ttyS0. aarch64 virt (PL011): ttyAMA0 (keep ttyS0 too for Proxmox serial0).
+case "${ARCH}" in
+  arm64|aarch64)
+    # ttyAMA0 = PL011 (QEMU/Proxmox virt). earlycon so EFI→kernel handoff is visible.
+    # arm64.nopauth: host CPUs with QARMA3 PAuth (e.g. Cortex-A720) can trip older
+    # userspace; disable PAC in the guest kernel as a safe default for virt.
+    CMDLINE="${PERTISK_CMDLINE:-earlycon=pl011,0x09000000 console=tty0 console=ttyAMA0 console=ttyS0 arm64.nopauth rdinit=/init}"
+    ;;
+  *)
+    CMDLINE="${PERTISK_CMDLINE:-console=tty0 console=ttyS0 rdinit=/init}"
+    ;;
+esac
 cat >/mnt/pertisk-efi/loader/entries/pertisk-a.conf <<EOF
 title Pertisk KOS (slot A)
 linux /pertisk/A/kernel

@@ -63,7 +63,14 @@ MAX_PODS="${MAX_PODS:-}"
 K8S_VER="${K8S_VER:-v1.36.3}"
 CNI="${CNI:-cilium}"          # cilium | calico | flannel | none
 CALICO_VERSION="${CALICO_VERSION:-v3.29.3}"
-ARCH="${ARCH:-amd64}"
+# Guest arch: ARCH / PERTISK_ARCH (amd64|arm64). Default amd64.
+ARCH="${PERTISK_ARCH:-${ARCH:-amd64}}"
+case "$(printf '%s' "$ARCH" | tr '[:upper:]' '[:lower:]')" in
+  amd64|x86_64|x64) ARCH=amd64 ;;
+  arm64|aarch64) ARCH=arm64 ;;
+  *) echo "unsupported ARCH=${ARCH} (use amd64|arm64)" >&2; exit 1 ;;
+esac
+export PERTISK_ARCH="$ARCH"
 # Cloud images: RPM puts qcow2 under /var/lib/pertisk-mgmt/images; local builds use $ROOT/out.
 IMAGES_DIR="${PERTISK_IMAGES_DIR:-${PROXMOX_IMAGES_DIR:-}}"
 if [[ -z "$IMAGES_DIR" ]]; then
@@ -76,6 +83,7 @@ if [[ -z "$IMAGES_DIR" ]]; then
 fi
 IMAGES_DIR="${IMAGES_DIR:-${ROOT}/out}"
 DISK="${PROXMOX_DISK:-}"
+DISK_FROM_CLI=0
 if [[ -z "$DISK" ]]; then
   for _cand in \
     "${IMAGES_DIR}/pertisk-cloud-${ARCH}.qcow2" \
@@ -113,6 +121,7 @@ Flags:
   --workers N         worker count (default ${WORKERS})
   --prefix NAME       Proxmox VM name prefix (default ${NAME_PREFIX})
   --cluster NAME      Kubernetes / hostname prefix (default ${CLUSTER_NAME})
+  --arch amd64|arm64  guest arch (default ${ARCH}; env ARCH/PERTISK_ARCH)
   --cni NAME          cilium|calico|flannel|none (default ${CNI})
   --k8s VER           kubernetesVersion for gen config (default ${K8S_VER})
   --max-pods N        kubelet maxPods (machine.kubelet.extraConfig.maxPods)
@@ -135,6 +144,7 @@ Flags:
 Env: PROXMOX_*, PROXMOX_SSH, APPS (space/comma-separated kubectl apply paths)
      CALICO_VERSION (default ${CALICO_VERSION})
      CONTROLPLANES, VIP, VIP6, DUAL_STACK=1
+     ARCH / PERTISK_ARCH (amd64|arm64; arm64 → machine=virt + AAVMF)
      PROXMOX_MEMORY / PROXMOX_CORES (defaults for both roles)
      PROXMOX_CP_MEMORY / PROXMOX_CP_CORES / PROXMOX_WORKER_MEMORY / PROXMOX_WORKER_CORES
      PROXMOX_CP_DISK_GB / PROXMOX_WORKER_DISK_GB / PERTISK_DISK_GB
@@ -153,10 +163,11 @@ while [[ $# -gt 0 ]]; do
     --workers) WORKERS="$2"; shift 2 ;;
     --prefix) NAME_PREFIX="$2"; PREFIX_SET=1; shift 2 ;;
     --cluster) CLUSTER_NAME="$2"; shift 2 ;;
+    --arch) ARCH="$2"; shift 2 ;;
     --cni) CNI="$2"; shift 2 ;;
     --k8s) K8S_VER="$2"; shift 2 ;;
     --max-pods) MAX_PODS="$2"; shift 2 ;;
-    --disk) DISK="$2"; shift 2 ;;
+    --disk) DISK="$2"; DISK_FROM_CLI=1; shift 2 ;;
     --memory) MEMORY="$2"; shift 2 ;;
     --cores) CORES="$2"; shift 2 ;;
     --cp-memory) CP_MEMORY="$2"; shift 2 ;;
@@ -174,6 +185,28 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
 done
+
+case "$(printf '%s' "$ARCH" | tr '[:upper:]' '[:lower:]')" in
+  amd64|x86_64|x64) ARCH=amd64 ;;
+  arm64|aarch64) ARCH=arm64 ;;
+  *) echo "unsupported --arch=${ARCH} (use amd64|arm64)" >&2; exit 1 ;;
+esac
+export PERTISK_ARCH="$ARCH" ARCH="$ARCH"
+
+# Re-resolve default disk if --arch changed and --disk / PROXMOX_DISK were not set.
+if [[ "$DISK_FROM_CLI" != "1" && -z "${PROXMOX_DISK:-}" ]]; then
+  DISK=""
+  for _cand in \
+    "${IMAGES_DIR}/pertisk-cloud-${ARCH}.qcow2" \
+    "${ROOT}/out/pertisk-cloud-${ARCH}.qcow2"; do
+    if [[ -f "$_cand" ]]; then
+      DISK="$_cand"
+      break
+    fi
+  done
+  DISK="${DISK:-${IMAGES_DIR}/pertisk-cloud-${ARCH}.qcow2}"
+  unset _cand
+fi
 
 # Proxmox VM names follow cluster name unless --prefix was set explicitly.
 if [[ "$PREFIX_SET" -eq 0 ]]; then
@@ -923,6 +956,7 @@ step_vms() {
     --controlplanes "$CONTROLPLANES"
     --workers "$WORKERS"
     --prefix "$NAME_PREFIX"
+    --arch "$ARCH"
     --disk "$DISK"
     --cp-disk "$CP_DISK"
     --worker-disk "$WORKER_DISK"

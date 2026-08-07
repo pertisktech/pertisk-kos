@@ -31,6 +31,9 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) {
         "PROXMOX_SSH_AUTO",
         "LAB_SUBNET",
         "PROXMOX_IMAGES_DIR",
+        "ARCH",
+        "PERTISK_ARCH",
+        "PROXMOX_ARM64_TEMPLATE",
     ] {
         if let Ok(v) = std::env::var(key) {
             if !v.is_empty() {
@@ -308,7 +311,8 @@ async fn run_create_cluster(
         r#"SELECT id, name, provider_id, controlplanes, workers, vip, vip6, cni, k8s_version,
                   cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb, cp_vmid,
                   COALESCE(network_mode, 'ipv4') as network_mode,
-                  COALESCE(max_pods, 250) as max_pods
+                  COALESCE(max_pods, 250) as max_pods,
+                  COALESCE(arch, 'amd64') as arch
            FROM clusters WHERE id = ?"#,
     )
     .bind(cid)
@@ -406,6 +410,60 @@ async fn run_create_cluster(
     if dual {
         cmd.arg("--dual-stack");
     }
+    // Guest arch from cluster (UI). Optional ops override: PERTISK_ARCH=arm64|amd64.
+    let guest_arch = std::env::var("PERTISK_ARCH")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| cluster.arch.clone());
+    let guest_arch = match guest_arch.to_ascii_lowercase().as_str() {
+        "arm64" | "aarch64" => "arm64",
+        _ => "amd64",
+    };
+    cmd.arg("--arch").arg(guest_arch);
+    cmd.env("PERTISK_ARCH", guest_arch).env("ARCH", guest_arch);
+    if guest_arch == "arm64" {
+        let template = std::env::var("PROXMOX_ARM64_TEMPLATE")
+            .ok()
+            .filter(|s| !s.is_empty());
+        if let Some(tmpl) = template {
+            append_log(
+                log_path,
+                &format!(
+                    "note: arch=arm64 via API clone of PROXMOX_ARM64_TEMPLATE={tmpl} (no SSH required)\n"
+                ),
+            )?;
+            cmd.env("PROXMOX_ARM64_TEMPLATE", &tmpl);
+            // Prefer API disk import/start like amd64.
+            cmd.env("PROXMOX_NO_SSH", "1");
+            cmd.env_remove("PROXMOX_SSH");
+        } else {
+            append_log(
+                log_path,
+                "note: arch=arm64 — needs pertisk-cloud-arm64*.qcow2 and either PROXMOX_ARM64_TEMPLATE=<vmid> (API) or PROXMOX_SSH=root@<pve>\n",
+            )?;
+            // Without a template, root SSH is required to set arch=aarch64.
+            cmd.env_remove("PROXMOX_NO_SSH");
+            let has_ssh = std::env::var("PROXMOX_SSH")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .is_some();
+            if !has_ssh {
+                if let Some(host) = pve_host_from_url(&provider.url) {
+                    let ssh = format!("root@{host}");
+                    append_log(
+                        log_path,
+                        &format!("auto PROXMOX_SSH={ssh} for arm64 guest arch\n"),
+                    )?;
+                    cmd.env("PROXMOX_SSH", ssh);
+                } else {
+                    append_log(
+                        log_path,
+                        "warn: set PROXMOX_ARM64_TEMPLATE or PROXMOX_SSH=root@<pve>\n",
+                    )?;
+                }
+            }
+        }
+    }
     // VIP / kube-vip is HA-only (controlplanes > 1). Single-CP uses the node IP.
     if cluster.controlplanes > 1 {
         if let Some(vip) = &cluster.vip {
@@ -424,8 +482,9 @@ async fn run_create_cluster(
     append_log(
         log_path,
         &format!(
-            "create cluster={} cps={} workers={} k8s={} network={} vip={:?} vip6={:?}\n",
+            "create cluster={} arch={} cps={} workers={} k8s={} network={} vip={:?} vip6={:?}\n",
             cluster.name,
+            guest_arch,
             cluster.controlplanes,
             cluster.workers,
             cluster.k8s_version,
@@ -1172,8 +1231,13 @@ pub async fn purge_cluster(state: &AppState, cid: &str, log_path: &str) -> anyho
                                 log_path,
                                 &format!("deleting VM {vmid} on {}\n", provider.node),
                             )?;
-                            if let Err(e) = client.delete_vm(&provider.node, vmid).await {
-                                append_log(log_path, &format!("warn: delete {vmid}: {e}\n"))?;
+                            match client.delete_vm(&provider.node, vmid).await {
+                                Ok(()) => {
+                                    append_log(log_path, &format!("deleted or already gone: {vmid}\n"))?;
+                                }
+                                Err(e) => {
+                                    append_log(log_path, &format!("warn: delete {vmid}: {e}\n"))?;
+                                }
                             }
                         }
                     }
@@ -1220,7 +1284,8 @@ async fn run_add_node(
         r#"SELECT id, name, provider_id, controlplanes, workers, vip, vip6, cni, k8s_version,
                   cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb, cp_vmid,
                   COALESCE(network_mode, 'ipv4') as network_mode,
-                  COALESCE(max_pods, 250) as max_pods
+                  COALESCE(max_pods, 250) as max_pods,
+                  COALESCE(arch, 'amd64') as arch
            FROM clusters WHERE id = ?"#,
     )
     .bind(cid)
@@ -1393,6 +1458,24 @@ async fn run_add_node(
         apply_lab_env(&mut cmd, state, &provider.url);
         if provider.insecure != 0 {
             cmd.env("PROXMOX_INSECURE", "1");
+        }
+        let node_arch = match cluster.arch.to_ascii_lowercase().as_str() {
+            "arm64" | "aarch64" => "arm64",
+            _ => "amd64",
+        };
+        cmd.arg("--arch").arg(node_arch);
+        cmd.env("PERTISK_ARCH", node_arch).env("ARCH", node_arch);
+        if node_arch == "arm64" {
+            cmd.env_remove("PROXMOX_NO_SSH");
+            if std::env::var("PROXMOX_SSH")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .is_none()
+            {
+                if let Some(host) = pve_host_from_url(&provider.url) {
+                    cmd.env("PROXMOX_SSH", format!("root@{host}"));
+                }
+            }
         }
         // First-boot EPHEMERAL mkfs on large worker disks can exceed 7+ minutes on
         // older images; give wait_ip headroom proportional to disk size.
@@ -3180,6 +3263,7 @@ struct ClusterRow {
     cp_vmid: Option<i64>,
     network_mode: String,
     max_pods: i64,
+    arch: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]

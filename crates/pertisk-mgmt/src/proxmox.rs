@@ -326,6 +326,7 @@ impl ProxmoxClient {
         let conn = self.test_connection().await?;
         let mut node_ok = true;
         let mut node_message = String::new();
+        let mut arch: Option<String> = None;
         if let Some(n) = node {
             if n.is_empty() {
                 node_ok = false;
@@ -343,6 +344,15 @@ impl ProxmoxClient {
                 );
             } else {
                 node_message = format!("node `{n}` ok");
+                match self.detect_node_arch(n).await {
+                    Ok(a) => {
+                        arch = Some(a.clone());
+                        node_message = format!("node `{n}` ok (host arch={a})");
+                    }
+                    Err(e) => {
+                        tracing::debug!(node = %n, error = %e, "could not detect node arch");
+                    }
+                }
             }
         }
         let storage_check = match (node, storage) {
@@ -362,7 +372,35 @@ impl ProxmoxClient {
             node_ok,
             node_message,
             storage: storage_check,
+            arch,
         })
+    }
+
+    /// Map Proxmox node CPU/kernel machine to guest image arch (amd64|arm64).
+    pub async fn detect_node_arch(&self, node: &str) -> ApiResult<String> {
+        let v = self
+            .get_json(&format!("/nodes/{node}/status"))
+            .await?;
+        let machine = v
+            .pointer("/data/current-kernel/machine")
+            .and_then(|x| x.as_str())
+            .or_else(|| {
+                // Older PVE: "Linux 6.x.x #1 SMP … x86_64" / "aarch64"
+                v.pointer("/data/kversion")
+                    .and_then(|x| x.as_str())
+                    .and_then(|kv| {
+                        kv.split_whitespace()
+                            .rev()
+                            .find(|t| {
+                                matches!(
+                                    *t,
+                                    "x86_64" | "amd64" | "aarch64" | "arm64" | "armv8l"
+                                )
+                            })
+                    })
+            })
+            .unwrap_or("");
+        Ok(normalize_host_arch(machine))
     }
 
     /// PUT/POST form helpers — Proxmox often returns HTTP 200 with `errors` in JSON.
@@ -589,6 +627,12 @@ impl ProxmoxClient {
     }
 
     pub async fn delete_vm(&self, node: &str, vmid: i64) -> ApiResult<()> {
+        // Failed creates often leave DB/node rows with VMIDs that never existed.
+        // Probe first so we don't queue a Proxmox task that fails in the UI.
+        if !self.vm_exists(node, vmid).await? {
+            return Ok(());
+        }
+
         let base = self.url.trim_end_matches('/');
         let stop_url = format!("{base}/api2/json/nodes/{node}/qemu/{vmid}/status/stop");
         let _ = self
@@ -598,6 +642,12 @@ impl ProxmoxClient {
             .send()
             .await;
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Re-check after stop — VM may have vanished, or never had a config.
+        if !self.vm_exists(node, vmid).await? {
+            return Ok(());
+        }
+
         let del_url = format!("{base}/api2/json/nodes/{node}/qemu/{vmid}");
         let resp = self
             .client()?
@@ -607,14 +657,57 @@ impl ProxmoxClient {
             .send()
             .await
             .map_err(|e| self.map_req_err(e))?;
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            if !body.contains("does not exist") && !body.contains("not found") {
-                return Err(AppError::bad(format!("delete vm failed: {body}")));
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            if proxmox_vm_missing(&body) {
+                return Ok(());
+            }
+            return Err(AppError::bad(format!("delete vm failed: {body}")));
+        }
+        // Async delete returns UPID — wait and treat "already gone" as success.
+        if let Ok(v) = serde_json::from_str::<Value>(&body) {
+            if let Some(upid) = v.get("data").and_then(|d| d.as_str()) {
+                if upid.starts_with("UPID:") {
+                    match self.wait_task(node, upid).await {
+                        Ok(()) => {}
+                        Err(e) if proxmox_vm_missing(&e.to_string()) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
             }
         }
         Ok(())
     }
+
+    /// True if the QEMU VM config exists on the node.
+    pub async fn vm_exists(&self, node: &str, vmid: i64) -> ApiResult<bool> {
+        match self
+            .get_json(&format!("/nodes/{node}/qemu/{vmid}/status/current"))
+            .await
+        {
+            Ok(v) => Ok(v.get("data").is_some_and(|d| !d.is_null())),
+            Err(e) => {
+                if proxmox_vm_missing(&e.to_string()) {
+                    Ok(false)
+                } else {
+                    // Ambiguous API error — assume present so delete still tries.
+                    Ok(true)
+                }
+            }
+        }
+    }
+}
+
+/// Proxmox wording for a VM that was never created / already removed.
+fn proxmox_vm_missing(body: &str) -> bool {
+    let b = body.to_ascii_lowercase();
+    b.contains("does not exist")
+        || b.contains("not found")
+        || b.contains("unable to find configuration")
+        || b.contains("no such guest")
+        || b.contains("no such vm")
+        || b.contains("configuration file for vm")
 }
 
 #[derive(Debug, Serialize)]
@@ -636,6 +729,20 @@ pub struct ProbeResult {
     pub node_ok: bool,
     pub node_message: String,
     pub storage: Option<StorageValidation>,
+    /// Detected host CPU arch mapped to guest image arch (amd64|arm64), when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+}
+
+/// Map uname/Proxmox machine string → guest image arch (amd64|arm64).
+pub fn normalize_host_arch(machine: &str) -> String {
+    let m = machine.trim().to_ascii_lowercase();
+    if m.contains("aarch64") || m.contains("arm64") || m == "armv8l" || m.starts_with("arm") {
+        "arm64".into()
+    } else {
+        // Default x86_64 / amd64 / unknown → amd64 (most lab hosts).
+        "amd64".into()
+    }
 }
 
 fn proxmox_body_has_errors(body: &str) -> bool {

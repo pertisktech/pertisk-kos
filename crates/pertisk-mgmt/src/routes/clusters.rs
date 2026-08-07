@@ -58,6 +58,7 @@ pub struct ClusterOut {
     pub error: Option<String>,
     pub network_mode: String,
     pub max_pods: i64,
+    pub arch: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -94,6 +95,10 @@ struct CreateCluster {
     cp_vmid: i64,
     #[serde(default = "default_max_pods")]
     max_pods: i64,
+    /// Guest CPU arch for cloud image + Proxmox VM (amd64|arm64).
+    /// When omitted, uses the provider's default arch.
+    #[serde(default)]
+    arch: Option<String>,
 }
 
 fn one() -> i64 {
@@ -140,6 +145,7 @@ SELECT c.id, c.name, c.provider_id,
        c.cp_memory, c.cp_cores, c.cp_disk_gb, c.worker_memory, c.worker_cores, c.worker_disk_gb,
        c.cp_vmid, c.endpoint, c.error, COALESCE(c.network_mode, 'ipv4') as network_mode,
        COALESCE(c.max_pods, 250) as max_pods,
+       COALESCE(c.arch, 'amd64') as arch,
        c.created_at, c.updated_at
 FROM clusters c
 LEFT JOIN providers p ON p.id = c.provider_id
@@ -311,15 +317,26 @@ async fn create(
         return Err(AppError::bad("max_pods must be between 1 and 1000"));
     }
 
-    // Ensure provider exists
-    let exists: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM providers WHERE id = ?")
+    // Ensure provider exists (+ default guest arch).
+    let provider: Option<(String, String)> =
+        sqlx::query_as("SELECT id, COALESCE(arch, 'amd64') FROM providers WHERE id = ?")
             .bind(&body.provider_id)
             .fetch_optional(state.pool())
             .await?;
-    if exists.is_none() {
+    let Some((_, provider_arch)) = provider else {
         return Err(AppError::bad("provider not found"));
-    }
+    };
+    let arch = match body.arch.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(a) => match a.to_ascii_lowercase().as_str() {
+            "amd64" | "x86_64" | "x64" => "amd64".to_string(),
+            "arm64" | "aarch64" => "arm64".to_string(),
+            _ => return Err(AppError::bad("arch must be amd64|arm64")),
+        },
+        None => match provider_arch.to_ascii_lowercase().as_str() {
+            "arm64" | "aarch64" => "arm64".to_string(),
+            _ => "amd64".to_string(),
+        },
+    };
 
     // Reject if any planned VMIDs already exist on the provider node.
     let vm_count = body.controlplanes + body.workers;
@@ -347,8 +364,8 @@ async fn create(
         r#"INSERT INTO clusters
            (id, name, provider_id, status, controlplanes, workers, vip, vip6, cni, k8s_version,
             cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb, cp_vmid,
-            network_mode, max_pods, created_at, updated_at)
-           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            network_mode, max_pods, arch, created_at, updated_at)
+           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&id)
     .bind(&body.name)
@@ -368,6 +385,7 @@ async fn create(
     .bind(body.cp_vmid)
     .bind(&mode)
     .bind(body.max_pods)
+    .bind(&arch)
     .bind(&now)
     .bind(&now)
     .execute(state.pool())
@@ -377,7 +395,7 @@ async fn create(
         &state,
         Some(&id),
         "create_cluster",
-        serde_json::json!({ "cp_vmid": body.cp_vmid, "network_mode": mode }),
+        serde_json::json!({ "cp_vmid": body.cp_vmid, "network_mode": mode, "arch": arch }),
     )
     .await
     .map_err(AppError::Anyhow)?;

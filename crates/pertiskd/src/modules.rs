@@ -68,6 +68,12 @@ mod linux_impl {
         "vmxnet3",
         // Early: kube-vip needs AF_PACKET as soon as the VIP static pod starts.
         "af_packet",
+        // scsi_common + scsi_mod must precede virtio_scsi/sd_mod (finit_module
+        // does not auto-load deps). On amd64 linux-virt these are often builtin;
+        // on aarch64 they are modules — without them /sys/block stays empty,
+        // EPHEMERAL never mounts, /var stays ~2GiB tmpfs → disk-pressure.
+        "scsi_common",
+        "scsi_mod",
         "virtio_scsi",
         "virtio_blk",
         // ESXi VirtualLsiLogicController → mptspi (Fusion SPI).
@@ -233,17 +239,87 @@ mod linux_impl {
         if !path.is_file() {
             return Err(format!("missing {}", path.display()));
         }
-        use std::ffi::CString;
-
-        let file = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-        let fd = file.as_raw_fd();
-        let params = CString::new("").map_err(|e| e.to_string())?;
-        // SAFETY: finit_module with a valid fd and NUL-terminated empty params.
-        let rc = unsafe { libc::syscall(libc::SYS_finit_module, fd, params.as_ptr(), 0_i32) };
-        if rc == 0 {
+        // Guard against circular depends= in .modinfo.
+        thread_local! {
+            static LOADING: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let already = LOADING.with(|stack| stack.borrow().iter().any(|n| n == &name));
+        if already {
             return Ok(());
         }
-        let err = std::io::Error::last_os_error();
-        Err(format!("{err}"))
+        LOADING.with(|stack| stack.borrow_mut().push(name.clone()));
+        let result = (|| {
+            // finit_module does not pull deps — load `depends=` from .modinfo first.
+            for dep in module_depends(path) {
+                let dep_path = path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(format!("{dep}.ko"));
+                match load_module(&dep_path) {
+                    Ok(()) => {}
+                    Err(err) if err.contains("File exists") || err.contains("EEXIST") => {}
+                    Err(err) if err.contains("missing ") => {
+                        // Builtin or already provided under another name — continue.
+                        warn!(module = %dep, error = %err, "module dependency missing; continuing");
+                    }
+                    Err(err) => {
+                        warn!(module = %dep, error = %err, "module dependency load failed");
+                    }
+                }
+            }
+            use std::ffi::CString;
+
+            let file = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+            let fd = file.as_raw_fd();
+            let params = CString::new("").map_err(|e| e.to_string())?;
+            // SAFETY: finit_module with a valid fd and NUL-terminated empty params.
+            let rc = unsafe { libc::syscall(libc::SYS_finit_module, fd, params.as_ptr(), 0_i32) };
+            if rc == 0 {
+                return Ok(());
+            }
+            let err = std::io::Error::last_os_error();
+            Err(format!("{err}"))
+        })();
+        LOADING.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+        result
+    }
+
+    /// Parse `depends=foo,bar` from a module's `.modinfo` blob (scanned raw).
+    fn module_depends(path: &Path) -> Vec<String> {
+        let Ok(bytes) = std::fs::read(path) else {
+            return Vec::new();
+        };
+        const KEY: &[u8] = b"depends=";
+        let mut deps = Vec::new();
+        let mut i = 0;
+        while i + KEY.len() < bytes.len() {
+            if &bytes[i..i + KEY.len()] != KEY {
+                i += 1;
+                continue;
+            }
+            let start = i + KEY.len();
+            let end = bytes[start..]
+                .iter()
+                .position(|&b| b == 0)
+                .map(|n| start + n)
+                .unwrap_or(bytes.len());
+            let list = String::from_utf8_lossy(&bytes[start..end]);
+            for dep in list.split(',') {
+                let dep = dep.trim();
+                if !dep.is_empty() {
+                    // modinfo uses dashes; ko files use underscores interchangeably.
+                    deps.push(dep.replace('-', "_"));
+                }
+            }
+            break;
+        }
+        deps
     }
 }

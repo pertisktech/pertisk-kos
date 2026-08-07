@@ -19,6 +19,7 @@ export default function ClusterNew() {
     controlplanes: 3,
     workers: 2,
     network_mode: 'ipv4', // ipv4 | ipv6 | dual-stack
+    arch: 'amd64', // amd64 | arm64
     vip: '10.1.1.200',
     vip6: 'fd00:1::200',
     cni: 'cilium',
@@ -36,7 +37,10 @@ export default function ClusterNew() {
   useEffect(() => {
     api('/providers').then((p) => {
       setProviders(p)
-      if (p[0]) setForm((f) => ({ ...f, provider_id: p[0].id }))
+      if (p[0]) {
+        const arch = p[0].arch === 'arm64' ? 'arm64' : 'amd64'
+        setForm((f) => ({ ...f, provider_id: p[0].id, arch }))
+      }
     })
   }, [])
 
@@ -140,6 +144,11 @@ export default function ClusterNew() {
         next.vip = ''
         next.vip6 = ''
       }
+      // Inherit guest arch from the selected provider.
+      if (k === 'provider_id') {
+        const p = providers.find((x) => x.id === v)
+        if (p) next.arch = p.arch === 'arm64' ? 'arm64' : 'amd64'
+      }
       return next
     })
   }
@@ -182,6 +191,7 @@ export default function ClusterNew() {
       controlplanes: Number(form.controlplanes),
       workers: Number(form.workers),
       network_mode: form.network_mode,
+      arch: form.arch,
       // Single-CP talks to the node IP — never store / pass a VIP.
       vip: ha && mode !== 'ipv6' ? (form.vip || null) : null,
       vip6: ha && mode !== 'ipv4' ? (form.vip6 || null) : null,
@@ -245,6 +255,17 @@ export default function ClusterNew() {
             <div className="field">
               <label>Workers (N)</label>
               <input type="number" min={0} value={form.workers} onChange={(e) => set('workers', e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Guest arch</label>
+              <select value={form.arch} onChange={(e) => set('arch', e.target.value)}>
+                <option value="amd64">amd64 (x86_64)</option>
+                <option value="arm64">arm64 (aarch64)</option>
+              </select>
+              <p className="hint muted">
+                Defaults from the provider; override per cluster if needed.
+                Uses <code>pertisk-cloud-{'{arch}'}.qcow2</code>. arm64 needs Proxmox root SSH.
+              </p>
             </div>
             <div className="field">
               <label>CNI</label>

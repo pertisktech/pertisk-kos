@@ -35,6 +35,8 @@ struct ProviderOut {
     bridge: String,
     insecure: i64,
     defaults_json: String,
+    /// Default guest arch for clusters on this provider (amd64|arm64).
+    arch: String,
     created_at: String,
     updated_at: String,
 }
@@ -55,6 +57,8 @@ struct ProviderIn {
     kind: String,
     #[serde(default = "default_defaults")]
     defaults: serde_json::Value,
+    #[serde(default = "default_arch")]
+    arch: String,
 }
 
 fn default_bridge() -> String {
@@ -67,6 +71,32 @@ fn default_kind() -> String {
 
 fn default_defaults() -> serde_json::Value {
     serde_json::json!({})
+}
+
+fn default_arch() -> String {
+    "auto".into()
+}
+
+fn normalize_arch(arch: &str) -> ApiResult<String> {
+    match arch.trim().to_ascii_lowercase().as_str() {
+        "amd64" | "x86_64" | "x64" => Ok("amd64".into()),
+        "arm64" | "aarch64" => Ok("arm64".into()),
+        "auto" | "" => Ok("auto".into()),
+        other => Err(AppError::bad(format!(
+            "unsupported arch `{other}` (use amd64|arm64|auto)"
+        ))),
+    }
+}
+
+/// Resolve guest arch: explicit amd64/arm64, or auto from probe.
+fn resolve_provider_arch(requested: &str, detected: Option<&str>) -> String {
+    match requested {
+        "amd64" | "arm64" => requested.into(),
+        _ => match detected.map(|s| s.to_ascii_lowercase()).as_deref() {
+            Some("arm64" | "aarch64") => "arm64".into(),
+            _ => "amd64".into(),
+        },
+    }
 }
 
 fn normalize_kind(kind: &str) -> ApiResult<String> {
@@ -90,16 +120,20 @@ struct ProviderPatch {
     bridge: Option<String>,
     insecure: Option<bool>,
     defaults: Option<serde_json::Value>,
+    arch: Option<String>,
 }
+
+const PROVIDER_SELECT: &str = r#"SELECT id, name, kind, url, token_id, node, storage, bridge, insecure,
+       defaults_json, COALESCE(arch, 'amd64') as arch, created_at, updated_at
+       FROM providers"#;
 
 async fn list(
     State(state): State<AppState>,
     CurrentUser(_): CurrentUser,
 ) -> ApiResult<Json<Vec<ProviderOut>>> {
-    let rows = sqlx::query_as::<_, ProviderOut>(
-        r#"SELECT id, name, kind, url, token_id, node, storage, bridge, insecure, defaults_json, created_at, updated_at
-           FROM providers ORDER BY name"#,
-    )
+    let rows = sqlx::query_as::<_, ProviderOut>(&format!(
+        "{PROVIDER_SELECT} ORDER BY name"
+    ))
     .fetch_all(state.pool())
     .await?;
     Ok(Json(rows))
@@ -110,10 +144,9 @@ async fn get_one(
     CurrentUser(_): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<ProviderOut>> {
-    let row = sqlx::query_as::<_, ProviderOut>(
-        r#"SELECT id, name, kind, url, token_id, node, storage, bridge, insecure, defaults_json, created_at, updated_at
-           FROM providers WHERE id = ?"#,
-    )
+    let row = sqlx::query_as::<_, ProviderOut>(&format!(
+        "{PROVIDER_SELECT} WHERE id = ?"
+    ))
     .bind(&id)
     .fetch_optional(state.pool())
     .await?
@@ -162,6 +195,7 @@ async fn create(
 ) -> ApiResult<Json<ProviderOut>> {
     require_mutate(&user)?;
     let kind = normalize_kind(&body.kind)?;
+    let arch_req = normalize_arch(&body.arch)?;
     let probe = probe_provider(
         &kind,
         &body.url,
@@ -188,6 +222,7 @@ async fn create(
             });
         return Err(AppError::bad(msg));
     }
+    let arch = resolve_provider_arch(&arch_req, probe.arch.as_deref());
 
     let id = Uuid::new_v4().to_string();
     let now = db::now_rfc3339();
@@ -196,8 +231,8 @@ async fn create(
     let defaults = body.defaults.to_string();
     sqlx::query(
         r#"INSERT INTO providers
-           (id, name, kind, url, token_id, token_secret_enc, node, storage, bridge, insecure, defaults_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+           (id, name, kind, url, token_id, token_secret_enc, node, storage, bridge, insecure, defaults_json, arch, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&id)
     .bind(&body.name)
@@ -210,6 +245,7 @@ async fn create(
     .bind(&body.bridge)
     .bind(if body.insecure { 1 } else { 0 })
     .bind(&defaults)
+    .bind(&arch)
     .bind(&now)
     .bind(&now)
     .execute(state.pool())
@@ -232,10 +268,9 @@ async fn update(
     Json(body): Json<ProviderPatch>,
 ) -> ApiResult<Json<ProviderOut>> {
     require_mutate(&user)?;
-    let existing = sqlx::query_as::<_, ProviderOut>(
-        r#"SELECT id, name, kind, url, token_id, node, storage, bridge, insecure, defaults_json, created_at, updated_at
-           FROM providers WHERE id = ?"#,
-    )
+    let existing = sqlx::query_as::<_, ProviderOut>(&format!(
+        "{PROVIDER_SELECT} WHERE id = ?"
+    ))
     .bind(&id)
     .fetch_optional(state.pool())
     .await?
@@ -293,11 +328,17 @@ async fn update(
             });
         return Err(AppError::bad(msg));
     }
+    let arch = if let Some(a) = body.arch.as_deref() {
+        let req = normalize_arch(a)?;
+        resolve_provider_arch(&req, probe.arch.as_deref())
+    } else {
+        existing.arch
+    };
 
     if body.token_secret.is_some() {
         let enc = crypto::encrypt(&state.cfg().secret_key, &secret).map_err(AppError::Anyhow)?;
         sqlx::query(
-            r#"UPDATE providers SET name=?, url=?, token_id=?, token_secret_enc=?, node=?, storage=?, bridge=?, insecure=?, defaults_json=?, updated_at=? WHERE id=?"#,
+            r#"UPDATE providers SET name=?, url=?, token_id=?, token_secret_enc=?, node=?, storage=?, bridge=?, insecure=?, defaults_json=?, arch=?, updated_at=? WHERE id=?"#,
         )
         .bind(&name)
         .bind(&url)
@@ -308,13 +349,14 @@ async fn update(
         .bind(&bridge)
         .bind(insecure)
         .bind(&defaults)
+        .bind(&arch)
         .bind(&now)
         .bind(&id)
         .execute(state.pool())
         .await?;
     } else {
         sqlx::query(
-            r#"UPDATE providers SET name=?, url=?, token_id=?, node=?, storage=?, bridge=?, insecure=?, defaults_json=?, updated_at=? WHERE id=?"#,
+            r#"UPDATE providers SET name=?, url=?, token_id=?, node=?, storage=?, bridge=?, insecure=?, defaults_json=?, arch=?, updated_at=? WHERE id=?"#,
         )
         .bind(&name)
         .bind(&url)
@@ -324,6 +366,7 @@ async fn update(
         .bind(&bridge)
         .bind(insecure)
         .bind(&defaults)
+        .bind(&arch)
         .bind(&now)
         .bind(&id)
         .execute(state.pool())

@@ -13,6 +13,7 @@ const emptyProxmox = {
   storage: 'local-lvm',
   bridge: 'vmbr0',
   insecure: true,
+  arch: 'auto',
 }
 
 const emptyVsphere = {
@@ -25,6 +26,7 @@ const emptyVsphere = {
   storage: 'datastore1',
   bridge: 'VM Network',
   insecure: true,
+  arch: 'auto',
 }
 
 function emptyForKind(kind) {
@@ -41,6 +43,9 @@ function formatProbe(r, kind) {
       ? `${kind === 'vsphere' ? 'host' : 'node'} OK (${r.node_message || 'ok'})`
       : `${kind === 'vsphere' ? 'host' : 'node'} FAIL: ${r.node_message || 'unknown'}`,
   ]
+  if (r.arch) {
+    parts.push(`guest arch → ${r.arch}`)
+  }
   if (r.storage) {
     parts.push(
       r.storage.ok
@@ -106,6 +111,7 @@ export default function Providers() {
       storage: p.storage,
       bridge: p.bridge || (p.kind === 'vsphere' ? 'VM Network' : 'vmbr0'),
       insecure: !!p.insecure,
+      arch: p.arch === 'arm64' || p.arch === 'amd64' ? p.arch : 'auto',
     })
   }
 
@@ -118,10 +124,15 @@ export default function Providers() {
   function applyProbeResult(r) {
     const available = r.storage?.available || []
     setForm((f) => {
+      let next = { ...f }
       if (available.length && f.storage && !available.includes(f.storage)) {
-        return { ...f, storage: available[0] }
+        next = { ...next, storage: available[0] }
       }
-      return f
+      // Auto-fill guest arch from host detection (unless user locked amd64/arm64).
+      if (r.arch && (f.arch === 'auto' || !f.arch)) {
+        next = { ...next, arch: r.arch }
+      }
+      return next
     })
     if (available.length) {
       setStorageOptions(available)
@@ -159,6 +170,7 @@ export default function Providers() {
           storage: form.storage,
           bridge: form.bridge,
           insecure: form.insecure,
+          arch: form.arch,
         }
         if (form.token_secret) body.token_secret = form.token_secret
         await api(`/providers/${editingId}`, { method: 'PUT', body })
@@ -389,6 +401,18 @@ export default function Providers() {
               />
             </div>
             <div className="field">
+              <label>Guest arch</label>
+              <select value={form.arch} onChange={(e) => set('arch', e.target.value)}>
+                <option value="auto">Auto (detect from host)</option>
+                <option value="amd64">amd64 (x86_64)</option>
+                <option value="arm64">arm64 (aarch64)</option>
+              </select>
+              <p className="hint muted">
+                Auto reads the Proxmox node kernel machine via Test/Save.
+                Override only for cross-arch guests (e.g. aarch64 VMs on amd64 PVE).
+              </p>
+            </div>
+            <div className="field">
               <label>Insecure TLS</label>
               <select value={form.insecure ? '1' : '0'} onChange={(e) => set('insecure', e.target.value === '1')}>
                 <option value="1">Yes (lab / self-signed)</option>
@@ -409,13 +433,14 @@ export default function Providers() {
       <div className="card">
         <table>
           <thead>
-            <tr><th>Name</th><th>Kind</th><th>URL</th><th>{/* host/node */}Host / Node</th><th>Storage</th><th>TLS</th><th></th></tr>
+            <tr><th>Name</th><th>Kind</th><th>Arch</th><th>URL</th><th>{/* host/node */}Host / Node</th><th>Storage</th><th>TLS</th><th></th></tr>
           </thead>
           <tbody>
             {list.map((p) => (
               <tr key={p.id}>
                 <td>{p.name}</td>
                 <td>{p.kind || 'proxmox'}</td>
+                <td>{p.arch || 'amd64'}</td>
                 <td className="mono">{p.url}</td>
                 <td>{p.node}</td>
                 <td>{p.storage}</td>
