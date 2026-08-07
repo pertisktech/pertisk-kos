@@ -515,9 +515,11 @@ for m in re.finditer(r'<obj[^>]*type=\"VirtualMachine\">([^<]+)</obj>(.*?)</obje
 }
 
 # Register VM for host autostart after ESXi reboot (HostAutoStartManager).
+# startOrder=-1 = "any" — ESXi rejects non-contiguous positive orders (e.g. VMID
+# 210, or moving a lone VM from 1→2). Ordered boot is done by the cluster-end sync.
 enable_vm_autostart() {
-  local moref="$1" order="$2"
-  echo "==> enable host autostart for ${NAME} (order=${order})"
+  local moref="$1"
+  echo "==> enable host autostart for ${NAME} (moref=${moref})"
   local resp
   resp="$(soap "urn:vim25/8.0.3.0" "<ReconfigureAutostart xmlns=\"urn:vim25\">
   <_this type=\"HostAutoStartManager\">ha-autostart-mgr</_this>
@@ -531,9 +533,9 @@ enable_vm_autostart() {
     </defaults>
     <powerInfo>
       <key type=\"VirtualMachine\">$(xml_escape "$moref")</key>
-      <startOrder>${order}</startOrder>
+      <startOrder>-1</startOrder>
       <startDelay>-1</startDelay>
-      <waitForHeartbeat>systemDefault</waitForHeartbeat>
+      <waitForHeartbeat>no</waitForHeartbeat>
       <startAction>powerOn</startAction>
       <stopDelay>-1</stopDelay>
       <stopAction>systemDefault</stopAction>
@@ -542,6 +544,24 @@ enable_vm_autostart() {
 </ReconfigureAutostart>")"
   if echo "$resp" | grep -qi 'Fault\|faultstring'; then
     echo "warn: autostart configure failed: $resp" >&2
+    return 1
+  fi
+  local cfg
+  cfg="$(soap "urn:vim25/8.0.3.0" "<RetrievePropertiesEx xmlns=\"urn:vim25\">
+  <_this type=\"PropertyCollector\">ha-property-collector</_this>
+  <specSet>
+    <propSet><type>HostAutoStartManager</type><all>false</all><pathSet>config</pathSet></propSet>
+    <objectSet><obj type=\"HostAutoStartManager\">ha-autostart-mgr</obj></objectSet>
+  </specSet>
+  <options></options>
+</RetrievePropertiesEx>")"
+  if ! echo "$cfg" | grep -q "<key type=\"VirtualMachine\">${moref}</key>"; then
+    echo "warn: autostart applied but VM ${moref} not listed in powerInfo" >&2
+    return 1
+  fi
+  if ! echo "$cfg" | grep -q '<enabled>true</enabled>'; then
+    echo "warn: host autostart defaults.enabled is not true" >&2
+    return 1
   fi
 }
 
@@ -550,8 +570,8 @@ VM_MOREF="$(find_vm_moref "$NAME")"
   echo "created VM but could not resolve MoRef" >&2
   exit 1
 }
-# Prefer VMID as start order so CP (lower id) comes up before workers.
-enable_vm_autostart "$VM_MOREF" "${VMID}"
+# Soft-fail: create-cluster later syncs the full Autostart list.
+enable_vm_autostart "$VM_MOREF" || echo "warn: continuing without per-VM autostart (will sync at cluster end)" >&2
 
 if [[ "$START" == "1" ]]; then
   echo "==> powering on ${NAME} (${VM_MOREF})"

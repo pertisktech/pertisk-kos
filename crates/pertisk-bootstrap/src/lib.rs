@@ -217,19 +217,17 @@ pub fn bootstrap_control_plane(
         format!("bootstrapped at {}\n", chrono_like_now()),
     )?;
 
-    // Best-effort once apiserver is up: token Secret, node-join RBAC, CP role
-    // label — same defaults operators expect from kubeadm.
+    // Block until token Secret + join RBAC + CP role are in place. Fire-and-forget
+    // races HA joins (etcd/apiserver flaps) and leaves workers Unauthorized.
     let admin_path = paths.admin_kubeconfig();
     let token = cluster.token.clone();
     let node_name = hostname.clone();
-    thread::spawn(move || {
-        if let Err(err) = finalize_bootstrap_when_ready(&admin_path, token.as_deref(), &node_name) {
-            tracing::warn!(
-                error = %err,
-                "post-bootstrap API finalize incomplete; apply token Secret / node-rbac / CP label manually if needed"
-            );
-        }
-    });
+    if let Err(err) = finalize_bootstrap_when_ready(&admin_path, token.as_deref(), &node_name) {
+        tracing::warn!(
+            error = %err,
+            "post-bootstrap API finalize incomplete; apply token Secret / node-rbac / CP label manually if needed"
+        );
+    }
 
     Ok(BootstrapResult {
         already_bootstrapped: false,
@@ -431,11 +429,12 @@ pub(crate) fn finalize_bootstrap_when_ready(
         );
         fs::write(dir.join("bootstrap-token-secret.yaml"), &yaml)?;
 
+        let secret_name = format!("bootstrap-token-{id}");
         let body = serde_json::json!({
             "apiVersion": "v1",
             "kind": "Secret",
             "metadata": {
-                "name": format!("bootstrap-token-{id}"),
+                "name": &secret_name,
                 "namespace": "kube-system"
             },
             "type": "bootstrap.kubernetes.io/token",
@@ -447,13 +446,37 @@ pub(crate) fn finalize_bootstrap_when_ready(
                 "usage-bootstrap-signing": "true",
                 "auth-extra-groups": "system:bootstrappers:kubeadm:default-node-token"
             }
-        });
-        ensure_created(
-            &client,
-            "/api/v1/namespaces/kube-system/secrets",
-            &body.to_string(),
-            &format!("bootstrap-token-{id}"),
-        )?;
+        })
+        .to_string();
+        // Retry: early apiserver can accept TCP then flap while etcd settles.
+        let mut last_err = None;
+        while Instant::now() < deadline {
+            match ensure_created(
+                &client,
+                "/api/v1/namespaces/kube-system/secrets",
+                &body,
+                &secret_name,
+            ) {
+                Ok(()) => {
+                    last_err = None;
+                    break;
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "bootstrap-token Secret create failed; retrying");
+                    last_err = Some(err);
+                    thread::sleep(Duration::from_secs(3));
+                }
+            }
+        }
+        if let Some(err) = last_err {
+            return Err(err).context("bootstrap-token Secret not created within finalize timeout");
+        }
+        // Confirm readable (create 201 alone is not enough if a later flap drops etcd).
+        let get_path = format!("/api/v1/namespaces/kube-system/secrets/{secret_name}");
+        let (gstatus, _) = client.get(&get_path)?;
+        if gstatus != 200 {
+            bail!("bootstrap-token Secret {secret_name} missing after create (HTTP {gstatus})");
+        }
     }
 
     ensure_node_join_rbac(&client)?;

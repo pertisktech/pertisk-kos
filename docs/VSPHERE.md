@@ -75,7 +75,13 @@ LAB_SUBNET=10.1.1.0/24 ./scripts/vsphere-lab-up.sh --skip-build --cp-vmid 210 --
 
 Upload flow: `qemu-img convert` qcow2 → **streamOptimized VMDK** (upload ≈ used data, not full virtual size) → datastore browser PUT → `CopyVirtualDisk` to thin VMFS → `CreateVM_Task` (UEFI, LSI Logic, e1000e) → **host autostart** (`ReconfigureAutostart`) → power on.
 
-New VMs are registered with ESXi **Autostart** (`startAction=powerOn`) and host defaults `enabled=true`, so they power on after an ESXi reboot. Start order uses the numeric VMID (lower first: CP before workers).
+New VMs are registered with ESXi **Autostart** (`startAction=powerOn`, `startOrder=-1`) and host defaults `enabled=true`, so they power on after an ESXi host reboot. Recreating a cluster replaces MoRefs — re-run autostart sync if VMs were created before this was wired:
+
+```bash
+VSPHERE_INSECURE=1 ./scripts/vsphere-enable-autostart.sh --prefix lab-ha-vsphere
+```
+
+Host Client: **Manage → System → Autostart** (must show Enabled + each VM listed).
 
 ## IP discovery
 

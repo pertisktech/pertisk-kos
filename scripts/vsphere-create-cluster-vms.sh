@@ -111,6 +111,14 @@ done
 
 echo "==> VMs created (CP=${CP_VMID}..$((CP_VMID + CONTROLPLANES - 1)), workers=${WORKERS})"
 
+# Ensure Autostart list includes every VM for this prefix (MoRefs change on recreate).
+ENABLE_AS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/vsphere-enable-autostart.sh"
+if [[ -x "$ENABLE_AS" ]] || [[ -f "$ENABLE_AS" ]]; then
+  echo "==> sync host Autostart for prefix=${NAME_PREFIX}"
+  chmod +x "$ENABLE_AS" 2>/dev/null || true
+  "$ENABLE_AS" --prefix "$NAME_PREFIX" || echo "warn: autostart sync failed (VMs still created)" >&2
+fi
+
 if [[ "$DO_LAB_UP" != "1" ]]; then
   cat <<EOF
 
