@@ -1,22 +1,22 @@
 # Pertisk KOS — Design Draft
 
-**Goal:** Build an immutable, API-only Kubernetes OS (like [Talos Linux](https://www.talos.dev/)), implemented in **Rust**.
+**Goal:** Build an immutable, API-only Kubernetes OS, implemented in **Rust**.
 
-**Positioning:** Talos uses Go (`machined`). Pertisk KOS is the same *shape* of product — minimal kernel, custom init, no SSH, gRPC management, containerd + kubelet — but the control plane on the node is Rust.
+**Positioning:** Minimal kernel, custom init, no SSH, gRPC management, containerd + kubelet — the node control plane is Rust (`pertiskd`).
 
 ---
 
 ## 1. Summary (what we are building)
 
-| Layer | Talos | Pertisk KOS |
-|-------|-------|-------------|
-| Kernel | Custom minimal Linux | Same approach (~5–10MB compressed) |
-| Init (PID 1) | `machined` (Go) | `pertiskd` (Rust) |
-| Management | gRPC + `talosctl` | gRPC/REST + `pertiskctl` |
-| Runtime | containerd | containerd (vendored/integrated) |
-| Root FS | SquashFS, immutable | SquashFS or EROFS |
-| Updates | A/B slots, atomic | A/B slots + signed images |
-| Shell/SSH | None by default | None by default |
+| Layer | Pertisk KOS |
+|-------|-------------|
+| Kernel | Minimal Linux (~5–10MB compressed) |
+| Init (PID 1) | `pertiskd` (Rust) |
+| Management | gRPC/REST + `pertiskctl` |
+| Runtime | containerd (vendored/integrated) |
+| Root FS | SquashFS or EROFS |
+| Updates | A/B slots + signed images |
+| Shell/SSH | None by default |
 
 **One sentence:** Pertisk KOS boots a locked-down Linux image whose only job is to run Kubernetes nodes, managed only through a typed API.
 
@@ -127,7 +127,7 @@ pertisk-kos/
 
 | Work item | Detail |
 |-----------|--------|
-| Disk layout | GPT: EFI, BOOT_A, BOOT_B, META, STATE, EPHEMERAL (Talos-inspired) |
+| Disk layout | GPT: EFI, BOOT_A, BOOT_B, META, STATE, EPHEMERAL |
 | Encryption | Optional LUKS on STATE/EPHEMERAL |
 | Net | DHCP or static via rtnetlink; `/etc/resolv.conf` managed |
 | Time | chrony or `systemd-timesyncd`-less NTP client (or embed simple SNTP) |
@@ -153,7 +153,7 @@ pertisk-kos/
 
 ### Phase 3 — Management API (weeks 8–12, overlaps Phase 2)
 
-**Outcome:** Node is operable without SSH, like Talos.
+**Outcome:** Node is operable without SSH.
 
 | Work item | Detail |
 |-----------|--------|
@@ -255,9 +255,9 @@ Still manual / incomplete:
 
 1. Fix Flannel (or ship a known-good CNI path) so multi-node pod networking works
 2. Cross-node smoke (Deployment/Service) + reboot endurance without re-bootstrap
-3. Document Talos-shaped Proxmox flow in [docs/PROXMOX.md](./docs/PROXMOX.md) (fold lab pitfalls from `note.txt`)
+3. Document Proxmox cluster flow in [docs/PROXMOX.md](./docs/PROXMOX.md) (fold lab pitfalls from `note.txt`)
 
-**Later (Talos / Omni parity)**
+**Later (mgmt / ops parity)**
 
 - etcd snapshot / restore
 - Proxmox provider automation + Omni-like web — see [docs/MGMT.md](./docs/MGMT.md) (`pertisk-mgmt`)
@@ -284,17 +284,17 @@ Still manual / incomplete:
 
 ---
 
-## 9. How this links to Talos (compatibility strategy)
+## 9. Compatibility strategy
 
 | Strategy | Choice for Pertisk |
 |----------|-------------------|
-| Wire-compatible with Talos API | **No** (different protos; avoid forever-chasing Talos) |
-| Conceptual / UX parity | **Yes** — same operator mental model as `talosctl` |
+| Wire-compatible with third-party node OS APIs | **No** (own protos and schema) |
+| Operator UX | **Yes** — `pertiskctl gen config` → apply → bootstrap → join |
 | Kubernetes compatibility | **Yes** — stock kubelet + containerd |
-| Image/format compatible | **No** — own image + config schema |
-| Learn from | Talos disk layout names, immutability, API-only ops |
+| Image/format compatible with other node OS | **No** — own image + config schema |
+| Design priorities | Immutability, API-only ops, A/B slots, GPT STATE/EPHEMERAL |
 
-Pertisk is a *sibling* of Talos in design, not a fork or drop-in replacement.
+Pertisk KOS is a standalone product with its own API and image format.
 
 ---
 

@@ -1,6 +1,6 @@
 # Pertisk KOS
 
-Immutable, API-only Kubernetes node OS (Talos-shaped), plus an optional management plane for provisioning HA clusters.
+Immutable, API-only Kubernetes node OS, plus an optional management plane for provisioning HA clusters.
 
 - **Node OS** — Rust `pertiskd` as PID 1, gRPC management (`pertiskctl`), containerd + kubelet; no SSH in production images
 - **Management plane** — `pertisk-mgmt` (API + React UI) creates and operates clusters on **Proxmox** and standalone **ESXi**
@@ -19,7 +19,7 @@ Still open: TPM attestation / OVMF enroll automation; metrics mTLS.
 
 ### Platform / node OS
 
-- Talos-shaped immutable OS: same cloud image for `controlplane` and `worker` (role from machine config)
+- Immutable node OS: same cloud image for `controlplane` and `worker` (role from machine config)
 - `pertiskd` PID 1: GPT / STATE / EPHEMERAL disks, DHCP or static net, containerd, kubelet, signed A/B updates, serial console dashboard
 - Multi-arch **amd64** / **arm64** (initramfs + cloud qcow2/raw)
 - A/B OS updates with Ed25519-signed bundles (`pertisk-update` / `pertisk-sign`)
@@ -94,7 +94,7 @@ pertisk-mgmt ──HTTPS──► Proxmox API / ESXi SOAP
 | `pertisk-runtime` / `pertisk-kubelet` | containerd + kubelet |
 | `pertisk-update` | A/B update / sign |
 | `pertisk-bootstrap` | PKI, static pods, join, gen config, kube-vip, addons |
-| `pertiskctl` | Talos-style CLI |
+| `pertiskctl` | Node management CLI |
 | `pertisk-mgmt` | Cluster mgmt API + embedded React UI |
 
 ---
@@ -146,7 +146,7 @@ export PROXMOX_SSH=root@<pve>
 # ESXi: ./scripts/vsphere-lab-up.sh …
 ```
 
-Manual Talos-shaped flow (`gen config` → apply → bootstrap → join): [docs/PROXMOX.md](./docs/PROXMOX.md).
+Manual cluster flow (`gen config` → apply → bootstrap → join): [docs/PROXMOX.md](./docs/PROXMOX.md).
 
 ### 4. Build node OS images
 
@@ -220,7 +220,7 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 |-----|--------|
 | [DESIGN.md](./DESIGN.md) | Architecture, phases, security model |
 | [docs/MGMT.md](./docs/MGMT.md) | Management UI/API, auth, create, RPM |
-| [docs/PROXMOX.md](./docs/PROXMOX.md) | Proxmox token, upload, Talos-shaped cluster |
+| [docs/PROXMOX.md](./docs/PROXMOX.md) | Proxmox token, upload, cluster bootstrap |
 | [docs/VSPHERE.md](./docs/VSPHERE.md) | ESXi provider |
 | [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md) | Platforms, runtime pins, CNI |
 | [docs/HARDENING.md](./docs/HARDENING.md) | CIS-ish worker checklist |

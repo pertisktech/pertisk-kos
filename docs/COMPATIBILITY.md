@@ -80,7 +80,7 @@ Image needs shared kernel modules + host `iptables-legacy` — see [examples/cni
 
 ## Explicitly out of scope (v0.1)
 
-- Talos API wire compatibility
+- Third-party node OS API wire compatibility
 - Omni-like web fleet manager (Phase D)
 - Secure Boot / UKI enrollment (tracked as hardening gap)
 - Windows / non-Linux hosts as nodes

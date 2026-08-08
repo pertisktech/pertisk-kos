@@ -8,7 +8,7 @@
 # `cilium-netns` to `/run/netns` (already rshared). Newer images bind `/run`
 # over `/var/run` so the default path works.
 #
-# Install like Talos: do **not** let Cilium remount bpf/cgroup (its mount-bpf-fs
+# Install on Pertisk: do **not** let Cilium remount bpf/cgroup (its mount-bpf-fs
 # init with Bidirectional propagation has broken host `/proc` on Pertisk →
 # containerd "stat /proc/.../ns/pid" → nodes NotReady + kubectl logs 401).
 #

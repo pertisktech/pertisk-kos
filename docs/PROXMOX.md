@@ -1,6 +1,6 @@
 # Deploy Pertisk on Proxmox VE
 
-Pertisk KOS is a **Talos-shaped** Kubernetes OS: the **same cloud image** runs as `controlplane` or `worker` (role comes from machine config). Create/join clusters with `pertiskctl` (see [Talos-shaped cluster](#talos-shaped-cluster-1-cp--workers) below).
+Pertisk KOS is an immutable, API-only Kubernetes OS: the **same cloud image** runs as `controlplane` or `worker` (role comes from machine config). Create/join clusters with `pertiskctl` (see [Cluster bootstrap](#4-cluster-bootstrap-1-cp-or-ha) below).
 
 Do **not** put Proxmox root passwords in git, chat, or scripts. Use an **API token**.
 
@@ -244,7 +244,7 @@ Other boot tips:
 | Still UEFI shell | Confirm GPT has ESP; re-import cloud image |
 | ZFS import without SSH | Set `PROXMOX_SSH=root@pve` — API upload to `local-zfs` often leaves no disk |
 
-## 4. Talos-shaped cluster (1 CP or HA)
+## 4. Cluster bootstrap (1 CP or HA)
 
 Same qcow2 for control-plane and workers. Prefer VMIDs **210+** so lab VM 200 is untouched.
 
@@ -298,7 +298,7 @@ make lab-up ARCH=arm64
 APPS=examples/apps/nginx.yaml ./scripts/proxmox-lab-up.sh --skip-build --cni cilium
 ```
 
-**IPv4 vs dual-stack:** default labs stay IPv4-only (`networkMode: ipv4`, Cilium `ipv6.enabled=false`). `--dual-stack` sets `networkMode: dual-stack` with Talos-shaped CIDRs (`10.244.0.0/16` + `2001:db8:10:0::/56` pods, `10.96.0.0/12` + `2001:db8:96:1::/112` services), enables guest IPv6, dual-stack apiserver `--service-cluster-ip-range`, kubelet `--node-ip=v4,v6`, and Cilium `ipam.mode=kubernetes` + `ipv6.enabled=true` (Node.PodCIDR). Lab bridges often have no RA — guests then get a stable node ULA derived from DHCPv4 (`10.1.1.173` → `fd00:a:1:1::ad/64`). When the LAN also offers SLAAC, the GUA wins and the synthetic ULA is dropped so kubectl InternalIP and the serial dashboard eth0 match. Rebuild the cloud image when changing EPHEMERAL/kubelet dual-stack behavior. Flannel/Calico dual-stack is out of scope for lab-up.
+**IPv4 vs dual-stack:** default labs stay IPv4-only (`networkMode: ipv4`, Cilium `ipv6.enabled=false`). `--dual-stack` sets `networkMode: dual-stack` with default dual-stack CIDRs (`10.244.0.0/16` + `2001:db8:10:0::/56` pods, `10.96.0.0/12` + `2001:db8:96:1::/112` services), enables guest IPv6, dual-stack apiserver `--service-cluster-ip-range`, kubelet `--node-ip=v4,v6`, and Cilium `ipam.mode=kubernetes` + `ipv6.enabled=true` (Node.PodCIDR). Lab bridges often have no RA — guests then get a stable node ULA derived from DHCPv4 (`10.1.1.173` → `fd00:a:1:1::ad/64`). When the LAN also offers SLAAC, the GUA wins and the synthetic ULA is dropped so kubectl InternalIP and the serial dashboard eth0 match. Rebuild the cloud image when changing EPHEMERAL/kubelet dual-stack behavior. Flannel/Calico dual-stack is out of scope for lab-up.
 
 CNI choices (pick one): Cilium (default, kubeProxyReplacement), Calico (VXLAN + kube-proxy), Flannel (VXLAN + kube-proxy). See [examples/cni/README.md](../examples/cni/README.md) and [cilium.md](../examples/cni/cilium.md) / [calico.md](../examples/cni/calico.md).
 
@@ -320,7 +320,7 @@ make pertiskctl
 
 # HA: endpoint = VIP; bootstrap CP1, then join CP2/CP3:
 ./out/bin/pertiskctl gen config lab-ha https://<VIP>:6443 -o ./out/cluster --controlplanes 3
-# Dual-stack HA (Talos-shaped pod/service CIDRs; optional IPv6 VIP → certSANs + kube-vip ND):
+# Dual-stack HA (default pod/service CIDRs; optional IPv6 VIP → certSANs + kube-vip ND):
 ./out/bin/pertiskctl gen config lab-ha https://10.1.1.210:6443 -o ./out/cluster \
   --controlplanes 3 --dual-stack [--vip6 '2405:9800:…:210']
 ./out/bin/pertiskctl -e <CP1>:50000 apply -f ./out/cluster/controlplane.yaml
