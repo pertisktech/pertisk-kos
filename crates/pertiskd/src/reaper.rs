@@ -117,7 +117,8 @@ mod unix_impl {
                     }
                     r
                 })
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || pertisk_bootstrap::take_kubelet_reload_request();
             if kubelet_reload {
                 if let Some(ref c) = cfg {
                     info!("restarting kubelet after bootstrap");

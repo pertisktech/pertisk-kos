@@ -289,8 +289,32 @@ pub fn publish_kubelet_credentials(kubelet_conf: &str, ca_crt: &str) -> Result<(
     if !ca_crt.is_empty() {
         fs::write(root.join("ca.crt"), ca_crt).context("write /var/lib/kubelet/ca.crt")?;
     }
+    // Ask pertiskd to restart kubelet so it picks up cert credentials before
+    // join finalize waits for the Node object (otherwise CP stays unregistered).
+    request_kubelet_reload();
     info!("published kubelet credentials under /var/lib/kubelet");
     Ok(())
+}
+
+/// Sentinel watched by pertiskd's supervise loop (`/run/pertisk/kubelet-reload`).
+pub const KUBELET_RELOAD_FLAG: &str = "/run/pertisk/kubelet-reload";
+
+pub fn request_kubelet_reload() {
+    let path = Path::new(KUBELET_RELOAD_FLAG);
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let _ = fs::write(path, b"1\n");
+}
+
+/// Returns true once if a reload was requested (consumes the flag).
+pub fn take_kubelet_reload_request() -> bool {
+    let path = Path::new(KUBELET_RELOAD_FLAG);
+    if !path.is_file() {
+        return false;
+    }
+    let _ = fs::remove_file(path);
+    true
 }
 
 pub fn read_ca_pem(state_root: &Path) -> Result<String> {
@@ -612,15 +636,28 @@ fn ensure_control_plane_node_role(
 ) -> Result<()> {
     let path = format!("/api/v1/nodes/{node_name}");
     while Instant::now() < deadline {
-        let (status, _) = client.get(&path)?;
-        if status == 200 {
-            break;
+        match client.get(&path) {
+            Ok((status, _)) if status == 200 => break,
+            Ok((status, _)) => {
+                tracing::debug!(status, node = %node_name, "node not registered yet");
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, node = %node_name, "get node failed; retrying");
+            }
         }
         thread::sleep(Duration::from_secs(3));
     }
-    let (status, _) = client.get(&path)?;
+    let (status, body) = client
+        .get(&path)
+        .with_context(|| format!("get node {node_name}"))?;
     if status != 200 {
         bail!("node {node_name} not registered before timeout (HTTP {status})");
+    }
+    // Already labeled (retry after a previous partial finalize) — still ensure taint.
+    if node_has_control_plane_label(&body) {
+        ensure_control_plane_taint(client, &path, node_name);
+        info!(node = %node_name, "control-plane label already present");
+        return Ok(());
     }
 
     // Label via merge-patch (empty-string role labels are reliable this way).
@@ -631,12 +668,41 @@ fn ensure_control_plane_node_role(
             }
         }
     });
-    let (status, resp) = client.patch_merge(&path, &label_patch.to_string())?;
+    let (status, resp) = client
+        .patch_merge(&path, &label_patch.to_string())
+        .with_context(|| format!("patch label on {node_name}"))?;
     if status != 200 {
         bail!("label node {node_name} failed HTTP {status}: {resp}");
     }
 
-    // Taint via strategic merge (merge key = key+effect).
+    ensure_control_plane_taint(client, &path, node_name);
+
+    // Verify label stuck (node recreate / patch no-op races).
+    // JSON Pointer: `/` in a key must be escaped as `~1` (RFC 6901).
+    let (status, body) = client
+        .get(&path)
+        .with_context(|| format!("re-get node {node_name}"))?;
+    if status != 200 {
+        bail!("re-get node {node_name} after label failed HTTP {status}");
+    }
+    if !node_has_control_plane_label(&body) {
+        bail!("node {node_name} missing control-plane label after patch");
+    }
+    info!(node = %node_name, "labeled control-plane (+ NoSchedule taint)");
+    Ok(())
+}
+
+fn node_has_control_plane_label(body: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    v.pointer("/metadata/labels/node-role.kubernetes.io~1control-plane")
+        .is_some()
+}
+
+/// Best-effort NoSchedule taint. Label alone is enough for `ROLES=control-plane`;
+/// taint failures must not fail join retries (strategic-merge edge cases).
+fn ensure_control_plane_taint(client: &api::KubeClient, path: &str, node_name: &str) {
     let taint_patch = serde_json::json!({
         "spec": {
             "taints": [{
@@ -645,26 +711,24 @@ fn ensure_control_plane_node_role(
             }]
         }
     });
-    let (status, resp) = client.patch_strategic(&path, &taint_patch.to_string())?;
-    if status != 200 {
-        bail!("taint node {node_name} failed HTTP {status}: {resp}");
+    match client.patch_strategic(path, &taint_patch.to_string()) {
+        Ok((status, _)) if status == 200 => {}
+        Ok((status, resp)) => {
+            tracing::warn!(
+                node = %node_name,
+                status,
+                body = %resp,
+                "control-plane taint patch failed (label may still be set)"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                node = %node_name,
+                error = %err,
+                "control-plane taint patch error (label may still be set)"
+            );
+        }
     }
-
-    // Verify label stuck (node recreate / patch no-op races).
-    // JSON Pointer: `/` in a key must be escaped as `~1` (RFC 6901).
-    let (status, body) = client.get(&path)?;
-    if status != 200 {
-        bail!("re-get node {node_name} after label failed HTTP {status}");
-    }
-    let v: serde_json::Value = serde_json::from_str(&body).context("parse node after label")?;
-    let has = v
-        .pointer("/metadata/labels/node-role.kubernetes.io~1control-plane")
-        .is_some();
-    if !has {
-        bail!("node {node_name} missing control-plane label after patch");
-    }
-    info!(node = %node_name, "labeled control-plane (+ NoSchedule taint)");
-    Ok(())
 }
 
 #[cfg(test)]

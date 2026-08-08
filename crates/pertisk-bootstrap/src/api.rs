@@ -130,7 +130,65 @@ fn parse_http_response(raw: &str) -> Result<(u16, String)> {
         .context("HTTP status")?
         .parse()
         .context("HTTP status number")?;
-    Ok((status, body.to_string()))
+
+    let chunked = head
+        .lines()
+        .any(|l| l.to_ascii_lowercase().starts_with("transfer-encoding:") && l.to_ascii_lowercase().contains("chunked"));
+    let body = if chunked {
+        decode_chunked_body(body).context("decode chunked HTTP body")?
+    } else {
+        body.to_string()
+    };
+    Ok((status, body))
+}
+
+/// Decode a single HTTP/1.1 chunked body (no trailers required).
+fn decode_chunked_body(body: &str) -> Result<String> {
+    let bytes = body.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Skip leading CR/LF between chunks.
+        while i < bytes.len() && (bytes[i] == b'\r' || bytes[i] == b'\n') {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let line_end = bytes[i..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|p| i + p)
+            .context("chunk size line truncated")?;
+        let size_line = std::str::from_utf8(&bytes[i..line_end])
+            .context("chunk size not utf8")?
+            .trim()
+            .trim_end_matches('\r');
+        // Ignore chunk extensions after ';'
+        let size_hex = size_line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_hex, 16)
+            .with_context(|| format!("invalid chunk size {size_hex:?}"))?;
+        i = line_end + 1;
+        if size == 0 {
+            break;
+        }
+        if i + size > bytes.len() {
+            bail!(
+                "chunk truncated: need {size} bytes, have {}",
+                bytes.len().saturating_sub(i)
+            );
+        }
+        out.extend_from_slice(&bytes[i..i + size]);
+        i += size;
+        // Expect trailing CRLF after chunk data.
+        if i < bytes.len() && bytes[i] == b'\r' {
+            i += 1;
+        }
+        if i < bytes.len() && bytes[i] == b'\n' {
+            i += 1;
+        }
+    }
+    String::from_utf8(out).context("chunked body not utf8")
 }
 
 /// Load admin client PEMs from a rendered kubeconfig (embedded base64 data).
@@ -183,5 +241,24 @@ mod tests {
         let (s, b) = parse_http_response("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
         assert_eq!(s, 200);
         assert_eq!(b, "ok");
+    }
+
+    #[test]
+    fn parse_chunked_json_body() {
+        let payload = r#"{"ok":true}"#;
+        let raw = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{payload}\r\n0\r\n\r\n",
+            payload.len()
+        );
+        let (s, b) = parse_http_response(&raw).unwrap();
+        assert_eq!(s, 200);
+        assert_eq!(b, payload);
+    }
+
+    #[test]
+    fn decode_multi_chunk() {
+        let body = "4\r\n{\"ab\r\n3\r\nc\":\r\n2\r\n1}\r\n0\r\n\r\n";
+        let decoded = decode_chunked_body(body).unwrap();
+        assert_eq!(decoded, r#"{"abc":1}"#);
     }
 }

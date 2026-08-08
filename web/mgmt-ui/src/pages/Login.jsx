@@ -5,7 +5,7 @@ import { APP_VERSION } from '../utils/version'
 
 export default function Login() {
   const nav = useNavigate()
-  const [username, setUsername] = useState('admin')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [mode, setMode] = useState(null)
   const [error, setError] = useState('')

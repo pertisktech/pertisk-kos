@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -79,6 +80,8 @@ pub async fn join_control_plane(
         let _ = crate::restore_control_plane(state_root);
         // Prior joins could write BOOTSTRAPPED before the CP role label stuck
         // (especially CP3). Re-run finalize so retries actually fix ROLES=<none>.
+        // Give pertiskd a beat to honor the kubelet-reload flag from restore.
+        thread::sleep(Duration::from_secs(5));
         let admin_path = paths.admin_kubeconfig();
         finalize_bootstrap_when_ready(&admin_path, None, &hostname).with_context(|| {
             format!("already-joined control-plane missing finalize/label for {hostname}")
@@ -232,6 +235,11 @@ pub async fn join_control_plane(
         paths.marker(),
         format!("joined control-plane at {}\n", chrono_like_now()),
     )?;
+
+    // Cert kubeconfig is on disk; wait briefly for pertiskd to restart kubelet
+    // (via /run/pertisk/kubelet-reload) so the Node object appears before finalize.
+    info!("waiting for kubelet credential reload before finalize");
+    thread::sleep(Duration::from_secs(8));
 
     // Label this CP node once local apiserver is up (skip token/RBAC/addons).
     // Must succeed: unlabeled joined CPs show ROLES=<none> in `kubectl get nodes`.

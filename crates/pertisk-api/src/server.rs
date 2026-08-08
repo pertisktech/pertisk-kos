@@ -367,7 +367,14 @@ impl MachineService for MachineSvc {
         };
         let result = join_control_plane(&state_root, &cfg, adv, &req.etcd_endpoints)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| {
+                // Even on finalize failure, credentials may already be on disk —
+                // restart kubelet so the Node can register for the next retry.
+                if let Ok(mut st) = self.state.lock() {
+                    st.kubelet_reload = true;
+                }
+                Status::internal(format!("{e:#}"))
+            })?;
         {
             let mut st = lock(&self.state)?;
             st.message = result.message.clone();
