@@ -41,6 +41,10 @@ pub struct ClusterOut {
     pub provider_url: Option<String>,
     pub provider_node: Option<String>,
     pub status: String,
+    /// Live reachability: `online` | `offline` | `unknown` (not stored in DB).
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub availability: String,
     pub controlplanes: i64,
     pub workers: i64,
     pub vip: Option<String>,
@@ -183,11 +187,25 @@ async fn list(
     State(state): State<AppState>,
     CurrentUser(_): CurrentUser,
 ) -> ApiResult<Json<Vec<ClusterOut>>> {
-    let rows = sqlx::query_as::<_, ClusterOut>(&format!(
+    let mut rows = sqlx::query_as::<_, ClusterOut>(&format!(
         "{CLUSTER_SELECT} ORDER BY c.created_at DESC"
     ))
     .fetch_all(state.pool())
     .await?;
+
+    let futs: Vec<_> = rows
+        .iter()
+        .map(|c| {
+            let state = state.clone();
+            let id = c.id.clone();
+            let status = c.status.clone();
+            async move { crate::cluster_availability::probe(&state, &id, &status).await }
+        })
+        .collect();
+    let avails = futures::future::join_all(futs).await;
+    for (c, a) in rows.iter_mut().zip(avails) {
+        c.availability = a;
+    }
     Ok(Json(rows))
 }
 
@@ -290,6 +308,9 @@ async fn get_one(
     .bind(&id)
     .fetch_all(state.pool())
     .await?;
+
+    cluster.availability =
+        crate::cluster_availability::probe(&state, &id, &cluster.status).await;
 
     Ok(Json(serde_json::json!({
         "cluster": cluster,

@@ -15,6 +15,8 @@ pub struct ClusterResourceSummary {
     pub cluster_id: String,
     pub cluster_name: String,
     pub status: String,
+    /// Live reachability: `online` | `offline` | `unknown`.
+    pub availability: String,
     pub k8s_version: String,
     pub node_count: i64,
     pub cpu: ResourceMetric,
@@ -74,10 +76,43 @@ pub async fn gather_all(state: &AppState) -> Vec<ClusterResourceSummary> {
         .into_iter()
         .map(|c| {
             let state = state.clone();
-            async move { gather_one(&state, c).await }
+            async move {
+                let id = c.id.clone();
+                let name = c.name.clone();
+                let status = c.status.clone();
+                let k8s_version = c.k8s_version.clone();
+                // Cap per-cluster work so a down Proxmox/VIP cannot stall the dashboard.
+                match timeout(Duration::from_secs(15), gather_one(&state, c)).await {
+                    Ok(summary) => summary,
+                    Err(_) => ClusterResourceSummary {
+                        cluster_id: id,
+                        cluster_name: name,
+                        status,
+                        availability: "offline".into(),
+                        k8s_version,
+                        node_count: 0,
+                        cpu: empty_metric("cores"),
+                        memory: empty_metric("GiB"),
+                        disk: empty_metric("GiB"),
+                        error: Some("resource probe timed out (API unreachable?)".into()),
+                    },
+                }
+            }
         })
         .collect();
     futures::future::join_all(futs).await
+}
+
+fn empty_metric(unit: &str) -> ResourceMetric {
+    ResourceMetric {
+        used: None,
+        total: None,
+        percent: None,
+        unit: unit.into(),
+        display_used: None,
+        display_total: None,
+        error: None,
+    }
 }
 
 async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSummary {
@@ -149,6 +184,7 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
             cluster_id: cluster.id,
             cluster_name: cluster.name,
             status: cluster.status,
+            availability: "unknown".into(),
             k8s_version: cluster.k8s_version,
             node_count,
             cpu,
@@ -165,6 +201,7 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
                 cluster_id: cluster.id,
                 cluster_name: cluster.name,
                 status: cluster.status,
+                availability: "offline".into(),
                 k8s_version: cluster.k8s_version,
                 node_count,
                 cpu,
@@ -179,6 +216,25 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
     // Prefer kubeconfig server; on connect failure, fall back to CP node IPs.
     let (server_override, mut soft_err) =
         resolve_api_server(&kc, &nodes, &cluster).await;
+
+    // Cluster VMs powered off / VIP dead — skip kubectl top & stats (would just timeout).
+    if soft_err.is_some() && server_override.is_none() {
+        cpu.error = soft_err.clone();
+        memory.error = soft_err.clone();
+        disk.error = soft_err.clone();
+        return ClusterResourceSummary {
+            cluster_id: cluster.id,
+            cluster_name: cluster.name,
+            status: cluster.status,
+            availability: "offline".into(),
+            k8s_version: cluster.k8s_version,
+            node_count,
+            cpu,
+            memory,
+            disk,
+            error: soft_err,
+        };
+    }
 
     let top_fut = fetch_kubectl_top_all(&kc, server_override.as_deref());
     let disk_fut = fetch_disk_from_stats(&kc, &nodes, server_override.as_deref());
@@ -269,6 +325,7 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
         cluster_id: cluster.id,
         cluster_name: cluster.name,
         status: cluster.status,
+        availability: "online".into(),
         k8s_version: cluster.k8s_version,
         node_count,
         cpu,

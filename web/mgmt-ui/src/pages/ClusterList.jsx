@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 
 const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
+const AVAIL_POLL_MS = 15000
 
 export default function Clusters() {
   const nav = useNavigate()
@@ -35,6 +37,15 @@ export default function Clusters() {
     const t = setInterval(load, 2000)
     return () => clearInterval(t)
   }, [list, load, expectDelete])
+
+  // Refresh online/offline even when idle.
+  useEffect(() => {
+    if (list.length === 0) return undefined
+    const busy = list.some((c) => BUSY.has(c.status))
+    if (busy) return undefined
+    const t = setInterval(load, AVAIL_POLL_MS)
+    return () => clearInterval(t)
+  }, [list, load])
 
   useEffect(() => {
     function onFocus() {
@@ -89,7 +100,9 @@ export default function Clusters() {
                   }}
                 >
                   <td><span className="row-click-label">{c.name}</span></td>
-                  <td><span className={`badge ${c.status}`}>{c.status}</span></td>
+                  <td>
+                    <ClusterStatusBadges status={c.status} availability={c.availability} />
+                  </td>
                   <td>
                     {c.provider_name ? (
                       <div>

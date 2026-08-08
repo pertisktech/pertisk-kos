@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, getToken } from '../api'
 import { Icon } from '../components/Icons'
+import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 import { useConfirm } from '../components/Confirm'
 import Checkbox from '../components/Checkbox'
 import Modal from '../components/Modal'
@@ -743,7 +744,7 @@ machine:
           <h1>
             <Icon name="clusters" size={22} /> {c.name}
           </h1>
-          <span className={`badge ${c.status}`}>{c.status}</span>
+          <ClusterStatusBadges status={c.status} availability={c.availability} />
         </div>
         <div className="row-actions">
           <Link className="btn secondary btn-icon" to="/clusters">
@@ -909,7 +910,12 @@ machine:
                   <h3 className="section-label">Cluster</h3>
                   <dl className="kv">
                     <div><dt>Name</dt><dd>{c.name}</dd></div>
-                    <div><dt>Status</dt><dd><span className={`badge ${c.status}`}>{c.status}</span></dd></div>
+                    <div>
+                      <dt>Status</dt>
+                      <dd>
+                        <ClusterStatusBadges status={c.status} availability={c.availability} />
+                      </dd>
+                    </div>
                     <div><dt>Endpoint</dt><dd className="mono-inline">{c.endpoint || '—'}</dd></div>
                     <div>
                       <dt>Provider</dt>

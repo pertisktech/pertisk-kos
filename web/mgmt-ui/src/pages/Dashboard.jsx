@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 
 const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 const RESOURCES_POLL_MS = 15000
@@ -93,10 +94,19 @@ function ClusterResourceCard({ summary, onOpen }) {
   const version = formatK8sVersion(summary.k8s_version)
   const nodes = summary.node_count
   const statusClass = summary.status || 'unknown'
+  const avail = summary.availability || 'unknown'
+  const cardClass = [
+    'card',
+    'cluster-resource-card',
+    `status-${statusClass}`,
+    statusClass === 'ready' ? `avail-${avail}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
 
   return (
     <article
-      className={`card cluster-resource-card status-${statusClass}`}
+      className={cardClass}
       role="link"
       tabIndex={0}
       onClick={onOpen}
@@ -122,7 +132,7 @@ function ClusterResourceCard({ summary, onOpen }) {
             </div>
           </div>
         </div>
-        <span className={`badge ${statusClass}`}>{summary.status}</span>
+        <ClusterStatusBadges status={summary.status} availability={summary.availability} />
       </div>
       <div className="resource-gauge-row">
         <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} />
@@ -163,7 +173,15 @@ export default function Dashboard() {
         setResourcesErr('')
       })
       .catch((e) => {
-        setResourcesErr(e.message || 'failed to load resources')
+        const msg = e.message || 'failed to load resources'
+        // Vite proxies /api → :8080; reqwest/fetch fail when pertisk-mgmt is down.
+        if (/failed to fetch|networkerror|load failed|sending request/i.test(msg)) {
+          setResourcesErr(
+            'Cannot reach management API at :8080 — is pertisk-mgmt running?',
+          )
+        } else {
+          setResourcesErr(msg)
+        }
       })
   }, [])
 
@@ -286,7 +304,9 @@ export default function Dashboard() {
                     }}
                   >
                     <td><span className="row-click-label">{c.name}</span></td>
-                    <td><span className={`badge ${c.status}`}>{c.status}</span></td>
+                    <td>
+                      <ClusterStatusBadges status={c.status} availability={c.availability} />
+                    </td>
                     <td>{c.controlplanes} CP / {c.workers} WK{c.vip ? ` · VIP ${c.vip}` : ''}</td>
                   </tr>
                 )

@@ -542,6 +542,7 @@ label {
   opacity: 0.85;
 }
 .cluster-resource-card.status-ready { --cluster-accent: var(--success); }
+.cluster-resource-card.status-ready.avail-offline { --cluster-accent: var(--danger); }
 .cluster-resource-card.status-error,
 .cluster-resource-card.status-failed { --cluster-accent: var(--danger); }
 .cluster-resource-card.status-pending,
@@ -745,10 +746,18 @@ tr.row-click:focus-visible {
   color: var(--accent);
 }
 .badge.ready, .badge.succeeded { background: rgba(62, 207, 142, 0.2); color: var(--success); }
+.badge.online { background: rgba(62, 207, 142, 0.2); color: var(--success); }
 .badge.pending, .badge.queued, .badge.provisioning, .badge.running, .badge.upgrading {
   background: rgba(230, 184, 77, 0.2); color: var(--warning);
 }
-.badge.error, .badge.failed { background: rgba(232, 93, 93, 0.2); color: var(--danger); }
+.badge.unknown { background: color-mix(in srgb, var(--border) 55%, transparent); color: var(--text-muted); }
+.badge.error, .badge.failed, .badge.offline { background: rgba(232, 93, 93, 0.2); color: var(--danger); }
+.status-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
 
 .row-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .page-head {
