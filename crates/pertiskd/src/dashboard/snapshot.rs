@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use pertisk_api::SharedState;
-use pertisk_config::MachineConfig;
+use pertisk_config::{Cluster, MachineConfig};
 use pertisk_update::BootMeta;
 
 #[derive(Debug, Clone, Default)]
@@ -18,6 +18,8 @@ pub struct StatusSnapshot {
     pub cpu_usage_pct: u16,
     /// 1-minute load average from `/proc/loadavg`.
     pub load_1m: f32,
+    pub uptime_secs: u64,
+    pub process_count: usize,
     pub mem_total_kb: u64,
     pub mem_available_kb: u64,
     pub disks: Vec<DiskUsage>,
@@ -97,8 +99,7 @@ impl StatusSnapshot {
                 .collect();
             if let Some(ref cluster) = cfg.cluster {
                 snap.cluster_endpoint = cluster.endpoint.clone();
-                snap.cni = cluster.cni.as_str().to_string();
-                snap.pod_cidr = cluster.pod_cidr.clone().unwrap_or_else(|| "-".into());
+                (snap.cni, snap.pod_cidr) = cluster_network_display(cluster);
                 snap.kubernetes_version = cluster
                     .kubernetes_version
                     .clone()
@@ -130,6 +131,8 @@ impl StatusSnapshot {
         snap.cpu_cores = cores;
         snap.cpu_usage_pct = sample_cpu_usage_pct();
         snap.load_1m = parse_loadavg(&read_to_string("/proc/loadavg").unwrap_or_default());
+        snap.uptime_secs = parse_uptime(&read_to_string("/proc/uptime").unwrap_or_default());
+        snap.process_count = process_count();
 
         let (total, avail) = parse_meminfo(&read_to_string("/proc/meminfo").unwrap_or_default());
         snap.mem_total_kb = total;
@@ -152,6 +155,21 @@ impl StatusSnapshot {
     pub fn mem_used_kb(&self) -> u64 {
         self.mem_total_kb.saturating_sub(self.mem_available_kb)
     }
+}
+
+fn cluster_network_display(cluster: &Cluster) -> (String, String) {
+    let cni = match cluster.cni.as_str() {
+        "none" => "external".into(),
+        configured => configured.to_string(),
+    };
+    let pod_cidr = cluster
+        .pod_cidr
+        .as_deref()
+        .filter(|cidr| !cidr.is_empty())
+        .or_else(|| cluster.pod_subnet.as_deref().filter(|cidr| !cidr.is_empty()))
+        .unwrap_or("-")
+        .to_string();
+    (cni, pod_cidr)
 }
 
 fn read_to_string(path: &str) -> Option<String> {
@@ -563,6 +581,30 @@ pub fn parse_loadavg(text: &str) -> f32 {
         .unwrap_or(0.0)
 }
 
+fn parse_uptime(text: &str) -> u64 {
+    text.split_whitespace()
+        .next()
+        .and_then(|value| value.parse::<f64>().ok())
+        .map(|seconds| seconds.max(0.0) as u64)
+        .unwrap_or(0)
+}
+
+fn process_count() -> usize {
+    std::fs::read_dir("/proc")
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+        })
+        .count()
+}
+
 /// Aggregate CPU ticks from the first `cpu ` line of `/proc/stat`.
 /// Returns `(idle_all, total)` where idle_all includes iowait.
 pub fn parse_proc_stat_cpu(text: &str) -> Option<(u64, u64)> {
@@ -729,6 +771,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn external_cni_uses_cluster_pod_subnet() {
+        let cfg = MachineConfig::from_yaml(
+            "version: v1alpha1\nmachine:\n  type: controlplane\ncluster:\n  endpoint: https://10.0.0.1:6443\n  cni: none\n  podSubnet: 10.244.0.0/16\n",
+        )
+        .expect("config");
+        let cluster = cfg.cluster.as_ref().expect("cluster");
+
+        assert_eq!(
+            cluster_network_display(cluster),
+            ("external".into(), "10.244.0.0/16".into())
+        );
+    }
+
+    #[test]
     fn cpuinfo_x86() {
         let sample = "\
 processor\t: 0
@@ -759,6 +815,12 @@ Cached:          2048000 kB
     fn loadavg_parses_first_field() {
         assert!((parse_loadavg("0.42 0.35 0.28 1/234 99") - 0.42).abs() < f32::EPSILON);
         assert_eq!(parse_loadavg(""), 0.0);
+    }
+
+    #[test]
+    fn uptime_parses_fractional_seconds() {
+        assert_eq!(parse_uptime("93784.23 1234.00"), 93_784);
+        assert_eq!(parse_uptime(""), 0);
     }
 
     #[test]

@@ -9,10 +9,10 @@
 //! `up` must stay on the simple codes or they look uncolored.
 //!
 //! Select with `PERTISK_DASHBOARD_THEME=…` (see `by_name`) and
-//! `PERTISK_DASHBOARD_BORDER=auto|ascii|light|heavy|double|rounded`.
+//! `PERTISK_DASHBOARD_BORDER=auto|line|ascii|light|rounded|heavy|double`.
 //!
-//! Wild Cherry palette inspired by
-//! <https://github.com/lysyi3m/macos-terminal-themes/blob/master/themes/WildCherry.terminal>.
+//! Default `line` is solid ASCII `=` (Serial-safe). Unicode box/block glyphs
+//! are ambiguous-width on Proxmox xterm.js and paint as spaced `-  -  -`.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
@@ -205,6 +205,10 @@ impl Theme {
         Style::default().fg(self.title).add_modifier(Modifier::BOLD)
     }
 
+    pub fn header_style(&self) -> Style {
+        Style::default().fg(self.title).add_modifier(Modifier::BOLD)
+    }
+
     pub fn label_style(&self) -> Style {
         Style::default().fg(self.label)
     }
@@ -258,10 +262,6 @@ impl Theme {
         }
     }
 
-    pub fn meter_track_style(&self) -> Style {
-        Style::default().fg(self.label)
-    }
-
     /// Color a log line by severity keyword.
     pub fn log_line_style(&self, line: &str) -> Style {
         let lower = line.to_ascii_lowercase();
@@ -299,11 +299,9 @@ pub fn classify(status: &str) -> Health {
 
 /// Frame glyph set.
 ///
-/// ASCII `-` is a short centered dash, so a run of them reads as `- - - -`
-/// rather than a solid rule. Box-drawing glyphs are designed to join, but
-/// they are three bytes each: on a console that is not decoding UTF-8 they
-/// become mojibake and shift every column after them. Hence `auto`, which
-/// picks based on the startup probe rather than on a guess.
+/// Proxmox Serial / xterm.js treats many Unicode box and block glyphs as
+/// ambiguous-width, so a run of `─`/`█` paints as spaced short dashes
+/// (`-  -  -`). Default frames are **ASCII only** with `=` rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Chrome {
     pub name: &'static str,
@@ -314,6 +312,7 @@ pub struct Chrome {
     pub meter_track: &'static str,
 }
 
+/// Solid ASCII line frames — default for Serial (`=` rules, `|` sides).
 pub const ASCII: Chrome = Chrome {
     name: "ascii",
     set: border::Set {
@@ -323,16 +322,34 @@ pub const ASCII: Chrome = Chrome {
         bottom_right: "+",
         vertical_left: "|",
         vertical_right: "|",
-        horizontal_top: "-",
-        horizontal_bottom: "-",
+        horizontal_top: "=",
+        horizontal_bottom: "=",
     },
     ascii_only: true,
-    meter_fill: "|",
-    meter_track: "-",
+    meter_fill: "#",
+    meter_track: "=",
+};
+
+/// `border: line` — same Serial-safe glyphs as [`ASCII`].
+pub const LINE: Chrome = Chrome {
+    name: "line",
+    set: ASCII.set,
+    ascii_only: true,
+    meter_fill: "#",
+    meter_track: "=",
 };
 
 const UNICODE_METER_FILL: &str = "█";
 const UNICODE_METER_TRACK: &str = "░";
+
+/// Full-block Unicode frames (opt-in — often wrong width on Serial).
+pub const PROPORTIONAL: Chrome = Chrome {
+    name: "proportional",
+    set: border::FULL,
+    ascii_only: false,
+    meter_fill: UNICODE_METER_FILL,
+    meter_track: UNICODE_METER_TRACK,
+};
 
 pub const LIGHT: Chrome = Chrome {
     name: "light",
@@ -368,10 +385,8 @@ pub const DOUBLE: Chrome = Chrome {
 
 /// Frame glyphs from `PERTISK_DASHBOARD_BORDER`.
 ///
-/// `auto` follows the UTF-8 probe. Explicit styles (`light`, `double`, …) keep
-/// their *shape* even when the probe says the console is not UTF-8 — they fall
-/// back to an ASCII stand-in (`=` rules for double, etc.) instead of emitting
-/// multi-byte glyphs that shift every column on Serial.
+/// Default / `line` / `bordered` always use solid ASCII `=` — never hyphen and
+/// never ambiguous-width Unicode. Opt-in Unicode styles still available.
 pub fn chrome(utf8: bool) -> Chrome {
     let requested = std::env::var("PERTISK_DASHBOARD_BORDER").unwrap_or_default();
     let force_utf8 = matches!(
@@ -388,19 +403,28 @@ pub fn chrome(utf8: bool) -> Chrome {
         utf8 || force_utf8
     };
     match requested.trim().to_ascii_lowercase().as_str() {
-        "ascii" | "plain" | "bordered" => ASCII,
-        "light" | "unicode" => {
+        "ascii" | "plain" => ASCII,
+        // Serial-safe continuous line — never `-`, never ambiguous Unicode.
+        "bordered" | "line" | "solid" => LINE,
+        "proportional" | "wide" | "block" | "full" => {
             if use_unicode {
-                LIGHT
+                PROPORTIONAL
             } else {
-                ASCII
+                LINE
             }
         }
         "rounded" => {
             if use_unicode {
                 ROUNDED
             } else {
-                ASCII
+                LINE
+            }
+        }
+        "light" | "unicode" => {
+            if use_unicode {
+                LIGHT
+            } else {
+                LINE
             }
         }
         "heavy" | "thick" => {
@@ -417,9 +441,8 @@ pub fn chrome(utf8: bool) -> Chrome {
                 ASCII_DOUBLE
             }
         }
-        // auto / empty / unknown → ASCII (safe on Serial); use `rounded`/`light`
-        // explicitly when UTF-8 is known-good.
-        _ => ASCII,
+        // auto / empty / unknown → ASCII `=` line.
+        _ => LINE,
     }
 }
 
@@ -480,6 +503,28 @@ pub fn ansi_fg(color: Color) -> Option<u8> {
         Color::White => Some(97),
         _ => None,
     }
+}
+
+/// ANSI SGR background code, or `None` for `Color::Reset`.
+pub fn ansi_bg(color: Color) -> Option<u8> {
+    ansi_fg(color).map(|code| code + 10)
+}
+
+/// Parse a configured dashboard background in strict `#RRGGBB` form.
+pub fn background() -> Option<Color> {
+    let raw = std::env::var("PERTISK_DASHBOARD_BACKGROUND").ok()?;
+    parse_hex_color(&raw)
+}
+
+pub fn parse_hex_color(raw: &str) -> Option<Color> {
+    let hex = raw.trim().strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color::Rgb(red, green, blue))
 }
 
 #[cfg(test)]
@@ -557,14 +602,53 @@ mod tests {
     }
 
     #[test]
+    fn parses_strict_hex_background_color() {
+        assert_eq!(parse_hex_color("#1E1E2E"), Some(Color::Rgb(30, 30, 46)));
+        assert_eq!(parse_hex_color("1E1E2E"), None);
+        assert_eq!(parse_hex_color("#123"), None);
+        assert_eq!(parse_hex_color("#GGGGGG"), None);
+    }
+
+    #[test]
     fn auto_chrome_follows_utf8_probe() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::remove_var("PERTISK_DASHBOARD_BORDER");
             std::env::remove_var("PERTISK_DASHBOARD_UTF8");
         }
-        assert_eq!(chrome(true).name, "ascii");
-        assert_eq!(chrome(false).name, "ascii");
+        // Default is Serial-safe ASCII `=` even when UTF-8 works.
+        assert_eq!(chrome(true).name, "line");
+        assert_eq!(chrome(false).name, "line");
+        assert_eq!(chrome(true).set.horizontal_top, "=");
+        assert!(chrome(true).ascii_only);
+    }
+
+    #[test]
+    fn line_is_solid_ascii_equals() {
+        with_border_env("line", Some("1"), || {
+            let c = chrome(true);
+            assert_eq!(c.name, "line");
+            assert!(c.ascii_only);
+            assert_eq!(c.set.horizontal_top, "=");
+            assert_ne!(c.set.horizontal_top, "-");
+        });
+    }
+
+    #[test]
+    fn bordered_is_solid_ascii_equals() {
+        with_border_env("bordered", Some("1"), || {
+            assert_eq!(chrome(true).name, "line");
+            assert_eq!(chrome(true).set.horizontal_top, "=");
+        });
+    }
+
+    #[test]
+    fn rounded_is_thin_line_with_utf8() {
+        with_border_env("rounded", Some("1"), || {
+            let c = chrome(false);
+            assert_eq!(c.name, "rounded");
+            assert!(!c.ascii_only);
+        });
     }
 
     #[test]

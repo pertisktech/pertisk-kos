@@ -8,13 +8,13 @@ machine:
         dhcp: true
     nameservers:
       - 1.1.1.1
-  # Optional — omit to use built-in defaults (catppuccin / ascii; size from probe).
+  # Optional — omit for built-ins (catppuccin / terminal black / ASCII - rules).
   # dashboard:
   #   theme: catppuccin
-  #   border: ascii
-  #   cols: 93          # only if probe is wrong — wrong size blanks Serial
+  #   border: line        # one label-plus-hyphen separator row per section
+  #   background: "#1E1E2E" # optional; omit for terminal default black
+  #   cols: 93            # only if probe is wrong — wrong size blanks Serial
   #   rows: 25
-  #   utf8: true
   #   mgmt_url: https://ptkos.apps.thaidevops.co
 cluster:
   endpoint: https://10.1.1.210:6443

@@ -2,8 +2,8 @@
 //!
 //! Renders into a ratatui `TestBackend`, then paints only the rows that
 //! changed (absolute CUP, no DEC synchronized updates — those blank Proxmox).
-//! Cursor is forced off around every write so a slow serial line does not
-//! show it walking through the node panel / mid-screen.
+//! Cursor is forced off around every write and parked at a stable in-frame
+//! cell so asynchronous console output cannot scroll past the footer.
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -31,7 +31,7 @@ const REFRESH_MS: u64 = 5000;
 /// Proxmox xterm.js starts blank when you open/switch the console; without a
 /// periodic dump the client never sees the last frame. Keep this >> 1 —
 /// every-tick invalidate made the pane look like a blinking cursor.
-const FORCE_REPAINT_EVERY: u32 = 12;
+const FORCE_REPAINT_EVERY: u32 = 2;
 
 /// Hide cursor + disable blink (xterm / Proxmox Serial).
 ///
@@ -40,9 +40,10 @@ const FORCE_REPAINT_EVERY: u32 = 12;
 /// Do **not** send OSC 12 (`ESC ] 12 ; … BEL`) — Proxmox prints `#1a1a1a`
 /// and rings the bell.
 const CURSOR_OFF: &str = "\x1b[?25l\x1b[?12l";
-/// Park far off-screen. Proxmox often ignores hide; parking is what keeps the
-/// blink from sitting on the dashboard chrome between paints.
-const CURSOR_PARK: &str = "\x1b[999;999H";
+/// Park at a stable in-frame cell. CUP positions beyond the terminal bounds
+/// clamp to the bottom-right; the next kernel/direct console write then wraps
+/// and scrolls beneath `[ END LOGS ]`.
+const CURSOR_PARK: &str = "\x1b[1;1H";
 
 /// Clear any stuck synchronized-update mode from a previous build.
 const UNSYNC: &str = "\x1b[?2026l";
@@ -109,7 +110,8 @@ fn run_tui_inner(
         terminal
             .draw(|frame| panels::render_themed(frame, &snap, &recent, &skin))
             .map_err(|e| format!("TUI draw: {e}"))?;
-        dump_frame(&mut writer, terminal.backend(), skin.chrome.ascii_only)?;
+        writer.invalidate();
+        dump_frame(&mut writer, terminal.backend(), true)?;
     }
 
     while !stop.load(Ordering::SeqCst) {
@@ -165,7 +167,7 @@ fn run_tui_inner(
         if ticks % FORCE_REPAINT_EVERY == 0 {
             writer.invalidate();
         }
-        dump_frame(&mut writer, terminal.backend(), skin.chrome.ascii_only)?;
+        dump_frame(&mut writer, terminal.backend(), true)?;
     }
 
     paint_console(b"\x1b[?25h\x1b[?12h");
@@ -177,18 +179,20 @@ fn build_skin(_width: u16, _height: u16, _source: &str, utf8: bool) -> panels::S
     panels::Skin {
         theme: theme::active(),
         chrome,
+        background: theme::background(),
         mgmt_url: crate::dashboard::mgmt_public_url(),
     }
 }
 
 fn config_signature(caps: &probe::ConsoleCaps, skin: &panels::Skin) -> String {
     format!(
-        "{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{:?}|{}",
         caps.cols,
         caps.rows,
         caps.utf8,
         skin.theme.name,
         skin.chrome.name,
+        skin.background,
         skin.mgmt_url.as_deref().unwrap_or(""),
     )
 }
@@ -292,18 +296,19 @@ impl FrameWriter {
         let mut out = String::with_capacity((area.width as usize + 24) * area.height as usize);
         out.push_str(CURSOR_OFF);
         if full {
-            // Reconnect / resize: one home + newline walk, then park.
-            out.push_str("\x1b[H");
-            out.push_str(CURSOR_OFF);
+            // Address every row independently. This avoids newline/wrap races
+            // and lets every reconnect receive a complete coherent frame.
             for (i, row) in rows.iter().enumerate() {
                 out.push_str(CURSOR_OFF);
+                out.push_str(&format!("\x1b[{};1H", i + 1));
                 out.push_str(row);
-                if i + 1 < rows.len() {
-                    out.push_str("\x1b[0m\x1b[K\r\n");
-                } else {
-                    out.push_str("\x1b[0m\x1b[K");
-                }
+                out.push_str("\x1b[0m\x1b[K");
+                out.push_str(CURSOR_OFF);
+                out.push_str(CURSOR_PARK);
             }
+            // The browser terminal can be taller than the probed frame. Clear
+            // stale text after the footer without clearing the dashboard.
+            out.push_str(&format!("\x1b[{};{}H\x1b[0J", area.height, area.width));
         } else {
             // Incremental: only rewrite dirty rows, park after each so a failed
             // hide never leaves the cursor mid-panel.
@@ -333,15 +338,15 @@ impl FrameWriter {
 fn encode_row(buf: &ratatui::buffer::Buffer, y: u16, ascii_only: bool) -> String {
     let area = buf.area();
     let mut out = String::with_capacity(area.width as usize + 16);
-    let mut current = Some((None, false));
-    for x in 0..area.width {
+    let mut current: Option<(ratatui::style::Color, ratatui::style::Color, bool)> = None;
+    // Never write the terminal's final column. Serial VTs commonly auto-wrap
+    // immediately after that cell, making one horizontal rule look like two.
+    // FrameWriter follows each row with EL, which clears this reserved cell.
+    for x in 0..area.width.saturating_sub(1) {
         let cell = &buf[(x, y)];
-        let want = (
-            theme::ansi_fg(cell.fg),
-            cell.modifier.contains(Modifier::BOLD),
-        );
+        let want = (cell.fg, cell.bg, cell.modifier.contains(Modifier::BOLD));
         if current != Some(want) {
-            out.push_str(&sgr(want.0, want.1));
+            out.push_str(&sgr(want.0, want.1, want.2));
             current = Some(want);
         }
         out.push_str(&glyph(cell.symbol(), ascii_only));
@@ -365,24 +370,74 @@ fn glyph(symbol: &str, ascii_only: bool) -> String {
 
 fn ascii_fallback(ch: char) -> char {
     match ch {
-        '─' | '━' | '═' => '-',
-        '│' | '┃' | '║' => '|',
-        '█' | '▓' | '▒' => '|',
-        '░' => '-',
+        // Block and box-drawing glyphs -> solid ASCII rule.
+        '▀' | '▄' | '─' | '━' | '═' | '░' => '=',
+        '█' | '▓' | '▒' | '│' | '┃' | '║' | '▌' | '▐' => '|',
         '┌' | '┐' | '└' | '┘' | '┏' | '┓' | '┗' | '┛' | '╔' | '╗' | '╚' | '╝' | '╭' | '╮' | '╯'
-        | '╰' => '+',
+        | '╰' | '▛' | '▜' | '▙' | '▟' | '▖' | '▗' | '▘' | '▝' => '+',
         '├' | '┤' | '┬' | '┴' | '┼' => '+',
         _ => ' ',
     }
 }
 
-fn sgr(fg: Option<u8>, bold: bool) -> String {
-    match (fg, bold) {
-        (None, false) => "\x1b[0m".to_string(),
-        (None, true) => "\x1b[0;1m".to_string(),
-        (Some(code), false) => format!("\x1b[0;{code}m"),
-        (Some(code), true) => format!("\x1b[0;1;{code}m"),
+fn sgr(fg: ratatui::style::Color, bg: ratatui::style::Color, bold: bool) -> String {
+    let mut codes = vec!["0".to_string()];
+    if bold {
+        codes.push("1".to_string());
     }
+    if let Some(code) = theme::ansi_fg(fg) {
+        codes.push(code.to_string());
+    }
+    match bg {
+        ratatui::style::Color::Rgb(red, green, blue) => {
+            // Linux VT and some serial parsers do not understand truecolor.
+            // `48;2;30;30;46` is then parsed as separate SGR codes and the
+            // final 46 turns the background cyan. Indexed color is unambiguous.
+            codes.push(format!("48;5;{}", rgb_to_xterm256(red, green, blue)));
+        }
+        color => {
+            if let Some(code) = theme::ansi_bg(color) {
+                codes.push(code.to_string());
+            }
+        }
+    }
+    format!("\x1b[{}m", codes.join(";"))
+}
+
+fn rgb_to_xterm256(red: u8, green: u8, blue: u8) -> u8 {
+    let cube_levels = [0u8, 95, 135, 175, 215, 255];
+    let mut best_index = 16u8;
+    let mut best_distance = u32::MAX;
+
+    for (red_index, &cube_red) in cube_levels.iter().enumerate() {
+        for (green_index, &cube_green) in cube_levels.iter().enumerate() {
+            for (blue_index, &cube_blue) in cube_levels.iter().enumerate() {
+                let distance = color_distance(red, green, blue, cube_red, cube_green, cube_blue);
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_index = 16 + 36 * red_index as u8 + 6 * green_index as u8 + blue_index as u8;
+                }
+            }
+        }
+    }
+
+    for gray_index in 0..24u8 {
+        let gray = 8 + gray_index * 10;
+        let distance = color_distance(red, green, blue, gray, gray, gray);
+        if distance < best_distance {
+            best_distance = distance;
+            best_index = 232 + gray_index;
+        }
+    }
+
+    best_index
+}
+
+fn color_distance(red: u8, green: u8, blue: u8, other_red: u8, other_green: u8, other_blue: u8) -> u32 {
+    let red_delta = i32::from(red) - i32::from(other_red);
+    let green_delta = i32::from(green) - i32::from(other_green);
+    let blue_delta = i32::from(blue) - i32::from(other_blue);
+    (3 * red_delta * red_delta + 6 * green_delta * green_delta + blue_delta * blue_delta) as u32
 }
 
 #[cfg(test)]
@@ -398,6 +453,8 @@ mod tests {
             cpu_cores: 4,
             cpu_usage_pct: 37,
             load_1m: 0.42,
+            uptime_secs: 93_784,
+            process_count: 42,
             mem_total_kb: 8 * 1024 * 1024,
             mem_available_kb: 3 * 1024 * 1024,
             disks: vec![DiskUsage {
@@ -441,6 +498,7 @@ mod tests {
         let skin = panels::Skin {
             theme: theme::DRACULA,
             chrome,
+            background: None,
             mgmt_url: None,
         };
         terminal
@@ -492,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn every_row_is_exactly_frame_width() {
+    fn encoded_rows_reserve_last_column_to_prevent_wrap() {
         for (chrome, width) in [
             (theme::ASCII, 80u16),
             (theme::LIGHT, 80),
@@ -503,21 +561,60 @@ mod tests {
             assert_eq!(rows.len(), 24);
             for (i, row) in rows.iter().enumerate() {
                 let cols = strip_escapes(row).chars().count();
-                assert_eq!(
-                    cols, width as usize,
-                    "{} row {i} is {cols} columns",
-                    chrome.name
-                );
+                assert_eq!(cols, width.saturating_sub(1) as usize, "{} row {i} is {cols} columns", chrome.name);
             }
         }
     }
 
     #[test]
-    fn panels_span_the_full_width() {
+    fn summary_headings_span_the_width() {
         let rows = demo_rows(160, 24, theme::ASCII);
-        let first = strip_escapes(&rows[0]);
-        assert!(first.starts_with('+'), "left edge missing: {first:?}");
-        assert!(first.ends_with('+'), "right edge missing: {first:?}");
+        let summary_top = strip_escapes(&rows[1]);
+        assert!(summary_top.starts_with("PERTISK"), "left heading missing: {summary_top:?}");
+        assert!(summary_top.contains("KUBERNETES"), "center heading missing: {summary_top:?}");
+        assert!(summary_top.contains("NETWORK"), "right heading missing: {summary_top:?}");
+    }
+
+    #[test]
+    fn compact_summary_shows_full_endpoint_and_node_ip() {
+        let rendered = demo_rows(80, 24, theme::ASCII)
+            .into_iter()
+            .map(|row| strip_escapes(&row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("eth0 192.168.1.50/24"), "node IP hidden: {rendered}");
+        assert!(rendered.contains("https://10.0.0.1:6443"), "endpoint clipped: {rendered}");
+    }
+
+    #[test]
+    fn compact_dashboard_uses_cockpit_header_and_dedicated_footer() {
+        let rows: Vec<String> = demo_rows(80, 24, theme::ASCII)
+            .into_iter()
+            .map(|row| strip_escapes(&row))
+            .collect();
+
+        assert!(rows[0].starts_with(" PERTISK pertisk-node-01  v0.1.0"), "header: {:?}", rows[0]);
+        assert!(rows[0].contains("| READY | CPU 37% RAM 62% LOAD 0.42"), "header: {:?}", rows[0]);
+        assert!(rows[1].contains("[ SYSTEM ] controlplane"), "system row: {:?}", rows[1]);
+        assert!(rows[6].contains("BOOT") && rows[6].contains("slot A"), "boot row: {:?}", rows[6]);
+        assert!(rows[7].contains("[ LOGS ]"), "log header: {:?}", rows[7]);
+        assert!(rows[23].contains("[ END LOGS ]") && rows[23].contains("refresh 5s"), "footer: {:?}", rows[23]);
+    }
+
+    #[test]
+    fn logs_do_not_overlap_compact_summary_at_minimum_height() {
+        let rows: Vec<String> = demo_rows(80, 8, theme::ASCII)
+            .into_iter()
+            .map(|row| strip_escapes(&row))
+            .collect();
+        assert!(rows[1].contains("[ SYSTEM ]"));
+        assert!(rows[2].contains("NODE") && rows[2].contains("192.168.1.50/24"));
+        assert!(rows[3].contains("ENDPOINT") && rows[3].contains("10.0.0.1:6443"));
+        assert!(rows[1..5].iter().all(|row| !row.contains("INFO")));
+        assert!(rows[5].contains("[ LOGS ]"));
+        assert!(rows[6].contains("INFO node ready"));
+        assert!(rows[7].contains("[ END LOGS ]") && rows[7].contains("pertisk-node-01"));
+        assert!(rows.iter().all(|row| !row.contains("F1:SUMMARY")));
     }
 
     #[test]
@@ -535,6 +632,46 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_has_plain_background_and_clear_boundaries() {
+        let out = render_demo(80, 24, theme::ASCII);
+        assert!(!out.contains(";40m") && !out.contains(";45m") && !out.contains(";105m"));
+        assert!(out.contains("[ SYSTEM ]"), "system boundary missing: {out:?}");
+        assert!(out.contains("[ LOGS ]"), "log start boundary missing: {out:?}");
+        assert!(out.contains("[ END LOGS ]"), "log end boundary missing: {out:?}");
+        assert!(!out.contains("F1:SUMMARY"), "obsolete footer action present: {out:?}");
+    }
+
+    #[test]
+    fn configured_hex_background_reaches_indexed_wire_without_cyan_fallback() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let skin = panels::Skin {
+            theme: theme::CATPPUCCIN,
+            chrome: theme::LINE,
+            background: Some(ratatui::style::Color::Rgb(30, 30, 46)),
+            mgmt_url: None,
+        };
+        terminal
+            .draw(|frame| panels::render_themed(frame, &demo_snapshot(), &demo_logs(), &skin))
+            .unwrap();
+        let out = FrameWriter::default()
+            .encode(terminal.backend().buffer(), true)
+            .expect("frame");
+
+        assert!(
+            out.contains("48;5;234m"),
+            "missing nearest indexed color for #1E1E2E: {out:?}"
+        );
+        assert!(!out.contains("48;2;30;30;46m"), "unsafe truecolor sequence: {out:?}");
+    }
+
+    #[test]
+    fn rgb_background_uses_nearest_xterm_palette_color() {
+        assert_eq!(rgb_to_xterm256(30, 30, 46), 234);
+        assert_eq!(rgb_to_xterm256(255, 0, 0), 196);
+        assert_eq!(rgb_to_xterm256(255, 255, 255), 231);
+    }
+
+    #[test]
     fn absent_status_is_red_on_the_wire() {
         let mut snap = demo_snapshot();
         snap.containerd = "absent".into();
@@ -545,6 +682,7 @@ mod tests {
         let skin = panels::Skin {
             theme: theme::WILD_CHERRY,
             chrome: theme::ASCII,
+            background: None,
             mgmt_url: Some("https://ptkos.apps.thaidevops.co".into()),
         };
         terminal
@@ -559,7 +697,7 @@ mod tests {
         );
         assert!(out.contains("kubelet"), "{out:?}");
         assert!(
-            out.contains("mgmt") && out.contains("ptkos.apps.thaidevops.co"),
+            out.contains("ptkos.apps.thaidevops.co") && !out.contains("F1:SUMMARY"),
             "mgmt URL missing: {out:?}"
         );
     }
@@ -568,7 +706,7 @@ mod tests {
     fn frame_always_paints_something() {
         let out = render_demo(80, 24, theme::ASCII);
         assert!(out.contains("pertisk-node-01"));
-        assert!(out.contains(" node "));
+        assert!(out.contains("NODE") && out.contains("ENDPOINT"));
         assert!(!out.contains("?2026h"), "synchronized update begin present");
     }
 
@@ -577,14 +715,15 @@ mod tests {
         let out = render_demo(80, 24, theme::ASCII);
         assert!(out.contains("\x1b[?25l"));
         assert!(!out.contains("\x1b[?25h"));
-        // Park off-screen — not CUP home after paint (blinks on title if hide fails).
+        // Never park past the terminal bounds: terminals clamp that address to
+        // the bottom-right, where asynchronous console output causes scrolling.
         assert!(
-            out.contains("\x1b[999;999H"),
-            "expected cursor park off-screen: {out:?}"
+            out.contains("\x1b[1;1H"),
+            "expected stable cursor park: {out:?}"
         );
         assert!(
-            !out.ends_with("\x1b[H\x1b[?25l\x1b[?12l"),
-            "must not leave cursor at home"
+            !out.contains("\x1b[999;999H"),
+            "must not park at the clamped bottom-right edge"
         );
     }
 
@@ -603,17 +742,23 @@ mod tests {
         assert!(writer.encode(terminal.backend().buffer(), true).is_some());
         assert!(writer.encode(terminal.backend().buffer(), true).is_none());
         writer.invalidate();
-        let out = writer.encode(terminal.backend().buffer(), true);
-        assert!(out.is_some(), "reconnect must get a full frame");
-        assert!(out.unwrap().contains("pertisk-node-01"));
+        let out = writer
+            .encode(terminal.backend().buffer(), true)
+            .expect("reconnect must get a full frame");
+        assert!(out.contains("pertisk-node-01"));
+        assert!(
+            out.contains("\x1b[24;80H\x1b[0J"),
+            "full repaint must clear stale text below the footer: {out:?}"
+        );
     }
 
     #[test]
-    fn changed_log_repaints_dirty_rows() {
+    fn changed_log_repaints_rows_by_address() {
         let mut writer = FrameWriter::default();
         let first = draw_demo(80, 24, theme::ASCII, &demo_logs());
         let full = writer.encode(first.backend().buffer(), true).unwrap();
-        assert!(full.contains("\x1b[H"), "first paint is full-frame");
+        assert!(full.contains("\x1b[1;1H"), "first row missing: {full:?}");
+        assert!(full.contains("\x1b[24;1H"), "last row missing: {full:?}");
 
         let mut logs = demo_logs();
         logs.push("INFO one more line".into());
@@ -625,8 +770,12 @@ mod tests {
         );
         assert!(out.contains("one more line"), "new log missing: {out:?}");
         assert!(
-            out.contains("\x1b[999;999H"),
-            "incremental must park off-screen"
+            !out.contains("[ LOGS ]"),
+            "incremental log update must not repaint the separator: {out:?}"
+        );
+        assert!(
+            out.contains("\x1b[1;1H"),
+            "incremental must use the stable cursor park"
         );
     }
 
@@ -652,28 +801,65 @@ mod tests {
 
     #[test]
     fn demo_frame_has_all_panels() {
-        for chrome in [theme::ASCII, theme::LIGHT, theme::DOUBLE, theme::ROUNDED] {
-            let rows = demo_rows(100, 26, chrome);
+        for chrome in [
+            theme::ASCII,
+            theme::PROPORTIONAL,
+            theme::LIGHT,
+            theme::DOUBLE,
+            theme::ROUNDED,
+        ] {
+            let rows = demo_rows(160, 26, chrome);
             let out = rows.join("\n");
-            for title in [" node ", " network ", " resources ", " services ", " logs "] {
+            for title in ["PERTISK", "KUBERNETES", "NETWORK", "LOGS"] {
                 assert!(out.contains(title), "missing panel {title}");
             }
             assert!(
-                out.contains("cpu") && out.contains("memory") && out.contains("disk"),
-                "resources panel missing cpu/memory/disk: {out}"
-            );
-            assert!(
-                out.contains("Kubernetes"),
-                "expected Kubernetes label: {out}"
+                out.contains("CPU") && out.contains("RAM") && !out.contains("F1:SUMMARY"),
+                "header/footer metrics missing: {out}"
             );
         }
     }
 
     #[test]
     fn unicode_glyphs_degrade_to_ascii() {
-        assert_eq!(glyph("─", true), "-");
+        assert_eq!(glyph("─", true), "=");
+        assert_eq!(glyph("▄", true), "=");
+        assert_eq!(glyph("▀", true), "=");
+        assert_eq!(glyph("█", true), "|");
         assert_eq!(glyph("╔", true), "+");
         assert_eq!(glyph("║", true), "|");
         assert_eq!(glyph("─", false), "─");
+        assert_eq!(glyph("▄", false), "▄");
+    }
+
+    #[test]
+    fn every_chrome_uses_one_ascii_hyphen_horizontal_rule() {
+        for chrome in [
+            theme::ASCII,
+            theme::LINE,
+            theme::LIGHT,
+            theme::ROUNDED,
+            theme::HEAVY,
+            theme::DOUBLE,
+            theme::PROPORTIONAL,
+        ] {
+            let rows = demo_rows(80, 24, chrome)
+                .into_iter()
+                .map(|row| strip_escapes(&row))
+                .collect::<Vec<_>>();
+            let log_rule = rows[7].strip_prefix("[ LOGS ] ").unwrap_or("");
+            assert!(
+                !log_rule.is_empty() && log_rule.chars().all(|ch| ch == '-'),
+                "wrong log separator for {}: {:?}",
+                chrome.name,
+                rows[7]
+            );
+            assert!(
+                !rows.join("\n").chars().any(|ch| matches!(ch, '─' | '━' | '═' | '▀' | '▄' | '█')),
+                "Unicode rule rendered for {}",
+                chrome.name
+            );
+            assert!(!rows[8].starts_with('-'), "double log rule rendered for {}", chrome.name);
+        }
     }
 }

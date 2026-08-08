@@ -7,10 +7,10 @@
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
-use crate::dashboard::snapshot::{format_bytes, format_kib, StatusSnapshot};
+use crate::dashboard::snapshot::StatusSnapshot;
 use crate::dashboard::theme::{Chrome, Theme};
 
 /// Everything a frame needs to draw itself.
@@ -18,70 +18,39 @@ use crate::dashboard::theme::{Chrome, Theme};
 pub struct Skin {
     pub theme: Theme,
     pub chrome: Chrome,
+    pub background: Option<ratatui::style::Color>,
     /// Public web management URL (from `MGMT_PUBLIC_URL` / dashboard config).
     pub mgmt_url: Option<String>,
 }
 
-/// (node, network, mid) — grow with the pane so a small font shows more.
-///
-/// Everything left after these three goes to logs. Cap the top so a 50-row
-/// console still keeps a tall log pane.
-///
-/// `extra_node_line` adds a second body row for the management URL.
-pub fn top_box_heights(frame_h: u16, extra_node_line: bool) -> (u16, u16, u16) {
-    let node = if extra_node_line { 4u16 } else { 3u16 };
-    // Keep a taller logs pane — on small 80×22 frames the old budget left
-    // ~4 hard-to-read log lines; reserve at least 10 rows for the logs frame.
-    let log_reserve = match frame_h {
-        0..=24 => 8,
-        25..=36 => 10,
-        _ => 14,
-    };
-    let budget = frame_h.saturating_sub(node + log_reserve);
-    // cpu + memory + ≥1 disk need mid body ≥3 → panel height ≥5.
-    let mid = match frame_h {
-        0..=24 => 5,
-        25..=36 => 6,
-        _ => 8,
-    }
-    .min(budget)
-    .max(5);
-    let net = match frame_h {
-        0..=24 => 4,
-        25..=30 => 5,
-        31..=40 => 7,
-        41..=56 => 9,
-        _ => 11,
-    }
-    .min(budget.saturating_sub(mid))
-    .max(4);
-    (node, net, mid)
+const HEADER_HEIGHT: u16 = 1;
+const SUMMARY_HEIGHT: u16 = 6;
+const FOOTER_HEIGHT: u16 = 1;
+const MIN_LOG_HEIGHT: u16 = 2;
+
+fn dashboard_heights(frame_h: u16) -> (u16, u16, u16, u16) {
+    let header = HEADER_HEIGHT.min(frame_h);
+    let footer = FOOTER_HEIGHT.min(frame_h.saturating_sub(header));
+    let available = frame_h.saturating_sub(header + footer);
+    let logs = MIN_LOG_HEIGHT.min(available);
+    let summary = SUMMARY_HEIGHT.min(available.saturating_sub(logs));
+    let logs = available.saturating_sub(summary);
+    (header, summary, logs, footer)
 }
 
-/// Log content rows (inside frame borders).
+/// Log content rows below the section title.
 pub fn log_inner_height(frame_h: u16) -> u16 {
-    log_inner_height_for(frame_h, false)
+    let (_, _, logs, _) = dashboard_heights(frame_h);
+    logs.saturating_sub(1).max(1)
 }
 
-pub fn log_inner_height_for(frame_h: u16, extra_node_line: bool) -> u16 {
-    let (node, net, mid) = top_box_heights(frame_h, extra_node_line);
-    frame_h
-        .saturating_sub(node + net + mid)
-        .saturating_sub(2) // top + bottom border
-        .max(1)
+pub fn log_inner_height_for(frame_h: u16, _extra_node_line: bool) -> u16 {
+    log_inner_height(frame_h)
 }
 
 /// Raw ring lines to pull for `rows` display rows — wrapping expands them.
 pub fn log_tail_count(rows: usize) -> usize {
     rows.saturating_mul(3).clamp(8, 200)
-}
-
-fn panel<'a>(title: &'a str, skin: &Skin) -> Block<'a> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_set(skin.chrome.set)
-        .border_style(skin.theme.border_style())
-        .title(Span::styled(format!(" {title} "), skin.theme.title_style()))
 }
 
 /// Printable ASCII only — one byte per terminal cell, so byte length equals
@@ -210,27 +179,17 @@ fn pct(used: u64, total: u64) -> u16 {
     ((used.saturating_mul(100)) / total).min(100) as u16
 }
 
-/// `[████░░░░░░]  42%` — fill colored by utilization.
-fn meter_spans(percent: u16, width: usize, skin: &Skin) -> Vec<Span<'static>> {
-    let theme = &skin.theme;
-    let bar_w = width.max(4);
-    let filled = ((percent as usize).saturating_mul(bar_w) / 100).min(bar_w);
-    vec![
-        Span::styled("[", theme.meter_track_style()),
-        Span::styled(
-            skin.chrome.meter_fill.repeat(filled),
-            theme.meter_style(percent),
-        ),
-        Span::styled(
-            skin.chrome.meter_track.repeat(bar_w - filled),
-            theme.meter_track_style(),
-        ),
-        Span::styled("]", theme.meter_track_style()),
-        Span::styled(
-            format!(" {:>3}%", percent.min(100)),
-            theme.meter_style(percent),
-        ),
-    ]
+fn format_uptime(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d{hours}h{minutes}m")
+    } else if hours > 0 {
+        format!("{hours}h{minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
 }
 
 fn label(text: &str, theme: &Theme) -> Span<'static> {
@@ -241,64 +200,79 @@ fn value(text: impl Into<String>, theme: &Theme) -> Span<'static> {
     Span::styled(text.into(), theme.value_style())
 }
 
-fn render_into(frame: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>, skin: &Skin) {
-    render_block(frame, area, panel(title, skin), lines);
+fn section_line(title: impl Into<String>, width: u16, skin: &Skin) -> Line<'static> {
+    let title = title.into();
+    let title_width = title.chars().count();
+    let gap = usize::from(width).saturating_sub(title_width);
+    let rule = "-".repeat(gap);
+    Line::from(vec![
+        Span::styled(title, skin.theme.title_style()),
+        Span::styled(rule, skin.theme.border_style()),
+    ])
 }
 
-fn render_block(frame: &mut Frame, area: Rect, block: Block, lines: Vec<Line<'static>>) {
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.width == 0 || inner.height == 0 {
+fn render_into(frame: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>, skin: &Skin) {
+    if area.width == 0 || area.height == 0 {
         return;
     }
-    let max_w = inner.width as usize;
-    let max_h = inner.height as usize;
+    let title_area = Rect::new(area.x, area.y, area.width, 1);
+    frame.render_widget(
+        Paragraph::new(section_line(format!("{title} "), area.width, skin)),
+        title_area,
+    );
+    let body = Rect::new(
+        area.x,
+        area.y.saturating_add(1),
+        area.width,
+        area.height.saturating_sub(1),
+    );
+    let max_w = body.width as usize;
+    let max_h = body.height as usize;
     let clipped: Vec<Line> = lines
         .into_iter()
         .take(max_h)
         .map(|line| truncate_line(line, max_w))
         .collect();
-    // No wrap — wrapping spills into the next panel.
-    frame.render_widget(Paragraph::new(clipped), inner);
+    frame.render_widget(Paragraph::new(clipped), body);
 }
 
 fn draw_node(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
     let theme = &skin.theme;
-    let ready = if snap.ready { "ready" } else { "not-ready" };
-    let mut lines = vec![Line::from(vec![
-        Span::styled(snap.hostname.clone(), theme.title_style()),
-        label("  v", theme),
-        value(snap.version.clone(), theme),
-        label("  ", theme),
-        value(snap.machine_type.clone(), theme),
-        label("  ", theme),
-        Span::styled(ready.to_string(), theme.ready_style(snap.ready)),
-    ])];
-    if let Some(url) = skin.mgmt_url.as_deref() {
-        lines.push(Line::from(vec![
-            label("mgmt ", theme),
-            value(url.to_string(), theme),
-        ]));
-    }
-    render_into(frame, area, "node", lines, skin);
+    let ready = if snap.ready { "true" } else { "false" };
+    let lines = vec![
+        Line::from(vec![label("TYPE       ", theme), value(snap.machine_type.clone(), theme)]),
+        Line::from(vec![
+            label("READY      ", theme),
+            Span::styled(ready, theme.ready_style(snap.ready)),
+        ]),
+        service_line("CONTAINERD ", &snap.containerd, snap.containerd_pid, theme),
+        service_line("KUBELET    ", &snap.kubelet, snap.kubelet_pid, theme),
+    ];
+    render_into(frame, area, "PERTISK", lines, skin);
+}
+
+fn draw_kubernetes(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
+    let theme = &skin.theme;
+    let lines = vec![
+        Line::from(vec![label("VERSION  ", theme), value(snap.kubernetes_version.clone(), theme)]),
+        Line::from(vec![label("ENDPOINT ", theme), value(snap.cluster_endpoint.clone(), theme)]),
+        Line::from(vec![label("CNI      ", theme), value(snap.cni.clone(), theme)]),
+        Line::from(vec![label("POD CIDR ", theme), value(snap.pod_cidr.clone(), theme)]),
+    ];
+    render_into(frame, area, "KUBERNETES", lines, skin);
 }
 
 fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
     let theme = &skin.theme;
-    let max_h = area.height.saturating_sub(2) as usize;
+    let max_h = area.height.saturating_sub(1) as usize;
     let mut lines: Vec<Line> = Vec::new();
-
-    // Always reserve the last 1–2 rows for cluster + Kubernetes/cni so Cilium
-    // noise (already filtered) cannot push the summary off-screen.
-    let summary_rows = if max_h >= 3 { 2 } else { 1 };
-    let iface_budget = max_h.saturating_sub(summary_rows);
 
     // Primary node IP line first.
     let node_line = if snap.node_iface.is_empty() && snap.node_ip == "-" {
         Line::from(Span::styled("(no node ip)", theme.warn_style()))
     } else {
         Line::from(vec![
-            label("node ", theme),
+            label("NODE  ", theme),
             value(
                 if snap.node_iface.is_empty() {
                     snap.node_ip.clone()
@@ -309,7 +283,7 @@ fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Ski
             ),
         ])
     };
-    if iface_budget > 0 {
+    if max_h > 0 {
         lines.push(node_line);
     }
 
@@ -322,7 +296,7 @@ fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Ski
             name != snap.node_iface
         })
         .collect();
-    let extra_slots = iface_budget.saturating_sub(lines.len());
+    let extra_slots = max_h.saturating_sub(lines.len());
     for row in extra.iter().take(extra_slots) {
         lines.push(net_row_line(row, theme));
     }
@@ -334,33 +308,7 @@ fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Ski
         )));
     }
 
-    // Cluster summary — always when there is room (budget reserved above).
-    if lines.len() < max_h {
-        if summary_rows >= 2 && lines.len() + 2 <= max_h {
-            lines.push(Line::from(vec![
-                label("cluster ", theme),
-                value(snap.cluster_endpoint.clone(), theme),
-            ]));
-            lines.push(Line::from(vec![
-                label("Kubernetes ", theme),
-                value(snap.kubernetes_version.clone(), theme),
-                label("  cni ", theme),
-                value(snap.cni.clone(), theme),
-                label("  pod ", theme),
-                value(snap.pod_cidr.clone(), theme),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                label("cluster ", theme),
-                value(snap.cluster_endpoint.clone(), theme),
-                label("  Kubernetes ", theme),
-                value(snap.kubernetes_version.clone(), theme),
-                label("  cni ", theme),
-                value(snap.cni.clone(), theme),
-            ]));
-        }
-    }
-    render_into(frame, area, "network", lines, skin);
+    render_into(frame, area, "NETWORK", lines, skin);
 }
 
 /// Interface name dimmed, address highlighted.
@@ -373,105 +321,6 @@ fn net_row_line(row: &str, theme: &Theme) -> Line<'static> {
         ]),
         None => Line::from(value(row.to_string(), theme)),
     }
-}
-
-fn draw_mid(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
-    let theme = &skin.theme;
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
-    let inner_h = cols[0].height.saturating_sub(2) as usize;
-    let inner_w = cols[0].width.saturating_sub(2) as usize;
-    // Scale the meter with the pane so GiB values are not cut to `~`.
-    let meter_w = (inner_w / 4).clamp(8, 24);
-
-    let mut resources: Vec<Line> = Vec::new();
-
-    // cpu  [████░░░░]  42%  4c  load 0.35
-    let mut cpu_spans = vec![label("cpu     ", theme)];
-    cpu_spans.extend(meter_spans(snap.cpu_usage_pct, meter_w, skin));
-    cpu_spans.push(label(" ", theme));
-    cpu_spans.push(value(format!("{}c", snap.cpu_cores), theme));
-    if snap.load_1m > 0.0 || snap.cpu_cores > 0 {
-        cpu_spans.push(label("  load ", theme));
-        cpu_spans.push(value(format!("{:.2}", snap.load_1m), theme));
-    }
-    resources.push(Line::from(cpu_spans));
-
-    // memory  [██████░░]  62%  5.0/8.0 GiB
-    let mem_pct = pct(snap.mem_used_kb(), snap.mem_total_kb);
-    let mut mem_spans = vec![label("memory  ", theme)];
-    mem_spans.extend(meter_spans(mem_pct, meter_w, skin));
-    mem_spans.push(label(" ", theme));
-    mem_spans.push(value(
-        format!(
-            "{}/{}",
-            format_kib(snap.mem_used_kb()),
-            format_kib(snap.mem_total_kb)
-        ),
-        theme,
-    ));
-    resources.push(Line::from(mem_spans));
-
-    // disk rows — first line labeled "disk"; extras use the volume name.
-    let disk_slots = inner_h.saturating_sub(resources.len()).max(1);
-    for (i, d) in snap.disks.iter().take(disk_slots).enumerate() {
-        let dp = pct(d.used_bytes, d.total_bytes);
-        let row_label = if i == 0 {
-            "disk    ".to_string()
-        } else {
-            format!("{:<8}", truncate_label(&d.label, 8))
-        };
-        let mut spans = vec![label(&row_label, theme)];
-        spans.extend(meter_spans(dp, meter_w, skin));
-        spans.push(label(" ", theme));
-        spans.push(value(
-            format!(
-                "{}/{}",
-                format_bytes(d.used_bytes),
-                format_bytes(d.total_bytes)
-            ),
-            theme,
-        ));
-        if i == 0 {
-            spans.push(label("  ", theme));
-            spans.push(value(d.label.clone(), theme));
-        }
-        resources.push(Line::from(spans));
-    }
-    if snap.disks.len() > disk_slots {
-        resources.push(Line::from(Span::styled(
-            format!("… +{} disks", snap.disks.len() - disk_slots),
-            theme.label_style(),
-        )));
-    }
-    render_into(frame, cols[0], "resources", resources, skin);
-
-    let mut svc = vec![
-        service_line("containerd ", &snap.containerd, snap.containerd_pid, theme),
-        service_line("kubelet    ", &snap.kubelet, snap.kubelet_pid, theme),
-    ];
-    if !snap.boot_slot.is_empty() && svc.len() < inner_h {
-        svc.push(Line::from(vec![
-            label("boot ", theme),
-            value(snap.boot_slot.clone(), theme),
-            label(" ok=", theme),
-            Span::styled(snap.boot_ok.to_string(), theme.ready_style(snap.boot_ok)),
-            label(" att=", theme),
-            value(snap.boot_attempts.to_string(), theme),
-        ]));
-    }
-    render_into(frame, cols[1], "services", svc, skin);
-}
-
-fn truncate_label(s: &str, max: usize) -> String {
-    let cleaned = cell_clean(s);
-    if cleaned.chars().count() <= max {
-        return cleaned;
-    }
-    cleaned.chars().take(max).collect()
 }
 
 fn service_line(name: &str, status: &str, pid: u32, theme: &Theme) -> Line<'static> {
@@ -488,134 +337,177 @@ fn service_line(name: &str, status: &str, pid: u32, theme: &Theme) -> Line<'stat
     Line::from(spans)
 }
 
-/// Manual ASCII logs frame (from ptkube) — avoids Block/content collision on
-/// serial, and lets each wrapped line carry its own severity color.
-fn draw_logs(frame: &mut Frame, area: Rect, recent: &[String], skin: &Skin) {
+fn draw_compact_summary(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
     let theme = &skin.theme;
-    let glyphs = skin.chrome.set;
-    let area = Rect {
-        x: area.x,
-        y: area.y,
-        width: area.width,
-        height: area.height.max(3),
+    let node = if snap.node_iface.is_empty() {
+        snap.node_ip.clone()
+    } else {
+        format!("{} {}", snap.node_iface, snap.node_ip)
     };
-    if area.width < 4 || area.height < 3 {
-        return;
-    }
-
-    let border_style = theme.border_style();
-    let buf = frame.buffer_mut();
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.reset();
-                cell.set_char(' ');
-            }
-        }
-    }
-
-    let x0 = area.left();
-    let x1 = area.right().saturating_sub(1);
-    let y0 = area.top();
-    let y1 = area.bottom().saturating_sub(1);
-
-    let frame_cell = |buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, glyph: &str| {
-        if let Some(c) = buf.cell_mut((x, y)) {
-            c.set_symbol(glyph);
-            c.set_style(border_style);
-        }
-    };
-    frame_cell(buf, x0, y0, glyphs.top_left);
-    frame_cell(buf, x1, y0, glyphs.top_right);
-    frame_cell(buf, x0, y1, glyphs.bottom_left);
-    frame_cell(buf, x1, y1, glyphs.bottom_right);
-    for x in (x0 + 1)..x1 {
-        frame_cell(buf, x, y0, glyphs.horizontal_top);
-        frame_cell(buf, x, y1, glyphs.horizontal_bottom);
-    }
-    for y in (y0 + 1)..y1 {
-        frame_cell(buf, x0, y, glyphs.vertical_left);
-        frame_cell(buf, x1, y, glyphs.vertical_right);
-    }
-
-    let title = " logs ";
-    let title_style = theme.title_style();
-    let title_x = x0.saturating_add(2);
-    for (i, ch) in title.chars().enumerate() {
-        let x = title_x + i as u16;
-        if x >= x1 {
-            break;
-        }
-        if let Some(c) = buf.cell_mut((x, y0)) {
-            c.set_char(ch);
-            c.set_style(title_style);
-        }
-    }
-
-    let inner_x = x0 + 1;
-    let inner_y = y0 + 1;
-    let inner_w = x1.saturating_sub(inner_x);
-    // Fill every row between the borders — earlier builds left a blank spacer
-    // that ate one log line on every frame.
-    let inner_h = y1.saturating_sub(inner_y);
-    if inner_w == 0 || inner_h == 0 {
-        return;
-    }
-    let cols = inner_w as usize;
-    let rows = inner_h as usize;
-
-    for (i, text) in log_body(recent, cols, rows).iter().enumerate() {
-        let y = inner_y + i as u16;
-        let style = theme.log_line_style(text);
-        for (j, ch) in text.chars().enumerate() {
-            let x = inner_x + j as u16;
-            if x >= x1 {
-                break;
-            }
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_char(ch);
-                cell.set_style(style);
-            }
-        }
-    }
+    let boot = if snap.boot_ok { "ok" } else { "pending" };
+    let lines = vec![
+        section_line(
+            format!("[ SYSTEM ] {} ", snap.machine_type),
+            area.width,
+            skin,
+        ),
+        Line::from(vec![label("NODE       ", theme), value(node, theme)]),
+        Line::from(vec![
+            label("ENDPOINT   ", theme),
+            value(snap.cluster_endpoint.clone(), theme),
+        ]),
+        Line::from(vec![
+            label("K8S        ", theme),
+            value(snap.kubernetes_version.clone(), theme),
+            label("  CNI ", theme),
+            value(snap.cni.clone(), theme),
+            label("  POD ", theme),
+            value(snap.pod_cidr.clone(), theme),
+        ]),
+        Line::from(vec![
+            label("SERVICES   containerd ", theme),
+            Span::styled(format!("[{}]", snap.containerd), theme.status_style(&snap.containerd)),
+            label("  kubelet ", theme),
+            Span::styled(format!("[{}]", snap.kubelet), theme.status_style(&snap.kubelet)),
+        ]),
+        Line::from(vec![
+            label("BOOT       slot ", theme),
+            value(snap.boot_slot.clone(), theme),
+            label("  status ", theme),
+            Span::styled(format!("[{boot}]"), theme.ready_style(snap.boot_ok)),
+            label("  attempts ", theme),
+            value(snap.boot_attempts.to_string(), theme),
+        ]),
+    ];
+    let clipped: Vec<Line> = lines
+        .into_iter()
+        .take(area.height as usize)
+        .map(|line| truncate_line(line, area.width as usize))
+        .collect();
+    frame.render_widget(Paragraph::new(clipped), area);
 }
 
-/// Render node → network (IPs) → resources|services → logs.
+fn draw_header(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
+    let theme = &skin.theme;
+    let mem_pct = pct(snap.mem_used_kb(), snap.mem_total_kb);
+    let ready = if snap.ready { "READY" } else { "NOT READY" };
+    let line = Line::from(vec![
+        Span::styled(" PERTISK ", theme.header_style()),
+        value(format!("{}  v{}", snap.hostname, snap.version), theme),
+        label(" | ", theme),
+        Span::styled(ready, theme.ready_style(snap.ready)),
+        label(" | CPU ", theme),
+        Span::styled(format!("{}%", snap.cpu_usage_pct), theme.meter_style(snap.cpu_usage_pct)),
+        label(" RAM ", theme),
+        Span::styled(format!("{mem_pct}%"), theme.meter_style(mem_pct)),
+        label(" LOAD ", theme),
+        value(format!("{:.2}", snap.load_1m), theme),
+        label(" | UP ", theme),
+        value(format_uptime(snap.uptime_secs), theme),
+    ]);
+    frame.render_widget(Paragraph::new(truncate_line(line, area.width as usize)), area);
+}
+
+fn draw_footer(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
+    if area.width == 0 {
+        return;
+    }
+    let theme = &skin.theme;
+    let left = format!("[ END LOGS ]  {}  |  refresh 5s", snap.hostname);
+    let right = match skin.mgmt_url.as_deref() {
+        Some(url) => format!(" {url} "),
+        None => String::new(),
+    };
+    let fill = "-".repeat(
+        (area.width as usize).saturating_sub(left.chars().count() + right.chars().count()),
+    );
+    let line = Line::from(vec![
+        Span::styled(left, theme.title_style()),
+        Span::styled(fill, theme.border_style()),
+        Span::styled(right, theme.value_style()),
+    ]);
+    frame.render_widget(Paragraph::new(truncate_line(line, area.width as usize)), area);
+}
+
+/// Borderless log surface with a compact section heading.
+fn draw_logs(frame: &mut Frame, area: Rect, recent: &[String], skin: &Skin) {
+    let theme = &skin.theme;
+    if area.width == 0 || area.height < 2 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(section_line("[ LOGS ] ", area.width, skin)),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    let body = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
+    let lines: Vec<Line> = log_body(recent, body.width as usize, body.height as usize)
+        .into_iter()
+        .map(|text| {
+            let style = theme.log_line_style(&text);
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), body);
+}
+
+/// Proxxx-inspired summary adapted for a non-interactive serial console.
 pub fn render_themed(frame: &mut Frame, snap: &StatusSnapshot, recent: &[String], skin: &Skin) {
     let area = frame.area();
-    let extra = skin.mgmt_url.is_some();
-    let (node_h, net_h, mid_h) = top_box_heights(area.height, extra);
+    if let Some(background) = skin.background {
+        frame.render_widget(
+            Block::default().style(ratatui::style::Style::default().bg(background)),
+            area,
+        );
+    }
+    let (header_h, summary_h, logs_h, footer_h) = dashboard_heights(area.height);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(node_h),
-            Constraint::Length(net_h),
-            Constraint::Length(mid_h),
-            Constraint::Min(6),
+            Constraint::Length(header_h),
+            Constraint::Length(summary_h),
+            Constraint::Length(logs_h),
+            Constraint::Length(footer_h),
         ])
         .split(area);
 
-    draw_node(frame, rows[0], snap, skin);
-    draw_network(frame, rows[1], snap, skin);
-    draw_mid(frame, rows[2], snap, skin);
-    draw_logs(frame, rows[3], recent, skin);
+    draw_header(frame, rows[0], snap, skin);
+    if area.width < 120 {
+        draw_compact_summary(frame, rows[1], snap, skin);
+    } else {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Fill(1),
+                Constraint::Length(2),
+                Constraint::Fill(1),
+                Constraint::Length(2),
+                Constraint::Fill(1),
+            ])
+            .split(rows[1]);
+        draw_node(frame, columns[0], snap, skin);
+        draw_kubernetes(frame, columns[2], snap, skin);
+        draw_network(frame, columns[4], snap, skin);
+    }
+    draw_logs(frame, rows[2], recent, skin);
+    draw_footer(frame, rows[3], snap, skin);
 }
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn layout_grows_with_taller_consoles() {
-        let (n24, net24, mid24) = top_box_heights(24, false);
-        let (n50, net50, mid50) = top_box_heights(50, false);
-        assert_eq!(n24, 3);
-        assert_eq!(n50, 3);
-        assert_eq!(top_box_heights(24, true).0, 4);
-        assert!(net50 > net24, "network should grow: {net50} vs {net24}");
-        assert!(mid50 >= mid24);
-        assert!(mid24 >= 5, "mid needs room for cpu/memory/disk");
-        // Most of a tall pane still goes to logs.
-        assert!(log_inner_height(50) >= 20);
+    fn talos_layout_reserves_header_summary_and_footer() {
+        assert_eq!(dashboard_heights(24), (1, 6, 16, 1));
+        assert_eq!(dashboard_heights(8), (1, 4, 2, 1));
+        assert_eq!(log_inner_height(24), 15);
+        assert_eq!(log_inner_height(8), 1);
+    }
+
+    #[test]
+    fn uptime_is_compact() {
+        assert_eq!(format_uptime(59), "0m");
+        assert_eq!(format_uptime(3_660), "1h1m");
+        assert_eq!(format_uptime(93_784), "1d2h3m");
     }
 
     #[test]

@@ -103,19 +103,23 @@ pub struct Dashboard {
     /// Default when omitted: `catppuccin`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
-    /// `auto` | `ascii` | `light` | `rounded` | `heavy` | `double`
+    /// `auto` | `ascii` | `light` | `rounded` | `heavy` | `double` | `bordered`
     ///
-    /// Default when omitted: `bordered`.
+    /// Default when omitted: `line` (continuous full-block frames).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border: Option<String>,
+    /// Optional dashboard background in `#RRGGBB` form. Omit to preserve the
+    /// terminal's default background.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
     /// Force column count (skips size probe). Omit to auto-detect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cols: Option<u16>,
     /// Force row count (skips size probe). Omit to auto-detect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rows: Option<u16>,
-    /// Force Unicode box-drawing even when the Serial UTF-8 probe fails.
-    /// Omit to follow the probe (safer on Proxmox Serial).
+    /// Force Unicode box-drawing. Omit to follow console detection; set
+    /// `false` if Serial renders multi-byte border glyphs incorrectly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utf8: Option<bool>,
     /// Public web management URL shown on the serial console (e.g.
@@ -130,23 +134,25 @@ pub struct Dashboard {
 
 impl Dashboard {
     pub const DEFAULT_THEME: &'static str = "catppuccin";
-    /// ASCII frames by default — Unicode borders can blank Proxmox Serial
-    /// when the UTF-8 probe is wrong.
-    pub const DEFAULT_BORDER: &'static str = "bordered";
+    /// Solid ASCII `=` line frames. Hyphen and ambiguous-width Unicode paint
+    /// as `-  -  -` on Proxmox Serial.
+    pub const DEFAULT_BORDER: &'static str = "line";
     /// Probe fallback only — never pinned unless YAML/env sets cols/rows.
     pub const DEFAULT_COLS: u16 = 80;
     pub const DEFAULT_ROWS: u16 = 24;
 
-    /// Built-in console look (theme/border only).
+    /// Built-in console look — ASCII `=` line frames (Serial-safe).
     ///
-    /// Size and UTF-8 are left unset so the console probe can run — pinning
-    /// geometry that does not match the pane blanks Proxmox Serial.
+    /// Size is left unset so the console probe can run — pinning geometry that
+    /// does not match the pane blanks Proxmox Serial.
     pub fn builtin() -> Self {
         Self {
             theme: Some(Self::DEFAULT_THEME.into()),
             border: Some(Self::DEFAULT_BORDER.into()),
+            background: None,
             cols: None,
             rows: None,
+            // Borders are ASCII; leave UTF-8 unset so meters/labels can follow probe.
             utf8: None,
             mgmt_url: None,
         }
@@ -897,7 +903,7 @@ machine:
         incoming.resolve_dashboard(None);
         let dash = incoming.machine.dashboard.unwrap();
         assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
-        assert_eq!(dash.border.as_deref(), Some("bordered"));
+        assert_eq!(dash.border.as_deref(), Some("line"));
         assert_eq!(dash.cols, None);
         assert_eq!(dash.rows, None);
         assert_eq!(dash.utf8, None);

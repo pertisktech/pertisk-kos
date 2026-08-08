@@ -53,6 +53,9 @@ pub fn apply_config(cfg: Option<&MachineConfig>) {
             } else {
                 set_if_unset("PERTISK_DASHBOARD_BORDER", DEFAULT_BORDER);
             }
+            if let Some(background) = dash.background.as_deref() {
+                set_var("PERTISK_DASHBOARD_BACKGROUND", background);
+            }
             if let Some(cols) = dash.cols {
                 set_var("PERTISK_DASHBOARD_COLS", &cols.to_string());
             }
@@ -72,6 +75,8 @@ pub fn apply_config(cfg: Option<&MachineConfig>) {
         None => {
             set_if_unset("PERTISK_DASHBOARD_THEME", DEFAULT_THEME);
             set_if_unset("PERTISK_DASHBOARD_BORDER", DEFAULT_BORDER);
+            // Leave UTF-8 unset so the console probe can select font-safe
+            // ASCII glyphs. YAML or the kernel cmdline can still force it.
         }
     }
 }
@@ -120,6 +125,7 @@ mod tests {
             for k in [
                 "PERTISK_DASHBOARD_THEME",
                 "PERTISK_DASHBOARD_BORDER",
+                "PERTISK_DASHBOARD_BACKGROUND",
                 "PERTISK_DASHBOARD_COLS",
                 "PERTISK_DASHBOARD_ROWS",
                 "PERTISK_DASHBOARD_UTF8",
@@ -132,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_config_sets_builtin_defaults_without_yaml() {
+    fn apply_config_leaves_builtin_utf8_to_console_probe() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_dash_env();
         apply_config(None);
@@ -144,6 +150,7 @@ mod tests {
             std::env::var("PERTISK_DASHBOARD_BORDER").unwrap(),
             DEFAULT_BORDER
         );
+        assert!(std::env::var_os("PERTISK_DASHBOARD_BACKGROUND").is_none());
         assert!(std::env::var_os("PERTISK_DASHBOARD_COLS").is_none());
         assert!(std::env::var_os("PERTISK_DASHBOARD_ROWS").is_none());
         assert!(std::env::var_os("PERTISK_DASHBOARD_UTF8").is_none());
@@ -187,6 +194,7 @@ mod tests {
                 dashboard: Some(Dashboard {
                     theme: Some("wild-cherry".into()),
                     border: Some("double".into()),
+                    background: Some("#1E1E2E".into()),
                     cols: Some(120),
                     rows: Some(40),
                     utf8: Some(true),
@@ -202,6 +210,10 @@ mod tests {
             "wild-cherry"
         );
         assert_eq!(std::env::var("PERTISK_DASHBOARD_BORDER").unwrap(), "double");
+        assert_eq!(
+            std::env::var("PERTISK_DASHBOARD_BACKGROUND").unwrap(),
+            "#1E1E2E"
+        );
         assert_eq!(std::env::var("PERTISK_DASHBOARD_COLS").unwrap(), "120");
         assert_eq!(std::env::var("PERTISK_DASHBOARD_ROWS").unwrap(), "40");
         assert_eq!(std::env::var("PERTISK_DASHBOARD_UTF8").unwrap(), "1");
