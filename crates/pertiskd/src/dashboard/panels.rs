@@ -257,7 +257,8 @@ fn draw_kubernetes(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &
         Line::from(vec![label("VERSION  ", theme), value(snap.kubernetes_version.clone(), theme)]),
         Line::from(vec![label("ENDPOINT ", theme), value(snap.cluster_endpoint.clone(), theme)]),
         Line::from(vec![label("CNI      ", theme), value(snap.cni.clone(), theme)]),
-        Line::from(vec![label("POD CIDR ", theme), value(snap.pod_cidr.clone(), theme)]),
+        Line::from(vec![label("POD      ", theme), value(snap.pod_cidr.clone(), theme)]),
+        Line::from(vec![label("SERVICE  ", theme), value(snap.service_subnet.clone(), theme)]),
     ];
     render_into(frame, area, "KUBERNETES", lines, skin);
 }
@@ -357,12 +358,12 @@ fn draw_compact_summary(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, sk
             value(snap.cluster_endpoint.clone(), theme),
         ]),
         Line::from(vec![
-            label("K8S        ", theme),
-            value(snap.kubernetes_version.clone(), theme),
+            label("POD        ", theme),
+            value(snap.pod_cidr.clone(), theme),
+            label("  SVC ", theme),
+            value(snap.service_subnet.clone(), theme),
             label("  CNI ", theme),
             value(snap.cni.clone(), theme),
-            label("  POD ", theme),
-            value(snap.pod_cidr.clone(), theme),
         ]),
         Line::from(vec![
             label("SERVICES   containerd ", theme),

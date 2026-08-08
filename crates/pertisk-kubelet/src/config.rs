@@ -197,6 +197,7 @@ mod tests {
             ca: Some("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".into()),
             ca_key: None,
             sa_key: None,
+            network: None,
             pod_subnet: None,
             service_subnet: None,
             pod_cidr_ipv6: None,

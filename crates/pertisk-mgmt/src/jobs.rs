@@ -312,7 +312,11 @@ async fn run_create_cluster(
                   cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb, cp_vmid,
                   COALESCE(network_mode, 'ipv4') as network_mode,
                   COALESCE(max_pods, 250) as max_pods,
-                  COALESCE(arch, 'amd64') as arch
+                  COALESCE(arch, 'amd64') as arch,
+                  COALESCE(pod_subnet, '10.244.0.0/16') as pod_subnet,
+                  COALESCE(service_subnet, '10.96.0.0/12') as service_subnet,
+                  pod_subnet_ipv6,
+                  service_subnet_ipv6
            FROM clusters WHERE id = ?"#,
     )
     .bind(cid)
@@ -375,6 +379,10 @@ async fn run_create_cluster(
         .arg(&cluster.k8s_version)
         .arg("--max-pods")
         .arg(cluster.max_pods.to_string())
+        .arg("--pod-subnet")
+        .arg(&cluster.pod_subnet)
+        .arg("--service-subnet")
+        .arg(&cluster.service_subnet)
         .env("CLUSTER_OUT", cluster_out.display().to_string())
         .env("K8S_VER", &cluster.k8s_version)
         .stdout(Stdio::piped())
@@ -409,6 +417,20 @@ async fn run_create_cluster(
     let dual = mode == "dual-stack" || mode == "ipv6";
     if dual {
         cmd.arg("--dual-stack");
+        let pod_v6 = cluster
+            .pod_subnet_ipv6
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("2001:db8:10:0::/56");
+        let svc_v6 = cluster
+            .service_subnet_ipv6
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("2001:db8:96:1::/112");
+        cmd.arg("--pod-subnet-ipv6")
+            .arg(pod_v6)
+            .arg("--service-subnet-ipv6")
+            .arg(svc_v6);
     }
     // Guest arch from cluster (UI). Optional ops override: PERTISK_ARCH=arm64|amd64.
     let guest_arch = std::env::var("PERTISK_ARCH")
@@ -482,13 +504,15 @@ async fn run_create_cluster(
     append_log(
         log_path,
         &format!(
-            "create cluster={} arch={} cps={} workers={} k8s={} network={} vip={:?} vip6={:?}\n",
+            "create cluster={} arch={} cps={} workers={} k8s={} network={} pod={} svc={} vip={:?} vip6={:?}\n",
             cluster.name,
             guest_arch,
             cluster.controlplanes,
             cluster.workers,
             cluster.k8s_version,
             mode,
+            cluster.pod_subnet,
+            cluster.service_subnet,
             cluster.vip,
             cluster.vip6
         ),
@@ -1285,7 +1309,11 @@ async fn run_add_node(
                   cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb, cp_vmid,
                   COALESCE(network_mode, 'ipv4') as network_mode,
                   COALESCE(max_pods, 250) as max_pods,
-                  COALESCE(arch, 'amd64') as arch
+                  COALESCE(arch, 'amd64') as arch,
+                  COALESCE(pod_subnet, '10.244.0.0/16') as pod_subnet,
+                  COALESCE(service_subnet, '10.96.0.0/12') as service_subnet,
+                  pod_subnet_ipv6,
+                  service_subnet_ipv6
            FROM clusters WHERE id = ?"#,
     )
     .bind(cid)
@@ -3264,6 +3292,10 @@ struct ClusterRow {
     network_mode: String,
     max_pods: i64,
     arch: String,
+    pod_subnet: String,
+    service_subnet: String,
+    pod_subnet_ipv6: Option<String>,
+    service_subnet_ipv6: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]

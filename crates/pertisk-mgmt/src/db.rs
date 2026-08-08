@@ -81,6 +81,10 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             network_mode TEXT NOT NULL DEFAULT 'ipv4',
             max_pods INTEGER NOT NULL DEFAULT 250,
             arch TEXT NOT NULL DEFAULT 'amd64',
+            pod_subnet TEXT NOT NULL DEFAULT '10.244.0.0/16',
+            service_subnet TEXT NOT NULL DEFAULT '10.96.0.0/12',
+            pod_subnet_ipv6 TEXT,
+            service_subnet_ipv6 TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -134,6 +138,22 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(pool)
     .await;
+    let _ = sqlx::query(
+        "ALTER TABLE clusters ADD COLUMN pod_subnet TEXT NOT NULL DEFAULT '10.244.0.0/16'",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "ALTER TABLE clusters ADD COLUMN service_subnet TEXT NOT NULL DEFAULT '10.96.0.0/12'",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query("ALTER TABLE clusters ADD COLUMN pod_subnet_ipv6 TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE clusters ADD COLUMN service_subnet_ipv6 TEXT")
+        .execute(pool)
+        .await;
     let _ = sqlx::query(
         "ALTER TABLE providers ADD COLUMN arch TEXT NOT NULL DEFAULT 'amd64'",
     )

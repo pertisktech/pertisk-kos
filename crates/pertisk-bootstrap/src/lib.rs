@@ -93,16 +93,13 @@ pub fn bootstrap_control_plane(
         .kubernetes_version
         .as_deref()
         .unwrap_or(DEFAULT_K8S_VERSION);
-    let service_subnet = cluster
-        .service_subnet
-        .as_deref()
-        .unwrap_or(DEFAULT_SERVICE_SUBNET);
+    let service_subnet = cluster.ipv4_service_subnet();
     let service_cidr = cluster.service_cluster_ip_range();
     let cluster_cidr = cluster.cluster_cidr();
     let sans = cluster.pki_extra_sans();
 
     info!(%advertise, %hostname, %k8s_ver, "generating control-plane PKI");
-    let kubernetes_svc_ip = kubernetes_service_ip(service_subnet);
+    let kubernetes_svc_ip = kubernetes_service_ip(&service_subnet);
     let pki = pki::generate_pki_with_optional_existing(
         &advertise,
         &hostname,
@@ -768,9 +765,35 @@ mod tests {
         assert!(g.controlplane_yaml.contains("controlplane"));
         assert!(g.controlplane_yaml.contains("dashboard"));
         assert!(g.controlplane_yaml.contains("catppuccin"));
+        assert!(g.controlplane_yaml.contains("podSubnets:"));
+        assert!(g.controlplane_yaml.contains("10.244.0.0/16"));
+        assert!(g.controlplane_yaml.contains("serviceSubnets:"));
+        assert!(g.controlplane_yaml.contains("10.96.0.0/12"));
+        assert!(!g.controlplane_yaml.contains("podSubnet:"));
         assert!(g.worker_yaml.contains("worker"));
         assert!(g.worker_yaml.contains("dashboard"));
         assert!(g.worker_yaml.contains("catppuccin"));
+    }
+
+    #[test]
+    fn gen_config_dual_stack_emits_ipv6_subnets() {
+        let net = GenNetworkOpts {
+            dual_stack: true,
+            ..Default::default()
+        };
+        let g = gen_config_with_network(
+            "lab",
+            "https://10.1.1.10:6443",
+            DEFAULT_K8S_VERSION,
+            "10.10.0.0/16",
+            DEFAULT_SERVICE_SUBNET,
+            &net,
+        )
+        .unwrap();
+        assert!(g.controlplane_yaml.contains("networkMode: dual-stack"));
+        assert!(g.controlplane_yaml.contains("10.10.0.0/16"));
+        assert!(g.controlplane_yaml.contains("2001:db8:10:0::/56"));
+        assert!(g.controlplane_yaml.contains("2001:db8:96:1::/112"));
     }
 
     #[test]

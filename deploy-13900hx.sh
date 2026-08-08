@@ -10,7 +10,7 @@
 set -euo pipefail
 
 # --- edit me ---
-VERSION="${VERSION:-0.1.94}"
+VERSION="${VERSION:-0.1.98}"
 PVE="${PVE:-10.1.1.195}"   # Proxmox node for PROXMOX_SSH (disk import / qm)
 # ---------------
 

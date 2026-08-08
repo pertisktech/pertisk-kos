@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use etcd_client::{Certificate as EtcdCert, Client, ConnectOptions, Identity as EtcdIdentity};
-use pertisk_config::{Cluster, CniMode, Dashboard, Interface, Machine, MachineConfig, MachineType, Network, CONFIG_VERSION};
+use pertisk_config::{
+    Cluster, ClusterNetwork, CniMode, Dashboard, Interface, Machine, MachineConfig, MachineType,
+    Network, CONFIG_VERSION,
+};
 use tracing::info;
 
 use crate::kube_vip;
@@ -18,7 +21,6 @@ use crate::static_pods;
 use crate::{
     chrono_like_now, copy_dir, detect_advertise_ip, endpoint_host, finalize_bootstrap_when_ready,
     kubernetes_service_ip, publish_kubelet_credentials, DEFAULT_ETCD_IMAGE, DEFAULT_K8S_VERSION,
-    DEFAULT_POD_SUBNET, DEFAULT_SERVICE_SUBNET,
 };
 
 pub struct JoinControlPlaneResult {
@@ -103,14 +105,11 @@ pub async fn join_control_plane(
         .kubernetes_version
         .as_deref()
         .unwrap_or(DEFAULT_K8S_VERSION);
-    let service_subnet = cluster
-        .service_subnet
-        .as_deref()
-        .unwrap_or(DEFAULT_SERVICE_SUBNET);
+    let service_subnet = cluster.ipv4_service_subnet();
     let service_cidr = cluster.service_cluster_ip_range();
     let cluster_cidr = cluster.cluster_cidr();
     let sans = cluster.pki_extra_sans();
-    let kubernetes_svc_ip = kubernetes_service_ip(service_subnet);
+    let kubernetes_svc_ip = kubernetes_service_ip(&service_subnet);
 
     info!(%advertise, %hostname, "joining control-plane (shared CA)");
     let pki = pki::generate_pki_from_existing(
@@ -343,16 +342,10 @@ pub fn get_join_config(
         .context("applied config missing cluster.token")?;
     let endpoint = cluster.endpoint.clone();
     let cert_sans = cluster.cert_sans.clone();
-    let pod_subnet = cluster
-        .pod_subnet
-        .clone()
-        .unwrap_or_else(|| DEFAULT_POD_SUBNET.into());
-    let service_subnet = cluster
-        .service_subnet
-        .clone()
-        .unwrap_or_else(|| DEFAULT_SERVICE_SUBNET.into());
-    let pod_cidr_ipv6 = cluster.pod_cidr_ipv6.clone();
-    let service_cidr_ipv6 = cluster.service_cidr_ipv6.clone();
+    let network = Some(ClusterNetwork {
+        pod_subnets: cluster.effective_pod_subnets(),
+        service_subnets: cluster.effective_service_subnets(),
+    });
     let network_mode = cluster.network_mode;
     let vip6 = cluster.vip6.clone();
     let k8s_ver = cluster
@@ -399,10 +392,11 @@ pub fn get_join_config(
             ca: Some(ca.clone()),
             ca_key: Some(ca_key),
             sa_key: Some(sa_key),
-            pod_subnet: Some(pod_subnet.clone()),
-            service_subnet: Some(service_subnet.clone()),
-            pod_cidr_ipv6: pod_cidr_ipv6.clone(),
-            service_cidr_ipv6: service_cidr_ipv6.clone(),
+            network: network.clone(),
+            pod_subnet: None,
+            service_subnet: None,
+            pod_cidr_ipv6: None,
+            service_cidr_ipv6: None,
             network_mode,
             vip6: vip6.clone(),
             kubernetes_version: Some(k8s_ver.clone()),
@@ -441,10 +435,11 @@ pub fn get_join_config(
             ca: Some(ca.clone()),
             ca_key: None,
             sa_key: None,
-            pod_subnet: Some(pod_subnet),
-            service_subnet: Some(service_subnet),
-            pod_cidr_ipv6,
-            service_cidr_ipv6,
+            network,
+            pod_subnet: None,
+            service_subnet: None,
+            pod_cidr_ipv6: None,
+            service_cidr_ipv6: None,
             network_mode,
             vip6,
             kubernetes_version: Some(k8s_ver),

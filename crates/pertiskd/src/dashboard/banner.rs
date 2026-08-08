@@ -62,8 +62,12 @@ pub fn run_banner_loop(
             out.push_str("\r\n");
         }
         out.push_str(&format!(
-            "cluster {}\r\nKubernetes {}  cni {}  pod {}\r\n",
-            snap.cluster_endpoint, snap.kubernetes_version, snap.cni, snap.pod_cidr
+            "cluster {}\r\nKubernetes {}  cni {}  pod {}  svc {}\r\n",
+            snap.cluster_endpoint,
+            snap.kubernetes_version,
+            snap.cni,
+            snap.pod_cidr,
+            snap.service_subnet
         ));
 
         out.push_str("==== resources ====\r\n");

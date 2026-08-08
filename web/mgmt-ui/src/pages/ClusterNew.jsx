@@ -46,6 +46,10 @@ export default function ClusterNew() {
     cni: 'cilium',
     k8s_version: '',
     max_pods: 250,
+    pod_subnet: '10.244.0.0/16',
+    service_subnet: '10.96.0.0/12',
+    pod_subnet_ipv6: '2001:db8:10:0::/56',
+    service_subnet_ipv6: '2001:db8:96:1::/112',
     cp_memory: 4096,
     cp_cores: 2,
     cp_disk_gb: 50,
@@ -262,6 +266,24 @@ export default function ClusterNew() {
       setError('Select a Kubernetes version')
       return
     }
+    if (!String(form.pod_subnet || '').trim()) {
+      setError('Pod CIDR is required')
+      return
+    }
+    if (!String(form.service_subnet || '').trim()) {
+      setError('Service CIDR is required')
+      return
+    }
+    if (mode === 'dual-stack' || mode === 'ipv6') {
+      if (!String(form.pod_subnet_ipv6 || '').trim()) {
+        setError('Pod IPv6 CIDR is required for dual-stack / IPv6')
+        return
+      }
+      if (!String(form.service_subnet_ipv6 || '').trim()) {
+        setError('Service IPv6 CIDR is required for dual-stack / IPv6')
+        return
+      }
+    }
     if (vmidBlocked) {
       setError(vmidCheck.message || 'Selected VMID range is already in use')
       return
@@ -284,6 +306,16 @@ export default function ClusterNew() {
       cni: form.cni,
       k8s_version: form.k8s_version,
       max_pods: Number(form.max_pods),
+      pod_subnet: String(form.pod_subnet || '').trim(),
+      service_subnet: String(form.service_subnet || '').trim(),
+      pod_subnet_ipv6:
+        form.network_mode === 'dual-stack' || form.network_mode === 'ipv6'
+          ? String(form.pod_subnet_ipv6 || '').trim() || null
+          : null,
+      service_subnet_ipv6:
+        form.network_mode === 'dual-stack' || form.network_mode === 'ipv6'
+          ? String(form.service_subnet_ipv6 || '').trim() || null
+          : null,
       cp_memory: Number(form.cp_memory),
       cp_cores: Number(form.cp_cores),
       cp_disk_gb: Number(form.cp_disk_gb),
@@ -295,7 +327,7 @@ export default function ClusterNew() {
     setSaving(true)
     try {
       const res = await api('/clusters', { method: 'POST', body })
-      nav(`/clusters/${res.id}?tab=nodes`)
+      nav(`/clusters/${res.id}?tab=overview`)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -480,6 +512,58 @@ export default function ClusterNew() {
               </div>
             )}
           </div>
+
+          <div className="form-grid" style={{ marginTop: '1rem' }}>
+            <div className="field">
+              <label>Pod subnet (IPv4)</label>
+              <input
+                value={form.pod_subnet}
+                onChange={(e) => set('pod_subnet', e.target.value)}
+                placeholder="10.244.0.0/16"
+                required
+              />
+            </div>
+            {(mode === 'dual-stack' || mode === 'ipv6') ? (
+              <div className="field">
+                <label>Pod subnet (IPv6)</label>
+                <input
+                  value={form.pod_subnet_ipv6}
+                  onChange={(e) => set('pod_subnet_ipv6', e.target.value)}
+                  placeholder="2001:db8:10:0::/56"
+                  required
+                />
+              </div>
+            ) : (
+              <div className="field" />
+            )}
+            <div className="field">
+              <label>Service subnet (IPv4)</label>
+              <input
+                value={form.service_subnet}
+                onChange={(e) => set('service_subnet', e.target.value)}
+                placeholder="10.96.0.0/12"
+                required
+              />
+            </div>
+            {(mode === 'dual-stack' || mode === 'ipv6') ? (
+              <div className="field">
+                <label>Service subnet (IPv6)</label>
+                <input
+                  value={form.service_subnet_ipv6}
+                  onChange={(e) => set('service_subnet_ipv6', e.target.value)}
+                  placeholder="2001:db8:96:1::/112"
+                  required
+                />
+              </div>
+            ) : (
+              <div className="field" />
+            )}
+          </div>
+          <p className="hint muted" style={{ marginTop: '0.5rem' }}>
+            {mode === 'dual-stack' || mode === 'ipv6'
+              ? 'Written as cluster.network.podSubnets / serviceSubnets (IPv4 + IPv6).'
+              : 'Written as cluster.network.podSubnets / serviceSubnets (IPv4 only).'}
+          </p>
           {ha && !vipChecking && vipCheck?.ok && (
             <p className="hint muted">{vipCheck.message}</p>
           )}

@@ -881,6 +881,37 @@ machine:
                     <div><dt>Created</dt><dd className="muted">{c.created_at}</dd></div>
                   </dl>
                 </section>
+                <section>
+                  <h3 className="section-label">Network</h3>
+                  <dl className="kv">
+                    <div><dt>Mode</dt><dd>{netLabel}</dd></div>
+                    <div><dt>CNI</dt><dd>{c.cni}</dd></div>
+                    <div>
+                      <dt>Pod CIDRs</dt>
+                      <dd className="mono-inline">
+                        {c.pod_subnet || '10.244.0.0/16'}
+                        {c.pod_subnet_ipv6 ? <><br />{c.pod_subnet_ipv6}</> : null}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Service CIDRs</dt>
+                      <dd className="mono-inline">
+                        {c.service_subnet || '10.96.0.0/12'}
+                        {c.service_subnet_ipv6 ? <><br />{c.service_subnet_ipv6}</> : null}
+                      </dd>
+                    </div>
+                    {(c.vip || c.vip6) && (
+                      <div>
+                        <dt>VIP</dt>
+                        <dd className="mono-inline">
+                          {c.vip || '—'}
+                          {c.vip6 ? <><br />{c.vip6}</> : null}
+                        </dd>
+                      </div>
+                    )}
+                    <div><dt>K8s</dt><dd>{c.k8s_version}</dd></div>
+                  </dl>
+                </section>
               </div>
 
               {latestJob && (

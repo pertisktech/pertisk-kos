@@ -28,12 +28,15 @@ pub struct StatusSnapshot {
     pub net_rows: Vec<String>,
     /// Primary host iface name (e.g. `eth0`), or empty.
     pub node_iface: String,
-    /// First IPv4 CIDR on the primary host iface, or `-`.
+    /// First IPv4 CIDR on the primary host iface (e.g. `10.1.1.198/24`), or `-`.
     pub node_ip: String,
     pub machine_type: String,
     pub cluster_endpoint: String,
     pub cni: String,
+    /// Cluster-wide pod network CIDR from `cluster.podSubnet` (e.g. `10.244.0.0/16`).
     pub pod_cidr: String,
+    /// Cluster service CIDR from `cluster.serviceSubnet` (e.g. `10.96.0.0/12`).
+    pub service_subnet: String,
     /// From `cluster.kubernetesVersion`, or `-`.
     pub kubernetes_version: String,
     pub containerd: String,
@@ -99,7 +102,7 @@ impl StatusSnapshot {
                 .collect();
             if let Some(ref cluster) = cfg.cluster {
                 snap.cluster_endpoint = cluster.endpoint.clone();
-                (snap.cni, snap.pod_cidr) = cluster_network_display(cluster);
+                (snap.cni, snap.pod_cidr, snap.service_subnet) = cluster_network_display(cluster);
                 snap.kubernetes_version = cluster
                     .kubernetes_version
                     .clone()
@@ -109,12 +112,16 @@ impl StatusSnapshot {
                 snap.cluster_endpoint = "(none)".into();
                 snap.cni = "-".into();
                 snap.pod_cidr = "-".into();
+                snap.service_subnet = "-".into();
                 snap.kubernetes_version = "-".into();
             }
         } else {
             snap.hostname = read_hostname().unwrap_or_else(|| "pertisk".into());
             snap.machine_type = "-".into();
             snap.cluster_endpoint = "(no config)".into();
+            snap.cni = "-".into();
+            snap.pod_cidr = "-".into();
+            snap.service_subnet = "-".into();
             snap.kubernetes_version = "-".into();
         }
 
@@ -157,19 +164,31 @@ impl StatusSnapshot {
     }
 }
 
-fn cluster_network_display(cluster: &Cluster) -> (String, String) {
+fn cluster_network_display(cluster: &Cluster) -> (String, String, String) {
     let cni = match cluster.cni.as_str() {
         "none" => "external".into(),
         configured => configured.to_string(),
     };
-    let pod_cidr = cluster
-        .pod_cidr
-        .as_deref()
-        .filter(|cidr| !cidr.is_empty())
-        .or_else(|| cluster.pod_subnet.as_deref().filter(|cidr| !cidr.is_empty()))
-        .unwrap_or("-")
-        .to_string();
-    (cni, pod_cidr)
+    // Dashboard always shows IPv4 CIDRs only — dual-stack IPv6 lives in
+    // cluster.network.podSubnets / serviceSubnets (or legacy podCidrIPv6) and is omitted here.
+    let pod_subnet = ipv4_cidr_only(&cluster.ipv4_pod_subnet());
+    let service_subnet = ipv4_cidr_only(&cluster.ipv4_service_subnet());
+    (cni, pod_subnet, service_subnet)
+}
+
+/// First IPv4 CIDR from a value that may be `v4`, `v4,v6`, or `-`.
+fn ipv4_cidr_only(raw: &str) -> String {
+    for part in raw.split(',') {
+        let cidr = part.trim();
+        if cidr.is_empty() || cidr == "-" {
+            continue;
+        }
+        let ip = cidr.split('/').next().unwrap_or(cidr);
+        if ip.contains('.') && !ip.contains(':') {
+            return cidr.to_string();
+        }
+    }
+    "-".into()
 }
 
 fn read_to_string(path: &str) -> Option<String> {
@@ -221,6 +240,7 @@ fn read_addresses_ip_br() -> Option<Vec<String>> {
                     // Hide IPv6 link-local so fe80:: does not look like "online".
                     !(a.starts_with("fe80:") || a.starts_with("fe80::"))
                 })
+                .map(|a| display_addr(a))
                 .collect();
             let has_v4 = addrs.iter().any(|a| a.contains('.'));
             if addrs.is_empty() {
@@ -266,21 +286,32 @@ fn ifaces_to_rows(ifaces: &[IfaceAddrs]) -> Vec<String> {
         .iter()
         .map(|i| {
             let state = operstate(&i.name);
-            let has_v4 = i.addresses.iter().any(|a| a.contains('.'));
-            if i.addresses.is_empty() {
+            let addrs: Vec<String> = i.addresses.iter().map(|a| display_addr(a)).collect();
+            let has_v4 = addrs.iter().any(|a| a.contains('.'));
+            if addrs.is_empty() {
                 format!("{}  {}  (no ipv4)", i.name, state)
             } else if !has_v4 {
                 format!(
                     "{}  {}  (no ipv4) {}",
                     i.name,
                     state,
-                    i.addresses.join("  ")
+                    addrs.join("  ")
                 )
             } else {
-                format!("{}  {}  {}", i.name, state, i.addresses.join("  "))
+                format!("{}  {}  {}", i.name, state, addrs.join("  "))
             }
         })
         .collect()
+}
+
+/// IPv4 keeps `addr/prefix`; IPv6 is address-only (no subnet on the dashboard).
+fn display_addr(addr: &str) -> String {
+    let ip = addr.split('/').next().unwrap_or(addr);
+    if ip.contains(':') {
+        ip.to_string()
+    } else {
+        addr.to_string()
+    }
 }
 
 fn operstate(iface: &str) -> String {
@@ -455,7 +486,7 @@ fn first_ipv4(addresses: &[String]) -> Option<&str> {
     addresses.iter().find_map(|a| {
         let ip = a.split('/').next().unwrap_or(a.as_str());
         if ip.contains('.') {
-            Some(ip)
+            Some(a.as_str())
         } else {
             None
         }
@@ -464,7 +495,10 @@ fn first_ipv4(addresses: &[String]) -> Option<&str> {
 
 fn first_global_ipv6(addresses: &[String]) -> Option<&str> {
     // Prefer SLAAC GUA over synthetic fd00:: ULA (same rule as kubelet --node-ip).
-    pertisk_net::prefer_global_ipv6(addresses.iter().map(|s| s.as_str()))
+    // Dashboard shows IPv6 as bare address (no /prefix); IPv4 keeps its CIDR.
+    pertisk_net::prefer_global_ipv6(addresses.iter().map(|s| s.as_str())).map(|a| {
+        a.split('/').next().unwrap_or(a)
+    })
 }
 
 fn row_has_ipv4(row: &str) -> bool {
@@ -773,15 +807,90 @@ mod tests {
     #[test]
     fn external_cni_uses_cluster_pod_subnet() {
         let cfg = MachineConfig::from_yaml(
-            "version: v1alpha1\nmachine:\n  type: controlplane\ncluster:\n  endpoint: https://10.0.0.1:6443\n  cni: none\n  podSubnet: 10.244.0.0/16\n",
+            "version: v1alpha1\nmachine:\n  type: controlplane\ncluster:\n  endpoint: https://10.0.0.1:6443\n  cni: none\n  podSubnet: 10.244.0.0/16\n  serviceSubnet: 10.96.0.0/12\n",
         )
         .expect("config");
         let cluster = cfg.cluster.as_ref().expect("cluster");
 
         assert_eq!(
             cluster_network_display(cluster),
-            ("external".into(), "10.244.0.0/16".into())
+            (
+                "external".into(),
+                "10.244.0.0/16".into(),
+                "10.96.0.0/12".into()
+            )
         );
+    }
+
+    #[test]
+    fn pod_subnet_preferred_over_node_pod_cidr() {
+        let cfg = MachineConfig::from_yaml(
+            "version: v1alpha1\nmachine:\n  type: controlplane\ncluster:\n  endpoint: https://10.0.0.1:6443\n  podSubnet: 10.244.0.0/16\n  podCidr: 10.244.1.0/24\n  serviceSubnet: 10.96.0.0/12\n",
+        )
+        .expect("config");
+        let cluster = cfg.cluster.as_ref().expect("cluster");
+        assert_eq!(
+            cluster_network_display(cluster),
+            (
+                "bridge".into(),
+                "10.244.0.0/16".into(),
+                "10.96.0.0/12".into()
+            )
+        );
+    }
+
+    #[test]
+    fn dual_stack_dashboard_shows_ipv4_subnets_only() {
+        let cfg = MachineConfig::from_yaml(
+            r#"
+version: v1alpha1
+machine:
+  type: controlplane
+cluster:
+  endpoint: https://10.0.0.1:6443
+  networkMode: dual-stack
+  network:
+    podSubnets:
+      - 10.244.0.0/16
+      - 2001:db8:10:0::/56
+    serviceSubnets:
+      - 10.96.0.0/12
+      - 2001:db8:96:1::/112
+"#,
+        )
+        .expect("config");
+        let cluster = cfg.cluster.as_ref().expect("cluster");
+        assert!(cluster.is_dual_stack());
+        assert_eq!(
+            cluster.cluster_cidr(),
+            "10.244.0.0/16,2001:db8:10:0::/56"
+        );
+        assert_eq!(
+            cluster_network_display(cluster),
+            (
+                "bridge".into(),
+                "10.244.0.0/16".into(),
+                "10.96.0.0/12".into()
+            )
+        );
+    }
+
+    #[test]
+    fn ipv4_cidr_only_strips_combined_dual_stack() {
+        assert_eq!(ipv4_cidr_only("10.244.0.0/16,2001:db8:10:0::/56"), "10.244.0.0/16");
+        assert_eq!(ipv4_cidr_only("10.96.0.0/12"), "10.96.0.0/12");
+        assert_eq!(ipv4_cidr_only("2001:db8:10:0::/56"), "-");
+        assert_eq!(ipv4_cidr_only("-"), "-");
+    }
+
+    #[test]
+    fn display_addr_keeps_ipv4_subnet_strips_ipv6() {
+        assert_eq!(display_addr("10.1.1.173/24"), "10.1.1.173/24");
+        assert_eq!(
+            display_addr("2405:9800:b901:194c:be24:11ff:fe91:e066/64"),
+            "2405:9800:b901:194c:be24:11ff:fe91:e066"
+        );
+        assert_eq!(display_addr("fd00:a:1:1::ad/64"), "fd00:a:1:1::ad");
     }
 
     #[test]
@@ -873,7 +982,7 @@ Cached:          2048000 kB
         ];
         let p = prioritize_host_network(&ifaces, &rows, &[]);
         assert_eq!(p.node_iface, "eth0");
-        assert_eq!(p.node_ip, "10.1.1.198");
+        assert_eq!(p.node_ip, "10.1.1.198/24");
         assert_eq!(p.net_rows.len(), 1);
         assert!(p.net_rows[0].starts_with("eth0"));
         assert!(p.interfaces.iter().all(|i| !is_cni_iface(&i.name)));
@@ -897,7 +1006,7 @@ Cached:          2048000 kB
         ];
         let p = prioritize_host_network(&ifaces, &rows, &["ens18".into()]);
         assert_eq!(p.node_iface, "ens18");
-        assert_eq!(p.node_ip, "10.1.1.50");
+        assert_eq!(p.node_ip, "10.1.1.50/24");
         assert_eq!(row_iface_name(&p.net_rows[0]), "ens18");
     }
 
@@ -917,9 +1026,11 @@ Cached:          2048000 kB
         ];
         let p = prioritize_host_network(&ifaces, &rows, &[]);
         assert_eq!(p.node_iface, "eth0");
+        // IPv4 keeps subnet; IPv6 is address-only (no /64).
         assert_eq!(
             p.node_ip,
-            "10.1.1.173 2405:9800:b901:194c:be24:11ff:fe91:e066"
+            "10.1.1.173/24 2405:9800:b901:194c:be24:11ff:fe91:e066"
         );
+        assert!(!p.node_ip.contains("/64"), "ipv6 must not include subnet: {}", p.node_ip);
     }
 }

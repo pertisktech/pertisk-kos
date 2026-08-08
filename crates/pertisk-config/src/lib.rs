@@ -205,6 +205,17 @@ pub struct Install {
     pub wipe: bool,
 }
 
+/// Talos-style cluster networking (`cluster.network`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClusterNetwork {
+    /// Pod CIDRs (IPv4 and optional IPv6), e.g. `10.244.0.0/16`, `2001:db8:10:0::/56`.
+    #[serde(default, rename = "podSubnets", skip_serializing_if = "Vec::is_empty")]
+    pub pod_subnets: Vec<String>,
+    /// Service CIDRs (IPv4 and optional IPv6), e.g. `10.96.0.0/12`, `2001:db8:96:1::/112`.
+    #[serde(default, rename = "serviceSubnets", skip_serializing_if = "Vec::is_empty")]
+    pub service_subnets: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Cluster {
     /// Logical cluster name (kubeconfig context / cluster entry).
@@ -222,40 +233,45 @@ pub struct Cluster {
     /// PEM-encoded service-account signing key (control-plane bootstrap only).
     #[serde(default, rename = "saKey")]
     pub sa_key: Option<String>,
-    /// Cluster-wide pod network CIDR (e.g. `10.244.0.0/16`).
-    #[serde(default, rename = "podSubnet")]
+    /// Talos-style pod/service subnet lists (preferred for new configs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<ClusterNetwork>,
+    /// Legacy cluster-wide pod network CIDR (e.g. `10.244.0.0/16`).
+    #[serde(default, rename = "podSubnet", skip_serializing_if = "Option::is_none")]
     pub pod_subnet: Option<String>,
-    /// Cluster service CIDR (default `10.96.0.0/12`).
-    #[serde(default, rename = "serviceSubnet")]
+    /// Legacy cluster service CIDR (default `10.96.0.0/12`).
+    #[serde(default, rename = "serviceSubnet", skip_serializing_if = "Option::is_none")]
     pub service_subnet: Option<String>,
-    /// IPv6 pod CIDR when [`NetworkMode::DualStack`] (default `2001:db8:10:0::/56`).
-    #[serde(default, rename = "podCidrIPv6")]
+    /// Legacy IPv6 pod CIDR when [`NetworkMode::DualStack`].
+    #[serde(default, rename = "podCidrIPv6", skip_serializing_if = "Option::is_none")]
     pub pod_cidr_ipv6: Option<String>,
-    /// IPv6 service CIDR when dual-stack (default `2001:db8:96:1::/112`).
-    #[serde(default, rename = "serviceCidrIPv6")]
+    /// Legacy IPv6 service CIDR when dual-stack.
+    #[serde(default, rename = "serviceCidrIPv6", skip_serializing_if = "Option::is_none")]
     pub service_cidr_ipv6: Option<String>,
     /// Node / cluster IP family mode. Default IPv4-only.
     #[serde(default, rename = "networkMode")]
     pub network_mode: NetworkMode,
     /// Optional IPv6 API VIP (HA dual-stack); also added to cert SANs.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vip6: Option<String>,
     /// Kubernetes version tag for static-pod images (e.g. `v1.32.5`).
     #[serde(default, rename = "kubernetesVersion")]
     pub kubernetes_version: Option<String>,
     /// Pod CIDR for this node's bridge CNI (e.g. `10.244.0.0/24`).
     /// Unused when `cni: none` (cluster CNI DaemonSet owns networking).
-    #[serde(default, rename = "podCidr")]
+    #[serde(default, rename = "podCidr", skip_serializing_if = "Option::is_none")]
     pub pod_cidr: Option<String>,
     /// Pod networking mode: `bridge` (built-in) or `none` (Flannel/Cilium/etc.).
     #[serde(default)]
     pub cni: CniMode,
     /// Extra apiserver (and etcd) certificate SANs — VIP, extra DNS names, CP IPs.
-    #[serde(default, rename = "certSANs")]
+    #[serde(default, rename = "certSANs", skip_serializing_if = "Vec::is_empty")]
     pub cert_sans: Vec<String>,
 }
 
 impl Cluster {
+    pub const DEFAULT_POD_SUBNET: &'static str = "10.244.0.0/16";
+    pub const DEFAULT_SERVICE_SUBNET: &'static str = "10.96.0.0/12";
     pub const DEFAULT_POD_CIDR_IPV6: &'static str = "2001:db8:10:0::/56";
     pub const DEFAULT_SERVICE_CIDR_IPV6: &'static str = "2001:db8:96:1::/112";
 
@@ -263,48 +279,143 @@ impl Cluster {
         matches!(self.network_mode, NetworkMode::DualStack)
     }
 
-    /// `--service-cluster-ip-range` value for kube-apiserver / controller-manager.
-    pub fn service_cluster_ip_range(&self) -> String {
-        let v4 = self
+    /// Resolved pod CIDR list (prefers `cluster.network.podSubnets`).
+    pub fn effective_pod_subnets(&self) -> Vec<String> {
+        if let Some(list) = self.network.as_ref().map(|n| {
+            n.pod_subnets
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        }) {
+            if !list.is_empty() {
+                return list;
+            }
+        }
+        let mut out = vec![self
+            .pod_subnet
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(Self::DEFAULT_POD_SUBNET)
+            .to_string()];
+        if self.is_dual_stack() {
+            out.push(
+                self.pod_cidr_ipv6
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(Self::DEFAULT_POD_CIDR_IPV6)
+                    .to_string(),
+            );
+        }
+        out
+    }
+
+    /// Resolved service CIDR list (prefers `cluster.network.serviceSubnets`).
+    pub fn effective_service_subnets(&self) -> Vec<String> {
+        if let Some(list) = self.network.as_ref().map(|n| {
+            n.service_subnets
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        }) {
+            if !list.is_empty() {
+                return list;
+            }
+        }
+        let mut out = vec![self
             .service_subnet
             .as_deref()
             .filter(|s| !s.is_empty())
-            .unwrap_or("10.96.0.0/12");
+            .unwrap_or(Self::DEFAULT_SERVICE_SUBNET)
+            .to_string()];
         if self.is_dual_stack() {
-            let v6 = self
-                .service_cidr_ipv6
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .unwrap_or(Self::DEFAULT_SERVICE_CIDR_IPV6);
-            format!("{v4},{v6}")
-        } else {
-            v4.to_string()
+            out.push(
+                self.service_cidr_ipv6
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(Self::DEFAULT_SERVICE_CIDR_IPV6)
+                    .to_string(),
+            );
         }
+        out
     }
 
-    pub fn effective_pod_cidr_ipv6(&self) -> Option<&str> {
-        if !self.is_dual_stack() {
-            return None;
-        }
-        Some(
-            self.pod_cidr_ipv6
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .unwrap_or(Self::DEFAULT_POD_CIDR_IPV6),
-        )
+    /// First IPv4 CIDR from [`Self::effective_pod_subnets`].
+    pub fn ipv4_pod_subnet(&self) -> String {
+        self.effective_pod_subnets()
+            .into_iter()
+            .find(|s| looks_like_ipv4_cidr(s))
+            .unwrap_or_else(|| Self::DEFAULT_POD_SUBNET.into())
+    }
+
+    /// First IPv4 CIDR from [`Self::effective_service_subnets`].
+    pub fn ipv4_service_subnet(&self) -> String {
+        self.effective_service_subnets()
+            .into_iter()
+            .find(|s| looks_like_ipv4_cidr(s))
+            .unwrap_or_else(|| Self::DEFAULT_SERVICE_SUBNET.into())
+    }
+
+    /// `--service-cluster-ip-range` value for kube-apiserver / controller-manager.
+    pub fn service_cluster_ip_range(&self) -> String {
+        self.effective_service_subnets().join(",")
+    }
+
+    pub fn effective_pod_cidr_ipv6(&self) -> Option<String> {
+        self.effective_pod_subnets()
+            .into_iter()
+            .find(|s| looks_like_ipv6_cidr(s))
+            .or_else(|| {
+                if !self.is_dual_stack() {
+                    return None;
+                }
+                Some(
+                    self.pod_cidr_ipv6
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(Self::DEFAULT_POD_CIDR_IPV6)
+                        .to_string(),
+                )
+            })
     }
 
     /// `--cluster-cidr` for kube-controller-manager (IPv4 or IPv4,IPv6).
     pub fn cluster_cidr(&self) -> String {
-        let v4 = self
-            .pod_subnet
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("10.244.0.0/16");
-        if let Some(v6) = self.effective_pod_cidr_ipv6() {
-            format!("{v4},{v6}")
-        } else {
-            v4.to_string()
+        self.effective_pod_subnets().join(",")
+    }
+
+    /// Build Talos-style `cluster.network` from IPv4 (+ optional IPv6) CIDRs.
+    pub fn network_from_cidrs(
+        pod_v4: &str,
+        service_v4: &str,
+        dual_stack: bool,
+        pod_v6: Option<&str>,
+        service_v6: Option<&str>,
+    ) -> ClusterNetwork {
+        let mut pod_subnets = vec![pod_v4.trim().to_string()];
+        let mut service_subnets = vec![service_v4.trim().to_string()];
+        if dual_stack {
+            pod_subnets.push(
+                pod_v6
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(Self::DEFAULT_POD_CIDR_IPV6)
+                    .to_string(),
+            );
+            service_subnets.push(
+                service_v6
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(Self::DEFAULT_SERVICE_CIDR_IPV6)
+                    .to_string(),
+            );
+        }
+        ClusterNetwork {
+            pod_subnets,
+            service_subnets,
         }
     }
 
@@ -318,6 +429,16 @@ impl Cluster {
         }
         sans
     }
+}
+
+fn looks_like_ipv4_cidr(s: &str) -> bool {
+    let ip = s.split('/').next().unwrap_or(s);
+    ip.contains('.') && !ip.contains(':')
+}
+
+fn looks_like_ipv6_cidr(s: &str) -> bool {
+    let ip = s.split('/').next().unwrap_or(s);
+    ip.contains(':')
 }
 
 /// Node / cluster IP family policy.
@@ -767,6 +888,45 @@ cluster:
         );
         assert_eq!(cluster.vip6.as_deref(), Some("fd00:1::210"));
         assert!(cluster.pki_extra_sans().contains(&"fd00:1::210".into()));
+    }
+
+    #[test]
+    fn parses_talos_style_network_subnets() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: controlplane
+cluster:
+  endpoint: https://10.1.1.210:6443
+  networkMode: dual-stack
+  network:
+    podSubnets:
+      - 10.10.0.0/16
+      - 2001:db8:10:0::/56
+    serviceSubnets:
+      - 10.96.0.0/12
+      - 2001:db8:96:1::/112
+"#;
+        let cfg = MachineConfig::from_yaml(yaml).unwrap();
+        let cluster = cfg.cluster.unwrap();
+        assert_eq!(
+            cluster.effective_pod_subnets(),
+            vec!["10.10.0.0/16".to_string(), "2001:db8:10:0::/56".to_string()]
+        );
+        assert_eq!(
+            cluster.effective_service_subnets(),
+            vec!["10.96.0.0/12".to_string(), "2001:db8:96:1::/112".to_string()]
+        );
+        assert_eq!(cluster.ipv4_pod_subnet(), "10.10.0.0/16");
+        assert_eq!(cluster.ipv4_service_subnet(), "10.96.0.0/12");
+        assert_eq!(
+            cluster.cluster_cidr(),
+            "10.10.0.0/16,2001:db8:10:0::/56"
+        );
+        assert_eq!(
+            cluster.service_cluster_ip_range(),
+            "10.96.0.0/12,2001:db8:96:1::/112"
+        );
     }
 
     #[test]

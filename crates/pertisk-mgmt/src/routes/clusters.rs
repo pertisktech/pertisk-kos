@@ -59,6 +59,10 @@ pub struct ClusterOut {
     pub network_mode: String,
     pub max_pods: i64,
     pub arch: String,
+    pub pod_subnet: String,
+    pub service_subnet: String,
+    pub pod_subnet_ipv6: Option<String>,
+    pub service_subnet_ipv6: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -99,6 +103,14 @@ struct CreateCluster {
     /// When omitted, uses the provider's default arch.
     #[serde(default)]
     arch: Option<String>,
+    #[serde(default = "default_pod_subnet")]
+    pod_subnet: String,
+    #[serde(default = "default_service_subnet")]
+    service_subnet: String,
+    #[serde(default)]
+    pod_subnet_ipv6: Option<String>,
+    #[serde(default)]
+    service_subnet_ipv6: Option<String>,
 }
 
 fn one() -> i64 {
@@ -137,6 +149,18 @@ fn default_max_pods() -> i64 {
 fn default_net_mode() -> String {
     "ipv4".into()
 }
+fn default_pod_subnet() -> String {
+    "10.244.0.0/16".into()
+}
+fn default_service_subnet() -> String {
+    "10.96.0.0/12".into()
+}
+fn default_pod_subnet_ipv6() -> String {
+    "2001:db8:10:0::/56".into()
+}
+fn default_service_subnet_ipv6() -> String {
+    "2001:db8:96:1::/112".into()
+}
 
 const CLUSTER_SELECT: &str = r#"
 SELECT c.id, c.name, c.provider_id,
@@ -146,6 +170,10 @@ SELECT c.id, c.name, c.provider_id,
        c.cp_vmid, c.endpoint, c.error, COALESCE(c.network_mode, 'ipv4') as network_mode,
        COALESCE(c.max_pods, 250) as max_pods,
        COALESCE(c.arch, 'amd64') as arch,
+       COALESCE(c.pod_subnet, '10.244.0.0/16') as pod_subnet,
+       COALESCE(c.service_subnet, '10.96.0.0/12') as service_subnet,
+       c.pod_subnet_ipv6,
+       c.service_subnet_ipv6,
        c.created_at, c.updated_at
 FROM clusters c
 LEFT JOIN providers p ON p.id = c.provider_id
@@ -316,6 +344,56 @@ async fn create(
     if body.max_pods < 1 || body.max_pods > 1000 {
         return Err(AppError::bad("max_pods must be between 1 and 1000"));
     }
+    let pod_subnet = body.pod_subnet.trim().to_string();
+    let service_subnet = body.service_subnet.trim().to_string();
+    if pod_subnet.is_empty() {
+        return Err(AppError::bad("pod_subnet is required"));
+    }
+    if service_subnet.is_empty() {
+        return Err(AppError::bad("service_subnet is required"));
+    }
+    if !looks_like_ipv4_cidr(&pod_subnet) {
+        return Err(AppError::bad("pod_subnet must be an IPv4 CIDR (e.g. 10.244.0.0/16)"));
+    }
+    if !looks_like_ipv4_cidr(&service_subnet) {
+        return Err(AppError::bad(
+            "service_subnet must be an IPv4 CIDR (e.g. 10.96.0.0/12)",
+        ));
+    }
+    let wants_v6 = matches!(mode.as_str(), "dual-stack" | "ipv6");
+    let pod_subnet_ipv6 = body
+        .pod_subnet_ipv6
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| wants_v6.then(default_pod_subnet_ipv6));
+    let service_subnet_ipv6 = body
+        .service_subnet_ipv6
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| wants_v6.then(default_service_subnet_ipv6));
+    if let Some(ref v6) = pod_subnet_ipv6 {
+        if !looks_like_ipv6_cidr(v6) {
+            return Err(AppError::bad(
+                "pod_subnet_ipv6 must be an IPv6 CIDR (e.g. 2001:db8:10:0::/56)",
+            ));
+        }
+    }
+    if let Some(ref v6) = service_subnet_ipv6 {
+        if !looks_like_ipv6_cidr(v6) {
+            return Err(AppError::bad(
+                "service_subnet_ipv6 must be an IPv6 CIDR (e.g. 2001:db8:96:1::/112)",
+            ));
+        }
+    }
+    let (pod_subnet_ipv6, service_subnet_ipv6) = if wants_v6 {
+        (pod_subnet_ipv6, service_subnet_ipv6)
+    } else {
+        (None, None)
+    };
 
     // Ensure provider exists (+ default guest arch).
     let provider: Option<(String, String)> =
@@ -364,8 +442,9 @@ async fn create(
         r#"INSERT INTO clusters
            (id, name, provider_id, status, controlplanes, workers, vip, vip6, cni, k8s_version,
             cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb, cp_vmid,
-            network_mode, max_pods, arch, created_at, updated_at)
-           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            network_mode, max_pods, arch, pod_subnet, service_subnet, pod_subnet_ipv6, service_subnet_ipv6,
+            created_at, updated_at)
+           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&id)
     .bind(&body.name)
@@ -386,6 +465,10 @@ async fn create(
     .bind(&mode)
     .bind(body.max_pods)
     .bind(&arch)
+    .bind(&pod_subnet)
+    .bind(&service_subnet)
+    .bind(&pod_subnet_ipv6)
+    .bind(&service_subnet_ipv6)
     .bind(&now)
     .bind(&now)
     .execute(state.pool())
@@ -1049,4 +1132,36 @@ async fn provider_check_vmids(
         };
         client.check_vmids(&row.4, cp_vmid, count).await
     }
+}
+
+/// Basic IPv4 CIDR check (e.g. `10.244.0.0/16`) — rejects IPv6 / empty.
+fn looks_like_ipv4_cidr(s: &str) -> bool {
+    let Some((ip, prefix)) = s.split_once('/') else {
+        return false;
+    };
+    if ip.contains(':') || !ip.contains('.') {
+        return false;
+    }
+    let Ok(pfx) = prefix.parse::<u8>() else {
+        return false;
+    };
+    if pfx > 32 {
+        return false;
+    }
+    let parts: Vec<&str> = ip.split('.').collect();
+    parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok())
+}
+
+/// Basic IPv6 CIDR check (e.g. `2001:db8:10:0::/56`).
+fn looks_like_ipv6_cidr(s: &str) -> bool {
+    let Some((ip, prefix)) = s.split_once('/') else {
+        return false;
+    };
+    if !ip.contains(':') {
+        return false;
+    }
+    let Ok(pfx) = prefix.parse::<u8>() else {
+        return false;
+    };
+    pfx <= 128
 }

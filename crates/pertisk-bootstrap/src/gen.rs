@@ -92,23 +92,13 @@ fn base_cluster(
     cert_sans: Vec<String>,
     net: &GenNetworkOpts,
 ) -> Cluster {
-    let (network_mode, pod_cidr_ipv6, service_cidr_ipv6, vip6) = if net.dual_stack {
+    let (network_mode, vip6) = if net.dual_stack {
         (
             NetworkMode::DualStack,
-            Some(
-                net.pod_cidr_ipv6
-                    .clone()
-                    .unwrap_or_else(|| Cluster::DEFAULT_POD_CIDR_IPV6.into()),
-            ),
-            Some(
-                net.service_cidr_ipv6
-                    .clone()
-                    .unwrap_or_else(|| Cluster::DEFAULT_SERVICE_CIDR_IPV6.into()),
-            ),
             net.vip6.clone().filter(|s| !s.trim().is_empty()),
         )
     } else {
-        (NetworkMode::Ipv4, None, None, None)
+        (NetworkMode::Ipv4, None)
     };
     let mut cert_sans = cert_sans;
     if let Some(ref v6) = vip6 {
@@ -124,10 +114,17 @@ fn base_cluster(
         ca: None,
         ca_key: None,
         sa_key: None,
-        pod_subnet: Some(pod_subnet.into()),
-        service_subnet: Some(service_subnet.into()),
-        pod_cidr_ipv6,
-        service_cidr_ipv6,
+        network: Some(Cluster::network_from_cidrs(
+            pod_subnet,
+            service_subnet,
+            net.dual_stack,
+            net.pod_cidr_ipv6.as_deref(),
+            net.service_cidr_ipv6.as_deref(),
+        )),
+        pod_subnet: None,
+        service_subnet: None,
+        pod_cidr_ipv6: None,
+        service_cidr_ipv6: None,
         network_mode,
         vip6,
         kubernetes_version: Some(kubernetes_version.into()),

@@ -469,6 +469,7 @@ mod tests {
             cluster_endpoint: "https://10.0.0.1:6443".into(),
             cni: "flannel".into(),
             pod_cidr: "10.244.0.0/16".into(),
+            service_subnet: "10.96.0.0/12".into(),
             kubernetes_version: "v1.36.3".into(),
             containerd: "up".into(),
             containerd_pid: 412,
@@ -584,6 +585,8 @@ mod tests {
             .join("\n");
         assert!(rendered.contains("eth0 192.168.1.50/24"), "node IP hidden: {rendered}");
         assert!(rendered.contains("https://10.0.0.1:6443"), "endpoint clipped: {rendered}");
+        assert!(rendered.contains("10.244.0.0/16"), "pod subnet hidden: {rendered}");
+        assert!(rendered.contains("10.96.0.0/12"), "service subnet hidden: {rendered}");
     }
 
     #[test]
