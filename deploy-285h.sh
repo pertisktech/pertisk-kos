@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# 13900HX lab deploy → almalinux@10.1.1.170
+# 13900HX lab deploy → almalinux@10.1.1.150
 #
 # Steps:
 #   1. Bump VERSION below
 #   2. ./deploy-13900hx.sh
 #
-# Default: builds + deploys both amd64 and arm64 cloud images, then mgmt RPM.
-# Also installs pertisk-mgmt → root@PVE SSH keys (needed for arm64 guest arch).
+# Default: amd64 cloud image + mgmt RPM. Also configures PROXMOX_SSH for
+# reliable qcow→ZFS import (scp+qm). Use ARCH=both for arm64 too.
 set -euo pipefail
 
 # --- edit me ---
-VERSION="${VERSION:-0.1.71}"
-PVE="${PVE:-10.1.1.194}"   # Proxmox node for PROXMOX_SSH (arm64 qm create)
+VERSION="${VERSION:-0.2.3}"
+PVE="${PVE:-10.1.1.195}"   # Proxmox node for PROXMOX_SSH (disk import / qm)
 # ---------------
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-MGMT="${MGMT:-almalinux@10.1.1.170}"
+MGMT="${MGMT:-almalinux@10.1.1.150}"
 CP_GB="${CP_GB:-50}"
 WORKER_GB="${WORKER_GB:-75}"
-# Default both; override with: ARCH=amd64 ./deploy-13900hx.sh
-ARCHS=(amd64 arm64)
-case "$(printf '%s' "${ARCH:-both}" | tr '[:upper:]' '[:lower:]')" in
+# Default amd64 (this lab). Override: ARCH=arm64|both ./deploy-13900hx.sh
+ARCHS=(amd64)
+case "$(printf '%s' "${ARCH:-amd64}" | tr '[:upper:]' '[:lower:]')" in
   amd64|x86_64) ARCHS=(amd64) ;;
   arm64|aarch64) ARCHS=(arm64) ;;
-  both|all|"") ARCHS=(amd64 arm64) ;;
+  both|all) ARCHS=(amd64 arm64) ;;
   *) echo "unsupported ARCH=${ARCH} (use amd64|arm64|both)" >&2; exit 1 ;;
 esac
 
@@ -40,7 +40,7 @@ for a in "${ARCHS[@]}"; do
     --worker-gb "$WORKER_GB"
     --version "$VERSION"
   )
-  # Install RPM once; configure SSH to PVE on that first pass (arm64 needs it).
+  # Install RPM once; configure SSH to PVE (ZFS importdisk + optional arm64 qm).
   if [[ "$first" == "1" ]]; then
     ARGS+=(--with-ssh --pve "$PVE")
   else
@@ -51,5 +51,5 @@ for a in "${ARCHS[@]}"; do
 done
 
 docker system prune -a -f
-echo "==> done (amd64 + arm64 images @ ${MGMT}:/var/lib/pertisk-mgmt/images/)"
-echo "    PROXMOX_SSH=root@${PVE} (required for arm64 guest create)"
+echo "==> done (${ARCHS[*]} images @ ${MGMT}:/var/lib/pertisk-mgmt/images/)"
+echo "    PROXMOX_SSH=root@${PVE} (amd64 ZFS disk import; also arm64 qm create)"

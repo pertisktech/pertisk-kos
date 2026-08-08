@@ -1,37 +1,107 @@
 # Pertisk KOS
 
-Immutable, API-only Kubernetes OS (Talos-shaped), node control plane in **Rust**.
+Immutable, API-only Kubernetes node OS (Talos-shaped), plus an optional management plane for provisioning HA clusters.
 
-See [DESIGN.md](./DESIGN.md) for architecture and phases.
+- **Node OS** — Rust `pertiskd` as PID 1, gRPC management (`pertiskctl`), containerd + kubelet; no SSH in production images
+- **Management plane** — `pertisk-mgmt` (API + React UI) creates and operates clusters on **Proxmox** and standalone **ESXi**
+
+Architecture and phases: [DESIGN.md](./DESIGN.md).
 
 ## Status
 
-**P5 (partial)** — UKI/Secure Boot lab path, production image (no shell), hardening CI, CNI, cloud images.
+**P5 (partial)** — production images, HA bootstrap, mgmt UI, Proxmox + ESXi providers, dual-stack, CNI lab paths, UKI/Secure Boot lab, hardening CI.
 
-## Build (Make)
+Still open: TPM attestation / OVMF enroll automation; metrics mTLS.
 
-```bash
-make help
-make build                              # initramfs amd64, Cargo.toml version
-make build VERSION=0.2.0 ARCH=arm64     # custom version + arch
-make build PROFILE=debug                # recovery image with BusyBox ash
-make build VERSION=0.2.0 ARCH=amd64 EMBED_BOOT=1 EMBED_RUNTIME=1
-make build-all VERSION=0.2.0            # amd64 + arm64
-make build-host VERSION=0.2.0           # host cargo release bins → out/bin/
-make pertiskctl                         # host CLI → out/bin/pertiskctl
-make mgmt                               # management UI+API → out/bin/pertisk-mgmt
-make mgmt-rpm                           # linux/amd64 RPM (API+UI) → out/rpm/
-make cloud VERSION=0.2.0 ARCH=amd64     # golden disk image
-make uki ARCH=amd64                     # Unified Kernel Image → out/uki/
+---
+
+## Features
+
+### Platform / node OS
+
+- Talos-shaped immutable OS: same cloud image for `controlplane` and `worker` (role from machine config)
+- `pertiskd` PID 1: GPT / STATE / EPHEMERAL disks, DHCP or static net, containerd, kubelet, signed A/B updates, serial console dashboard
+- Multi-arch **amd64** / **arm64** (initramfs + cloud qcow2/raw)
+- A/B OS updates with Ed25519-signed bundles (`pertisk-update` / `pertisk-sign`)
+- UKI / Secure Boot lab path (`make uki`) — see [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
+- Guest extensions: **nfs-client**, **qemu-guest-agent**
+- Machine config `v1alpha1`: network, install disk, cluster endpoint/token/CA, kubelet `maxPods`, `machine.dashboard.mgmt_url`
+- Observability: gRPC mTLS **:50000**, Prometheus **:50001**, `pertiskctl logs`
+- Hardening checklist + `make check-hardening` — [docs/HARDENING.md](./docs/HARDENING.md)
+
+### Cluster lifecycle
+
+- `pertiskctl gen config` — controlplane + worker YAML (HA multi-CP, dual-stack CIDRs, `maxPods`, `mgmt_url`)
+- Bootstrap first CP (PKI + static pods: etcd, apiserver, controller-manager, scheduler)
+- Join workers and **additional control planes** (stacked etcd)
+- **HA**: `controlplanes > 1` → stacked etcd + **kube-vip** VIP (IPv4 ARP and/or IPv6 ND)
+- Post-bootstrap finalize: bootstrap-token Secret, node RBAC, control-plane labels/taints, CoreDNS + metrics-server
+- Mgmt UI / lab scripts: create, add nodes, bulk reboot/delete, hardware resize (grow EPHEMERAL), delete cluster
+- Rolling Kubernetes upgrade (drain → bump version → Ready → uncordon; CPs then workers)
+- Download / show / copy cluster kubeconfig
+
+### Networking
+
+| Mode / CNI | Notes |
+|------------|--------|
+| IPv4 / IPv6 / **dual-stack** | Pod + service CIDRs; optional VIP6 |
+| Built-in `cluster.cni: bridge` | Unique `podCidr` — single-node / lab |
+| **Cilium** (default in lab-up) | `kubeProxyReplacement`; guest needs shared bpffs |
+| Calico / Flannel | Via lab-up or `examples/cni/` with `cni: none` |
+| kube-vip | Static pod on CPs (needs guest `af_packet`) |
+
+Optional addons: CoreDNS, metrics-server, kubernetes-reflector, NFS provisioner — see [examples/addons/](./examples/addons/).
+
+### Management UI
+
+Single-port API + UI (`pertisk-mgmt`). Details: [docs/MGMT.md](./docs/MGMT.md).
+
+| Area | Capabilities |
+|------|----------------|
+| **Auth** | Local, Auth0, or both; roles `admin` \| `operator` \| `viewer` |
+| **Dashboard** | Cluster counts + CPU / memory / disk gauges |
+| **Providers** | Proxmox (API token) and **vSphere ESXi** (SOAP `/sdk`); test probe |
+| **Create cluster** | Provider, CP/worker counts, arch, CNI, K8s version, max pods, VIP / dual-stack, VMID + live conflict checks, HW sizes |
+| **Cluster detail** | Overview, Nodes, **K8s** workloads, **Shell** (mgmt-host PTY + kubeconfig), Config, Upgrade, Jobs |
+| **Node detail** | Inventory, live health, metrics charts, log tail |
+| **Settings** | Session, listen/public URL, JWT TTL, paths, auth mode |
+
+### Providers
+
+| Provider | Status | Docs |
+|----------|--------|------|
+| Proxmox VE | Supported (API token; optional SSH for arm64 create) | [docs/PROXMOX.md](./docs/PROXMOX.md) |
+| VMware ESXi (standalone) | Supported (qcow2→VMDK) — not vCenter | [docs/VSPHERE.md](./docs/VSPHERE.md) |
+| QEMU / bare metal EFI | Supported | [image/README.md](./image/README.md) |
+| AWS / GCP / Azure | Outlined only | [image/cloud/README.md](./image/cloud/README.md) |
+
+---
+
+## Architecture
+
+```
+pertiskctl / mgmt UI ──gRPC mTLS──► pertiskd (PID 1) ──► containerd + kubelet
+pertisk-mgmt ──HTTPS──► Proxmox API / ESXi SOAP
+             └── runs lab-up jobs; stores kubeconfigs + inventory
 ```
 
-See [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md) for signed UKI + OVMF enrollment.
+| Crate | Role |
+|-------|------|
+| `pertiskd` | PID 1 / node supervisor |
+| `pertisk-api` / `pertisk-proto` | gRPC management API |
+| `pertisk-config` | Machine config schema |
+| `pertisk-disk` / `pertisk-net` | Volumes + host networking |
+| `pertisk-runtime` / `pertisk-kubelet` | containerd + kubelet |
+| `pertisk-update` | A/B update / sign |
+| `pertisk-bootstrap` | PKI, static pods, join, gen config, kube-vip, addons |
+| `pertiskctl` | Talos-style CLI |
+| `pertisk-mgmt` | Cluster mgmt API + embedded React UI |
 
-Artifacts: `out/initramfs-<arch>.cpio.gz` (production) or `out/initramfs-<arch>-debug.cpio.gz`, plus `-v<version>` copies.
+---
 
-## Management UI + API
+## Quick starts
 
-Single-port Proxmox management plane: Rust API (`pertisk-mgmt`) + React UI. Details: [docs/MGMT.md](./docs/MGMT.md).
+### 1. Management UI (local)
 
 ```bash
 export MGMT_ADMIN_USER=admin
@@ -43,22 +113,68 @@ make mgmt
 # open http://127.0.0.1:8080
 ```
 
-Dev (UI hot reload + API in two terminals):
+Dev (UI hot reload):
 
 ```bash
 MGMT_ADMIN_PASSWORD=admin cargo run -p pertisk-mgmt -- --listen 127.0.0.1:8080
-cd web/mgmt-ui && npm run dev   # http://127.0.0.1:5173 proxies /api → :8080
+cd web/mgmt-ui && npm run dev   # :5173 proxies /api → :8080
 ```
 
-Deploy as linux/amd64 RPM (Docker build). Full steps (images + `pertisk-mgmt`→PVE SSH): [docs/MGMT.md](./docs/MGMT.md#rpm-deploy-linuxamd64).
+### 2. Deploy mgmt RPM + cloud images to a lab host
 
 ```bash
-make rpm VERSION=0.1.3   # → out/rpm/pertisk-mgmt-*.rpm
-scp out/rpm/pertisk-mgmt-*.rpm almalinux@10.1.1.12:/tmp/
-ssh almalinux@10.1.1.12 'sudo rpm -Uvh /tmp/pertisk-mgmt-*-1.x86_64.rpm && sudo systemctl enable --now pertisk-mgmt'
+./scripts/deploy-mgmt-lab.sh --mgmt user@host --version 0.2.3
+# Host wrappers (edit VERSION / MGMT / PVE inside):
+#   ./deploy-285h.sh | ./deploy-13900hx.sh | ./deploy-h255.sh
+#   ARCH=both ./deploy-h255.sh    # amd64 + arm64 images
 ```
 
-## Quick start (mTLS + upgrade)
+Full RPM + Proxmox SSH notes: [docs/MGMT.md](./docs/MGMT.md#rpm-deploy-linuxamd64).
+
+### 3. CLI cluster (Proxmox lab-up)
+
+```bash
+make cloud ARCH=amd64
+make pertiskctl
+export PROXMOX_SSH=root@<pve>
+
+# Example HA: 3 CP + 3 workers, Cilium, VIP
+./scripts/proxmox-lab-up.sh \
+  --controlplanes 3 --workers 3 \
+  --vip <free-ip> --cni cilium
+
+# ESXi: ./scripts/vsphere-lab-up.sh …
+```
+
+Manual Talos-shaped flow (`gen config` → apply → bootstrap → join): [docs/PROXMOX.md](./docs/PROXMOX.md).
+
+### 4. Build node OS images
+
+```bash
+make help
+make build VERSION=0.2.0 ARCH=amd64 EMBED_BOOT=1 EMBED_RUNTIME=1
+make build-all VERSION=0.2.0            # amd64 + arm64
+make cloud VERSION=0.2.0 ARCH=amd64     # golden disk → out/pertisk-cloud-*.qcow2
+make uki ARCH=amd64                     # Unified Kernel Image
+make pertiskctl                         # → out/bin/pertiskctl
+make mgmt / make mgmt-rpm               # UI+API binary / RPM
+```
+
+Artifacts: `out/initramfs-<arch>.cpio.gz` (or `-debug`), versioned copies, `out/uki/`, `out/rpm/`.
+
+---
+
+## Observability
+
+```bash
+curl -s http://127.0.0.1:50001/metrics
+# Optional bearer: --metrics-token / PERTISK_METRICS_TOKEN / STATE secrets/metrics.token
+
+./out/bin/pertiskctl -e 127.0.0.1:50000 logs dmesg -n 50
+./out/bin/pertiskctl -e 127.0.0.1:50000 logs pertiskd
+```
+
+## mTLS + signed upgrade smoke
 
 ```bash
 ./scripts/gen-mtls-certs.sh
@@ -80,84 +196,40 @@ cargo run -p pertiskd -- --state-dir /tmp/pertisk-state --force-init --skip-runt
   --trust-key /tmp/pertisk-state/secrets/os-trust.pk
 ```
 
-## Images + UEFI install smoke
+## QEMU / UEFI install smoke
 
 ```bash
-# Installer image with embedded kernel + systemd-boot (+ self as initramfs)
 PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
-
 ./image/create-disk.sh
-./image/run-qemu-disk.sh          # first boot: GPT install + ESP bootstrap
-./image/run-qemu-uefi.sh          # second boot: OVMF from disk only
+./image/run-qemu-disk.sh          # first boot: GPT install + ESP
+./image/run-qemu-uefi.sh          # boot from disk (OVMF)
 ```
 
-`examples/worker-install.yaml` / rootfs config set `machine.install.disk: /dev/vda`.
+## Compatibility / CI / SBOM
 
-## Runtime + cluster (Talos-shaped ctl)
+- Matrix (K8s, containerd, CNI, arch): [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md)
+- Hardening: [docs/HARDENING.md](./docs/HARDENING.md) — `make check-hardening`
+- SBOM: `./scripts/generate-sbom.sh` → `out/sbom/`
+- CI: fmt, clippy, tests, SBOM, amd64 initramfs build
 
-```bash
-./image/fetch-runtime.sh
-PERTISK_EMBED_RUNTIME=1 ./image/build-initramfs.sh
-make pertiskctl
+---
 
-# Generate machine configs (like talosctl gen config):
-./out/bin/pertiskctl gen config lab-ha https://<cp-ip>:6443 -o ./out/cluster
-# Apply + bootstrap CP, then join-config workers — see docs/PROXMOX.md
-```
+## Documentation
 
-Same cloud image for `controlplane` and `worker`. Proxmox multi-VM helper:
-`scripts/proxmox-create-cluster-vms.sh`.
-
-Kubelet bridge CNI: `cluster.cni: bridge` + unique `podCidr`. For Flannel/Cilium use `cni: none` and `examples/cni/`.
-
-## Observability
-
-```bash
-# Prometheus text metrics (default :50001)
-curl -s http://127.0.0.1:50001/metrics
-
-# Optional bearer (also: STATE secrets/metrics.token)
-# --metrics-token "$TOKEN"   or   PERTISK_METRICS_TOKEN=...
-curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:50001/metrics
-
-# Tail logs via management API (gRPC :50000)
-cargo run -p pertiskctl -- -e 127.0.0.1:50000 logs dmesg -n 50
-cargo run -p pertiskctl -- -e 127.0.0.1:50000 logs pertiskd
-```
-
-## Compatibility
-
-See [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md) for Kubernetes / containerd / CNI / arch matrix.
-
-## CI / SBOM
-
-```bash
-./scripts/generate-sbom.sh   # → out/sbom/
-```
-
-GitHub Actions runs fmt, clippy, tests, SBOM, and amd64 initramfs build.
-
-## Hardening
-
-See [docs/HARDENING.md](./docs/HARDENING.md) for the CIS-ish worker checklist (kubelet 4.2.x, sysctls, secrets modes, operator steps).
-
-```bash
-./scripts/check-hardening.sh   # or: make check-hardening
-```
-
-## Cloud / golden disk image
-
-```bash
-./image/fetch-kernel.sh && ./image/fetch-bootloader.sh
-PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
-./image/build-cloud-image.sh
-# → out/pertisk-cloud-amd64.raw + .qcow2
-PERTISK_DISK=out/pertisk-cloud-amd64.raw ./image/run-qemu-uefi.sh
-```
-
-See [image/cloud/README.md](./image/cloud/README.md) for AWS / GCP / Azure upload outlines.
-
-**Proxmox:** [docs/PROXMOX.md](./docs/PROXMOX.md) — API-token upload + UEFI worker VM (`scripts/proxmox-upload-vm.sh`).
+| Doc | Topic |
+|-----|--------|
+| [DESIGN.md](./DESIGN.md) | Architecture, phases, security model |
+| [docs/MGMT.md](./docs/MGMT.md) | Management UI/API, auth, create, RPM |
+| [docs/PROXMOX.md](./docs/PROXMOX.md) | Proxmox token, upload, Talos-shaped cluster |
+| [docs/VSPHERE.md](./docs/VSPHERE.md) | ESXi provider |
+| [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md) | Platforms, runtime pins, CNI |
+| [docs/HARDENING.md](./docs/HARDENING.md) | CIS-ish worker checklist |
+| [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md) | UKI + enrollment lab |
+| [image/README.md](./image/README.md) | Initramfs / QEMU |
+| [image/cloud/README.md](./image/cloud/README.md) | Cloud upload outlines |
+| [image/extensions/README.md](./image/extensions/README.md) | nfs-client, qemu-ga |
+| [examples/cni/README.md](./examples/cni/README.md) | Cilium / Calico / Flannel |
+| [examples/addons/README.md](./examples/addons/README.md) | CoreDNS, metrics-server, reflector, NFS |
 
 ## Next
 
