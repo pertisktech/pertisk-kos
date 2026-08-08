@@ -69,19 +69,21 @@ COPY proto ./proto
 # Native BUILDPLATFORM rustc + Zig cross link (avoids qemu-user codegen bugs).
 # PERTISK_BUILD_VERSION (from ARG VERSION) is baked into release_version().
 # Note: a single `--bin NAME` filters the whole build to that binary only, so
-# build packages separately (pertiskd + udhcpc hook).
+# build packages separately (pertiskd + power helper + udhcpc hook).
 # Cache mounts keep crates.io + target/ across rebuilds (needs BuildKit).
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/src/target,sharing=locked \
     RUST_TARGET="$(cat /tmp/rust-target)" \
     && echo "==> cargo zigbuild PERTISK_BUILD_VERSION=${PERTISK_BUILD_VERSION} target=${RUST_TARGET}" \
-    && cargo zigbuild --release -p pertiskd --target "${RUST_TARGET}" \
+    && cargo zigbuild --release -p pertiskd --bin pertiskd --target "${RUST_TARGET}" \
+    && cargo zigbuild --release -p pertiskd --bin pertisk-power --target "${RUST_TARGET}" \
     && cargo zigbuild --release -p pertisk-net --bin pertisk-udhcpc-hook --target "${RUST_TARGET}" \
     && cp "target/${RUST_TARGET}/release/pertiskd" /pertiskd \
+    && cp "target/${RUST_TARGET}/release/pertisk-power" /pertisk-power \
     && cp "target/${RUST_TARGET}/release/pertisk-udhcpc-hook" /pertisk-udhcpc-hook \
-    && file /pertiskd /pertisk-udhcpc-hook \
-    && for bin in /pertiskd /pertisk-udhcpc-hook; do \
+    && file /pertiskd /pertisk-power /pertisk-udhcpc-hook \
+    && for bin in /pertiskd /pertisk-power /pertisk-udhcpc-hook; do \
          if ! file "$bin" | grep -Eqi 'statically linked|static-pie'; then \
            echo "ERROR: $bin must be statically linked for initramfs" >&2; \
            exit 1; \
@@ -93,8 +95,10 @@ ARG TARGETARCH
 RUN apk add --no-cache sgdisk e2fsprogs e2fsprogs-extra dosfstools busybox parted util-linux ca-certificates \
     iptables iptables-legacy \
     nfs-utils \
+    qemu-guest-agent \
     && mkdir -p /tools/bin /tools/lib /tools/certs /tools/xtables \
     && cp /usr/bin/sgdisk /usr/sbin/partprobe /sbin/mkfs.ext4 /sbin/mkfs.vfat /usr/sbin/resize2fs /usr/sbin/tune2fs /sbin/blkid /bin/busybox /tools/bin/ \
+    && cp /usr/bin/qemu-ga /tools/bin/ \
     && cp /etc/ssl/certs/ca-certificates.crt /tools/certs/ \
     # NFS client helpers (BusyBox mount -t nfs looks for /sbin/mount.nfs).
     && cp /sbin/mount.nfs /sbin/mount.nfs4 /sbin/umount.nfs /sbin/umount.nfs4 /tools/bin/ \
@@ -108,13 +112,19 @@ RUN apk add --no-cache sgdisk e2fsprogs e2fsprogs-extra dosfstools busybox parte
     && ln -sf xtables-legacy-multi /tools/bin/ip6tables \
     && ln -sf xtables-legacy-multi /tools/bin/ip6tables-legacy \
     && cp -a /usr/lib/xtables/. /tools/xtables/ \
-    && for bin in /tools/bin/sgdisk /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/resize2fs /tools/bin/tune2fs /tools/bin/blkid /tools/bin/partprobe /tools/bin/xtables-legacy-multi /tools/bin/mount.nfs /tools/bin/mount.nfs4 /tools/bin/umount.nfs /tools/bin/umount.nfs4; do \
+    && for bin in /tools/bin/sgdisk /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/resize2fs /tools/bin/tune2fs /tools/bin/blkid /tools/bin/partprobe /tools/bin/xtables-legacy-multi /tools/bin/mount.nfs /tools/bin/mount.nfs4 /tools/bin/umount.nfs /tools/bin/umount.nfs4 /tools/bin/qemu-ga; do \
          [ -f "$bin" ] || continue; \
          ldd "$bin" 2>/dev/null | awk '{print $3}' | grep -E '^/' | while read -r lib; do cp -n "$lib" /tools/lib/; done; \
        done \
     # nfs-utils also needs libtirpc / libmount / libblkid (ldd can miss some dlopen paths).
     && for lib in /usr/lib/libtirpc.so.3* /lib/libtirpc.so.3* /usr/lib/libmount.so.1* /lib/libmount.so.1* \
                   /usr/lib/libblkid.so.1* /lib/libblkid.so.1* /usr/lib/libuuid.so.1* /lib/libuuid.so.1*; do \
+         [ -e "$lib" ] || continue; \
+         cp -an "$lib" /tools/lib/ 2>/dev/null || cp -n "$lib" /tools/lib/; \
+       done \
+    # qemu-ga nested deps (glib → pcre2/intl already via ldd; keep globs for so names).
+    && for lib in /usr/lib/libnuma.so.1* /usr/lib/liburing.so.2* /usr/lib/libglib-2.0.so.0* \
+                  /usr/lib/libgmodule-2.0.so.0* /usr/lib/libintl.so.8* /usr/lib/libpcre2-8.so.0*; do \
          [ -e "$lib" ] || continue; \
          cp -an "$lib" /tools/lib/ 2>/dev/null || cp -n "$lib" /tools/lib/; \
        done \
@@ -132,11 +142,13 @@ WORKDIR /rootfs
 COPY image/rootfs/ ./
 COPY image/boot-overlay/ ./
 COPY --from=build /pertiskd ./init
+COPY --from=build /pertisk-power ./usr/sbin/pertisk-power
 # Disk/net helpers (required). BusyBox multi-call binary is only shipped as udhcpc
 # in production — no /bin/busybox shell entrypoint. Debug profile adds ash/sh.
 # DHCP leases apply via /usr/lib/pertisk/udhcpc-hook (Rust; no shell script).
 COPY --from=tools /tools/bin/sgdisk /tools/bin/partprobe /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/resize2fs /tools/bin/tune2fs /tools/bin/blkid ./usr/sbin/
 COPY --from=tools /tools/bin/busybox ./usr/sbin/udhcpc
+COPY --from=tools /tools/bin/qemu-ga ./usr/bin/qemu-ga
 # NFS client (storage extension) — BusyBox mount -t nfs → /sbin/mount.nfs
 COPY --from=tools /tools/bin/mount.nfs /tools/bin/mount.nfs4 /tools/bin/umount.nfs /tools/bin/umount.nfs4 ./sbin/
 # iptables-legacy for Flannel/Calico CNI + kube-proxy (host-path lookups).
@@ -161,7 +173,7 @@ RUN mkdir -p proc sys dev run tmp var system/state etc/pertisk sbin \
     && ln -sf /usr/sbin/iptables ./sbin/iptables \
     && ln -sf /usr/sbin/iptables-legacy ./sbin/iptables-legacy
 COPY --from=build /pertisk-udhcpc-hook ./usr/lib/pertisk/udhcpc-hook
-RUN chmod +x ./init ./usr/sbin/* ./usr/lib/pertisk/udhcpc-hook \
+RUN chmod +x ./init ./usr/sbin/* ./usr/bin/qemu-ga ./usr/lib/pertisk/udhcpc-hook \
     && chmod +x ./sbin/mount.nfs ./sbin/mount.nfs4 ./sbin/umount.nfs ./sbin/umount.nfs4 \
     && ln -sf /usr/sbin/sgdisk ./sbin/sgdisk \
     && ln -sf /usr/sbin/mkfs.ext4 ./sbin/mkfs.ext4 \
@@ -173,6 +185,16 @@ RUN chmod +x ./init ./usr/sbin/* ./usr/lib/pertisk/udhcpc-hook \
     && ln -sf /usr/sbin/udhcpc ./sbin/udhcpc \
     && ln -sf /usr/sbin/udhcpc ./usr/sbin/ip \
     && ln -sf /usr/sbin/udhcpc ./sbin/ip \
+    # qemu-ga guest-shutdown: Alpine tries /sbin/shutdown then /sbin/poweroff.
+    # Do NOT use BusyBox poweroff here — without -f it waits on PID 1/init.
+    && ln -sf /usr/sbin/pertisk-power ./sbin/poweroff \
+    && ln -sf /usr/sbin/pertisk-power ./sbin/reboot \
+    && ln -sf /usr/sbin/pertisk-power ./sbin/halt \
+    && ln -sf /usr/sbin/pertisk-power ./sbin/shutdown \
+    && ln -sf /usr/sbin/pertisk-power ./usr/sbin/poweroff \
+    && ln -sf /usr/sbin/pertisk-power ./usr/sbin/reboot \
+    && ln -sf /usr/sbin/pertisk-power ./usr/sbin/halt \
+    && ln -sf /usr/sbin/pertisk-power ./usr/sbin/shutdown \
     # Kubelet projected volumes / subPath need host mount(8). udhcpc is BusyBox
     # multi-call — expose mount/umount/ip applets without a shell entrypoint.
     && ln -sf /usr/sbin/udhcpc ./bin/mount \

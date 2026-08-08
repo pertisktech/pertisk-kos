@@ -2,11 +2,6 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { APP_VERSION } from '../utils/version'
-import {
-  KUBE_WEB_DEFAULT_URL,
-  kubeWebUrl,
-  setKubeWebUrl,
-} from '../utils/kubeWeb'
 
 function PathRow({ label, info }) {
   if (!info) return null
@@ -43,8 +38,6 @@ export default function Settings() {
   const [cfg, setCfg] = useState(null)
   const [me, setMe] = useState(null)
   const [error, setError] = useState('')
-  const [kubeWeb, setKubeWeb] = useState(() => kubeWebUrl())
-  const [kubeWebSaved, setKubeWebSaved] = useState('')
 
   useEffect(() => {
     Promise.all([
@@ -56,19 +49,10 @@ export default function Settings() {
       .then(([s, m]) => {
         setCfg(s)
         setMe(m)
-        if (s?.kube_web_public_url) setKubeWeb(s.kube_web_public_url)
         setError('')
       })
       .catch((e) => setError(e.message || 'failed to load settings'))
   }, [])
-
-  function saveKubeWeb(e) {
-    e.preventDefault()
-    const next = setKubeWebUrl(kubeWeb)
-    setKubeWeb(next)
-    setKubeWebSaved('Saved')
-    setTimeout(() => setKubeWebSaved(''), 2000)
-  }
 
   return (
     <div>
@@ -157,41 +141,6 @@ export default function Settings() {
             <PathRow label="pertiskctl" info={cfg.pertiskctl} />
           </dl>
         )}
-      </div>
-
-      <div className="card">
-        <h2 className="card-title"><Icon name="external" size={18} /> Kubernetes UI</h2>
-        <p className="muted">
-          Public reverse-proxy URL for <code className="mono-inline">pertisk-kube-web</code> (Linux
-          service). Overview → Open Kubernetes UI downloads the cluster kubeconfig and opens this URL.
-        </p>
-        {cfg?.kube_web_public_url && (
-          <p className="hint muted">
-            Server default from <code className="mono-inline">KUBE_WEB_PUBLIC_URL</code>:{' '}
-            <code className="mono-inline">{cfg.kube_web_public_url}</code>
-          </p>
-        )}
-        <form onSubmit={saveKubeWeb} className="form-grid" style={{ maxWidth: 520 }}>
-          <div className="field">
-            <label>Kubernetes UI URL (browser override)</label>
-            <input
-              value={kubeWeb}
-              onChange={(e) => setKubeWeb(e.target.value)}
-              placeholder={cfg?.kube_web_public_url || KUBE_WEB_DEFAULT_URL}
-            />
-            <p className="hint muted">
-              Prefer setting <code className="mono-inline">KUBE_WEB_PUBLIC_URL</code> in{' '}
-              <code className="mono-inline">/etc/pertisk-mgmt/pertisk-mgmt.env</code> for all users.
-              This field only overrides in your browser.
-            </p>
-          </div>
-          <div className="form-footer" style={{ marginTop: 0 }}>
-            <button type="submit" className="btn-icon">
-              <Icon name="check" size={16} /> Save override
-            </button>
-            {kubeWebSaved && <span className="muted">{kubeWebSaved}</span>}
-          </div>
-        </form>
       </div>
 
       <div className="card">

@@ -1,4 +1,4 @@
-//! Start and babysit containerd + kubelet.
+//! Start and babysit containerd + kubelet (+ QEMU guest agent when present).
 
 use anyhow::Result;
 use pertisk_config::{MachineConfig, MachineType};
@@ -8,11 +8,13 @@ use pertisk_kubelet::{
 use pertisk_runtime::{start_containerd_with_sink, ContainerdHandle, RuntimePaths};
 use tracing::{info, warn};
 
+use crate::guest_agent::{self, GuestAgentHandle};
 use crate::log_ring::LogRing;
 
 pub struct NodeServices {
     pub containerd: Option<ContainerdHandle>,
     pub kubelet: Option<KubeletHandle>,
+    pub guest_agent: Option<GuestAgentHandle>,
 }
 
 impl NodeServices {
@@ -21,6 +23,7 @@ impl NodeServices {
         let mut services = Self {
             containerd: None,
             kubelet: None,
+            guest_agent: guest_agent::start(),
         };
 
         match start_containerd_with_sink(&RuntimePaths::default(), Some(logs.sink("containerd"))) {
@@ -62,6 +65,9 @@ impl NodeServices {
         // restarting runtimes that depend on /proc/<pid>/ns/*.
         if let Err(err) = crate::linux::ensure_proc_readable() {
             warn!(error = %err, "ensure /proc failed");
+        }
+        if let Some(ref mut ga) = self.guest_agent {
+            ga.ensure_alive();
         }
         if let Some(ref mut cd) = self.containerd {
             if let Err(err) = cd.ensure_alive() {

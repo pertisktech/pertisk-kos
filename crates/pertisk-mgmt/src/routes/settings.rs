@@ -23,8 +23,6 @@ struct SettingsResp {
     version: String,
     listen: String,
     public_url: String,
-    /// Reverse-proxied pertisk-kube-web URL (`KUBE_WEB_PUBLIC_URL`), if set.
-    kube_web_public_url: Option<String>,
     db: PathInfo,
     data_dir: PathInfo,
     jobs_dir: PathInfo,
@@ -68,7 +66,6 @@ async fn settings(State(state): State<AppState>) -> Json<SettingsResp> {
         version: env!("CARGO_PKG_VERSION").into(),
         listen: cfg.listen.to_string(),
         public_url: cfg.public_url.clone(),
-        kube_web_public_url: cfg.kube_web_public_url.clone(),
         db: path_info(&cfg.db),
         data_dir: path_info(&cfg.data_dir),
         jobs_dir: path_info(&cfg.jobs_dir()),

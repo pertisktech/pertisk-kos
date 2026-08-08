@@ -24,8 +24,6 @@ pub struct Config {
     #[allow(dead_code)]
     pub auth0_audience: Option<String>,
     pub public_url: String,
-    /// Public reverse-proxy URL for pertisk-kube-web (Overview → Open Kubernetes UI).
-    pub kube_web_public_url: Option<String>,
     /// Optional Bearer for scraping guest `:50001/metrics`.
     pub metrics_token: Option<String>,
     /// Directory of prebuilt cloud qcow2 images (lab-up --skip-build).
@@ -82,10 +80,6 @@ impl Config {
             .unwrap_or(86400);
         let public_url = std::env::var("MGMT_PUBLIC_URL")
             .unwrap_or_else(|_| format!("http://{}", listen));
-        let kube_web_public_url = std::env::var("KUBE_WEB_PUBLIC_URL")
-            .ok()
-            .map(|s| s.trim().trim_end_matches('/').to_string())
-            .filter(|s| !s.is_empty());
         let metrics_token = std::env::var("MGMT_METRICS_TOKEN")
             .ok()
             .filter(|s| !s.is_empty());
@@ -122,7 +116,6 @@ impl Config {
             auth0_client_secret,
             auth0_audience,
             public_url,
-            kube_web_public_url,
             metrics_token,
             images_dir,
         })

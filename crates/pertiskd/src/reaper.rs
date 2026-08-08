@@ -225,6 +225,9 @@ mod unix_impl {
         if let Some(kl) = services.kubelet.take() {
             kl.stop();
         }
+        if let Some(ga) = services.guest_agent.take() {
+            ga.stop();
+        }
     }
 
     fn do_reboot() -> Result<()> {

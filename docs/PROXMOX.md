@@ -102,7 +102,7 @@ Cloud images set systemd-boot `timeout 0` so there is **no countdown menu**. Wit
 
 ### Console dashboard + finding the guest IP
 
-Proxmox VMs created by `proxmox-upload-vm.sh` enable **QEMU Guest Agent** (`agent=enabled=1`). The guest image does not yet ship `qemu-guest-agent`, so Summary IP may still be empty — use the Serial dashboard **network** panel, or add the agent package to the image later.
+Proxmox VMs created by `proxmox-upload-vm.sh` enable **QEMU Guest Agent** (`agent=enabled=1`). Cloud images ship `/usr/bin/qemu-ga` plus `/sbin/{poweroff,shutdown,reboot,halt}` → `pertisk-power` (direct `reboot(2)`; BusyBox poweroff would hang waiting on PID 1). `pertiskd` starts qemu-ga at boot (and links `/dev/virtio-ports/org.qemu.guest_agent.0` without udev). That enables Proxmox **Shutdown** / Summary IP. Rebuild the guest image after upgrading — existing VMs keep the old initramfs until replaced.
 
 Guests default to **IPv4-only** at runtime: `pertiskd` disables IPv6 via sysctl before DHCP (no hard `ipv6.disable=1` on the cmdline). Opt into dual-stack with `cluster.networkMode: dual-stack` / `pertiskctl gen config --dual-stack` / lab `--dual-stack` so SLAAC/global IPv6 is allowed. Rebuild the cloud image only when you need a fresh qcow2 for other changes — IPv4-only vs dual-stack is config-driven.
 

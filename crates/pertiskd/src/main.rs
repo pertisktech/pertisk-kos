@@ -3,6 +3,7 @@
 //! Milestone M4: management gRPC API + containerd/kubelet supervision.
 
 mod dashboard;
+mod guest_agent;
 mod hostname;
 mod linux;
 mod log_ring;
@@ -465,6 +466,7 @@ fn run() -> Result<()> {
         NodeServices {
             containerd: None,
             kubelet: None,
+            guest_agent: guest_agent::start(),
         }
     } else if let Some(ref cfg) = cfg {
         match NodeServices::start(cfg, log_ring()) {
@@ -474,6 +476,7 @@ fn run() -> Result<()> {
                 NodeServices {
                     containerd: None,
                     kubelet: None,
+                    guest_agent: guest_agent::start(),
                 }
             }
         }
@@ -481,6 +484,7 @@ fn run() -> Result<()> {
         NodeServices {
             containerd: None,
             kubelet: None,
+            guest_agent: guest_agent::start(),
         }
     };
 
@@ -513,6 +517,9 @@ fn run() -> Result<()> {
         }
         if let Some(kl) = services.kubelet.take() {
             kl.stop();
+        }
+        if let Some(ga) = services.guest_agent.take() {
+            ga.stop();
         }
         if !is_pid1 {
             info!("dev mode (not PID 1); use --force-init to supervise + serve API");

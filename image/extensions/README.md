@@ -7,6 +7,7 @@ them when growing the image.
 | Extension | Purpose | In default image? |
 |-----------|---------|-------------------|
 | [nfs-client](./nfs-client/) | Mount NFS PVs / nfs-subdir-external-provisioner | **Yes** (modules + `mount.nfs`) |
+| qemu-guest-agent | Proxmox/QEMU Shutdown + Summary IP (`qemu-ga`) | **Yes** (`/usr/bin/qemu-ga`, started by pertiskd) |
 | nfs-server | Export NFS from a node (unusual; prefer external NAS/mgmt) | Docs only — run on mgmt/lab host |
 
 ## Build wiring

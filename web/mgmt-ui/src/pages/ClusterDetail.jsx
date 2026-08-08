@@ -229,8 +229,8 @@ machine:
   const [hwOpen, setHwOpen] = useState(false)
   const [hwNode, setHwNode] = useState(null)
   const [hwForm, setHwForm] = useState({ memory: 4096, cores: 2, disk_gb: 50 })
-  const [kubeWebOpen, setKubeWebOpen] = useState(false)
-  const [kubeWebFilename, setKubeWebFilename] = useState('')
+  const [kubeconfigOpen, setKubeconfigOpen] = useState(false)
+  const [kubeconfigFilenameShown, setKubeconfigFilenameShown] = useState('')
   const [kubeconfigText, setKubeconfigText] = useState('')
   const [kubeCopied, setKubeCopied] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -644,8 +644,8 @@ machine:
       const text = await fetchKubeconfig()
       const filename = kubeconfigFilename()
       setKubeconfigText(text)
-      setKubeWebFilename(filename)
-      setKubeWebOpen(true)
+      setKubeconfigFilenameShown(filename)
+      setKubeconfigOpen(true)
     } catch (err) {
       setError(err.message)
     }
@@ -656,10 +656,10 @@ machine:
     setKubeCopied(false)
     try {
       let text = kubeconfigText
-      if (!text || !kubeWebOpen) {
+      if (!text || !kubeconfigOpen) {
         text = await fetchKubeconfig()
         setKubeconfigText(text)
-        setKubeWebFilename(kubeconfigFilename())
+        setKubeconfigFilenameShown(kubeconfigFilename())
       }
       await navigator.clipboard.writeText(text)
       setKubeCopied(true)
@@ -1392,16 +1392,16 @@ machine:
       </Modal>
 
       <Modal
-        open={kubeWebOpen}
+        open={kubeconfigOpen}
         title="Kubeconfig"
         icon="download"
         onClose={() => {
-          setKubeWebOpen(false)
+          setKubeconfigOpen(false)
           setKubeCopied(false)
         }}
       >
         <p className="muted" style={{ marginTop: 0 }}>
-          <code className="mono-inline">{kubeWebFilename || 'cluster.yaml'}</code>
+          <code className="mono-inline">{kubeconfigFilenameShown || 'cluster.yaml'}</code>
         </p>
         <pre
           style={{
@@ -1422,7 +1422,7 @@ machine:
             type="button"
             className="secondary"
             onClick={() => {
-              setKubeWebOpen(false)
+              setKubeconfigOpen(false)
               setKubeCopied(false)
             }}
           >
@@ -1432,7 +1432,7 @@ machine:
             type="button"
             className="secondary btn-icon"
             onClick={() => {
-              if (kubeconfigText) triggerDownload(kubeconfigText, kubeWebFilename || 'kubeconfig.yaml')
+              if (kubeconfigText) triggerDownload(kubeconfigText, kubeconfigFilenameShown || 'kubeconfig.yaml')
             }}
           >
             <Icon name="download" size={16} /> Download
