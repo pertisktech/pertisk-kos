@@ -414,7 +414,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin
         return;
     }
     let theme = &skin.theme;
-    let left = format!("[ END LOGS ]  {}  |  refresh 5s", snap.hostname);
+    let left = snap.hostname.clone();
     let right = match skin.mgmt_url.as_deref() {
         Some(url) => format!(" {url} "),
         None => String::new(),

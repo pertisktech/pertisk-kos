@@ -42,7 +42,7 @@ const FORCE_REPAINT_EVERY: u32 = 2;
 const CURSOR_OFF: &str = "\x1b[?25l\x1b[?12l";
 /// Park at a stable in-frame cell. CUP positions beyond the terminal bounds
 /// clamp to the bottom-right; the next kernel/direct console write then wraps
-/// and scrolls beneath `[ END LOGS ]`.
+/// and scrolls beneath the footer.
 const CURSOR_PARK: &str = "\x1b[1;1H";
 
 /// Clear any stuck synchronized-update mode from a previous build.
@@ -601,7 +601,11 @@ mod tests {
         assert!(rows[1].contains("[ SYSTEM ] controlplane"), "system row: {:?}", rows[1]);
         assert!(rows[6].contains("BOOT") && rows[6].contains("slot A"), "boot row: {:?}", rows[6]);
         assert!(rows[7].contains("[ LOGS ]"), "log header: {:?}", rows[7]);
-        assert!(rows[23].contains("[ END LOGS ]") && rows[23].contains("refresh 5s"), "footer: {:?}", rows[23]);
+        assert!(
+            rows[23].contains("pertisk-node-01") && !rows[23].contains("[ END LOGS ]") && !rows[23].contains("refresh"),
+            "footer: {:?}",
+            rows[23]
+        );
     }
 
     #[test]
@@ -616,7 +620,11 @@ mod tests {
         assert!(rows[1..5].iter().all(|row| !row.contains("INFO")));
         assert!(rows[5].contains("[ LOGS ]"));
         assert!(rows[6].contains("INFO node ready"));
-        assert!(rows[7].contains("[ END LOGS ]") && rows[7].contains("pertisk-node-01"));
+        assert!(
+            rows[7].contains("pertisk-node-01") && !rows[7].contains("[ END LOGS ]"),
+            "footer: {:?}",
+            rows[7]
+        );
         assert!(rows.iter().all(|row| !row.contains("F1:SUMMARY")));
     }
 
@@ -640,7 +648,8 @@ mod tests {
         assert!(!out.contains(";40m") && !out.contains(";45m") && !out.contains(";105m"));
         assert!(out.contains("[ SYSTEM ]"), "system boundary missing: {out:?}");
         assert!(out.contains("[ LOGS ]"), "log start boundary missing: {out:?}");
-        assert!(out.contains("[ END LOGS ]"), "log end boundary missing: {out:?}");
+        assert!(!out.contains("[ END LOGS ]"), "obsolete END LOGS still present: {out:?}");
+        assert!(!out.contains("refresh 5s"), "obsolete refresh footer still present: {out:?}");
         assert!(!out.contains("F1:SUMMARY"), "obsolete footer action present: {out:?}");
     }
 
