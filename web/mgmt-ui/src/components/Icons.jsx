@@ -83,6 +83,12 @@ export function Icon({ name, size = 18, className = '' }) {
           <path d="M12 4v12M8 12l4 4 4-4M5 20h14" />
         </svg>
       )
+    case 'external':
+      return (
+        <svg {...props}>
+          <path d="M14 4h6v6M10 14 20 4M5 9v10a1 1 0 0 0 1 1h10" />
+        </svg>
+      )
     case 'sun':
       return (
         <svg {...props}>

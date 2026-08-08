@@ -229,6 +229,10 @@ machine:
   const [hwOpen, setHwOpen] = useState(false)
   const [hwNode, setHwNode] = useState(null)
   const [hwForm, setHwForm] = useState({ memory: 4096, cores: 2, disk_gb: 50 })
+  const [kubeWebOpen, setKubeWebOpen] = useState(false)
+  const [kubeWebFilename, setKubeWebFilename] = useState('')
+  const [kubeconfigText, setKubeconfigText] = useState('')
+  const [kubeCopied, setKubeCopied] = useState(false)
   const [busy, setBusy] = useState(false)
   const [errorDismissedKey, setErrorDismissedKey] = useState('')
   const logRef = useRef(null)
@@ -585,37 +589,83 @@ machine:
     load()
   }
 
-  async function downloadKc() {
-    setError('')
+  function kubeconfigFilename() {
     const clusterName = data?.cluster?.name || 'cluster'
     const safeName = String(clusterName)
       .trim()
       .replace(/[^a-zA-Z0-9._-]+/g, '-')
       .replace(/^[.-]+|[.-]+$/g, '') || 'kubeconfig'
-    const filename = safeName.endsWith('.yaml') || safeName.endsWith('.yml')
+    return safeName.endsWith('.yaml') || safeName.endsWith('.yml')
       ? safeName
       : `${safeName}.yaml`
+  }
+
+  async function fetchKubeconfig() {
+    setError('')
+    const res = await fetch(`/api/clusters/${id}/kubeconfig`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }))
+      throw new Error(body.error || res.statusText)
+    }
+    return res.text()
+  }
+
+  function triggerDownload(text, filename) {
+    const blob = new Blob([text], { type: 'application/x-yaml;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  async function downloadKc() {
+    const filename = kubeconfigFilename()
     try {
-      const res = await fetch(`/api/clusters/${id}/kubeconfig`, {
-        headers: { Authorization: `Bearer ${getToken()}` },
-      })
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: res.statusText }))
-        throw new Error(body.error || res.statusText)
-      }
-      const text = await res.text()
-      const blob = new Blob([text], { type: 'application/x-yaml;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = filename
-      a.rel = 'noopener'
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      URL.revokeObjectURL(url)
+      const text = await fetchKubeconfig()
+      triggerDownload(text, filename)
+      return { text, filename }
     } catch (err) {
       setError(err.message)
+      return null
+    }
+  }
+
+  async function showKubeconfig() {
+    setError('')
+    setKubeCopied(false)
+    try {
+      const text = await fetchKubeconfig()
+      const filename = kubeconfigFilename()
+      setKubeconfigText(text)
+      setKubeWebFilename(filename)
+      setKubeWebOpen(true)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function copyKubeconfig() {
+    setError('')
+    setKubeCopied(false)
+    try {
+      let text = kubeconfigText
+      if (!text || !kubeWebOpen) {
+        text = await fetchKubeconfig()
+        setKubeconfigText(text)
+        setKubeWebFilename(kubeconfigFilename())
+      }
+      await navigator.clipboard.writeText(text)
+      setKubeCopied(true)
+      setTimeout(() => setKubeCopied(false), 2000)
+    } catch (err) {
+      setError(err.message || 'Failed to copy kubeconfig')
     }
   }
 
@@ -913,6 +963,45 @@ machine:
                   </dl>
                 </section>
               </div>
+
+              <section className="overview-job">
+                <div className="section-head">
+                  <h3 className="section-label">Kubeconfig</h3>
+                  <div className="row-actions">
+                    <button
+                      type="button"
+                      className="btn-icon"
+                      onClick={copyKubeconfig}
+                      disabled={c.status !== 'ready'}
+                      title="Copy kubeconfig to clipboard"
+                    >
+                      <Icon name="check" size={16} /> {kubeCopied ? 'Copied' : 'Copy'}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary btn-icon"
+                      onClick={showKubeconfig}
+                      disabled={c.status !== 'ready'}
+                      title="View kubeconfig content"
+                    >
+                      View
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary btn-icon"
+                      onClick={downloadKc}
+                      disabled={c.status !== 'ready'}
+                      title="Download kubeconfig file"
+                    >
+                      <Icon name="download" size={16} /> Download
+                    </button>
+                  </div>
+                </div>
+                <p className="muted" style={{ margin: 0 }}>
+                  Copy or download this cluster’s kubeconfig for kubectl or kube-web (
+                  <code className="mono-inline">KUBECONFIG</code>).
+                </p>
+              </section>
 
               {latestJob && (
                 <section className="overview-job">
@@ -1298,6 +1387,58 @@ machine:
           </button>
           <button type="button" onClick={submitHardware} disabled={busy}>
             {busy ? 'Queuing…' : 'Apply hardware'}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={kubeWebOpen}
+        title="Kubeconfig"
+        icon="download"
+        onClose={() => {
+          setKubeWebOpen(false)
+          setKubeCopied(false)
+        }}
+      >
+        <p className="muted" style={{ marginTop: 0 }}>
+          <code className="mono-inline">{kubeWebFilename || 'cluster.yaml'}</code>
+        </p>
+        <pre
+          style={{
+            whiteSpace: 'pre-wrap',
+            fontSize: '0.75rem',
+            background: 'var(--bg-elevated, #111)',
+            padding: '0.75rem',
+            borderRadius: 6,
+            overflow: 'auto',
+            maxHeight: '50vh',
+            margin: '0 0 0.75rem',
+          }}
+        >
+          {kubeconfigText}
+        </pre>
+        <div className="modal-actions">
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              setKubeWebOpen(false)
+              setKubeCopied(false)
+            }}
+          >
+            Close
+          </button>
+          <button
+            type="button"
+            className="secondary btn-icon"
+            onClick={() => {
+              if (kubeconfigText) triggerDownload(kubeconfigText, kubeWebFilename || 'kubeconfig.yaml')
+            }}
+          >
+            <Icon name="download" size={16} /> Download
+          </button>
+          <button type="button" className="btn-icon" onClick={copyKubeconfig}>
+            <Icon name="check" size={16} /> {kubeCopied ? 'Copied' : 'Copy'}
           </button>
         </div>
       </Modal>

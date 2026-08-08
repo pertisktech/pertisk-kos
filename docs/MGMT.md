@@ -33,6 +33,7 @@ cd web/mgmt-ui && npm run dev   # http://127.0.0.1:5173 proxies /api → :8080
 | `MGMT_SECRET_KEY` | JWT + AES key (hex 64 chars or any string) |
 | `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET` | SSO |
 | `MGMT_PUBLIC_URL` | Public base URL for OIDC callback |
+| `KUBE_WEB_PUBLIC_URL` | Public reverse-proxy URL for pertisk-kube-web (Overview → Open Kubernetes UI) |
 | `MGMT_METRICS_TOKEN` | Optional Bearer when scraping guest `:50001/metrics` |
 | `MGMT_PERTISKCTL` | Path to `pertiskctl` (default `./out/bin/pertiskctl`) |
 
