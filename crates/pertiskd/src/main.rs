@@ -196,7 +196,7 @@ fn run() -> Result<()> {
     // PID 1: mount /dev and bind stdio to serial *before* any logs, otherwise
     // "Run /init as init process" is the last thing visible on Proxmox Serial.
     if pid == 1 {
-        // Kernel starts init with an empty PATH; udhcpc lives in /usr/sbin.
+        // Kernel starts init with an empty PATH; disk/net helpers live in /usr/sbin.
         if std::env::var_os("PATH").is_none() {
             // SAFETY: single-threaded PID 1 boot; no concurrent env readers yet.
             unsafe {

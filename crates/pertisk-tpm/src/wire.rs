@@ -15,6 +15,10 @@ pub const TPM_CC_LOAD: u32 = 0x0000_0157;
 pub const TPM_CC_QUOTE: u32 = 0x0000_0158;
 pub const TPM_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
 pub const TPM_CC_READ_PUBLIC: u32 = 0x0000_0173;
+pub const TPM_CC_EVICT_CONTROL: u32 = 0x0000_0120;
+
+/// Persistent handle for the lab attestation signing key.
+pub const AK_PERSISTENT_HANDLE: u32 = 0x8100_000A;
 
 pub const TPM_ALG_SHA256: u16 = 0x000B;
 pub const TPM_ALG_NULL: u16 = 0x0010;

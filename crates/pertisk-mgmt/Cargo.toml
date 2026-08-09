@@ -41,6 +41,7 @@ url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 aes-gcm = "0.10"
 pertisk-config = { workspace = true }
+pertisk-tpm = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

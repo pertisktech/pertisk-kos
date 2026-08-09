@@ -100,11 +100,12 @@ Pertisk exposes a **read-only** attestation snapshot over gRPC (no `libtss2` in 
 
 Pure-Rust Quote over `/dev/tpmrm0` (fallback `/dev/tpm0`) — no `tpm2-tools` / `libtss2`:
 
-- Ephemeral ECC NIST-P256 restricted signing AK per request
+- Persistent ECC NIST-P256 restricted signing AK at handle `0x8100000A` (created on first Quote)
 - `MachineService.Quote` + `pertiskctl quote [--verify] [--nonce HEX]`
 - Local verify checks ECDSA signature, nonce (`extraData`), and PCR composite digest vs sysfs
+- **Mgmt trust store (lab):** node detail → Enroll AK / Verify Quote (TOFU store of AK public in SQLite; verify re-Quotes and checks signature against enrolled key)
 
-Still later: persistent AK / EK certs, mgmt UI remote trust store.
+Still later: EK cert chain / manufacturer endorsement for production remote attestation.
 
 ```bash
 # On a node with PERTISK_TPM=1 (or a real TPM):

@@ -5,9 +5,9 @@ use crate::error::{Error, Result};
 use crate::wire::{
     marshal_ecc_ak_public, marshal_ecc_storage_public, marshal_pcr_selection,
     marshal_sensitive_create_empty, parse_response, response_params, Reader, Writer,
-    TPM_ALG_ECDSA, TPM_ALG_NULL, TPM_CC_CREATE, TPM_CC_CREATE_PRIMARY, TPM_CC_FLUSH_CONTEXT,
-    TPM_CC_LOAD, TPM_CC_QUOTE, TPM_CC_READ_PUBLIC, TPM_RH_OWNER, TPM_ST_NO_SESSIONS,
-    TPM_ST_SESSIONS,
+    AK_PERSISTENT_HANDLE, TPM_ALG_ECDSA, TPM_ALG_NULL, TPM_CC_CREATE, TPM_CC_CREATE_PRIMARY,
+    TPM_CC_EVICT_CONTROL, TPM_CC_FLUSH_CONTEXT, TPM_CC_LOAD, TPM_CC_QUOTE, TPM_CC_READ_PUBLIC,
+    TPM_RH_OWNER, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS,
 };
 
 pub struct LoadedKey {
@@ -197,4 +197,70 @@ pub fn quote(
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     let resp = dev.transact(&cmd_quote(ak, nonce, pcr_indices))?;
     parse_quote(&resp)
+}
+
+fn cmd_evict(object: u32, persistent: u32) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u16(TPM_ST_SESSIONS);
+    w.u32(0);
+    w.u32(TPM_CC_EVICT_CONTROL);
+    w.u32(TPM_RH_OWNER);
+    w.u32(object);
+
+    let mut auth = Writer::new();
+    auth.pw_empty_auth();
+    let auth_bytes = auth.into_vec();
+    w.u32(auth_bytes.len() as u32);
+    w.bytes(&auth_bytes);
+
+    w.u32(persistent);
+    w.finish_header()
+}
+
+/// ReadPublic for an existing handle (transient or persistent).
+pub fn read_public(dev: &mut Device, handle: u32) -> Result<Vec<u8>> {
+    let resp = dev.transact(&cmd_read_public(handle))?;
+    parse_read_public(&resp)
+}
+
+/// Persist a loaded object at `persistent` (EvictControl).
+pub fn evict_control(dev: &mut Device, object: u32, persistent: u32) -> Result<()> {
+    let resp = dev.transact(&cmd_evict(object, persistent))?;
+    let _ = parse_response(&resp)?;
+    Ok(())
+}
+
+/// Load or create the lab persistent AK at [`AK_PERSISTENT_HANDLE`].
+///
+/// Returns the persistent handle + TPMT_PUBLIC. Primary is flushed after enroll.
+pub fn ensure_persistent_ak(dev: &mut Device) -> Result<LoadedKey> {
+    if let Ok(public) = read_public(dev, AK_PERSISTENT_HANDLE) {
+        return Ok(LoadedKey {
+            handle: AK_PERSISTENT_HANDLE,
+            public,
+        });
+    }
+
+    let primary = create_primary(dev)?;
+    let ak = match create_and_load_ak(dev, primary.handle) {
+        Ok(k) => k,
+        Err(e) => {
+            flush(dev, primary.handle);
+            return Err(e);
+        }
+    };
+    // If a stale persistent object occupies the slot, evict it first.
+    let _ = evict_control(dev, AK_PERSISTENT_HANDLE, AK_PERSISTENT_HANDLE);
+    if let Err(e) = evict_control(dev, ak.handle, AK_PERSISTENT_HANDLE) {
+        flush(dev, ak.handle);
+        flush(dev, primary.handle);
+        return Err(e);
+    }
+    // Transient AK handle is invalidated by EvictControl into persistent.
+    flush(dev, primary.handle);
+    let public = read_public(dev, AK_PERSISTENT_HANDLE).unwrap_or(ak.public);
+    Ok(LoadedKey {
+        handle: AK_PERSISTENT_HANDLE,
+        public,
+    })
 }

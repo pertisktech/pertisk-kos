@@ -13,9 +13,10 @@ use pertisk_config::Cluster;
 use pertisk_proto::machine_service_client::MachineServiceClient;
 use pertisk_proto::{
     ApplyConfigurationRequest, AttestRequest, BootstrapRequest, ContainersRequest,
-    GetJoinConfigRequest, GrowDiskRequest, HealthRequest, JoinControlPlaneRequest,
-    KubeconfigRequest, LogsRequest, MarkBootGoodRequest, QuoteRequest, RebootRequest,
-    ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest, VersionRequest,
+    EtcdRestoreRequest, EtcdSnapshotRequest, GetJoinConfigRequest, GrowDiskRequest, HealthRequest,
+    JoinControlPlaneRequest, KubeconfigRequest, LogsRequest, MarkBootGoodRequest, QuoteRequest,
+    RebootRequest, ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest,
+    VersionRequest,
 };
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
@@ -70,6 +71,11 @@ enum Commands {
         /// Verify signature, nonce, and PCR digest locally.
         #[arg(long, default_value_t = false)]
         verify: bool,
+    },
+    /// etcd DB snapshot / restore (control-plane).
+    Etcd {
+        #[command(subcommand)]
+        command: EtcdCommands,
     },
     Services,
     Validate {
@@ -188,6 +194,33 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum EtcdCommands {
+    /// Write a live etcd snapshot on the node.
+    Snapshot {
+        /// Destination path on the node (default: /var/lib/pertisk/etcd-snapshots/…).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+    },
+    /// Offline restore into /var/lib/etcd (destructive; requires --force).
+    Restore {
+        /// Snapshot path on the node.
+        #[arg(short = 'f', long)]
+        file: PathBuf,
+        /// Required — replaces local etcd data.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+        #[arg(long)]
+        member_name: Option<String>,
+        #[arg(long)]
+        initial_cluster: Option<String>,
+        #[arg(long)]
+        peer_url: Option<String>,
+        #[arg(long)]
+        advertise_address: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum GenCommands {
     /// Generate controlplane.yaml + worker.yaml (like `talosctl gen config`).
     Config {
@@ -279,8 +312,8 @@ async fn main() -> Result<()> {
             println!("available={} — {}", resp.available, resp.message);
             if !resp.containers.is_empty() {
                 println!(
-                    "{:<14} {:<24} {:<12} {}",
-                    "ID", "NAME", "STATE", "IMAGE"
+                    "{:<14} {:<10} {:<20} {:<24} {:<16} {:<12} {}",
+                    "ID", "KIND", "POD", "NAME", "NS", "STATE", "IMAGE"
                 );
                 for c in resp.containers {
                     let id = if c.id.len() > 12 {
@@ -288,9 +321,30 @@ async fn main() -> Result<()> {
                     } else {
                         &c.id
                     };
+                    let pod = if c.pod_name.is_empty() {
+                        "—"
+                    } else {
+                        &c.pod_name
+                    };
+                    let ns = if c.pod_namespace.is_empty() {
+                        "—"
+                    } else {
+                        &c.pod_namespace
+                    };
+                    let kind = if c.kind.is_empty() {
+                        "unknown"
+                    } else {
+                        &c.kind
+                    };
                     println!(
-                        "{:<14} {:<24} {:<12} {}",
-                        id, c.name, c.state, c.image
+                        "{:<14} {:<10} {:<20} {:<24} {:<16} {:<12} {}",
+                        id,
+                        truncate(kind, 10),
+                        truncate(pod, 20),
+                        truncate(&c.name, 24),
+                        truncate(ns, 16),
+                        c.state,
+                        c.image
                     );
                 }
             }
@@ -367,6 +421,55 @@ async fn main() -> Result<()> {
                 println!("verify=ok");
             }
         }
+        Commands::Etcd { ref command } => match command {
+            EtcdCommands::Snapshot { output } => {
+                let mut client = connect(&cli).await?;
+                let resp = client
+                    .etcd_snapshot(EtcdSnapshotRequest {
+                        output_path: output
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default(),
+                    })
+                    .await?
+                    .into_inner();
+                println!(
+                    "available={} path={} size={} revision={} — {}",
+                    resp.available, resp.path, resp.size_bytes, resp.revision, resp.message
+                );
+                if !resp.available {
+                    anyhow::bail!("{}", resp.message);
+                }
+            }
+            EtcdCommands::Restore {
+                file,
+                force,
+                member_name,
+                initial_cluster,
+                peer_url,
+                advertise_address,
+            } => {
+                if !force {
+                    anyhow::bail!("etcd restore requires --force (destroys /var/lib/etcd)");
+                }
+                let mut client = connect(&cli).await?;
+                let resp = client
+                    .etcd_restore(EtcdRestoreRequest {
+                        snapshot_path: file.display().to_string(),
+                        force: *force,
+                        member_name: member_name.clone().unwrap_or_default(),
+                        initial_cluster: initial_cluster.clone().unwrap_or_default(),
+                        peer_url: peer_url.clone().unwrap_or_default(),
+                        advertise_address: advertise_address.clone().unwrap_or_default(),
+                    })
+                    .await?
+                    .into_inner();
+                println!("ok={} — {}", resp.ok, resp.message);
+                if !resp.ok {
+                    anyhow::bail!("{}", resp.message);
+                }
+            }
+        },
         Commands::Services => {
             let mut client = connect(&cli).await?;
             let resp = client
@@ -725,6 +828,16 @@ async fn connect(cli: &Cli) -> Result<MachineServiceClient<Channel>> {
             Ok(client)
         }
         _ => anyhow::bail!("mTLS requires --ca, --cert, and --key together"),
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
     }
 }
 

@@ -23,6 +23,18 @@ pub fn routes() -> Router<AppState> {
         .route("/clusters/{cid}/nodes/{nid}/logs", get(logs))
         .route("/clusters/{cid}/nodes/{nid}/reboot", post(reboot))
         .route(
+            "/clusters/{cid}/nodes/{nid}/attestation",
+            get(attestation_status),
+        )
+        .route(
+            "/clusters/{cid}/nodes/{nid}/attestation/enroll",
+            post(attestation_enroll),
+        )
+        .route(
+            "/clusters/{cid}/nodes/{nid}/attestation/verify",
+            post(attestation_verify),
+        )
+        .route(
             "/clusters/{cid}/nodes/{nid}/hardware",
             put(update_hardware),
         )
@@ -41,13 +53,17 @@ pub struct NodeOut {
     pub memory: Option<i64>,
     pub cores: Option<i64>,
     pub disk_gb: Option<i64>,
+    /// Stored AK public (TPM2B_PUBLIC bytes, base64). Not serialized to API clients.
+    #[serde(skip_serializing)]
+    pub ak_public_b64: Option<String>,
+    pub ak_enrolled_at: Option<String>,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
 }
 
 pub const NODE_SELECT: &str = r#"SELECT id, cluster_id, name, role, vmid, ip, ip6, k8s_version,
-       memory, cores, disk_gb, status, created_at, updated_at
+       memory, cores, disk_gb, ak_public_b64, ak_enrolled_at, status, created_at, updated_at
        FROM nodes"#;
 
 #[derive(Deserialize)]
@@ -417,4 +433,83 @@ async fn update_hardware(
     )
     .await;
     Ok(Json(serde_json::json!({ "job_id": job_id })))
+}
+
+async fn load_node_ip(
+    state: &AppState,
+    cid: &str,
+    nid: &str,
+) -> ApiResult<(NodeOut, String)> {
+    let row = sqlx::query_as::<_, NodeOut>(&format!(
+        "{NODE_SELECT} WHERE id = ? AND cluster_id = ?"
+    ))
+    .bind(nid)
+    .bind(cid)
+    .fetch_optional(state.pool())
+    .await?;
+    let Some(node) = row else {
+        return Err(AppError::NotFound);
+    };
+    let ip = node
+        .ip
+        .clone()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::bad("node has no IPv4 yet"))?;
+    Ok((node, ip))
+}
+
+async fn attestation_status(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path((cid, nid)): Path<(String, String)>,
+) -> ApiResult<Json<crate::node_attestation::AttestationOut>> {
+    let exists: Option<(i64,)> =
+        sqlx::query_as("SELECT 1 FROM nodes WHERE id = ? AND cluster_id = ?")
+            .bind(&nid)
+            .bind(&cid)
+            .fetch_optional(state.pool())
+            .await?;
+    if exists.is_none() {
+        return Err(AppError::NotFound);
+    }
+    let out = crate::node_attestation::status(state.pool(), &nid).await?;
+    Ok(Json(out))
+}
+
+async fn attestation_enroll(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((cid, nid)): Path<(String, String)>,
+) -> ApiResult<Json<crate::node_attestation::AttestationOut>> {
+    require_mutate(&user)?;
+    let (_node, ip) = load_node_ip(&state, &cid, &nid).await?;
+    let out = crate::node_attestation::enroll(state.cfg(), state.pool(), &nid, &ip).await?;
+    audit(
+        state.pool(),
+        Some(&user.id),
+        "node.attestation.enroll",
+        Some(&nid),
+        None,
+    )
+    .await;
+    Ok(Json(out))
+}
+
+async fn attestation_verify(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((cid, nid)): Path<(String, String)>,
+) -> ApiResult<Json<crate::node_attestation::AttestationOut>> {
+    require_mutate(&user)?;
+    let (_node, ip) = load_node_ip(&state, &cid, &nid).await?;
+    let out = crate::node_attestation::verify(state.cfg(), state.pool(), &nid, &ip).await?;
+    audit(
+        state.pool(),
+        Some(&user.id),
+        "node.attestation.verify",
+        Some(&nid),
+        None,
+    )
+    .await;
+    Ok(Json(out))
 }

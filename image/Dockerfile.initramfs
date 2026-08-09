@@ -69,7 +69,7 @@ COPY proto ./proto
 # Native BUILDPLATFORM rustc + Zig cross link (avoids qemu-user codegen bugs).
 # PERTISK_BUILD_VERSION (from ARG VERSION) is baked into release_version().
 # Note: a single `--bin NAME` filters the whole build to that binary only, so
-# build packages separately (pertiskd + power helper + udhcpc hook).
+# build packages separately (pertiskd + power helper).
 # Cache mounts keep crates.io + target/ across rebuilds (needs BuildKit).
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
@@ -78,12 +78,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     && echo "==> cargo zigbuild PERTISK_BUILD_VERSION=${PERTISK_BUILD_VERSION} target=${RUST_TARGET}" \
     && cargo zigbuild --release -p pertiskd --bin pertiskd --target "${RUST_TARGET}" \
     && cargo zigbuild --release -p pertiskd --bin pertisk-power --target "${RUST_TARGET}" \
-    && cargo zigbuild --release -p pertisk-net --bin pertisk-udhcpc-hook --target "${RUST_TARGET}" \
     && cp "target/${RUST_TARGET}/release/pertiskd" /pertiskd \
     && cp "target/${RUST_TARGET}/release/pertisk-power" /pertisk-power \
-    && cp "target/${RUST_TARGET}/release/pertisk-udhcpc-hook" /pertisk-udhcpc-hook \
-    && file /pertiskd /pertisk-power /pertisk-udhcpc-hook \
-    && for bin in /pertiskd /pertisk-power /pertisk-udhcpc-hook; do \
+    && file /pertiskd /pertisk-power \
+    && for bin in /pertiskd /pertisk-power; do \
          if ! file "$bin" | grep -Eqi 'statically linked|static-pie'; then \
            echo "ERROR: $bin must be statically linked for initramfs" >&2; \
            exit 1; \
@@ -151,12 +149,11 @@ COPY image/rootfs/ ./
 COPY image/boot-overlay/ ./
 COPY --from=build /pertiskd ./init
 COPY --from=build /pertisk-power ./usr/sbin/pertisk-power
-# Disk/net helpers (required). BusyBox multi-call binary is only shipped as udhcpc
-# (DHCP fallback) — no /bin/busybox shell entrypoint. Debug profile adds ash/sh.
-# mount/umount = util-linux; ip = iproute2 (not BusyBox applets).
-# DHCPv4 primary is in-process; udhcpc + /usr/lib/pertisk/udhcpc-hook is fallback.
+# Disk/net helpers (required). Production ships no BusyBox at all.
+# mount/umount = util-linux; ip = iproute2. DHCPv4 is in-process only.
+# Debug profile copies BusyBox to /bin/busybox for ash recovery.
 COPY --from=tools /tools/bin/sgdisk /tools/bin/partprobe /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/resize2fs /tools/bin/tune2fs /tools/bin/blkid ./usr/sbin/
-COPY --from=tools /tools/bin/busybox ./usr/sbin/udhcpc
+COPY --from=tools /tools/bin/busybox ./usr/lib/pertisk/.busybox-debug
 COPY --from=tools /tools/bin/qemu-ga ./usr/bin/qemu-ga
 # util-linux mount/umount for kubelet projected volumes / subPath.
 COPY --from=tools /tools/bin/mount /tools/bin/umount ./bin/
@@ -185,8 +182,7 @@ RUN mkdir -p proc sys dev run tmp var system/state etc/pertisk sbin \
     && ln -sf xtables-legacy-multi ./usr/sbin/ip6tables-legacy \
     && ln -sf /usr/sbin/iptables ./sbin/iptables \
     && ln -sf /usr/sbin/iptables-legacy ./sbin/iptables-legacy
-COPY --from=build /pertisk-udhcpc-hook ./usr/lib/pertisk/udhcpc-hook
-RUN chmod +x ./init ./usr/sbin/* ./usr/bin/qemu-ga ./usr/lib/pertisk/udhcpc-hook \
+RUN chmod +x ./init ./usr/sbin/* ./usr/bin/qemu-ga \
     && chmod +x ./bin/mount ./bin/umount ./sbin/ip \
     && chmod +x ./sbin/mount.nfs ./sbin/mount.nfs4 ./sbin/umount.nfs ./sbin/umount.nfs4 \
     && ln -sf /usr/sbin/sgdisk ./sbin/sgdisk \
@@ -196,7 +192,6 @@ RUN chmod +x ./init ./usr/sbin/* ./usr/bin/qemu-ga ./usr/lib/pertisk/udhcpc-hook
     && ln -sf /usr/sbin/tune2fs ./sbin/tune2fs \
     && ln -sf /usr/sbin/blkid ./sbin/blkid \
     && ln -sf /usr/sbin/partprobe ./sbin/partprobe \
-    && ln -sf /usr/sbin/udhcpc ./sbin/udhcpc \
     && ln -sf /bin/mount ./sbin/mount \
     && ln -sf /bin/umount ./sbin/umount \
     && ln -sf /sbin/ip ./usr/sbin/ip \
@@ -213,15 +208,15 @@ RUN chmod +x ./init ./usr/sbin/* ./usr/bin/qemu-ga ./usr/lib/pertisk/udhcpc-hook
     && ln -sf /etc/ssl/certs/ca-certificates.crt ./etc/ssl/cert.pem \
     && echo "${IMAGE_PROFILE}" > ./etc/pertisk/image-profile \
     && if [ "${IMAGE_PROFILE}" = "debug" ]; then \
-         cp ./usr/sbin/udhcpc ./bin/busybox \
+         mv ./usr/lib/pertisk/.busybox-debug ./bin/busybox \
          && ln -sf busybox ./bin/sh \
          && ln -sf busybox ./bin/ash \
          && chmod +x ./bin/busybox \
          && echo "debug profile: BusyBox ash enabled"; \
        else \
-         # Production: no interactive shell; util-linux mount/umount + iproute2 ip.
-         rm -f ./bin/busybox ./bin/sh ./bin/ash ./bin/bash \
-         && echo "production profile: no shell; util-linux mount/umount + iproute2 ip"; \
+         # Production: no BusyBox / udhcpc / interactive shell.
+         rm -f ./usr/lib/pertisk/.busybox-debug ./bin/busybox ./bin/sh ./bin/ash ./bin/bash \
+         && echo "production profile: no BusyBox; util-linux mount/umount + iproute2 ip; builtin DHCP"; \
        fi \
     && if [ -f ./usr/local/bin/containerd ]; then chmod +x ./usr/local/bin/*; fi \
     && if [ -f ./usr/local/bin/runc ]; then ln -sf /usr/local/bin/runc ./usr/bin/runc; fi \

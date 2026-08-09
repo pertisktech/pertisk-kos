@@ -8,7 +8,7 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 
 | Control | Status | Notes |
 |---------|--------|-------|
-| No SSH / interactive shell in production image | pass | Default `IMAGE_PROFILE=production`: no `/bin/sh`; DHCPv4 in-process (BusyBox `udhcpc` fallback); util-linux `mount`/`umount` + iproute2 `ip`. Debug profile adds ash (`PROFILE=debug`) |
+| No SSH / interactive shell in production image | pass | Default `IMAGE_PROFILE=production`: no `/bin/sh`, no BusyBox/`udhcpc`; DHCPv4 in-process only; util-linux `mount`/`umount` + iproute2 `ip`. Debug profile adds ash (`PROFILE=debug`) |
 | Immutable root FS | partial | Initramfs root; STATE/EPHEMERAL writable; full SquashFS/EROFS root still Phase 4/5 |
 | Management API mTLS | pass | `PERTISK_TLS_*` + `scripts/gen-mtls-certs.sh` |
 | Signed A/B OS upgrades | pass | Ed25519 trust key on STATE; unsigned rejected |
@@ -114,7 +114,8 @@ Pertisk goals (DESIGN §8): measured boot where feasible. Not required for v0.1.
 | 3 | Optional UKI (`*.efi` with kernel+initrd+cmdline) per slot | done — `./image/build-uki.sh`, ESP `EFI/Linux/` |
 | 4 | Enroll PK/KEK/db in OVMF / firmware; reject unsigned UKI | done — keygen + signed UKI + `scripts/enroll-ovmf-vars.sh` |
 | 5 | TPM PCR attestation of boot chain (optional) | done (lab) — sysfs PCR read; `Attest` RPC / `pertiskctl attest`; QEMU `PERTISK_TPM=1` |
-| 5b | TPM2 Quote (optional) | done (lab) — pure-Rust Quote RPC / `pertiskctl quote --verify`; no libtss2 |
+| 5b | TPM2 Quote (optional) | done (lab) — pure-Rust Quote + persistent AK `0x8100000A`; `pertiskctl quote --verify` |
+| 5c | Mgmt Quote trust store | done (lab) — enroll/verify against stored AK public |
 
 See [SECURE_BOOT.md](./SECURE_BOOT.md) for build/sign/enroll steps.
 
@@ -129,6 +130,5 @@ Marker file in the image: `/etc/pertisk/image-profile`.
 
 ## Gaps tracked for later
 
-- etcd snapshot / restore
-- Mgmt remote trust store / persistent AK enrollment for Quotes
-- Drop BusyBox/`udhcpc` fallback entirely (optional)
+- EK cert chain / manufacturer endorsement for production remote attestation
+- Lease renew / rebind for long-lived DHCP leases (builtin client is one-shot at boot)

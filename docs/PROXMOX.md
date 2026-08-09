@@ -130,7 +130,7 @@ Requires: `./proxmox.sh`, `PROXMOX_SSH`, a free VIP on L2, outbound pulls for re
 
 After boot, `pertiskd` shows a Serial TUI **as soon as Serial is ready** (before DHCP / STATE / containerd finish). Status line cycles `booting` → `network` → `mounting STATE` → `starting runtime`. Cursor is hidden; ~2s refresh.
 
-Nothing else may write to the console while the dashboard owns it: tracing stays in the ring, and `udhcpc` / module load no longer `eprintln!` onto Serial.
+Nothing else may write to the console while the dashboard owns it: tracing stays in the ring, and module load no longer `eprintln!` onto Serial.
 
 Colors use the **16 base ANSI colors only** — 256-color and truecolor SGR arrive mangled through Serial. Status follows the usual convention: `up`/`ready` green, `failed`/`absent` red, anything else amber; memory and disk meters redden past 70% and 90%. Log lines are word-wrapped (continuations indented two columns) and colored by severity.
 

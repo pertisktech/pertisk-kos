@@ -80,6 +80,20 @@ check "QEMU PERTISK_TPM" file_has "image/run-qemu-uefi.sh" 'PERTISK_TPM'
 check "Quote RPC in proto" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'rpc Quote'
 check "pertisk-tpm Quote client" file_has "crates/pertisk-tpm/src/quote.rs" 'produce_quote'
 check "pertiskctl quote" file_has "crates/pertiskctl/src/main.rs" 'Commands::Quote'
+check "persistent AK handle" file_has "crates/pertisk-tpm/src/wire.rs" 'AK_PERSISTENT_HANDLE'
+check "mgmt Quote enroll" file_has "crates/pertisk-mgmt/src/node_attestation.rs" 'pub async fn enroll'
+check "mgmt Quote verify" file_has "crates/pertisk-mgmt/src/node_attestation.rs" 'pub async fn verify'
+
+# --- etcd snapshot / restore (lab) ---
+check "EtcdSnapshot RPC in proto" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'rpc EtcdSnapshot'
+check "EtcdRestore RPC in proto" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'rpc EtcdRestore'
+check "pertiskctl etcd" file_has "crates/pertiskctl/src/main.rs" 'Commands::Etcd'
+
+# --- CRI containers / sandbox labels (lab) ---
+check "Containers RPC in proto" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'rpc Containers'
+check "ContainerInfo pod_namespace" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'string pod_namespace'
+check "ctr info label parse" file_has "crates/pertisk-api/src/containers.rs" 'parse_container_info_labels'
+check "pertiskctl containers" file_has "crates/pertiskctl/src/main.rs" 'Commands::Containers'
 
 # --- Mount hardening ---
 LINUX="crates/pertiskd/src/linux.rs"
@@ -93,18 +107,18 @@ check "SECURE_BOOT.md exists" test -f docs/SECURE_BOOT.md
 check "enroll-ovmf-vars.sh exists" test -x scripts/enroll-ovmf-vars.sh
 check "gen-secureboot-keys.sh exists" test -x scripts/gen-secureboot-keys.sh
 
-# --- Production image: no interactive BusyBox by default ---
+# --- Production image: no BusyBox / udhcpc ---
 DF="image/Dockerfile.initramfs"
 check "IMAGE_PROFILE defaults to production" file_has "${DF}" 'ARG IMAGE_PROFILE=production'
-check "production removes /bin/busybox" file_has "${DF}" 'rm -f ./bin/busybox'
+check "production removes BusyBox staging" file_has "${DF}" 'rm -f ./usr/lib/pertisk/.busybox-debug'
+check "production removes /bin/busybox" file_has "${DF}" 'rm -f ./usr/lib/pertisk/.busybox-debug ./bin/busybox'
 check "util-linux mount shipped" file_has "${DF}" 'tools/bin/mount /tools/bin/umount'
 check "iproute2 ip shipped" file_has "${DF}" 'tools/bin/ip ./sbin/ip'
-check "mount not BusyBox applet" bash -c "! grep -qE 'ln -sf /usr/sbin/udhcpc ./bin/mount' '${DF}'"
-check "debug profile installs ash" file_has "${DF}" 'IMAGE_PROFILE.*=.*"debug"'
-check "udhcpc without /bin/busybox path" file_has "${DF}" 'usr/sbin/udhcpc'
-check "shell-less udhcpc hook in image" file_has "${DF}" 'usr/lib/pertisk/udhcpc-hook'
-check "builtin DHCP preferred over udhcpc" file_has "crates/pertisk-net/src/link.rs" 'crate::dhcp::run_dhcp\(iface\)'
+check "no udhcpc in image" bash -c "! grep -qE 'usr/sbin/udhcpc|pertisk-udhcpc-hook' '${DF}'"
+check "debug profile installs ash via /bin/busybox" file_has "${DF}" 'mv ./usr/lib/pertisk/.busybox-debug ./bin/busybox'
+check "builtin DHCP only" file_has "crates/pertisk-net/src/link.rs" 'crate::dhcp::run_dhcp\(iface\)'
 check "shared ioctl DHCP lease apply" file_has "crates/pertisk-net/src/link.rs" 'apply_dhcp_v4_lease'
+check "no udhcpc_hook module" bash -c "! test -f crates/pertisk-net/src/udhcpc_hook.rs"
 
 # --- Unit tests for kubelet CIS fields ---
 echo

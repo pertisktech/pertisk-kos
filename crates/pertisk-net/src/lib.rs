@@ -1,15 +1,13 @@
 //! Host networking for Pertisk KOS (Phase 1 / M2).
 //!
 //! Brings links up, applies static addressing via netlink/ioctl, or requests
-//! DHCPv4 via the **in-process** client (`dhcp::run_dhcp`). BusyBox `udhcpc`
-//! (with `pertisk-udhcpc-hook`) remains a fallback only.
+//! DHCPv4 via the **in-process** client (`dhcp::run_dhcp`). No BusyBox `udhcpc`.
 
 mod apply;
 #[cfg(target_os = "linux")]
 mod dhcp;
 mod dns;
 mod link;
-pub mod udhcpc_hook;
 
 pub use apply::{apply_network, NetError};
 pub use link::{

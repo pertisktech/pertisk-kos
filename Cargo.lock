@@ -2445,6 +2445,7 @@ dependencies = [
  "jsonwebtoken",
  "mime_guess",
  "pertisk-config",
+ "pertisk-tpm",
  "portable-pty",
  "rand 0.8.7",
  "reqwest",

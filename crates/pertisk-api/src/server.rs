@@ -6,13 +6,15 @@ use std::path::PathBuf;
 use std::sync::MutexGuard;
 
 use pertisk_bootstrap::{
-    bootstrap_control_plane, get_join_config, join_control_plane, read_admin_kubeconfig,
+    bootstrap_control_plane, default_restore_identity, detect_advertise_ip, etcd_restore,
+    etcd_snapshot, get_join_config, join_control_plane, read_admin_kubeconfig,
 };
 use pertisk_config::MachineConfig;
 use pertisk_proto::machine_service_server::{MachineService, MachineServiceServer};
 use pertisk_proto::{
     ApplyConfigurationRequest, ApplyConfigurationResponse, AttestRequest, AttestResponse,
     BootstrapRequest, BootstrapResponse, ContainerInfo, ContainersRequest, ContainersResponse,
+    EtcdRestoreRequest, EtcdRestoreResponse, EtcdSnapshotRequest, EtcdSnapshotResponse,
     GetJoinConfigRequest, GetJoinConfigResponse, GrowDiskRequest, GrowDiskResponse, HealthRequest,
     HealthResponse, JoinControlPlaneRequest, JoinControlPlaneResponse, KubeconfigRequest,
     KubeconfigResponse, LogsRequest, LogsResponse, MarkBootGoodRequest, MarkBootGoodResponse,
@@ -531,6 +533,9 @@ impl MachineService for MachineSvc {
                     image: c.image,
                     state: c.state,
                     namespace: c.namespace,
+                    kind: c.kind,
+                    pod_name: c.pod_name,
+                    pod_namespace: c.pod_namespace,
                 })
                 .collect(),
         }))
@@ -574,6 +579,83 @@ impl MachineService for MachineSvc {
             pcrs,
             active_slot,
             version,
+        }))
+    }
+
+    async fn etcd_snapshot(
+        &self,
+        request: Request<EtcdSnapshotRequest>,
+    ) -> Result<Response<EtcdSnapshotResponse>, Status> {
+        let req = request.into_inner();
+        let state_root = {
+            let st = lock(&self.state)?;
+            st.state_root.clone()
+        };
+        let out = if req.output_path.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(req.output_path))
+        };
+        let snap = etcd_snapshot(&state_root, out.as_deref()).await;
+        Ok(Response::new(EtcdSnapshotResponse {
+            available: snap.available,
+            message: snap.message,
+            path: snap.path,
+            size_bytes: snap.size_bytes,
+            revision: snap.revision,
+        }))
+    }
+
+    async fn etcd_restore(
+        &self,
+        request: Request<EtcdRestoreRequest>,
+    ) -> Result<Response<EtcdRestoreResponse>, Status> {
+        let req = request.into_inner();
+        if req.snapshot_path.is_empty() {
+            return Err(Status::invalid_argument("snapshot_path required"));
+        }
+        let (state_root, config_path) = {
+            let st = lock(&self.state)?;
+            (st.state_root.clone(), st.config_path.clone())
+        };
+        let hostname = fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|y| MachineConfig::from_yaml(&y).ok())
+            .and_then(|c| c.machine.network.hostname)
+            .unwrap_or_else(|| "pertisk-cp-1".into());
+        let advertise = if !req.advertise_address.is_empty() {
+            req.advertise_address.clone()
+        } else {
+            detect_advertise_ip().unwrap_or_else(|| "127.0.0.1".into())
+        };
+        let (def_name, def_initial, def_peer) = default_restore_identity(&hostname, &advertise);
+        let name = if req.member_name.is_empty() {
+            def_name
+        } else {
+            req.member_name
+        };
+        let initial = if req.initial_cluster.is_empty() {
+            def_initial
+        } else {
+            req.initial_cluster
+        };
+        let peer = if req.peer_url.is_empty() {
+            def_peer
+        } else {
+            req.peer_url
+        };
+        let result = etcd_restore(
+            &state_root,
+            std::path::Path::new(&req.snapshot_path),
+            req.force,
+            &name,
+            &initial,
+            &peer,
+        )
+        .await;
+        Ok(Response::new(EtcdRestoreResponse {
+            ok: result.ok,
+            message: result.message,
         }))
     }
 }

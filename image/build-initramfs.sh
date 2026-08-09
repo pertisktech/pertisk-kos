@@ -73,7 +73,7 @@ else
   esac
 fi
 
-# production (default): no /bin/busybox. debug: BusyBox ash for recovery.
+# production (default): no BusyBox. debug: BusyBox ash for recovery.
 IMAGE_PROFILE="${PERTISK_IMAGE_PROFILE:-production}"
 case "${IMAGE_PROFILE}" in
   production | debug) ;;

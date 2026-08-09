@@ -34,6 +34,10 @@ service MachineService {
   rpc Containers(ContainersRequest) returns (ContainersResponse);
   // TPM2 Quote over /dev/tpmrm0 (ephemeral ECC AK; lab, no libtss2).
   rpc Quote(QuoteRequest) returns (QuoteResponse);
+  // Write a live etcd DB snapshot to disk (control-plane).
+  rpc EtcdSnapshot(EtcdSnapshotRequest) returns (EtcdSnapshotResponse);
+  // Offline restore of an etcd snapshot into /var/lib/etcd (destructive; force required).
+  rpc EtcdRestore(EtcdRestoreRequest) returns (EtcdRestoreResponse);
 }
 
 message VersionRequest {}
@@ -233,6 +237,12 @@ message ContainerInfo {
   string state = 4;
   // containerd namespace (k8s.io for kubelet pods)
   string namespace = 5;
+  // sandbox | container | unknown (from io.cri-containerd.kind)
+  string kind = 6;
+  // io.kubernetes.pod.name
+  string pod_name = 7;
+  // io.kubernetes.pod.namespace
+  string pod_namespace = 8;
 }
 
 message ContainersResponse {
@@ -259,4 +269,36 @@ message QuoteResponse {
   repeated PcrValue pcrs = 7;
   string active_slot = 8;
   string version = 9;
+}
+
+message EtcdSnapshotRequest {
+  // Destination path; empty → /var/lib/pertisk/etcd-snapshots/snapshot-<unix>.db
+  string output_path = 1;
+}
+
+message EtcdSnapshotResponse {
+  bool available = 1;
+  string message = 2;
+  string path = 3;
+  uint64 size_bytes = 4;
+  int64 revision = 5;
+}
+
+message EtcdRestoreRequest {
+  string snapshot_path = 1;
+  // Must be true — restore replaces local /var/lib/etcd.
+  bool force = 2;
+  // Optional etcd member name (default: machine hostname).
+  string member_name = 3;
+  // Optional initial-cluster (default: name=https://<advertise>:2380).
+  string initial_cluster = 4;
+  // Optional advertise peer URL (default: https://<advertise>:2380).
+  string peer_url = 5;
+  // Optional advertise IP used when defaults are derived.
+  string advertise_address = 6;
+}
+
+message EtcdRestoreResponse {
+  bool ok = 1;
+  string message = 2;
 }

@@ -15,3 +15,4 @@ pub use error::{Error, Result};
 pub use quote::{produce_quote, QuoteBundle, QUOTE_PCR_INDICES};
 pub use quote::pcr_digests_from_hex;
 pub use verify::{verify_quote, PcrDigest};
+pub use wire::AK_PERSISTENT_HANDLE;

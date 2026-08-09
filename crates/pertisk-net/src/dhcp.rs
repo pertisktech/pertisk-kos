@@ -1,7 +1,6 @@
-//! In-process DHCPv4 client (no BusyBox / shell).
+//! In-process DHCPv4 client (no BusyBox / shell / udhcpc).
 //!
-//! Used as the primary lease path for production images where `udhcpc` may
-//! daemonize or fail under an empty PID-1 environment.
+//! Sole lease path for production images.
 
 #[cfg(target_os = "linux")]
 use crate::apply::NetError;
@@ -197,7 +196,7 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
         routers.extend(r.iter().copied());
     }
 
-    // ioctl apply (same path as udhcpc hook) — avoids flaky netlink on virtio.
+    // ioctl apply — avoids flaky netlink on virtio.
     crate::link::apply_dhcp_v4_lease(iface, ip, prefix, &routers)?;
 
     // Verify IPv4 actually landed — IPv6 LL alone must not count as success.

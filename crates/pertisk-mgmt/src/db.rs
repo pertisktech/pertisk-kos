@@ -174,6 +174,12 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN disk_gb INTEGER")
         .execute(pool)
         .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN ak_public_b64 TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN ak_enrolled_at TEXT")
+        .execute(pool)
+        .await;
 
     // Backfill node hardware from cluster role defaults when unset.
     let _ = sqlx::query(

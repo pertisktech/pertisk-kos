@@ -81,6 +81,10 @@ export default function NodeDetail() {
   const [followLog, setFollowLog] = useState(true)
   const logRef = useRef(null)
 
+  const [attest, setAttest] = useState(null)
+  const [attestErr, setAttestErr] = useState(null)
+  const [attestBusy, setAttestBusy] = useState(null)
+
   const load = useCallback(async () => {
     try {
       const [snap, clusterRes] = await Promise.all([
@@ -173,6 +177,37 @@ export default function NodeDetail() {
     if (!followLog || !logRef.current) return
     logRef.current.scrollTop = logRef.current.scrollHeight
   }, [logText, followLog])
+
+  const loadAttest = useCallback(async () => {
+    try {
+      const res = await api(`/clusters/${clusterId}/nodes/${nid}/attestation`)
+      setAttest(res)
+      setAttestErr(null)
+    } catch (e) {
+      setAttestErr(e.message || String(e))
+    }
+  }, [clusterId, nid])
+
+  useEffect(() => {
+    setAttest(null)
+    setAttestErr(null)
+    loadAttest()
+  }, [loadAttest])
+
+  async function runAttest(action) {
+    setAttestBusy(action)
+    setAttestErr(null)
+    try {
+      const res = await api(`/clusters/${clusterId}/nodes/${nid}/attestation/${action}`, {
+        method: 'POST',
+      })
+      setAttest(res)
+    } catch (e) {
+      setAttestErr(e.message || String(e))
+    } finally {
+      setAttestBusy(null)
+    }
+  }
 
   function onLogScroll() {
     const el = logRef.current
@@ -272,6 +307,65 @@ export default function NodeDetail() {
           </div>
         )}
         {health?.message && <p className="muted" style={{ marginTop: '0.75rem' }}>{health.message}</p>}
+      </div>
+
+      <div className="card">
+        <h2 className="card-title">TPM Quote attestation</h2>
+        {attestErr && <p className="banner danger">{attestErr}</p>}
+        {attest ? (
+          <div className="health-pills">
+            <HealthPill
+              label="Enrolled"
+              ok={attest.enrolled}
+              value={attest.enrolled ? 'yes' : 'no'}
+            />
+            <HealthPill
+              label="AK"
+              ok={attest.enrolled ? true : null}
+              value={attest.ak_fingerprint ? `…${attest.ak_fingerprint}` : '—'}
+            />
+            {attest.ok != null && (
+              <HealthPill
+                label="Verify"
+                ok={attest.ok}
+                value={attest.ok ? 'ok' : 'fail'}
+              />
+            )}
+          </div>
+        ) : (
+          <p className="muted">Loading attestation status…</p>
+        )}
+        {attest?.message && (
+          <p className="muted" style={{ marginTop: '0.75rem' }}>{attest.message}</p>
+        )}
+        {attest?.ak_enrolled_at && (
+          <p className="muted" style={{ marginTop: '0.25rem' }}>
+            Enrolled at {attest.ak_enrolled_at}
+          </p>
+        )}
+        <div className="row-actions" style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem' }}>
+          <button
+            type="button"
+            className="btn secondary"
+            disabled={attestBusy || !node?.ip}
+            onClick={() => runAttest('enroll')}
+          >
+            {attestBusy === 'enroll' ? 'Enrolling…' : 'Enroll AK'}
+          </button>
+          <button
+            type="button"
+            className="btn secondary"
+            disabled={attestBusy || !node?.ip || !attest?.enrolled}
+            onClick={() => runAttest('verify')}
+          >
+            {attestBusy === 'verify' ? 'Verifying…' : 'Verify Quote'}
+          </button>
+        </div>
+        {!node?.ip && (
+          <p className="muted" style={{ marginTop: '0.5rem' }}>
+            Node needs an IPv4 before Quote enroll/verify.
+          </p>
+        )}
       </div>
 
       <div className="chart-grid">

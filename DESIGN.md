@@ -199,16 +199,14 @@ Shipped:
 - UKI build + ESP install + OVMF enroll automation (`make uki`, `make enroll-ovmf`) — [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 - TPM PCR Attest lab path (`MachineService.Attest`, `pertiskctl attest`, QEMU `PERTISK_TPM=1`)
 - Management plane: `pertisk-mgmt` UI + Proxmox / ESXi providers — [docs/MGMT.md](./docs/MGMT.md)
-- BusyBox-free DHCPv4: in-process client primary (`pertisk-net::dhcp`); `udhcpc` + hook as fallback only
-- util-linux `mount`/`umount` + iproute2 `ip` in the initramfs (BusyBox only as `udhcpc` fallback)
-- CRI introspection lab path (`MachineService.Containers`, `pertiskctl containers` via `ctr`)
-- TPM2 Quote lab path (`MachineService.Quote`, pure-Rust `/dev/tpmrm0`, `pertiskctl quote --verify`)
+- BusyBox-free DHCPv4: in-process client only (`pertisk-net::dhcp`)
+- util-linux `mount`/`umount` + iproute2 `ip` in the initramfs (BusyBox only in `debug` profile as ash)
+- CRI introspection lab path (`MachineService.Containers`, `pertiskctl containers` via `ctr`; kind / pod name / namespace from labels)
+- TPM2 Quote lab path (`MachineService.Quote`, pure-Rust `/dev/tpmrm0`, persistent AK, `pertiskctl quote --verify`)
+- etcd snapshot / restore lab path (`MachineService.EtcdSnapshot` / `EtcdRestore`, `pertiskctl etcd …`)
+- Mgmt Quote trust store (TOFU AK enroll / verify on node detail)
 
-Still open (stretch):
-
-- etcd snapshot / restore
-- Mgmt remote trust store / persistent AK enrollment for Quotes
-- Optional drop of BusyBox/`udhcpc` fallback
+Still open (stretch): none for P5; see **Later** under §7.
 
 ---
 
@@ -246,7 +244,8 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 - `Reboot` / `Shutdown`
 - `Version` / `Health` / `Attest` (sysfs PCR digests + boot slot)
 - `Quote` (TPM2 Quote via `/dev/tpmrm0`, ephemeral ECC AK)
-- `Containers` (containerd `ctr` list in `k8s.io`)
+- `EtcdSnapshot` / `EtcdRestore` (live snapshot; offline restore with `--force`)
+- `Containers` (containerd `ctr` list in `k8s.io` + CRI kind/pod labels)
 - `Logs` (pertiskd, containerd, kubelet, dmesg)
 - `Upgrade` / `MarkBootGood` / `UpgradeStatus`
 - Metrics HTTP(S) `/metrics` (Prometheus text; mTLS when TLS PEMs set)
@@ -256,7 +255,7 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 Done:
 
 - `Bootstrap` / `Kubeconfig` / `JoinConfig` / `GetJoinConfig` / `JoinControlPlane` RPCs
-- `pertiskctl gen config` / `apply` / `bootstrap` / `kubeconfig` / `join-config` / `attest` / `quote` / `containers`
+- `pertiskctl gen config` / `apply` / `bootstrap` / `kubeconfig` / `join-config` / `attest` / `quote` / `etcd` / `containers`
 - Static-pod etcd + apiserver + controller-manager + scheduler (`pertisk-bootstrap`)
 - Worker TLS bootstrap (bootstrap-kubeconfig → CSR → node cert)
 - Post-bootstrap finalize: token Secret, node-join RBAC, CP labels/taints, CoreDNS + metrics-server
@@ -266,13 +265,11 @@ Done:
 
 **Next (P5 stretch)**
 
-1. etcd snapshot / restore
-2. Mgmt remote trust store / persistent AK enrollment for Quotes
-3. Optional drop of BusyBox/`udhcpc` fallback
+_(none — P5 stretch complete for lab / HA)_
 
 **Later (mgmt / ops parity)**
 
-- container/CRI deep dive (pod sandboxes / CRI logs) — list via `Containers` is done
+- CRI log streaming (pod sandbox metadata on `Containers` is done)
 - net / disk inspect
 - reset / wipe
 - dashboard events stream
@@ -291,7 +288,7 @@ Done:
 3. **mTLS** for all management traffic.
 4. **Signed OS images**; reject unsigned upgrades.
 5. **Least kernel surface** — drop unused drivers/modules.
-6. **Root of trust** — measured boot where feasible (UKI + OVMF enroll + PCR Attest + Quote lab; mgmt trust store later).
+6. **Root of trust** — measured boot where feasible (UKI + OVMF enroll + PCR Attest + Quote lab + mgmt AK trust store).
 
 ---
 
@@ -323,11 +320,13 @@ Pertisk KOS is a standalone product with its own API and image format.
 | M5 | A/B upgrade with rollback | Done (signed bundles + boot attempts / mark-good) |
 | M5b | HA + mgmt UI (Proxmox / ESXi) | Done |
 | M5c | Secure Boot lab (UKI + OVMF enroll + PCR Attest) | Done (lab); Quote done as M5g |
-| M5d | BusyBox-free DHCPv4 (builtin primary) | Done (`dhcp::run_dhcp` first; udhcpc fallback) |
-| M5e | util-linux mount/umount + iproute2 ip | Done (BusyBox only as udhcpc) |
-| M5f | CRI introspection (`Containers` / `ctr`) | Done (lab) |
-| M5g | TPM2 Quote (pure-Rust `/dev/tpmrm0`) | Done (lab); mgmt trust store later |
-| M6 | etcd snapshot/restore; mgmt Quote trust store | **Next** |
+| M5d | BusyBox-free DHCPv4 (builtin only) | Done (`dhcp::run_dhcp`; no udhcpc) |
+| M5e | util-linux mount/umount + iproute2 ip | Done (BusyBox only in debug ash) |
+| M5f | CRI introspection (`Containers` / `ctr` + sandbox labels) | Done (lab) |
+| M5g | TPM2 Quote (pure-Rust `/dev/tpmrm0`) | Done (lab); persistent AK `0x8100000A` |
+| M5h | etcd snapshot / restore | Done (lab) |
+| M5i | mgmt Quote trust store (AK enroll / verify) | Done (lab) |
+| M6 | drop BusyBox/`udhcpc` from production | Done |
 
 ---
 

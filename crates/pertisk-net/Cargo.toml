@@ -24,7 +24,3 @@ rtnetlink = "0.14"
 socket2 = { version = "0.5", features = ["all"] }
 # Pin: newer url pulls icu_* needing rustc ≥ 1.86; Docker builder is 1.85.
 url = "=2.4.1"
-
-[[bin]]
-name = "pertisk-udhcpc-hook"
-path = "src/bin/pertisk-udhcpc-hook.rs"

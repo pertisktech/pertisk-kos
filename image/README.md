@@ -21,7 +21,7 @@ brew install qemu            # once
 
 Defaults to **linux/amd64** so artifacts match `qemu-system-x86_64` on Apple Silicon.
 
-Production images omit `/bin/busybox` (API-only). For a recovery shell:
+Production images omit BusyBox entirely (API-only; in-process DHCP). For a recovery shell:
 
 ```bash
 make build PROFILE=debug

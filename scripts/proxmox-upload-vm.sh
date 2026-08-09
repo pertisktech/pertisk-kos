@@ -405,6 +405,9 @@ else
     }
   else
     echo "==> creating VM ${VMID} (${NAME}) arch=${PVE_ARCH} bios=ovmf machine=${PVE_MACHINE} agent=1"
+    # Fingerprint: fixed create path treats {"data":"UPID:…"} as success.
+    # If logs still show: create with efidisk0 failed ({"data":"UPID:…"})
+    # then /usr/share/pertisk-mgmt/scripts/proxmox-upload-vm.sh is stale — redeploy scripts.
     EFI_STORAGE="${PROXMOX_EFI_STORAGE:-${STORAGE}}"
     CREATE_ARGS=(
       --data-urlencode "vmid=${VMID}"

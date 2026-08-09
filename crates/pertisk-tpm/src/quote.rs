@@ -1,9 +1,10 @@
-//! Produce an ephemeral ECC AK Quote from `/dev/tpmrm0`.
+//! Produce a Quote signed by the lab persistent ECC AK.
 
-use crate::commands::{self, LoadedKey};
+use crate::commands;
 use crate::device::Device;
 use crate::error::{Error, Result};
 use crate::verify::PcrDigest;
+use crate::wire::AK_PERSISTENT_HANDLE;
 
 /// PCR indices quoted (firmware 0–7 + UKI stub 11).
 pub const QUOTE_PCR_INDICES: &[u32] = &[0, 1, 2, 3, 4, 5, 6, 7, 11];
@@ -17,9 +18,11 @@ pub struct QuoteBundle {
     pub quoted: Vec<u8>,
     /// Marshaled TPMT_SIGNATURE (ECDSA).
     pub signature: Vec<u8>,
-    /// TPMT_PUBLIC bytes for the ephemeral AK.
+    /// TPMT_PUBLIC bytes for the persistent AK.
     pub ak_public: Vec<u8>,
     pub device: Option<String>,
+    /// Persistent handle used (e.g. 0x8100000A).
+    pub ak_handle: u32,
 }
 
 impl QuoteBundle {
@@ -32,13 +35,12 @@ impl QuoteBundle {
             signature: Vec::new(),
             ak_public: Vec::new(),
             device: None,
+            ak_handle: 0,
         }
     }
 }
 
-/// Create ephemeral primary + AK, Quote selected PCRs, then flush.
-///
-/// Soft-fails (available=false) when the TPM device is missing.
+/// Ensure persistent AK, Quote selected PCRs. Soft-fails without TPM.
 pub fn produce_quote(nonce: &[u8]) -> QuoteBundle {
     match produce_quote_inner(nonce) {
         Ok(b) => b,
@@ -57,24 +59,13 @@ fn produce_quote_inner(nonce: &[u8]) -> Result<QuoteBundle> {
     let mut dev = Device::open_default()?;
     let path = dev.path().display().to_string();
 
-    let primary = commands::create_primary(&mut dev)?;
-    let ak = match commands::create_and_load_ak(&mut dev, primary.handle) {
-        Ok(k) => k,
-        Err(e) => {
-            commands::flush(&mut dev, primary.handle);
-            return Err(e);
-        }
-    };
+    let ak = commands::ensure_persistent_ak(&mut dev)?;
+    let (quoted, signature) = commands::quote(&mut dev, ak.handle, &nonce, QUOTE_PCR_INDICES)?;
 
-    let result = commands::quote(&mut dev, ak.handle, &nonce, QUOTE_PCR_INDICES);
-    commands::flush(&mut dev, ak.handle);
-    commands::flush(&mut dev, primary.handle);
-
-    let (quoted, signature) = result?;
     Ok(QuoteBundle {
         available: true,
         message: format!(
-            "quoted {} PCR(s) via {path} (ephemeral ECC AK)",
+            "quoted {} PCR(s) via {path} (persistent AK handle 0x{AK_PERSISTENT_HANDLE:08x})",
             QUOTE_PCR_INDICES.len()
         ),
         nonce,
@@ -82,14 +73,16 @@ fn produce_quote_inner(nonce: &[u8]) -> Result<QuoteBundle> {
         signature,
         ak_public: ak.public,
         device: Some(path),
+        ak_handle: ak.handle,
     })
 }
 
 fn getrandom_nonce() -> Vec<u8> {
-    // Prefer getrandom; fall back to reading /dev/urandom.
     let mut buf = vec![0u8; 32];
     if fill_random(&mut buf).is_err() {
-        buf = (0..32).map(|i| (i as u8).wrapping_mul(17).wrapping_add(0x5a)).collect();
+        buf = (0..32)
+            .map(|i| (i as u8).wrapping_mul(17).wrapping_add(0x5a))
+            .collect();
     }
     buf
 }
@@ -109,9 +102,4 @@ pub fn pcr_digests_from_hex(pairs: &[(u32, &str)]) -> Vec<PcrDigest> {
             digest_hex: (*h).to_string(),
         })
         .collect()
-}
-
-#[allow(dead_code)]
-fn _use_loaded(k: &LoadedKey) -> u32 {
-    k.handle
 }

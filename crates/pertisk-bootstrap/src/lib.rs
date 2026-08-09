@@ -3,6 +3,7 @@
 mod addons;
 mod api;
 mod coredns;
+mod etcd_backup;
 mod gen;
 mod join;
 mod kube_vip;
@@ -23,6 +24,9 @@ use anyhow::{bail, Context, Result};
 use pertisk_config::{MachineConfig, MachineType};
 use tracing::info;
 
+pub use etcd_backup::{
+    default_restore_identity, etcd_restore, etcd_snapshot, EtcdRestoreResult, EtcdSnapshotResult,
+};
 pub use gen::{
     gen_config, gen_config_ha, gen_config_ha_with_network, gen_config_with_network,
     patch_controlplane_secrets, patch_worker_ca, write_gen_config, write_gen_config_ha,
@@ -364,7 +368,7 @@ pub(crate) fn endpoint_host(endpoint: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn detect_advertise_ip() -> Option<String> {
+pub fn detect_advertise_ip() -> Option<String> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
     sock.connect("1.1.1.1:80").ok()?;
     let ip = sock.local_addr().ok()?.ip();
