@@ -149,12 +149,31 @@ function ClusterResourceCard({ summary, onOpen }) {
   )
 }
 
+function placeholderSummary(c) {
+  const nodes = (c.controlplanes || 0) + (c.workers || 0)
+  const empty = { used: null, total: null, percent: null, unit: '', display_used: null, display_total: null, error: null }
+  return {
+    cluster_id: c.id,
+    cluster_name: c.name,
+    status: c.status || 'unknown',
+    availability: c.availability || 'unknown',
+    k8s_version: c.k8s_version || '',
+    node_count: nodes,
+    cpu: { ...empty, unit: 'cores' },
+    memory: { ...empty, unit: 'GiB' },
+    disk: { ...empty, unit: 'GiB' },
+    error: null,
+    _placeholder: true,
+  }
+}
+
 export default function Dashboard() {
   const nav = useNavigate()
   const [clusters, setClusters] = useState([])
   const [providers, setProviders] = useState([])
   const [resources, setResources] = useState([])
   const [resourcesErr, setResourcesErr] = useState('')
+  const [resourcesLoading, setResourcesLoading] = useState(false)
 
   const load = useCallback(() => {
     Promise.all([
@@ -167,14 +186,20 @@ export default function Dashboard() {
   }, [])
 
   const loadResources = useCallback(() => {
+    setResourcesLoading(true)
     api('/dashboard/resources')
       .then((rows) => {
-        setResources(Array.isArray(rows) ? rows : [])
+        // Soft-fail: keep prior cards if the response is empty unexpectedly.
+        if (Array.isArray(rows) && rows.length > 0) {
+          setResources(rows)
+        } else if (Array.isArray(rows)) {
+          setResources(rows)
+        }
         setResourcesErr('')
       })
       .catch((e) => {
         const msg = e.message || 'failed to load resources'
-        // Vite proxies /api → :8080; reqwest/fetch fail when pertisk-mgmt is down.
+        // Keep prior resources; only surface the error.
         if (/failed to fetch|networkerror|load failed|sending request/i.test(msg)) {
           setResourcesErr(
             'Cannot reach management API at :8080 — is pertisk-mgmt running?',
@@ -183,6 +208,7 @@ export default function Dashboard() {
           setResourcesErr(msg)
         }
       })
+      .finally(() => setResourcesLoading(false))
   }, [])
 
   useEffect(() => {
@@ -202,6 +228,13 @@ export default function Dashboard() {
     const t = setInterval(loadResources, RESOURCES_POLL_MS)
     return () => clearInterval(t)
   }, [clusters.length, loadResources])
+
+  const displayResources = useMemo(() => {
+    if (resources.length > 0) return resources
+    // While live metrics load, show skeleton cards from the cluster list.
+    if (clusters.length > 0) return clusters.map(placeholderSummary)
+    return []
+  }, [resources, clusters])
 
   const ready = clusters.filter((c) => c.status === 'ready').length
   const cps = clusters.reduce((n, c) => n + (c.controlplanes || 0), 0)
@@ -232,13 +265,14 @@ export default function Dashboard() {
           </h2>
           <p className="muted dash-section-sub">
             Live CPU, memory, and disk · updates every {RESOURCES_POLL_MS / 1000}s
+            {resourcesLoading && resources.length === 0 ? ' · loading metrics…' : ''}
           </p>
         </div>
         <div className="dash-resources-actions">
           <Link className="secondary btn-icon" to="/clusters">
             <Icon name="clusters" size={14} /> All clusters
           </Link>
-          <button type="button" className="secondary btn-icon" onClick={loadResources}>
+          <button type="button" className="secondary btn-icon" onClick={loadResources} disabled={resourcesLoading}>
             <Icon name="play" size={14} /> Refresh
           </button>
         </div>
@@ -260,11 +294,9 @@ export default function Dashboard() {
             </Link>
           </div>
         </div>
-      ) : resources.length === 0 && !resourcesErr ? (
-        <div className="card"><p className="muted">Loading resource summaries…</p></div>
       ) : (
         <div className="cluster-resource-grid">
-          {resources.map((s) => (
+          {displayResources.map((s) => (
             <ClusterResourceCard
               key={s.cluster_id}
               summary={s}

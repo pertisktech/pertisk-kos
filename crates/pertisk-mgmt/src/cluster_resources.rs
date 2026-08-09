@@ -7,6 +7,7 @@ use serde::Serialize;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+use crate::cluster_availability;
 use crate::k8s::{kubectl_json, resolve_cluster_kubeconfig};
 use crate::state::AppState;
 
@@ -37,7 +38,7 @@ pub struct ResourceMetric {
     pub error: Option<String>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 struct ClusterRow {
     id: String,
     name: String,
@@ -77,25 +78,11 @@ pub async fn gather_all(state: &AppState) -> Vec<ClusterResourceSummary> {
         .map(|c| {
             let state = state.clone();
             async move {
-                let id = c.id.clone();
-                let name = c.name.clone();
-                let status = c.status.clone();
-                let k8s_version = c.k8s_version.clone();
-                // Cap per-cluster work so a down Proxmox/VIP cannot stall the dashboard.
-                match timeout(Duration::from_secs(15), gather_one(&state, c)).await {
+                // Cap per-cluster work so a down VIP cannot stall the dashboard.
+                // Offline probes finish in ~1s; keep DB capacity if we still time out.
+                match timeout(Duration::from_secs(5), gather_one(&state, c.clone())).await {
                     Ok(summary) => summary,
-                    Err(_) => ClusterResourceSummary {
-                        cluster_id: id,
-                        cluster_name: name,
-                        status,
-                        availability: "offline".into(),
-                        k8s_version,
-                        node_count: 0,
-                        cpu: empty_metric("cores"),
-                        memory: empty_metric("GiB"),
-                        disk: empty_metric("GiB"),
-                        error: Some("resource probe timed out (API unreachable?)".into()),
-                    },
+                    Err(_) => timeout_summary_with_capacity(&state, &c).await,
                 }
             }
         })
@@ -103,19 +90,11 @@ pub async fn gather_all(state: &AppState) -> Vec<ClusterResourceSummary> {
     futures::future::join_all(futs).await
 }
 
-fn empty_metric(unit: &str) -> ResourceMetric {
-    ResourceMetric {
-        used: None,
-        total: None,
-        percent: None,
-        unit: unit.into(),
-        display_used: None,
-        display_total: None,
-        error: None,
-    }
-}
-
-async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSummary {
+/// Like gather_one capacity path, used when the live probe hits the outer deadline.
+async fn timeout_summary_with_capacity(
+    state: &AppState,
+    cluster: &ClusterRow,
+) -> ClusterResourceSummary {
     let nodes: Vec<NodeCap> = sqlx::query_as(
         "SELECT name, role, ip, cores, memory, disk_gb \
          FROM nodes WHERE cluster_id = ? ORDER BY role, name",
@@ -125,12 +104,32 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
     .await
     .unwrap_or_default();
 
-    let node_count = nodes.len() as i64;
+    let (cpu, memory, disk) = capacity_metrics(&nodes);
+    let err = Some("resource probe timed out (API unreachable?)".to_string());
+    ClusterResourceSummary {
+        cluster_id: cluster.id.clone(),
+        cluster_name: cluster.name.clone(),
+        status: cluster.status.clone(),
+        availability: if cluster.status == "ready" {
+            "offline".into()
+        } else {
+            "unknown".into()
+        },
+        k8s_version: cluster.k8s_version.clone(),
+        node_count: nodes.len() as i64,
+        cpu: with_metric_error(cpu, err.clone()),
+        memory: with_metric_error(memory, err.clone()),
+        disk: with_metric_error(disk, err.clone()),
+        error: err,
+    }
+}
+
+fn capacity_metrics(nodes: &[NodeCap]) -> (ResourceMetric, ResourceMetric, ResourceMetric) {
     let cap_cores: f64 = nodes.iter().filter_map(|n| n.cores).sum::<i64>() as f64;
     let cap_mem_mib: f64 = nodes.iter().filter_map(|n| n.memory).sum::<i64>() as f64;
     let cap_disk_gib: f64 = nodes.iter().filter_map(|n| n.disk_gb).sum::<i64>() as f64;
 
-    let mut cpu = ResourceMetric {
+    let cpu = ResourceMetric {
         used: None,
         total: if cap_cores > 0.0 { Some(cap_cores) } else { None },
         percent: None,
@@ -143,7 +142,7 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
         },
         error: None,
     };
-    let mut memory = ResourceMetric {
+    let memory = ResourceMetric {
         used: None,
         total: if cap_mem_mib > 0.0 {
             Some(cap_mem_mib / 1024.0)
@@ -160,7 +159,7 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
         },
         error: None,
     };
-    let mut disk = ResourceMetric {
+    let disk = ResourceMetric {
         used: None,
         total: if cap_disk_gib > 0.0 {
             Some(cap_disk_gib)
@@ -177,6 +176,28 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
         },
         error: None,
     };
+    (cpu, memory, disk)
+}
+
+fn with_metric_error(mut m: ResourceMetric, err: Option<String>) -> ResourceMetric {
+    m.error = err;
+    m
+}
+
+async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSummary {
+    let nodes: Vec<NodeCap> = sqlx::query_as(
+        "SELECT name, role, ip, cores, memory, disk_gb \
+         FROM nodes WHERE cluster_id = ? ORDER BY role, name",
+    )
+    .bind(&cluster.id)
+    .fetch_all(state.pool())
+    .await
+    .unwrap_or_default();
+
+    let node_count = nodes.len() as i64;
+    let (mut cpu, mut memory, mut disk) = capacity_metrics(&nodes);
+    let cap_cores = cpu.total.unwrap_or(0.0);
+    let cap_mem_mib = memory.total.map(|g| g * 1024.0).unwrap_or(0.0);
 
     if cluster.status != "ready" {
         let status = cluster.status.clone();
@@ -342,52 +363,52 @@ async fn resolve_api_server(
     nodes: &[NodeCap],
     cluster: &ClusterRow,
 ) -> (Option<String>, Option<String>) {
-    if probe_readyz(kc, None).await {
-        // Single-CP must not keep a VIP in kubeconfig (kube-vip is HA-only).
-        if cluster.controlplanes <= 1 {
-            if let Some(cp) = first_cp_ip(nodes) {
-                if kubeconfig_points_at_vip(kc, cluster) {
-                    let _ = rewrite_kubeconfig_server(kc, &format!("https://{cp}:6443"));
-                }
-            }
-        }
-        return (None, None);
-    }
-
-    let cp_ips: Vec<String> = nodes
+    let cp_servers: Vec<String> = nodes
         .iter()
         .filter(|n| n.role == "controlplane")
         .filter_map(|n| n.ip.as_ref())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .map(|ip| format!("https://{ip}:6443"))
         .collect();
 
-    for ip in &cp_ips {
-        let server = format!("https://{ip}:6443");
-        if probe_readyz(kc, Some(&server)).await {
-            // Persist heal for single-CP (VIP in kubeconfig is never correct).
+    match cluster_availability::first_reachable_server(kc, &cp_servers).await {
+        Some(None) => {
+            // Kubeconfig default (VIP) worked.
+            if cluster.controlplanes <= 1 {
+                if let Some(cp) = first_cp_ip(nodes) {
+                    if kubeconfig_points_at_vip(kc, cluster) {
+                        let _ = rewrite_kubeconfig_server(kc, &format!("https://{cp}:6443"));
+                    }
+                }
+            }
+            (None, None)
+        }
+        Some(Some(server)) => {
             if cluster.controlplanes <= 1 {
                 let _ = rewrite_kubeconfig_server(kc, &server);
-                return (None, None);
+                (None, None)
+            } else {
+                // HA: keep kubeconfig on VIP; override for this poll only.
+                (Some(server), None)
             }
-            // HA: keep kubeconfig on VIP; override for this poll only.
-            return (Some(server), None);
+        }
+        None => {
+            let tip = cluster
+                .vip
+                .as_deref()
+                .filter(|v| !v.is_empty())
+                .or_else(|| cluster.vip6.as_deref().filter(|v| !v.is_empty()))
+                .map(|v| format!("VIP {v}"))
+                .unwrap_or_else(|| "API endpoint".into());
+            (
+                None,
+                Some(format!(
+                    "cannot connect to {tip}; no reachable control plane after reboot?"
+                )),
+            )
         }
     }
-
-    let tip = cluster
-        .vip
-        .as_deref()
-        .filter(|v| !v.is_empty())
-        .or_else(|| cluster.vip6.as_deref().filter(|v| !v.is_empty()))
-        .map(|v| format!("VIP {v}"))
-        .unwrap_or_else(|| "API endpoint".into());
-    (
-        None,
-        Some(format!(
-            "cannot connect to {tip}; no reachable control plane after reboot?"
-        )),
-    )
 }
 
 fn first_cp_ip(nodes: &[NodeCap]) -> Option<String> {
@@ -462,19 +483,6 @@ fn rewrite_kubeconfig_server(kc: &Path, url: &str) -> std::io::Result<()> {
     std::fs::write(kc, out)
 }
 
-async fn probe_readyz(kc: &Path, server: Option<&str>) -> bool {
-    let mut cmd = Command::new("kubectl");
-    cmd.arg("--kubeconfig").arg(kc);
-    if let Some(s) = server {
-        cmd.arg("--server").arg(s);
-    }
-    cmd.args(["get", "--raw", "/readyz"]);
-    match timeout(Duration::from_secs(3), cmd.output()).await {
-        Ok(Ok(out)) => out.status.success(),
-        _ => false,
-    }
-}
-
 #[derive(Debug)]
 struct TopRow {
     cpu_cores: f64,
@@ -494,7 +502,7 @@ async fn fetch_kubectl_top_all(
     }
     cmd.args(["top", "nodes", "--no-headers"]);
 
-    let out = timeout(Duration::from_secs(12), cmd.output())
+    let out = timeout(Duration::from_secs(3), cmd.output())
         .await
         .map_err(|_| "kubectl top nodes timed out".to_string())?
         .map_err(|e| format!("kubectl: {e}"))?;
@@ -582,27 +590,44 @@ async fn fetch_disk_from_stats(
     if nodes.is_empty() {
         return Ok(None);
     }
+
+    let kc_buf = kc.to_path_buf();
+    let server = server.map(str::to_string);
+    let futs: Vec<_> = nodes
+        .iter()
+        .map(|n| {
+            let name = n.name.clone();
+            let kc = kc_buf.clone();
+            let server = server.clone();
+            async move {
+                match timeout(
+                    Duration::from_secs(2),
+                    fetch_one_node_fs(&kc, &name, server.as_deref()),
+                )
+                .await
+                {
+                    Ok(Ok(Some((u, c)))) => Ok(Some((u, c))),
+                    Ok(Ok(None)) => Ok(None),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => Err(format!("stats timeout for {name}")),
+                }
+            }
+        })
+        .collect();
+
     let mut used = 0_u64;
     let mut cap = 0_u64;
     let mut any = false;
     let mut last_err: Option<String> = None;
-
-    // Cap concurrency — one stats call per node with short timeout.
-    for n in nodes {
-        match timeout(
-            Duration::from_secs(4),
-            fetch_one_node_fs(kc, &n.name, server),
-        )
-        .await
-        {
-            Ok(Ok(Some((u, c)))) => {
+    for res in futures::future::join_all(futs).await {
+        match res {
+            Ok(Some((u, c))) => {
                 used = used.saturating_add(u);
                 cap = cap.saturating_add(c);
                 any = true;
             }
-            Ok(Ok(None)) => {}
-            Ok(Err(e)) => last_err = Some(e),
-            Err(_) => last_err = Some(format!("stats timeout for {}", n.name)),
+            Ok(None) => {}
+            Err(e) => last_err = Some(e),
         }
     }
 
