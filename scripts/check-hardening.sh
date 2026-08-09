@@ -93,6 +93,8 @@ check "pertiskctl etcd" file_has "crates/pertiskctl/src/main.rs" 'Commands::Etcd
 check "Containers RPC in proto" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'rpc Containers'
 check "ContainerInfo pod_namespace" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'string pod_namespace'
 check "ctr info label parse" file_has "crates/pertisk-api/src/containers.rs" 'parse_container_info_labels'
+check "CRI log resolve" file_has "crates/pertisk-api/src/containers.rs" 'resolve_cri_log'
+check "logs container: service" file_has "crates/pertisk-api/src/logs.rs" 'container:'
 check "pertiskctl containers" file_has "crates/pertiskctl/src/main.rs" 'Commands::Containers'
 
 # --- Mount hardening ---

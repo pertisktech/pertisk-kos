@@ -140,7 +140,7 @@ message UpgradeStatusResponse {
 }
 
 message LogsRequest {
-  // pertiskd | containerd | kubelet | dmesg
+  // pertiskd | containerd | kubelet | dmesg | container:<id>
   string service = 1;
   // Number of trailing lines (default 100, max 5000).
   uint32 tail_lines = 2;

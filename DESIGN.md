@@ -201,7 +201,7 @@ Shipped:
 - Management plane: `pertisk-mgmt` UI + Proxmox / ESXi providers — [docs/MGMT.md](./docs/MGMT.md)
 - BusyBox-free DHCPv4: in-process client only (`pertisk-net::dhcp`)
 - util-linux `mount`/`umount` + iproute2 `ip` in the initramfs (BusyBox only in `debug` profile as ash)
-- CRI introspection lab path (`MachineService.Containers`, `pertiskctl containers` via `ctr`; kind / pod name / namespace from labels)
+- CRI introspection lab path (`MachineService.Containers` + `logs container:<id>` via `/var/log/pods`)
 - TPM2 Quote lab path (`MachineService.Quote`, pure-Rust `/dev/tpmrm0`, persistent AK, `pertiskctl quote --verify`)
 - etcd snapshot / restore lab path (`MachineService.EtcdSnapshot` / `EtcdRestore`, `pertiskctl etcd …`)
 - Mgmt Quote trust store (TOFU AK enroll / verify on node detail)
@@ -246,7 +246,7 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 - `Quote` (TPM2 Quote via `/dev/tpmrm0`, ephemeral ECC AK)
 - `EtcdSnapshot` / `EtcdRestore` (live snapshot; offline restore with `--force`)
 - `Containers` (containerd `ctr` list in `k8s.io` + CRI kind/pod labels)
-- `Logs` (pertiskd, containerd, kubelet, dmesg)
+- `Logs` (pertiskd, containerd, kubelet, dmesg, `container:<id>` CRI tails)
 - `Upgrade` / `MarkBootGood` / `UpgradeStatus`
 - Metrics HTTP(S) `/metrics` (Prometheus text; mTLS when TLS PEMs set)
 
@@ -269,10 +269,10 @@ _(none — P5 stretch complete for lab / HA)_
 
 **Later (mgmt / ops parity)**
 
-- CRI log streaming (pod sandbox metadata on `Containers` is done)
 - net / disk inspect
 - reset / wipe
 - dashboard events stream
+- CRI log *follow*/stream (unary `logs container:<id>` tail is done)
 
 **Done (HA + mgmt)**
 

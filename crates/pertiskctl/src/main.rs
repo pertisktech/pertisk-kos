@@ -186,6 +186,7 @@ enum Commands {
     UpgradeStatus,
     MarkBootGood,
     Logs {
+        /// pertiskd | containerd | kubelet | dmesg | container:<id>
         #[arg(default_value = "pertiskd")]
         service: String,
         #[arg(long, short = 'n', default_value_t = 100)]

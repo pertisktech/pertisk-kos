@@ -196,12 +196,12 @@ curl -s --cacert out/mtls/ca.crt \
 
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs dmesg -n 50
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs pertiskd
+./out/bin/pertiskctl -e 127.0.0.1:50000 containers # containerd k8s.io via ctr (+ CRI labels)
+./out/bin/pertiskctl -e 127.0.0.1:50000 logs container:<id> -n 200  # CRI app logs via /var/log/pods
 ./out/bin/pertiskctl -e 127.0.0.1:50000 attest      # TPM PCRs when present
 ./out/bin/pertiskctl -e 127.0.0.1:50000 quote --verify  # TPM2 Quote + local verify
 ./out/bin/pertiskctl -e 127.0.0.1:50000 etcd snapshot
-./out/bin/pertiskctl -e 127.0.0.1:50000 containers # containerd k8s.io via ctr (+ CRI labels)
 ```
-
 ## mTLS + signed upgrade smoke
 
 ```bash
@@ -262,4 +262,4 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 
 ## Next
 
-P5 stretch is complete for lab / HA. Later ops parity (when needed): CRI log streaming, net/disk inspect, reset/wipe, dashboard events stream.
+P5 stretch is complete for lab / HA. Later ops parity (when needed): net/disk inspect, reset/wipe, dashboard events stream; CRI log follow/stream.

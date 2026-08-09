@@ -1,7 +1,7 @@
 //! List containers via containerd `ctr` (lab CRI introspection).
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const SOCK: &str = "/run/containerd/containerd.sock";
@@ -11,6 +11,7 @@ const CTR_CANDIDATES: &[&str] = &["/usr/local/bin/ctr", "/usr/bin/ctr", "ctr"];
 const LABEL_KIND: &str = "io.cri-containerd.kind";
 const LABEL_POD_NAME: &str = "io.kubernetes.pod.name";
 const LABEL_POD_NS: &str = "io.kubernetes.pod.namespace";
+const LABEL_POD_UID: &str = "io.kubernetes.pod.uid";
 const LABEL_CONTAINER_NAME: &str = "io.kubernetes.container.name";
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -18,7 +19,21 @@ pub struct CriLabels {
     pub kind: String,
     pub pod_name: String,
     pub pod_namespace: String,
+    pub pod_uid: String,
     pub container_name: String,
+}
+
+/// Result of resolving a container id to a kubelet CRI log file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CriLogResolve {
+    pub container_id: String,
+    pub kind: String,
+    pub pod_name: String,
+    pub pod_namespace: String,
+    pub container_name: String,
+    /// Absolute path to the newest `*.log` under `/var/log/pods/...`, if found.
+    pub path: Option<String>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,10 +226,184 @@ pub fn parse_container_info_labels(stdout: &str) -> CriLabels {
     if let Some(ns) = json_string_field(stdout, LABEL_POD_NS) {
         labels.pod_namespace = ns;
     }
+    if let Some(uid) = json_string_field(stdout, LABEL_POD_UID) {
+        labels.pod_uid = uid;
+    }
     if let Some(cname) = json_string_field(stdout, LABEL_CONTAINER_NAME) {
         labels.container_name = cname;
     }
     labels
+}
+
+/// Resolve `container:<id>` to a kubelet CRI log file under `/var/log/pods`.
+///
+/// Soft-fails with `path = None` and an explanatory `message` when the
+/// container, sandbox, or log file cannot be found.
+pub fn resolve_cri_log(id_or_prefix: &str) -> CriLogResolve {
+    let needle = id_or_prefix.trim();
+    if needle.is_empty() {
+        return CriLogResolve {
+            container_id: String::new(),
+            kind: String::new(),
+            pod_name: String::new(),
+            pod_namespace: String::new(),
+            container_name: String::new(),
+            path: None,
+            message: "empty container id".into(),
+        };
+    }
+
+    if !Path::new(SOCK).exists() {
+        return CriLogResolve {
+            container_id: needle.into(),
+            kind: String::new(),
+            pod_name: String::new(),
+            pod_namespace: String::new(),
+            container_name: String::new(),
+            path: None,
+            message: format!("containerd socket missing at {SOCK}"),
+        };
+    }
+    let Some(ctr) = find_ctr() else {
+        return CriLogResolve {
+            container_id: needle.into(),
+            kind: String::new(),
+            pod_name: String::new(),
+            pod_namespace: String::new(),
+            container_name: String::new(),
+            path: None,
+            message: "ctr binary not found".into(),
+        };
+    };
+
+    let id = match resolve_container_id(ctr, needle) {
+        Ok(id) => id,
+        Err(msg) => {
+            return CriLogResolve {
+                container_id: needle.into(),
+                kind: String::new(),
+                pod_name: String::new(),
+                pod_namespace: String::new(),
+                container_name: String::new(),
+                path: None,
+                message: msg,
+            };
+        }
+    };
+
+    let info = match run_ctr(ctr, &["containers", "info", &id]) {
+        Ok(s) => s,
+        Err(err) => {
+            return CriLogResolve {
+                container_id: id,
+                kind: String::new(),
+                pod_name: String::new(),
+                pod_namespace: String::new(),
+                container_name: String::new(),
+                path: None,
+                message: err,
+            };
+        }
+    };
+    let labels = parse_container_info_labels(&info);
+
+    if labels.kind == "sandbox" {
+        return CriLogResolve {
+            container_id: id,
+            kind: labels.kind,
+            pod_name: labels.pod_name,
+            pod_namespace: labels.pod_namespace,
+            container_name: String::new(),
+            path: None,
+            message: "sandbox has no application logs (pick a container id)".into(),
+        };
+    }
+
+    if labels.pod_namespace.is_empty()
+        || labels.pod_name.is_empty()
+        || labels.pod_uid.is_empty()
+        || labels.container_name.is_empty()
+    {
+        return CriLogResolve {
+            container_id: id,
+            kind: labels.kind,
+            pod_name: labels.pod_name,
+            pod_namespace: labels.pod_namespace,
+            container_name: labels.container_name,
+            path: None,
+            message: "missing CRI pod labels (not a kubelet-managed container?)".into(),
+        };
+    }
+
+    let dir = PathBuf::from(format!(
+        "/var/log/pods/{}_{}_{}/{}",
+        labels.pod_namespace, labels.pod_name, labels.pod_uid, labels.container_name
+    ));
+    match newest_log_in_dir(&dir) {
+        Some(path) => CriLogResolve {
+            container_id: id,
+            kind: labels.kind.clone(),
+            pod_name: labels.pod_name.clone(),
+            pod_namespace: labels.pod_namespace.clone(),
+            container_name: labels.container_name.clone(),
+            path: Some(path.display().to_string()),
+            message: format!(
+                "{}/{} in {}",
+                labels.pod_namespace, labels.pod_name, labels.container_name
+            ),
+        },
+        None => CriLogResolve {
+            container_id: id,
+            kind: labels.kind,
+            pod_name: labels.pod_name,
+            pod_namespace: labels.pod_namespace,
+            container_name: labels.container_name,
+            path: None,
+            message: format!("(no log file under {})", dir.display()),
+        },
+    }
+}
+
+fn resolve_container_id(ctr: &str, needle: &str) -> Result<String, String> {
+    let out = run_ctr(ctr, &["containers", "ls"])?;
+    let running = HashSet::new();
+    let rows = parse_containers_ls(&out, &running);
+    let matches: Vec<&ContainerRow> = rows
+        .iter()
+        .filter(|r| r.id == needle || r.id.starts_with(needle))
+        .collect();
+    match matches.as_slice() {
+        [] => Err(format!("no container matching id prefix {needle:?}")),
+        [one] => Ok(one.id.clone()),
+        many => Err(format!(
+            "ambiguous container id prefix {needle:?} ({} matches)",
+            many.len()
+        )),
+    }
+}
+
+/// Pick the newest `*.log` in a kubelet container log directory.
+pub fn newest_log_in_dir(dir: &Path) -> Option<PathBuf> {
+    use std::fs;
+    use std::time::SystemTime;
+
+    let entries = fs::read_dir(dir).ok()?;
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    for ent in entries.flatten() {
+        let path = ent.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("log") {
+            continue;
+        }
+        let modified = ent
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        match &best {
+            Some((t, _)) if modified <= *t => {}
+            _ => best = Some((modified, path)),
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 /// Best-effort `"key": "value"` extractor (handles escaped quotes lightly).
@@ -322,6 +511,7 @@ abc123def4567890                                                    1234     RUN
         assert_eq!(labels.kind, "sandbox");
         assert_eq!(labels.pod_name, "coredns-5d4dd4d4f-abcde");
         assert_eq!(labels.pod_namespace, "kube-system");
+        assert_eq!(labels.pod_uid, "49b28d61-8984-4ed3-8c4b-0762628c55fe");
         assert!(labels.container_name.is_empty());
     }
 
@@ -362,6 +552,7 @@ abc123def4567890                                                    1234     RUN
             kind: "sandbox".into(),
             pod_name: "my-pod".into(),
             pod_namespace: "default".into(),
+            pod_uid: "uid-1".into(),
             container_name: String::new(),
         };
         let mut row = ContainerRow {
@@ -377,5 +568,26 @@ abc123def4567890                                                    1234     RUN
         apply_labels(&mut row, &labels);
         assert_eq!(row.name, "my-pod");
         assert_eq!(row.kind, "sandbox");
+    }
+
+    #[test]
+    fn picks_newest_log_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let older = dir.path().join("0.log");
+        let newer = dir.path().join("1.log");
+        std::fs::write(&older, "old").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&newer, "new").unwrap();
+        let got = newest_log_in_dir(dir.path()).unwrap();
+        assert_eq!(got, newer);
+    }
+
+    #[test]
+    fn pod_log_dir_layout() {
+        let path = format!(
+            "/var/log/pods/{}_{}_{}/{}",
+            "kube-system", "coredns-x", "uid", "coredns"
+        );
+        assert_eq!(path, "/var/log/pods/kube-system_coredns-x_uid/coredns");
     }
 }

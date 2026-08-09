@@ -7,9 +7,13 @@ use std::process::Command;
 
 use thiserror::Error;
 
+use crate::containers;
+
 #[derive(Debug, Error)]
 pub enum LogsError {
-    #[error("unknown service '{0}' (want pertiskd|containerd|kubelet|dmesg)")]
+    #[error(
+        "unknown service '{0}' (want pertiskd|containerd|kubelet|dmesg|container:<id>)"
+    )]
     UnknownService(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -27,6 +31,9 @@ pub struct LogTail {
 /// Tail logs for a named service.
 pub fn tail_logs(state_root: &Path, service: &str, tail_lines: u32) -> Result<LogTail, LogsError> {
     let n = normalize_tail(tail_lines);
+    if let Some(id) = service.strip_prefix("container:") {
+        return tail_container_logs(id, n);
+    }
     match service {
         "dmesg" => tail_dmesg(n),
         "pertiskd" => {
@@ -43,6 +50,32 @@ pub fn tail_logs(state_root: &Path, service: &str, tail_lines: u32) -> Result<Lo
         }
         other => Err(LogsError::UnknownService(other.into())),
     }
+}
+
+fn tail_container_logs(id: &str, n: usize) -> Result<LogTail, LogsError> {
+    let service = format!("container:{}", id.trim());
+    let resolved = containers::resolve_cri_log(id);
+    let Some(path) = resolved.path.as_deref() else {
+        return Ok(LogTail {
+            service,
+            source: resolved.message.clone(),
+            lines: vec![resolved.message],
+        });
+    };
+    let path = Path::new(path);
+    if !path.exists() {
+        return Ok(LogTail {
+            service,
+            source: path.display().to_string(),
+            lines: vec![format!("(no log file at {})", path.display())],
+        });
+    }
+    let lines = tail_file(path, n)?;
+    Ok(LogTail {
+        service,
+        source: path.display().to_string(),
+        lines,
+    })
 }
 
 fn normalize_tail(n: u32) -> usize {
@@ -153,5 +186,20 @@ mod tests {
             tail_logs(dir.path(), "nope", 10),
             Err(LogsError::UnknownService(_))
         ));
+    }
+
+    #[test]
+    fn container_service_soft_fails_without_runtime() {
+        let dir = tempdir().unwrap();
+        let tail = tail_logs(dir.path(), "container:deadbeef", 10).unwrap();
+        assert_eq!(tail.service, "container:deadbeef");
+        assert!(!tail.lines.is_empty());
+        // No containerd on the unit-test host → soft message, not InvalidArgument.
+        assert!(
+            tail.lines[0].contains("containerd socket")
+                || tail.lines[0].contains("ctr binary")
+                || tail.lines[0].contains("no container")
+                || tail.lines[0].contains("no log file")
+        );
     }
 }
