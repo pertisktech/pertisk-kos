@@ -18,6 +18,14 @@ STORAGE="${PROXMOX_EFI_STORAGE:-${PROXMOX_STORAGE:-local-zfs}}"
 BRIDGE="${PROXMOX_BRIDGE:-vmbr0}"
 SSH_HOST="${PROXMOX_SSH:-}"
 
+# Stable MAC in Proxmox OUI space: BC:24:11 + 24-bit VMID (clones overwrite net0).
+mac_for_vmid() {
+  local id="$1"
+  printf 'BC:24:11:%02X:%02X:%02X' $(( (id >> 16) & 255 )) $(( (id >> 8) & 255 )) $(( id & 255 ))
+}
+NET0_MAC="$(mac_for_vmid "${VMID}")"
+NET0_SPEC="virtio=${NET0_MAC},bridge=${BRIDGE}"
+
 run() {
   if [[ -n "$SSH_HOST" ]]; then
     ssh -o StrictHostKeyChecking=accept-new "$SSH_HOST" "$@"
@@ -26,13 +34,13 @@ run() {
   fi
 }
 
-echo "==> ensure arm64 template VMID=${VMID} name=${NAME} storage=${STORAGE}"
+echo "==> ensure arm64 template VMID=${VMID} name=${NAME} storage=${STORAGE} net0=${NET0_SPEC}"
 
 if run "qm status ${VMID} >/dev/null 2>&1"; then
   echo "==> VM ${VMID} already exists — converting to template if needed"
   run "qm stop ${VMID} >/dev/null 2>&1 || true"
   run "qm template ${VMID} >/dev/null 2>&1 || true"
-  run "qm config ${VMID} | grep -E '^(arch|machine|bios|efidisk|template):' || true"
+  run "qm config ${VMID} | grep -E '^(arch|machine|bios|efidisk|template|net0):' || true"
   echo "==> done — set PROXMOX_ARM64_TEMPLATE=${VMID} on mgmt"
   exit 0
 fi
@@ -43,7 +51,7 @@ run "qm create ${VMID} \
   --memory 1024 --cores 1 --cpu max \
   --arch aarch64 --machine virt --bios ovmf \
   --scsihw virtio-scsi-single \
-  --net0 virtio,bridge=${BRIDGE} \
+  --net0 ${NET0_SPEC} \
   --ostype l26 --agent enabled=1 \
   --serial0 socket --vga serial0 \
   --efidisk0 ${STORAGE}:1,efitype=4m,pre-enrolled-keys=0"

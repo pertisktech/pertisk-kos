@@ -202,12 +202,16 @@ Disable with `--no-dashboard` if you need raw scrolling serial logs only.
 Or look up the VM MAC on the Proxmox host / DHCP server:
 
 ```bash
-# MAC from Hardware → Network Device, e.g. BC:24:11:F2:B6:53
-ip neigh | grep -i bc:24:11:f2:b6:53
+# MAC is pinned from VMID at create: BC:24:11 + 24-bit VMID
+# e.g. VMID 210 → BC:24:11:00:00:D2
+qm config <vmid> | grep ^net0
+ip neigh | grep -i bc:24:11:00:00:d2
 # or your router's DHCP lease table for that MAC
 ```
 
-To force a known address, bake static config into the image (`dhcp: false` + `addresses` / `gateway` in the seed YAML) and rebuild.
+**Stable guest IPs (lab):** Proxmox does not assign DHCP — your router does (e.g. OpenWrt at `10.1.1.10`). New VMs get `net0=virtio=BC:24:11:…,bridge=…` with MAC derived from VMID so recreate keeps the same MAC. Add **Static Leases** on the DHCP server (LuCI → Network → DHCP and DNS) for each MAC → desired IPv4. Do not reserve the HA kube-vip.
+
+To force a known address without DHCP, bake static config into the image (`dhcp: false` + `addresses` / `gateway` in the seed YAML) and rebuild.
 
 ### If the VM does not boot
 
@@ -371,8 +375,8 @@ You can still join Pertisk workers to a non-Pertisk control plane with `examples
 
 | Item | Recommendation |
 |------|----------------|
-| Guest NIC | virtio on `vmbr0` (or VLAN bridge); image loads `virtio_net` module at boot |
-| Guest IP | DHCP (default seed) or static in machine config |
+| Guest NIC | virtio on `vmbr0` (or VLAN bridge); MAC pinned as `BC:24:11:` + VMID |
+| Guest IP | DHCP (default seed) or static in machine config; reserve DHCP by MAC for stable lab IPs |
 | Management API | `:50000` (mTLS); firewall carefully |
 | Metrics | `:50001` (optional bearer token) |
 | CNI | Prefer `cni: none` + Cilium, Calico, or Flannel on multi-node Proxmox |

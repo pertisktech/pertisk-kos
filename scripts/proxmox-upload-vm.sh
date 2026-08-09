@@ -80,6 +80,14 @@ done
   exit 1
 }
 
+# Stable MAC in Proxmox OUI space: BC:24:11 + 24-bit VMID (survives recreate).
+mac_for_vmid() {
+  local id="$1"
+  printf 'BC:24:11:%02X:%02X:%02X' $(( (id >> 16) & 255 )) $(( (id >> 8) & 255 )) $(( id & 255 ))
+}
+NET0_MAC="$(mac_for_vmid "${VMID}")"
+NET0_SPEC="virtio=${NET0_MAC},bridge=${BRIDGE}"
+
 # Normalize / infer guest arch.
 normalize_arch() {
   local a
@@ -327,13 +335,16 @@ clone_from_arm64_template() {
     echo "hint: create template first (scripts/proxmox-ensure-arm64-template.sh) or set PROXMOX_SSH" >&2
     exit 1
   fi
-  # Apply sizing; strip any template scsi0 so we import the cloud image fresh.
+  # Apply sizing + pin MAC to this VMID (do not keep template MAC).
+  # Strip any template scsi0 so we import the cloud image fresh.
   api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
     --data-urlencode "memory=${MEMORY}" \
     --data-urlencode "cores=${CORES}" \
     --data-urlencode "cpu=${ARM64_CPU:-host}" \
     --data-urlencode "machine=virt" \
-    --data-urlencode "bios=ovmf" >/dev/null 2>&1 || true
+    --data-urlencode "bios=ovmf" \
+    --data-urlencode "net0=${NET0_SPEC}" >/dev/null 2>&1 || true
+  echo "    net0=${NET0_SPEC} (MAC pinned from VMID)"
   if vm_has_scsi0; then
     echo "==> removing template scsi0 before cloud-image import"
     detach_scsi0
@@ -379,7 +390,7 @@ else
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" \
       "qm create ${VMID} --name $(printf '%q' "$NAME") --memory ${MEMORY} --cores ${CORES} \
         --cpu ${ARM64_CPU:-host} --arch aarch64 --machine virt --bios ovmf \
-        --scsihw virtio-scsi-single --net0 virtio,bridge=${BRIDGE} \
+        --scsihw virtio-scsi-single --net0 ${NET0_SPEC} \
         --ostype l26 --agent enabled=1 --onboot 1 \
         --efidisk0 ${EFI_STORAGE}:1,efitype=4m,pre-enrolled-keys=0" || {
       echo "ERROR: qm create failed on ${PROXMOX_SSH}" >&2
@@ -397,7 +408,7 @@ else
       --data-urlencode "machine=${PVE_MACHINE}"
       --data-urlencode "bios=ovmf"
       --data-urlencode "scsihw=virtio-scsi-single"
-      --data-urlencode "net0=virtio,bridge=${BRIDGE}"
+      --data-urlencode "net0=${NET0_SPEC}"
       --data-urlencode "ostype=l26"
       --data-urlencode "agent=enabled=1"
       --data-urlencode "onboot=1"
@@ -411,9 +422,9 @@ else
     }
   fi
   if [[ "${DUAL_STACK:-${PERTISK_DUAL_STACK:-0}}" == "1" ]]; then
-    echo "    net0=virtio,bridge=${BRIDGE} (dual-stack: IPv6 enabled after machine config apply)"
+    echo "    net0=${NET0_SPEC} (MAC pinned from VMID; dual-stack: IPv6 after machine config apply)"
   else
-    echo "    net0=virtio,bridge=${BRIDGE} (IPv4-only by default; pass lab --dual-stack for IPv6)"
+    echo "    net0=${NET0_SPEC} (MAC pinned from VMID; IPv4-only by default)"
   fi
 fi
 
