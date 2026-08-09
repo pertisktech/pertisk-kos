@@ -11,7 +11,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 
 ## Status
 
-**P5 (productize) — mostly done for lab / HA.** Remaining stretch: TPM2 Quote + remote verifier; BusyBox-free DHCP.
+**P5 (productize) — mostly done for lab / HA.** Remaining stretch: TPM2 Quote + remote verifier; etcd snapshot / CRI introspection.
 
 | Area | Progress |
 |------|----------|
@@ -22,6 +22,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 | Metrics mTLS (`:50001` with API PEMs) | done |
 | UKI / OVMF enroll (`make enroll-ovmf`) | done |
 | TPM PCR Attest (sysfs / `pertiskctl attest`) | done (lab) |
+| BusyBox-free DHCPv4 (builtin primary) | done |
 
 ---
 
@@ -33,6 +34,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 - `pertiskd` PID 1: GPT / STATE / EPHEMERAL disks, DHCP or static net, containerd, kubelet, signed A/B updates, serial console dashboard
 - Multi-arch **amd64** / **arm64** (initramfs + cloud qcow2/raw)
 - A/B OS updates with Ed25519-signed bundles (`pertisk-update` / `pertisk-sign`)
+- In-process DHCPv4 (BusyBox `udhcpc` fallback only)
 - UKI / Secure Boot lab path (`make uki`, `make enroll-ovmf`, `PERTISK_TPM=1`) — see [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 - Guest extensions: **nfs-client**, **qemu-guest-agent**
 - Machine config `v1alpha1`: network, install disk, cluster endpoint/token/CA, kubelet `maxPods`, `machine.dashboard.mgmt_url`
@@ -252,5 +254,5 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 ## Next
 
 1. TPM2 Quote / AK enrollment + remote attestation verifier (mgmt)
-2. BusyBox-free DHCP (replace multi-call `udhcpc`; leases already applied by Rust hook)
-3. etcd snapshot / restore; container/CRI introspection
+2. etcd snapshot / restore; container/CRI introspection
+3. Replace BusyBox `mount` / `umount` / `ip` applets (DHCP already in-process)

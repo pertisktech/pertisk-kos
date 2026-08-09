@@ -199,12 +199,13 @@ Shipped:
 - UKI build + ESP install + OVMF enroll automation (`make uki`, `make enroll-ovmf`) — [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 - TPM PCR Attest lab path (`MachineService.Attest`, `pertiskctl attest`, QEMU `PERTISK_TPM=1`)
 - Management plane: `pertisk-mgmt` UI + Proxmox / ESXi providers — [docs/MGMT.md](./docs/MGMT.md)
+- BusyBox-free DHCPv4: in-process client primary (`pertisk-net::dhcp`); `udhcpc` + hook as fallback only
 
 Still open (stretch):
 
 - TPM2 Quote / AK + remote attestation verifier
-- BusyBox-free DHCP (Rust lease hook already applies addresses)
 - etcd snapshot / restore; CRI introspection
+- BusyBox `mount` / `umount` / `ip` applets (DHCPv4 lease path is in-process)
 
 ---
 
@@ -261,8 +262,8 @@ Done:
 **Next (P5 stretch)**
 
 1. TPM2 Quote / AK + remote attestation verifier
-2. BusyBox-free DHCP
-3. etcd snapshot / restore; CRI introspection
+2. etcd snapshot / restore; CRI introspection
+3. BusyBox `mount` / `umount` / `ip` applets
 
 **Later (mgmt / ops parity)**
 
@@ -317,7 +318,8 @@ Pertisk KOS is a standalone product with its own API and image format.
 | M5 | A/B upgrade with rollback | Done (signed bundles + boot attempts / mark-good) |
 | M5b | HA + mgmt UI (Proxmox / ESXi) | Done |
 | M5c | Secure Boot lab (UKI + OVMF enroll + PCR Attest) | Done (lab); Quote/remote verify stretch |
-| M6 | TPM2 Quote + remote verifier; BusyBox-free DHCP | **Next** |
+| M5d | BusyBox-free DHCPv4 (builtin primary) | Done (`dhcp::run_dhcp` first; udhcpc fallback) |
+| M6 | TPM2 Quote + remote verifier; etcd/CRI ops | **Next** |
 
 ---
 

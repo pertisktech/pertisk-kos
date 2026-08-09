@@ -192,30 +192,13 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
     };
     let cidr = format!("{ip}/{prefix}");
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| NetError::Msg(e.to_string()))?;
-    rt.block_on(async {
-        // Best-effort flush: IPv6 EAFNOSUPPORT must not block installing the
-        // IPv4 lease (dashboard otherwise sticks on eth0 `(no ip)`).
-        if let Err(err) = crate::link::flush_addresses(iface).await {
-            tracing::warn!(
-                interface = iface,
-                error = %err,
-                "DHCP flush before bind failed; continuing"
-            );
-        }
-        crate::link::add_address(iface, &cidr).await?;
-        if let Some(DhcpOption::Router(routers)) = ack.opts().get(OptionCode::Router) {
-            for gw in routers {
-                if let Err(err) = crate::link::add_default_route(&gw.to_string()).await {
-                    tracing::warn!(gateway = %gw, error = %err, "DHCP default route failed");
-                }
-            }
-        }
-        Ok::<(), NetError>(())
-    })?;
+    let mut routers: Vec<Ipv4Addr> = Vec::new();
+    if let Some(DhcpOption::Router(r)) = ack.opts().get(OptionCode::Router) {
+        routers.extend(r.iter().copied());
+    }
+
+    // ioctl apply (same path as udhcpc hook) — avoids flaky netlink on virtio.
+    crate::link::apply_dhcp_v4_lease(iface, ip, prefix, &routers)?;
 
     // Verify IPv4 actually landed — IPv6 LL alone must not count as success.
     {
@@ -290,4 +273,26 @@ fn ipv4_mask_to_prefix(mask: std::net::Ipv4Addr) -> Result<u8, NetError> {
         return Err(NetError::Msg(format!("non-contiguous DHCP mask {mask}")));
     }
     Ok(prefix)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::ipv4_mask_to_prefix;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn mask_to_prefix() {
+        assert_eq!(
+            ipv4_mask_to_prefix(Ipv4Addr::new(255, 255, 255, 0)).unwrap(),
+            24
+        );
+        assert_eq!(
+            ipv4_mask_to_prefix(Ipv4Addr::new(255, 255, 0, 0)).unwrap(),
+            16
+        );
+        assert_eq!(
+            ipv4_mask_to_prefix(Ipv4Addr::new(255, 255, 255, 252)).unwrap(),
+            30
+        );
+    }
 }

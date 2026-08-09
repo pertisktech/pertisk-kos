@@ -784,7 +784,26 @@ pub async fn resolve_iface(configured: &str) -> Result<String, NetError> {
     )))
 }
 
+/// Apply a DHCPv4 lease via ioctl (no netlink) — shared by builtin DHCP and udhcpc hook.
+#[cfg(target_os = "linux")]
+pub fn apply_dhcp_v4_lease(
+    iface: &str,
+    ip: std::net::Ipv4Addr,
+    prefix: u8,
+    routers: &[std::net::Ipv4Addr],
+) -> Result<(), NetError> {
+    let _ = del_ipv4_ioctl(iface);
+    add_ipv4_ioctl(iface, ip, prefix)?;
+    for gw in routers {
+        if let Err(err) = add_default_route_v4_ioctl(*gw) {
+            tracing::warn!(interface = iface, gateway = %gw, error = %err, "DHCP default route failed");
+        }
+    }
+    Ok(())
+}
+
 /// Funnel a child's captured output into tracing, one line per record.
+#[cfg(target_os = "linux")]
 fn log_child_output(bin: &str, stdout: &[u8], stderr: &[u8]) {
     for (stream, bytes) in [("stdout", stdout), ("stderr", stderr)] {
         for line in String::from_utf8_lossy(bytes).lines() {
@@ -796,6 +815,7 @@ fn log_child_output(bin: &str, stdout: &[u8], stderr: &[u8]) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn dhcp_bin(candidates: &[&'static str]) -> Option<&'static str> {
     for c in candidates {
         if std::path::Path::new(c).is_file() {
@@ -805,9 +825,10 @@ fn dhcp_bin(candidates: &[&'static str]) -> Option<&'static str> {
     None
 }
 
-/// Run a DHCP client if available (`udhcpc`, then `dhclient`).
+/// Run DHCPv4 on `iface`.
 ///
-/// Prefer `udhcpc -s /usr/lib/pertisk/udhcpc-hook` so leases apply without `/bin/sh`.
+/// Order: **builtin** in-process client first (BusyBox-free), then BusyBox
+/// `udhcpc -s /usr/lib/pertisk/udhcpc-hook` as fallback, then optional `dhclient`.
 /// Uses absolute paths — PID 1 often has an empty `PATH`.
 #[cfg(target_os = "linux")]
 pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
@@ -819,6 +840,36 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
     const UDHCPC_BINS: &[&str] = &["/usr/sbin/udhcpc", "/sbin/udhcpc", "udhcpc"];
     const DHCLIENT_BINS: &[&str] = &["/usr/sbin/dhclient", "/sbin/dhclient", "dhclient"];
 
+    wait_carrier(iface, Duration::from_secs(10))?;
+
+    let mut last_err = String::from("no DHCP client ran");
+
+    // 1) Builtin DHCPv4 (primary — no BusyBox multi-call needed for leases).
+    match crate::dhcp::run_dhcp(iface) {
+        Ok(()) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| NetError::Msg(e.to_string()))?;
+            let addrs = rt.block_on(list_addresses(iface)).unwrap_or_default();
+            if addrs.iter().any(|a| a.contains('.')) {
+                tracing::info!(
+                    interface = iface,
+                    addresses = ?addrs,
+                    "builtin DHCP IPv4 lease applied"
+                );
+                return Ok(());
+            }
+            last_err = format!("builtin DHCP returned Ok but no IPv4 on {iface}: {addrs:?}");
+            tracing::warn!(%last_err, "builtin DHCP incomplete");
+        }
+        Err(err) => {
+            tracing::warn!(interface = iface, error = %err, "builtin DHCP failed; trying udhcpc");
+            last_err = err.to_string();
+        }
+    }
+
+    // 2) BusyBox udhcpc + Rust hook (fallback).
     let hook = if std::path::Path::new(UDHCPC_HOOK).is_file() {
         Some(UDHCPC_HOOK)
     } else {
@@ -826,11 +877,6 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
         None
     };
 
-    wait_carrier(iface, Duration::from_secs(10))?;
-
-    // BusyBox udhcpc first — more reliable on virtio than the in-process client
-    // when only IPv6 link-local is present and DHCPv4 must still win.
-    let mut last_err = String::from("no DHCP client ran");
     for attempt in 1..=3 {
         if let Some(bin) = dhcp_bin(UDHCPC_BINS) {
             let mut args = vec!["-i", iface, "-f", "-n", "-q", "-t", "8"];
@@ -860,7 +906,7 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
                             interface = iface,
                             attempt,
                             addresses = ?addrs,
-                            "udhcpc IPv4 lease applied"
+                            "udhcpc IPv4 lease applied (fallback)"
                         );
                         return Ok(());
                     }
@@ -887,7 +933,6 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
                 }
             }
         } else {
-            last_err = "udhcpc not found".into();
             break;
         }
 
@@ -896,25 +941,7 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
         }
     }
 
-    match crate::dhcp::run_dhcp(iface) {
-        Ok(()) => {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| NetError::Msg(e.to_string()))?;
-            let addrs = rt.block_on(list_addresses(iface)).unwrap_or_default();
-            if addrs.iter().any(|a| a.contains('.')) {
-                return Ok(());
-            }
-            last_err = format!("builtin DHCP returned Ok but no IPv4 on {iface}: {addrs:?}");
-            tracing::warn!(%last_err, "builtin DHCP incomplete");
-        }
-        Err(err) => {
-            tracing::warn!(interface = iface, error = %err, "builtin DHCP failed");
-            last_err = err.to_string();
-        }
-    }
-
+    // 3) Optional dhclient.
     if let Some(bin) = dhcp_bin(DHCLIENT_BINS) {
         match Command::new(bin).args(["-1", "-v", iface]).output() {
             Ok(out) if out.status.success() => {
@@ -937,11 +964,6 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
         }
     }
 
-    if dhcp_bin(UDHCPC_BINS).is_none() && dhcp_bin(DHCLIENT_BINS).is_none() {
-        return Err(NetError::Msg(format!(
-            "no DHCP client found for {iface} (tried /usr/sbin/udhcpc)"
-        )));
-    }
     Err(NetError::Msg(format!(
         "DHCP failed for {iface} (no IPv4): {last_err}"
     )))

@@ -38,16 +38,15 @@ pub fn run_from_env(args: &[String]) -> Result<(), NetError> {
                 .map_err(|e| NetError::Msg(format!("udhcpc bad $ip {ip}: {e}")))?;
             let prefix = lease_prefix_len()?;
             eprintln!("pertisk-udhcpc-hook: {action} {iface} {ip}/{prefix}");
-            crate::link::add_ipv4_ioctl(&iface, ip, prefix)?;
-            if let Ok(routers) = std::env::var("router") {
-                for gw in routers.split_whitespace() {
+            let mut routers = Vec::new();
+            if let Ok(router) = std::env::var("router") {
+                for gw in router.split_whitespace() {
                     if let Ok(gw_ip) = Ipv4Addr::from_str(gw) {
-                        if let Err(err) = crate::link::add_default_route_v4_ioctl(gw_ip) {
-                            eprintln!("pertisk-udhcpc-hook: route {gw}: {err}");
-                        }
+                        routers.push(gw_ip);
                     }
                 }
             }
+            crate::link::apply_dhcp_v4_lease(&iface, ip, prefix, &routers)?;
             if let Ok(dns) = std::env::var("dns") {
                 let servers: Vec<String> = dns
                     .split_whitespace()

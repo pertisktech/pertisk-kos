@@ -1,10 +1,8 @@
 //! Host networking for Pertisk KOS (Phase 1 / M2).
 //!
-//! Brings links up, applies static addressing via netlink, or requests DHCP
-//! through `udhcpc` / `dhclient` when present.
-//!
-//! Production images have no shell, so DHCP leases are applied by the
-//! `pertisk-udhcpc-hook` binary (`udhcpc -s /usr/lib/pertisk/udhcpc-hook`).
+//! Brings links up, applies static addressing via netlink/ioctl, or requests
+//! DHCPv4 via the **in-process** client (`dhcp::run_dhcp`). BusyBox `udhcpc`
+//! (with `pertisk-udhcpc-hook`) remains a fallback only.
 
 mod apply;
 #[cfg(target_os = "linux")]

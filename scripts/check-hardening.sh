@@ -96,6 +96,8 @@ check "production ships mount applet" file_has "${DF}" 'ln -sf /usr/sbin/udhcpc 
 check "debug profile installs ash" file_has "${DF}" 'IMAGE_PROFILE.*=.*"debug"'
 check "udhcpc without /bin/busybox path" file_has "${DF}" 'usr/sbin/udhcpc'
 check "shell-less udhcpc hook in image" file_has "${DF}" 'usr/lib/pertisk/udhcpc-hook'
+check "builtin DHCP preferred over udhcpc" file_has "crates/pertisk-net/src/link.rs" 'crate::dhcp::run_dhcp\(iface\)'
+check "shared ioctl DHCP lease apply" file_has "crates/pertisk-net/src/link.rs" 'apply_dhcp_v4_lease'
 
 # --- Unit tests for kubelet CIS fields ---
 echo
