@@ -30,6 +30,8 @@ service MachineService {
   rpc GrowDisk(GrowDiskRequest) returns (GrowDiskResponse);
   // Read TPM PCR digests (sysfs lab path) + active boot slot/version.
   rpc Attest(AttestRequest) returns (AttestResponse);
+  // List containers via containerd `ctr` (k8s.io namespace).
+  rpc Containers(ContainersRequest) returns (ContainersResponse);
 }
 
 message VersionRequest {}
@@ -217,4 +219,22 @@ message AttestResponse {
   string active_slot = 3;
   string version = 4;
   repeated PcrValue pcrs = 5;
+}
+
+message ContainersRequest {}
+
+message ContainerInfo {
+  string id = 1;
+  string name = 2;
+  string image = 3;
+  // running | created | stopped | unknown
+  string state = 4;
+  // containerd namespace (k8s.io for kubelet pods)
+  string namespace = 5;
+}
+
+message ContainersResponse {
+  bool available = 1;
+  string message = 2;
+  repeated ContainerInfo containers = 3;
 }

@@ -92,7 +92,9 @@ check "gen-secureboot-keys.sh exists" test -x scripts/gen-secureboot-keys.sh
 DF="image/Dockerfile.initramfs"
 check "IMAGE_PROFILE defaults to production" file_has "${DF}" 'ARG IMAGE_PROFILE=production'
 check "production removes /bin/busybox" file_has "${DF}" 'rm -f ./bin/busybox'
-check "production ships mount applet" file_has "${DF}" 'ln -sf /usr/sbin/udhcpc ./bin/mount'
+check "util-linux mount shipped" file_has "${DF}" 'tools/bin/mount /tools/bin/umount'
+check "iproute2 ip shipped" file_has "${DF}" 'tools/bin/ip ./sbin/ip'
+check "mount not BusyBox applet" bash -c "! grep -qE 'ln -sf /usr/sbin/udhcpc ./bin/mount' '${DF}'"
 check "debug profile installs ash" file_has "${DF}" 'IMAGE_PROFILE.*=.*"debug"'
 check "udhcpc without /bin/busybox path" file_has "${DF}" 'usr/sbin/udhcpc'
 check "shell-less udhcpc hook in image" file_has "${DF}" 'usr/lib/pertisk/udhcpc-hook'

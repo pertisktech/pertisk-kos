@@ -200,12 +200,14 @@ Shipped:
 - TPM PCR Attest lab path (`MachineService.Attest`, `pertiskctl attest`, QEMU `PERTISK_TPM=1`)
 - Management plane: `pertisk-mgmt` UI + Proxmox / ESXi providers — [docs/MGMT.md](./docs/MGMT.md)
 - BusyBox-free DHCPv4: in-process client primary (`pertisk-net::dhcp`); `udhcpc` + hook as fallback only
+- util-linux `mount`/`umount` + iproute2 `ip` in the initramfs (BusyBox only as `udhcpc` fallback)
+- CRI introspection lab path (`MachineService.Containers`, `pertiskctl containers` via `ctr`)
 
 Still open (stretch):
 
 - TPM2 Quote / AK + remote attestation verifier
-- etcd snapshot / restore; CRI introspection
-- BusyBox `mount` / `umount` / `ip` applets (DHCPv4 lease path is in-process)
+- etcd snapshot / restore
+- Optional drop of BusyBox/`udhcpc` fallback
 
 ---
 
@@ -242,6 +244,7 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 - `ApplyConfiguration` / `ValidateConfiguration`
 - `Reboot` / `Shutdown`
 - `Version` / `Health` / `Attest` (sysfs PCR digests + boot slot)
+- `Containers` (containerd `ctr` list in `k8s.io`)
 - `Logs` (pertiskd, containerd, kubelet, dmesg)
 - `Upgrade` / `MarkBootGood` / `UpgradeStatus`
 - Metrics HTTP(S) `/metrics` (Prometheus text; mTLS when TLS PEMs set)
@@ -251,7 +254,7 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 Done:
 
 - `Bootstrap` / `Kubeconfig` / `JoinConfig` / `GetJoinConfig` / `JoinControlPlane` RPCs
-- `pertiskctl gen config` / `apply` / `bootstrap` / `kubeconfig` / `join-config` / `attest`
+- `pertiskctl gen config` / `apply` / `bootstrap` / `kubeconfig` / `join-config` / `attest` / `containers`
 - Static-pod etcd + apiserver + controller-manager + scheduler (`pertisk-bootstrap`)
 - Worker TLS bootstrap (bootstrap-kubeconfig → CSR → node cert)
 - Post-bootstrap finalize: token Secret, node-join RBAC, CP labels/taints, CoreDNS + metrics-server
@@ -262,12 +265,12 @@ Done:
 **Next (P5 stretch)**
 
 1. TPM2 Quote / AK + remote attestation verifier
-2. etcd snapshot / restore; CRI introspection
-3. BusyBox `mount` / `umount` / `ip` applets
+2. etcd snapshot / restore
+3. Optional drop of BusyBox/`udhcpc` fallback
 
 **Later (mgmt / ops parity)**
 
-- container/CRI introspection
+- container/CRI deep dive (pod sandboxes / CRI logs) — list via `Containers` is done
 - net / disk inspect
 - reset / wipe
 - dashboard events stream
@@ -319,7 +322,9 @@ Pertisk KOS is a standalone product with its own API and image format.
 | M5b | HA + mgmt UI (Proxmox / ESXi) | Done |
 | M5c | Secure Boot lab (UKI + OVMF enroll + PCR Attest) | Done (lab); Quote/remote verify stretch |
 | M5d | BusyBox-free DHCPv4 (builtin primary) | Done (`dhcp::run_dhcp` first; udhcpc fallback) |
-| M6 | TPM2 Quote + remote verifier; etcd/CRI ops | **Next** |
+| M5e | util-linux mount/umount + iproute2 ip | Done (BusyBox only as udhcpc) |
+| M5f | CRI introspection (`Containers` / `ctr`) | Done (lab) |
+| M6 | TPM2 Quote + remote verifier; etcd snapshot/restore | **Next** |
 
 ---
 

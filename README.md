@@ -11,7 +11,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 
 ## Status
 
-**P5 (productize) — mostly done for lab / HA.** Remaining stretch: TPM2 Quote + remote verifier; etcd snapshot / CRI introspection.
+**P5 (productize) — mostly done for lab / HA.** Remaining stretch: TPM2 Quote + remote verifier; etcd snapshot / restore.
 
 | Area | Progress |
 |------|----------|
@@ -23,6 +23,8 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 | UKI / OVMF enroll (`make enroll-ovmf`) | done |
 | TPM PCR Attest (sysfs / `pertiskctl attest`) | done (lab) |
 | BusyBox-free DHCPv4 (builtin primary) | done |
+| util-linux mount/umount + iproute2 ip | done |
+| CRI introspection (`pertiskctl containers`) | done (lab) |
 
 ---
 
@@ -35,10 +37,11 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 - Multi-arch **amd64** / **arm64** (initramfs + cloud qcow2/raw)
 - A/B OS updates with Ed25519-signed bundles (`pertisk-update` / `pertisk-sign`)
 - In-process DHCPv4 (BusyBox `udhcpc` fallback only)
+- util-linux `mount`/`umount` + iproute2 `ip` (no BusyBox applets)
 - UKI / Secure Boot lab path (`make uki`, `make enroll-ovmf`, `PERTISK_TPM=1`) — see [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 - Guest extensions: **nfs-client**, **qemu-guest-agent**
 - Machine config `v1alpha1`: network, install disk, cluster endpoint/token/CA, kubelet `maxPods`, `machine.dashboard.mgmt_url`
-- Observability: gRPC mTLS **:50000**, Prometheus **:50001** (mTLS when TLS PEMs set; optional bearer), `pertiskctl logs` / `attest`
+- Observability: gRPC mTLS **:50000**, Prometheus **:50001** (mTLS when TLS PEMs set; optional bearer), `pertiskctl logs` / `attest` / `containers`
 - Hardening checklist + `make check-hardening` — [docs/HARDENING.md](./docs/HARDENING.md)
 
 ### Cluster lifecycle
@@ -190,7 +193,8 @@ curl -s --cacert out/mtls/ca.crt \
 
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs dmesg -n 50
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs pertiskd
-./out/bin/pertiskctl -e 127.0.0.1:50000 attest   # TPM PCRs when present
+./out/bin/pertiskctl -e 127.0.0.1:50000 attest      # TPM PCRs when present
+./out/bin/pertiskctl -e 127.0.0.1:50000 containers # containerd k8s.io via ctr
 ```
 
 ## mTLS + signed upgrade smoke
@@ -254,5 +258,5 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 ## Next
 
 1. TPM2 Quote / AK enrollment + remote attestation verifier (mgmt)
-2. etcd snapshot / restore; container/CRI introspection
-3. Replace BusyBox `mount` / `umount` / `ip` applets (DHCP already in-process)
+2. etcd snapshot / restore
+3. Optional: drop BusyBox/`udhcpc` DHCP fallback entirely

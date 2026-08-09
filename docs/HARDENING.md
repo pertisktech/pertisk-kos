@@ -8,7 +8,7 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 
 | Control | Status | Notes |
 |---------|--------|-------|
-| No SSH / interactive shell in production image | pass | Default `IMAGE_PROFILE=production`: no `/bin/sh`; DHCPv4 via in-process client (BusyBox `udhcpc` fallback). `mount`/`umount` BusyBox applets for kubelet volumes. Debug profile adds ash (`PROFILE=debug`) |
+| No SSH / interactive shell in production image | pass | Default `IMAGE_PROFILE=production`: no `/bin/sh`; DHCPv4 in-process (BusyBox `udhcpc` fallback); util-linux `mount`/`umount` + iproute2 `ip`. Debug profile adds ash (`PROFILE=debug`) |
 | Immutable root FS | partial | Initramfs root; STATE/EPHEMERAL writable; full SquashFS/EROFS root still Phase 4/5 |
 | Management API mTLS | pass | `PERTISK_TLS_*` + `scripts/gen-mtls-certs.sh` |
 | Signed A/B OS upgrades | pass | Ed25519 trust key on STATE; unsigned rejected |
@@ -129,4 +129,5 @@ Marker file in the image: `/etc/pertisk/image-profile`.
 ## Gaps tracked for later
 
 - TPM2 Quote / AK enrollment + remote attestation verifier
-- BusyBox `mount` / `umount` / `ip` applets (DHCP lease path is already in-process)
+- etcd snapshot / restore
+- Drop BusyBox/`udhcpc` fallback entirely (optional)

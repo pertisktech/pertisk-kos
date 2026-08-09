@@ -25,7 +25,7 @@ Dependency order is handled by `fetch-kernel.sh`’s `copy_module` (follows
 
 Alpine `nfs-utils`: `/sbin/mount.nfs`, `mount.nfs4`, `umount.nfs`, `umount.nfs4`.
 
-BusyBox `mount -t nfs` looks for `/sbin/mount.nfs`.
+BusyBox `mount -t nfs` / util-linux `mount -t nfs` looks for `/sbin/mount.nfs`.
 
 ## NFS server (external)
 

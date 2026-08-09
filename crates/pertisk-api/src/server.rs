@@ -12,13 +12,13 @@ use pertisk_config::MachineConfig;
 use pertisk_proto::machine_service_server::{MachineService, MachineServiceServer};
 use pertisk_proto::{
     ApplyConfigurationRequest, ApplyConfigurationResponse, AttestRequest, AttestResponse,
-    BootstrapRequest, BootstrapResponse, GetJoinConfigRequest, GetJoinConfigResponse,
-    GrowDiskRequest, GrowDiskResponse, HealthRequest, HealthResponse, JoinControlPlaneRequest,
-    JoinControlPlaneResponse, KubeconfigRequest, KubeconfigResponse, LogsRequest, LogsResponse,
-    MarkBootGoodRequest, MarkBootGoodResponse, PcrValue, RebootRequest, RebootResponse,
-    ServiceListRequest, ServiceListResponse, ServiceStatus, ShutdownRequest, ShutdownResponse,
-    UpgradeRequest, UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse,
-    ValidateConfigurationResponse, VersionRequest, VersionResponse,
+    BootstrapRequest, BootstrapResponse, ContainerInfo, ContainersRequest, ContainersResponse,
+    GetJoinConfigRequest, GetJoinConfigResponse, GrowDiskRequest, GrowDiskResponse, HealthRequest,
+    HealthResponse, JoinControlPlaneRequest, JoinControlPlaneResponse, KubeconfigRequest,
+    KubeconfigResponse, LogsRequest, LogsResponse, MarkBootGoodRequest, MarkBootGoodResponse,
+    PcrValue, RebootRequest, RebootResponse, ServiceListRequest, ServiceListResponse, ServiceStatus,
+    ShutdownRequest, ShutdownResponse, UpgradeRequest, UpgradeResponse, UpgradeStatusRequest,
+    UpgradeStatusResponse, ValidateConfigurationResponse, VersionRequest, VersionResponse,
 };
 use pertisk_update::{apply_bundle, mark_boot_good, BootMeta, SlotLayout};
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
@@ -506,6 +506,30 @@ impl MachineService for MachineSvc {
                     index: p.index,
                     algo: p.algo,
                     digest_hex: p.digest_hex,
+                })
+                .collect(),
+        }))
+    }
+
+    async fn containers(
+        &self,
+        _request: Request<ContainersRequest>,
+    ) -> Result<Response<ContainersResponse>, Status> {
+        let snap = tokio::task::spawn_blocking(crate::containers::list_containers)
+            .await
+            .map_err(|e| Status::internal(format!("containers task: {e}")))?;
+        Ok(Response::new(ContainersResponse {
+            available: snap.available,
+            message: snap.message,
+            containers: snap
+                .containers
+                .into_iter()
+                .map(|c| ContainerInfo {
+                    id: c.id,
+                    name: c.name,
+                    image: c.image,
+                    state: c.state,
+                    namespace: c.namespace,
                 })
                 .collect(),
         }))

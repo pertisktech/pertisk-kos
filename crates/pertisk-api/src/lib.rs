@@ -2,6 +2,7 @@
 
 mod api_metrics;
 mod attest;
+mod containers;
 mod logs;
 mod metrics;
 mod server;

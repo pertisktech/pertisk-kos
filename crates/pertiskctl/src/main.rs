@@ -12,10 +12,10 @@ use pertisk_bootstrap::{
 use pertisk_config::Cluster;
 use pertisk_proto::machine_service_client::MachineServiceClient;
 use pertisk_proto::{
-    ApplyConfigurationRequest, AttestRequest, BootstrapRequest, GetJoinConfigRequest,
-    GrowDiskRequest, HealthRequest, JoinControlPlaneRequest, KubeconfigRequest, LogsRequest,
-    MarkBootGoodRequest, RebootRequest, ServiceListRequest, ShutdownRequest, UpgradeRequest,
-    UpgradeStatusRequest, VersionRequest,
+    ApplyConfigurationRequest, AttestRequest, BootstrapRequest, ContainersRequest,
+    GetJoinConfigRequest, GrowDiskRequest, HealthRequest, JoinControlPlaneRequest,
+    KubeconfigRequest, LogsRequest, MarkBootGoodRequest, RebootRequest, ServiceListRequest,
+    ShutdownRequest, UpgradeRequest, UpgradeStatusRequest, VersionRequest,
 };
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
@@ -60,6 +60,8 @@ enum Commands {
     Health,
     /// Read TPM PCR digests (sysfs) + active boot slot.
     Attest,
+    /// List containers via containerd (`ctr` / k8s.io namespace).
+    Containers,
     Services,
     Validate {
         #[arg(short = 'f', long)]
@@ -259,6 +261,28 @@ async fn main() -> Result<()> {
                 println!("{:<6} {:<8} {}", "PCR", "ALGO", "DIGEST");
                 for p in resp.pcrs {
                     println!("{:<6} {:<8} {}", p.index, p.algo, p.digest_hex);
+                }
+            }
+        }
+        Commands::Containers => {
+            let mut client = connect(&cli).await?;
+            let resp = client.containers(ContainersRequest {}).await?.into_inner();
+            println!("available={} — {}", resp.available, resp.message);
+            if !resp.containers.is_empty() {
+                println!(
+                    "{:<14} {:<24} {:<12} {}",
+                    "ID", "NAME", "STATE", "IMAGE"
+                );
+                for c in resp.containers {
+                    let id = if c.id.len() > 12 {
+                        &c.id[..12]
+                    } else {
+                        &c.id
+                    };
+                    println!(
+                        "{:<14} {:<24} {:<12} {}",
+                        id, c.name, c.state, c.image
+                    );
                 }
             }
         }
