@@ -56,6 +56,16 @@ PERTISK_SB_CERT=out/secureboot/db.crt \
 
 ## Enroll in OVMF (QEMU)
 
+Automated:
+
+```bash
+./scripts/enroll-ovmf-vars.sh
+# or: make enroll-ovmf
+PERTISK_OVMF_VARS=out/secureboot/OVMF_VARS.secboot.fd ./image/run-qemu-uefi.sh
+```
+
+Manual:
+
 1. Boot OVMF with Secure Boot disabled / setup mode (empty PK).
 2. Use the firmware UI (or `virt-fw-vars`) to enroll:
    - PK ← `PK.cer`

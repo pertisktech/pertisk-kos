@@ -6,6 +6,7 @@
 #   PERTISK_DISK=out/pertisk-cloud-amd64.raw ./image/run-qemu-uefi.sh
 #   PERTISK_DISK=out/pertisk-cloud-arm64.raw ./image/run-qemu-uefi.sh
 #   PERTISK_ARCH=arm64 PERTISK_DISK=out/pertisk-cloud-arm64.raw ./image/run-qemu-uefi.sh
+#   PERTISK_OVMF_VARS=out/secureboot/OVMF_VARS.secboot.fd ./image/run-qemu-uefi.sh  # after enroll-ovmf-vars.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

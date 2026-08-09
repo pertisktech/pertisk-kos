@@ -11,7 +11,7 @@ Pertisk boots with **systemd-boot** today (kernel + initramfs on the ESP). A **U
 | Build UKI (`ukify`) | done — `./image/build-uki.sh` |
 | ESP install UKI (`EFI/Linux/pertisk-{a,b}.efi`) | done — when `uki` present in slot/assets |
 | Sign UKI with db key | done — optional `PERTISK_SB_*` |
-| Enroll PK/KEK/db in firmware | lab docs below |
+| Enroll PK/KEK/db in firmware | done — `./scripts/enroll-ovmf-vars.sh` (or manual OVMF UI) |
 | TPM PCR attestation | todo |
 
 ## Build a UKI
@@ -53,6 +53,28 @@ PERTISK_SB_CERT=out/secureboot/db.crt \
 Private keys are **test-only**. Production must use org PKI / HSM.
 
 ## Enroll keys in OVMF (QEMU)
+
+### Automated (recommended)
+
+Requires [`virt-fw-vars`](https://pypi.org/project/virt-firmware/) (`pip install virt-firmware` or `python3-virt-firmware`).
+
+```bash
+./scripts/gen-secureboot-keys.sh
+./scripts/enroll-ovmf-vars.sh                 # → out/secureboot/OVMF_VARS.secboot.fd
+./scripts/enroll-ovmf-vars.sh --arch arm64    # → out/secureboot/AAVMF_VARS.secboot.fd
+
+# Sign UKI with the same db key, then boot with enrolled vars:
+PERTISK_SB_KEY=out/secureboot/db.key \
+PERTISK_SB_CERT=out/secureboot/db.crt \
+  make uki ARCH=amd64
+
+PERTISK_OVMF_VARS=out/secureboot/OVMF_VARS.secboot.fd \
+  ./image/run-qemu-uefi.sh
+```
+
+Override the blank template with `PERTISK_OVMF_VARS_TEMPLATE=/path/to/VARS.fd` if auto-detect misses your edk2 package.
+
+### Manual (firmware UI)
 
 1. Start QEMU with OVMF **and** a writable vars store (see `image/run-qemu-uefi.sh`).
 2. Enter firmware setup (often Esc / F2 during POST) → Secure Boot / Device Manager.

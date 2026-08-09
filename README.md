@@ -7,11 +7,13 @@ Immutable, API-only Kubernetes node OS, plus an optional management plane for pr
 
 Architecture and phases: [DESIGN.md](./DESIGN.md).
 
+![Pertisk KOS management dashboard](docs/resources/1786259533199.jpg)
+
 ## Status
 
 **P5 (partial)** — production images, HA bootstrap, mgmt UI, Proxmox + ESXi providers, dual-stack, CNI lab paths, UKI/Secure Boot lab, hardening CI.
 
-Still open: TPM attestation / OVMF enroll automation; metrics mTLS.
+Still open: TPM attestation; metrics mTLS.
 
 ---
 
@@ -23,7 +25,7 @@ Still open: TPM attestation / OVMF enroll automation; metrics mTLS.
 - `pertiskd` PID 1: GPT / STATE / EPHEMERAL disks, DHCP or static net, containerd, kubelet, signed A/B updates, serial console dashboard
 - Multi-arch **amd64** / **arm64** (initramfs + cloud qcow2/raw)
 - A/B OS updates with Ed25519-signed bundles (`pertisk-update` / `pertisk-sign`)
-- UKI / Secure Boot lab path (`make uki`) — see [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
+- UKI / Secure Boot lab path (`make uki`, `make enroll-ovmf`) — see [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 - Guest extensions: **nfs-client**, **qemu-guest-agent**
 - Machine config `v1alpha1`: network, install disk, cluster endpoint/token/CA, kubelet `maxPods`, `machine.dashboard.mgmt_url`
 - Observability: gRPC mTLS **:50000**, Prometheus **:50001**, `pertiskctl logs`
@@ -59,7 +61,7 @@ Single-port API + UI (`pertisk-mgmt`). Details: [docs/MGMT.md](./docs/MGMT.md).
 | Area | Capabilities |
 |------|----------------|
 | **Auth** | Local, Auth0, or both; roles `admin` \| `operator` \| `viewer` |
-| **Dashboard** | Cluster counts + CPU / memory / disk gauges |
+| **Dashboard** | Cluster counts, online/offline reachability, CPU / memory / disk gauges |
 | **Providers** | Proxmox (API token) and **vSphere ESXi** (SOAP `/sdk`); test probe |
 | **Create cluster** | Provider, CP/worker counts, arch, CNI, K8s version, max pods, VIP / dual-stack, VMID + live conflict checks, HW sizes |
 | **Cluster detail** | Overview, Nodes, **K8s** workloads, **Shell** (mgmt-host PTY + kubeconfig), Config, Upgrade, Jobs |
@@ -224,7 +226,7 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 | [docs/VSPHERE.md](./docs/VSPHERE.md) | ESXi provider |
 | [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md) | Platforms, runtime pins, CNI |
 | [docs/HARDENING.md](./docs/HARDENING.md) | CIS-ish worker checklist |
-| [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md) | UKI + enrollment lab |
+| [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md) | UKI + OVMF enroll (`enroll-ovmf-vars.sh`) |
 | [image/README.md](./image/README.md) | Initramfs / QEMU |
 | [image/cloud/README.md](./image/cloud/README.md) | Cloud upload outlines |
 | [image/extensions/README.md](./image/extensions/README.md) | nfs-client, qemu-ga |
@@ -233,4 +235,4 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 
 ## Next
 
-P5 remainder: TPM attestation / OVMF enroll automation; metrics mTLS.
+P5 remainder: TPM attestation; metrics mTLS.

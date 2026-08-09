@@ -41,7 +41,7 @@ ifeq ($(filter $(PROFILE),production debug),)
   $(error unsupported PROFILE=$(PROFILE); use production or debug)
 endif
 
-.PHONY: help build build-host build-all initramfs pertiskctl cloud uki \
+.PHONY: help build build-host build-all initramfs pertiskctl cloud uki enroll-ovmf \
 	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version lab-up \
 	mgmt mgmt-ui mgmt-rpm rpm
 
@@ -60,6 +60,7 @@ help:
 	@echo "  make stage-images [DEST=out]           # cloud + *-50g/*-75g qcow2 for RPM mgmt"
 	@echo "  make deploy-lab MGMT=user@host PVE=ip  # build→RPM→images→mgmt (see script)"
 	@echo "  make uki [VERSION=...] [ARCH=...]     # Unified Kernel Image"
+	@echo "  make enroll-ovmf [ARCH=...]           # enroll SB keys into OVMF vars (lab)"
 	@echo "  make lab-up [ARCH=...]                # build→VMs→IPs→cluster→CNI (see script)"
 	@echo "  make test | check-hardening | fmt | clippy | clean"
 	@echo ""
@@ -156,6 +157,10 @@ deploy-lab:
 uki:
 	@echo "==> UKI VERSION=$(VERSION) ARCH=$(BUILD_ARCH)"
 	PERTISK_VERSION="$(VERSION)" PERTISK_ARCH="$(BUILD_ARCH)" "$(ROOT)/image/build-uki.sh"
+
+## Enroll lab Secure Boot keys into an OVMF/AAVMF vars template (needs virt-fw-vars).
+enroll-ovmf:
+	PERTISK_ARCH="$(BUILD_ARCH)" "$(ROOT)/scripts/enroll-ovmf-vars.sh"
 
 fetch-runtime:
 	PERTISK_ARCH="$(BUILD_ARCH)" "$(ROOT)/image/fetch-runtime.sh"

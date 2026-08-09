@@ -112,7 +112,7 @@ Pertisk goals (DESIGN §8): measured boot where feasible. Not required for v0.1.
 | 1 | Keep signed A/B bundles (Ed25519) on STATE | done |
 | 2 | systemd-boot ESP entries for A/B | done |
 | 3 | Optional UKI (`*.efi` with kernel+initrd+cmdline) per slot | done — `./image/build-uki.sh`, ESP `EFI/Linux/` |
-| 4 | Enroll PK/KEK/db in OVMF / firmware; reject unsigned UKI | partial — keygen + signed UKI; manual OVMF enroll |
+| 4 | Enroll PK/KEK/db in OVMF / firmware; reject unsigned UKI | done — keygen + signed UKI + `scripts/enroll-ovmf-vars.sh` |
 | 5 | TPM PCR attestation of boot chain (optional) | todo |
 
 See [SECURE_BOOT.md](./SECURE_BOOT.md) for build/sign/enroll steps.
@@ -129,5 +129,5 @@ Marker file in the image: `/etc/pertisk/image-profile`.
 ## Gaps tracked for later
 
 - Metrics over mTLS (bearer is interim)
-- TPM PCR attestation / automated OVMF enrollment in CI
+- TPM PCR attestation of boot chain
 - BusyBox-free DHCP (leases already applied by Rust `pertisk-udhcpc-hook`; replace multi-call `udhcpc` itself next)

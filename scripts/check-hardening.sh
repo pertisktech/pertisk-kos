@@ -74,6 +74,9 @@ check "tmpfs nosuid/nodev" file_has "${LINUX}" 'MS_NOSUID \| MsFlags::MS_NODEV'
 # --- Docs present ---
 check "HARDENING.md exists" test -f docs/HARDENING.md
 check "COMPATIBILITY.md exists" test -f docs/COMPATIBILITY.md
+check "SECURE_BOOT.md exists" test -f docs/SECURE_BOOT.md
+check "enroll-ovmf-vars.sh exists" test -x scripts/enroll-ovmf-vars.sh
+check "gen-secureboot-keys.sh exists" test -x scripts/gen-secureboot-keys.sh
 
 # --- Production image: no interactive BusyBox by default ---
 DF="image/Dockerfile.initramfs"
