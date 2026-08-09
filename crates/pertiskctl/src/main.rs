@@ -67,7 +67,7 @@ enum Commands {
     Interfaces,
     /// STATE / EPHEMERAL volume mount + capacity.
     Disks,
-    /// TPM2 Quote (ephemeral ECC AK) + optional local verify.
+    /// TPM2 Quote (persistent ECC AK) + optional local verify + EK endorsement.
     Quote {
         /// Hex-encoded qualifyingData nonce (default: random 32 bytes).
         #[arg(long)]
@@ -75,6 +75,10 @@ enum Commands {
         /// Verify signature, nonce, and PCR digest locally.
         #[arg(long, default_value_t = false)]
         verify: bool,
+        /// Directory of manufacturer EK CA PEMs (`*.pem`/`*.crt`); also
+        /// `PERTISK_TPM_EK_CAS`. With `--verify`, require `ek_chain_status=ok`.
+        #[arg(long)]
+        ek_cas: Option<PathBuf>,
     },
     /// etcd DB snapshot / restore (control-plane).
     Etcd {
@@ -407,7 +411,11 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Quote { ref nonce, verify } => {
+        Commands::Quote {
+            ref nonce,
+            verify,
+            ref ek_cas,
+        } => {
             let nonce_bytes = match nonce {
                 Some(h) => hex_decode(h).context("invalid --nonce hex")?,
                 None => random_nonce_32(),
@@ -450,6 +458,41 @@ async fn main() -> Result<()> {
                     resp.ak_public.len()
                 );
             }
+            if !resp.ek_cert_der.is_empty() || !resp.ek_chain_status.is_empty() {
+                println!(
+                    "ek_nv=0x{:08x} chain={} fingerprint={}",
+                    resp.ek_nv_index,
+                    if resp.ek_chain_status.is_empty() {
+                        "—"
+                    } else {
+                        &resp.ek_chain_status
+                    },
+                    if resp.ek_fingerprint.is_empty() {
+                        "—"
+                    } else {
+                        &resp.ek_fingerprint
+                    }
+                );
+                if !resp.ek_subject.is_empty() {
+                    println!("ek_subject={}", resp.ek_subject);
+                }
+                if !resp.ek_issuer.is_empty() {
+                    println!("ek_issuer={}", resp.ek_issuer);
+                }
+                if !resp.ek_chain_message.is_empty() {
+                    println!("ek_chain_message={}", resp.ek_chain_message);
+                }
+                if !resp.ek_cert_der.is_empty() {
+                    println!(
+                        "ek_cert_b64={} ({} bytes)",
+                        base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            &resp.ek_cert_der
+                        ),
+                        resp.ek_cert_der.len()
+                    );
+                }
+            }
             if !resp.pcrs.is_empty() {
                 println!("{:<6} {:<8} {}", "PCR", "ALGO", "DIGEST");
                 for p in &resp.pcrs {
@@ -477,6 +520,21 @@ async fn main() -> Result<()> {
                 )
                 .map_err(|e| anyhow::anyhow!("quote verify failed: {e}"))?;
                 println!("verify=ok");
+
+                // Optional manufacturer EK chain check (local re-verify of DER).
+                let ca_resolved = pertisk_tpm::resolve_ca_dir(ek_cas.as_deref());
+                if let Some(dir) = ca_resolved {
+                    if resp.ek_cert_der.is_empty() {
+                        anyhow::bail!(
+                            "EK chain required (--ek-cas / PERTISK_TPM_EK_CAS) but Quote has no EK cert"
+                        );
+                    }
+                    let ca_subject = pertisk_tpm::verify_ek_chain(&resp.ek_cert_der, &dir)
+                        .map_err(|e| anyhow::anyhow!("EK chain verify failed: {e}"))?;
+                    println!("ek_chain=ok ca={ca_subject}");
+                } else if ek_cas.is_some() {
+                    anyhow::bail!("--ek-cas path is not a directory");
+                }
             }
         }
         Commands::Etcd { ref command } => match command {

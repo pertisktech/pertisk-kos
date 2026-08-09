@@ -199,16 +199,18 @@ Shipped:
 - UKI build + ESP install + OVMF enroll automation (`make uki`, `make enroll-ovmf`) — [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 - TPM PCR Attest lab path (`MachineService.Attest`, `pertiskctl attest`, QEMU `PERTISK_TPM=1`)
 - Management plane: `pertisk-mgmt` UI + Proxmox / ESXi providers — [docs/MGMT.md](./docs/MGMT.md)
-- BusyBox-free DHCPv4: in-process client only (`pertisk-net::dhcp`)
+- BusyBox-free DHCPv4: in-process client only (`pertisk-net::dhcp`) with T1 renew / T2 rebind
 - util-linux `mount`/`umount` + iproute2 `ip` in the initramfs (BusyBox only in `debug` profile as ash)
 - CRI introspection lab path (`MachineService.Containers` + `logs container:<id>` via `/var/log/pods`)
 - Net / disk inspect (`MachineService.NetInspect` / `DiskInspect`, `pertiskctl interfaces` / `disks`)
 - TPM2 Quote lab path (`MachineService.Quote`, pure-Rust `/dev/tpmrm0`, persistent AK, `pertiskctl quote --verify`)
+- EK certificate + manufacturer CA chain (`PERTISK_TPM_EK_CAS` / `--ek-cas`; Quote carries EK DER + chain status)
 - etcd snapshot / restore lab path (`MachineService.EtcdSnapshot` / `EtcdRestore`, `pertiskctl etcd …`)
-- Mgmt Quote trust store (TOFU AK enroll / verify on node detail)
+- Mgmt Quote trust store (TOFU AK enroll / verify on node detail; stores EK fingerprint)
 - Soft reset (`MachineService.Reset`, `pertiskctl reset --force`; clears STATE + runtime, keeps GPT)
 - Dashboard events stream (`GET /api/events` SSE for job/cluster status)
 - CRI / service log follow (`MachineService.Logs` stream, `pertiskctl logs -f`)
+- DHCPv4 lease renew / rebind (T1 unicast + T2 broadcast maintainer)
 
 Still open (stretch): none for P5; see **Later** under §7.
 
@@ -247,7 +249,7 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 - `ApplyConfiguration` / `ValidateConfiguration`
 - `Reboot` / `Shutdown`
 - `Version` / `Health` / `Attest` (sysfs PCR digests + boot slot)
-- `Quote` (TPM2 Quote via `/dev/tpmrm0`, ephemeral ECC AK)
+- `Quote` (TPM2 Quote via `/dev/tpmrm0`, persistent ECC AK + EK cert / CA chain status)
 - `EtcdSnapshot` / `EtcdRestore` (live snapshot; offline restore with `--force`)
 - `Reset` (soft: clear STATE identity + EPHEMERAL runtime; keep GPT; requires `force`)
 - `Containers` (containerd `ctr` list in `k8s.io` + CRI kind/pod labels)
@@ -274,7 +276,7 @@ _(none — P5 stretch complete for lab / HA)_
 
 **Later (mgmt / ops parity)**
 
-_(none — ops parity stretch complete for lab)_
+_(none currently)_
 
 **Done (HA + mgmt)**
 
@@ -284,6 +286,8 @@ _(none — ops parity stretch complete for lab)_
 - Soft reset (`MachineService.Reset`, `pertiskctl reset --force`)
 - Dashboard events stream (`GET /api/events` SSE; job/cluster push)
 - CRI / service log follow (`pertiskctl logs -f` / `Logs` stream)
+- DHCPv4 lease renew / rebind (builtin client T1/T2 maintainer)
+- EK cert + manufacturer CA chain (NV read + `PERTISK_TPM_EK_CAS` / `--ek-cas`)
 ---
 
 ## 8. Security model (non-negotiable)
@@ -293,7 +297,7 @@ _(none — ops parity stretch complete for lab)_
 3. **mTLS** for all management traffic.
 4. **Signed OS images**; reject unsigned upgrades.
 5. **Least kernel surface** — drop unused drivers/modules.
-6. **Root of trust** — measured boot where feasible (UKI + OVMF enroll + PCR Attest + Quote lab + mgmt AK trust store).
+6. **Root of trust** — measured boot where feasible (UKI + OVMF enroll + PCR Attest + Quote + EK CA chain lab + mgmt AK/EK trust store).
 
 ---
 
@@ -331,6 +335,8 @@ Pertisk KOS is a standalone product with its own API and image format.
 | M5g | TPM2 Quote (pure-Rust `/dev/tpmrm0`) | Done (lab); persistent AK `0x8100000A` |
 | M5h | etcd snapshot / restore | Done (lab) |
 | M5i | mgmt Quote trust store (AK enroll / verify) | Done (lab) |
+| M5j | DHCPv4 lease renew / rebind (T1/T2) | Done |
+| M5k | EK cert + manufacturer CA chain | Done (lab) |
 | M6 | drop BusyBox/`udhcpc` from production | Done |
 
 ---
@@ -357,4 +363,4 @@ Pertisk KOS is a standalone product with its own API and image format.
 - Config and etcd data survive host/VM reboot (STATE + EPHEMERAL on disk).
 - Upgrade and reboot through the API (signed A/B + mark-boot-good).
 - No SSH in the default (`production`) image.
-- Optional lab measured-boot path: UKI + OVMF enroll + PCR Attest (`pertiskctl attest`) + Quote (`pertiskctl quote --verify`).
+- Optional lab measured-boot path: UKI + OVMF enroll + PCR Attest (`pertiskctl attest`) + Quote (`pertiskctl quote --verify`) + EK manufacturer CA chain (`PERTISK_TPM_EK_CAS`).

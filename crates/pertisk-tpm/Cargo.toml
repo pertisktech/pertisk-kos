@@ -10,6 +10,8 @@ rust-version.workspace = true
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8"] }
 sha2 = "0.10"
 thiserror = { workspace = true }
+x509-parser = { version = "0.16", features = ["verify"] }
 
 [dev-dependencies]
+rcgen = { version = "0.14", features = ["pem"] }
 tempfile = "3"

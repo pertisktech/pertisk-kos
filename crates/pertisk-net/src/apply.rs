@@ -79,6 +79,8 @@ mod linux {
                         addresses = ?existing,
                         "DHCP already configured (IPv4 present)"
                     );
+                    // Still renew/rebind so the address survives past the first lease.
+                    crate::dhcp::ensure_maintainer(&name);
                 } else {
                     match link::run_dhcp(&name) {
                         Ok(()) => {

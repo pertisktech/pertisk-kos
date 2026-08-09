@@ -655,6 +655,13 @@ impl MachineService for MachineSvc {
             pcrs,
             active_slot,
             version,
+            ek_cert_der: snap.ek.der,
+            ek_nv_index: snap.ek.nv_index,
+            ek_subject: snap.ek.subject,
+            ek_issuer: snap.ek.issuer,
+            ek_fingerprint: snap.ek.fingerprint_sha256,
+            ek_chain_status: snap.ek.chain_status.as_str().to_string(),
+            ek_chain_message: snap.ek.chain_message,
         }))
     }
 

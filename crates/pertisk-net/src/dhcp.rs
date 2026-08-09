@@ -1,25 +1,300 @@
 //! In-process DHCPv4 client (no BusyBox / shell / udhcpc).
 //!
-//! Sole lease path for production images.
+//! Sole lease path for production images. After the initial DISCOVER/REQUEST,
+//! a per-interface maintainer thread renews at T1 (unicast) and rebinds at T2
+//! (broadcast) so long-lived nodes keep their address past the first lease.
 
 #[cfg(target_os = "linux")]
 use crate::apply::NetError;
 
 #[cfg(target_os = "linux")]
-pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
-    use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
-    use std::time::{Duration, Instant};
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::net::Ipv4Addr;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "linux")]
+use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(target_os = "linux")]
+use std::thread::JoinHandle;
+#[cfg(target_os = "linux")]
+use std::time::{Duration, Instant};
 
+/// Active DHCPv4 lease (in-memory; rediscovered after reboot).
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone)]
+pub struct Lease {
+    pub iface: String,
+    pub ip: Ipv4Addr,
+    pub prefix: u8,
+    pub server: Ipv4Addr,
+    pub routers: Vec<Ipv4Addr>,
+    pub dns: Vec<Ipv4Addr>,
+    /// Lease lifetime in seconds (`0xFFFF_FFFF` = infinite).
+    pub lease_secs: u32,
+    /// Seconds from acquire until unicast renew (T1).
+    pub t1_secs: u32,
+    /// Seconds from acquire until broadcast rebind (T2).
+    pub t2_secs: u32,
+    pub acquired: Instant,
+}
+
+#[cfg(target_os = "linux")]
+impl Lease {
+    fn is_infinite(&self) -> bool {
+        self.lease_secs == u32::MAX
+    }
+
+    fn renew_at(&self) -> Instant {
+        self.acquired + Duration::from_secs(u64::from(self.t1_secs))
+    }
+
+    fn rebind_at(&self) -> Instant {
+        self.acquired + Duration::from_secs(u64::from(self.t2_secs))
+    }
+
+    fn expire_at(&self) -> Instant {
+        if self.is_infinite() {
+            Instant::now() + Duration::from_secs(u64::MAX / 4)
+        } else {
+            self.acquired + Duration::from_secs(u64::from(self.lease_secs))
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct Maintainer {
+    stop: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
+}
+
+#[cfg(target_os = "linux")]
+fn maintainers() -> &'static Mutex<HashMap<String, Maintainer>> {
+    static M: OnceLock<Mutex<HashMap<String, Maintainer>>> = OnceLock::new();
+    M.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Freshly acquired leases handed to a just-started maintainer (avoids
+/// reconstructing short synthetic timers after a successful ACK).
+#[cfg(target_os = "linux")]
+fn seeded_leases() -> &'static Mutex<HashMap<String, Lease>> {
+    static S: OnceLock<Mutex<HashMap<String, Lease>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(target_os = "linux")]
+fn seed_lease(lease: Lease) {
+    let iface = lease.iface.clone();
+    let mut map = match seeded_leases().lock() {
+        Ok(m) => m,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    map.insert(iface, lease);
+}
+
+#[cfg(target_os = "linux")]
+fn take_seeded_lease(iface: &str) -> Option<Lease> {
+    let mut map = match seeded_leases().lock() {
+        Ok(m) => m,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    map.remove(iface)
+}
+
+/// Ensure a background renew/rebind loop is running for `iface`.
+///
+/// Idempotent: replaces any prior maintainer for the same interface.
+#[cfg(target_os = "linux")]
+pub fn ensure_maintainer(iface: &str) {
+    let mut map = match maintainers().lock() {
+        Ok(m) => m,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(prev) = map.remove(iface) {
+        prev.stop.store(true, Ordering::SeqCst);
+        let _ = prev.handle.join();
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_c = Arc::clone(&stop);
+    let iface_owned = iface.to_string();
+    let handle = std::thread::Builder::new()
+        .name(format!("dhcp-{iface}"))
+        .spawn(move || maintain_loop(&iface_owned, &stop_c))
+        .unwrap_or_else(|e| {
+            tracing::error!(interface = iface, error = %e, "failed to spawn DHCP maintainer");
+            std::thread::spawn(|| {})
+        });
+    map.insert(
+        iface.to_string(),
+        Maintainer { stop, handle },
+    );
+    tracing::info!(interface = iface, "DHCP lease maintainer started");
+}
+
+/// One-shot DISCOVER → REQUEST → ACK and apply the lease (boot path).
+#[cfg(target_os = "linux")]
+pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
+    let lease = acquire(iface)?;
+    apply_lease(&lease)?;
+    seed_lease(lease);
+    ensure_maintainer(iface);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn maintain_loop(iface: &str, stop: &AtomicBool) {
+    let mut lease = match take_seeded_lease(iface) {
+        Some(l) => {
+            tracing::info!(
+                interface = iface,
+                ip = %l.ip,
+                lease_secs = l.lease_secs,
+                t1 = l.t1_secs,
+                t2 = l.t2_secs,
+                "DHCP maintainer using acquired lease"
+            );
+            Some(l)
+        }
+        None => match current_v4_lease(iface) {
+            // Apply skipped DHCP because IPv4 was already present — rebind soon.
+            Some(l) => {
+                tracing::info!(
+                    interface = iface,
+                    ip = %l.ip,
+                    lease_secs = l.lease_secs,
+                    "DHCP maintainer adopting existing IPv4"
+                );
+                Some(l)
+            }
+            None => None,
+        },
+    };
+
+    while !stop.load(Ordering::SeqCst) {
+        if lease.is_none() {
+            match acquire(iface) {
+                Ok(l) => {
+                    if let Err(err) = apply_lease(&l) {
+                        tracing::warn!(interface = iface, error = %err, "DHCP apply after acquire failed");
+                        sleep_interruptible(Duration::from_secs(15), stop);
+                        continue;
+                    }
+                    lease = Some(l);
+                }
+                Err(err) => {
+                    tracing::warn!(interface = iface, error = %err, "DHCP acquire failed; retry");
+                    sleep_interruptible(Duration::from_secs(15), stop);
+                    continue;
+                }
+            }
+        }
+
+        let Some(cur) = lease.as_ref() else {
+            continue;
+        };
+        if cur.is_infinite() {
+            // Still wake occasionally in case the address disappears.
+            sleep_interruptible(Duration::from_secs(3600), stop);
+            if iface_has_v4(iface) {
+                continue;
+            }
+            tracing::warn!(interface = iface, "IPv4 lost on infinite lease; rediscovering");
+            lease = None;
+            continue;
+        }
+
+        let now = Instant::now();
+        if now < cur.renew_at() {
+            let wait = cur.renew_at().saturating_duration_since(now);
+            sleep_interruptible(wait.min(Duration::from_secs(60)), stop);
+            continue;
+        }
+
+        if now < cur.rebind_at() {
+            // Adopted leases (unknown server) skip unicast renew.
+            if cur.server.is_unspecified() || cur.server.is_broadcast() {
+                let wait = cur
+                    .rebind_at()
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_secs(30));
+                sleep_interruptible(wait, stop);
+                continue;
+            }
+            match renew(cur) {
+                Ok(l) => {
+                    if let Err(err) = apply_lease(&l) {
+                        tracing::warn!(interface = iface, error = %err, "DHCP apply after renew failed");
+                    } else {
+                        tracing::info!(
+                            interface = iface,
+                            ip = %l.ip,
+                            lease_secs = l.lease_secs,
+                            "DHCP lease renewed"
+                        );
+                        lease = Some(l);
+                    }
+                    continue;
+                }
+                Err(err) => {
+                    tracing::warn!(interface = iface, error = %err, "DHCP renew failed; will rebind at T2");
+                    let wait = cur
+                        .rebind_at()
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_secs(30));
+                    sleep_interruptible(wait, stop);
+                    continue;
+                }
+            }
+        }
+
+        if now < cur.expire_at() {
+            match rebind(cur) {
+                Ok(l) => {
+                    if let Err(err) = apply_lease(&l) {
+                        tracing::warn!(interface = iface, error = %err, "DHCP apply after rebind failed");
+                    } else {
+                        tracing::info!(
+                            interface = iface,
+                            ip = %l.ip,
+                            lease_secs = l.lease_secs,
+                            "DHCP lease rebound"
+                        );
+                        lease = Some(l);
+                    }
+                    continue;
+                }
+                Err(err) => {
+                    tracing::warn!(interface = iface, error = %err, "DHCP rebind failed; retry until expiry");
+                    let wait = cur
+                        .expire_at()
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_secs(15));
+                    if wait.is_zero() {
+                        tracing::warn!(interface = iface, "DHCP lease expired; rediscovering");
+                        lease = None;
+                    } else {
+                        sleep_interruptible(wait, stop);
+                    }
+                    continue;
+                }
+            }
+        }
+
+        tracing::warn!(interface = iface, "DHCP lease expired; rediscovering");
+        lease = None;
+    }
+    tracing::info!(interface = iface, "DHCP lease maintainer stopped");
+}
+
+#[cfg(target_os = "linux")]
+fn acquire(iface: &str) -> Result<Lease, NetError> {
     use dhcproto::v4::{
-        Decodable, Decoder, DhcpOption, Encodable, Encoder, Flags, Message, MessageType, Opcode,
-        OptionCode,
+        DhcpOption, Encodable, Encoder, Flags, Message, MessageType, Opcode, OptionCode,
     };
     use rand::RngCore;
-    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::SocketAddrV4;
 
     wait_iface(iface, Duration::from_secs(15))?;
-    // Ensure UP even if caller forgot — DHCPv4 needs carrier; IPv6 LL can
-    // appear while we still have no IPv4.
     {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -31,32 +306,14 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
     let mut xid_bytes = [0u8; 4];
     rand::thread_rng().fill_bytes(&mut xid_bytes);
     let xid = u32::from_be_bytes(xid_bytes);
+    let client_id = client_id_from_mac(&mac);
 
-    // Client id = 0x01 + MAC (Ethernet hardware type).
-    let mut client_id = vec![0x01];
-    client_id.extend_from_slice(&mac);
-
-    let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
-        .map_err(|e| NetError::Msg(format!("dhcp socket: {e}")))?;
-    sock.set_reuse_address(true)
-        .map_err(|e| NetError::Msg(format!("dhcp reuseaddr: {e}")))?;
-    sock.set_broadcast(true)
-        .map_err(|e| NetError::Msg(format!("dhcp broadcast: {e}")))?;
-    if let Err(err) = sock.bind_device(Some(iface.as_bytes())) {
-        tracing::warn!(interface = iface, error = %err, "DHCP bind_device failed; continuing");
-    }
-    sock.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 68).into())
-        .map_err(|e| NetError::Msg(format!("dhcp bind :68: {e}")))?;
-    sock.set_read_timeout(Some(Duration::from_secs(2)))
-        .map_err(|e| NetError::Msg(format!("dhcp timeout: {e}")))?;
-    let sock: UdpSocket = sock.into();
-
+    let sock = open_dhcp_socket(iface, Ipv4Addr::UNSPECIFIED)?;
     let dest = SocketAddrV4::new(Ipv4Addr::BROADCAST, 67);
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut offer: Option<Message> = None;
     let mut discovers = 0u32;
 
-    // DISCOVER → OFFER
     while Instant::now() < deadline && offer.is_none() {
         let mut msg = Message::default();
         msg.set_opcode(Opcode::BootRequest);
@@ -68,12 +325,8 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
             .insert(DhcpOption::MessageType(MessageType::Discover));
         msg.opts_mut()
             .insert(DhcpOption::ClientIdentifier(client_id.clone()));
-        msg.opts_mut().insert(DhcpOption::ParameterRequestList(vec![
-            OptionCode::SubnetMask,
-            OptionCode::Router,
-            OptionCode::DomainNameServer,
-            OptionCode::DomainName,
-        ]));
+        msg.opts_mut()
+            .insert(DhcpOption::ParameterRequestList(param_request_list()));
         let mut buf = Vec::new();
         msg.encode(&mut Encoder::new(&mut buf))
             .map_err(|e| NetError::Msg(format!("dhcp encode discover: {e}")))?;
@@ -85,31 +338,12 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
                 tracing::warn!(interface = iface, error = %err, "DHCP discover send failed");
             }
         }
-
-        let mut rbuf = [0u8; 1500];
-        match sock.recv_from(&mut rbuf) {
-            Ok((n, from)) => {
-                tracing::debug!(bytes = n, %from, "DHCP packet received");
-                if let Ok(resp) = Message::decode(&mut Decoder::new(&rbuf[..n])) {
-                    if resp.xid() == xid {
-                        if let Some(DhcpOption::MessageType(MessageType::Offer)) =
-                            resp.opts().get(OptionCode::MessageType)
-                        {
-                            offer = Some(resp);
-                        } else {
-                            tracing::debug!("ignoring non-offer DHCP message");
-                        }
-                    } else {
-                        tracing::debug!(got = resp.xid(), want = xid, "ignoring DHCP xid mismatch");
-                    }
-                } else {
-                    tracing::debug!(bytes = n, "failed to decode DHCP packet");
-                }
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(err) => {
-                return Err(NetError::Msg(format!("dhcp recv offer: {err}")));
+        if let Some(resp) = recv_matching(&sock, xid, deadline) {
+            if matches!(
+                resp.opts().get(OptionCode::MessageType),
+                Some(DhcpOption::MessageType(MessageType::Offer))
+            ) {
+                offer = Some(resp);
             }
         }
     }
@@ -129,7 +363,6 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
     };
     tracing::info!(interface = iface, %yiaddr, %server_ip, "DHCP offer");
 
-    // REQUEST → ACK
     let mut ack: Option<Message> = None;
     while Instant::now() < deadline && ack.is_none() {
         let mut msg = Message::default();
@@ -145,12 +378,8 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
             .insert(DhcpOption::RequestedIpAddress(yiaddr));
         msg.opts_mut()
             .insert(DhcpOption::ServerIdentifier(server_ip));
-        msg.opts_mut().insert(DhcpOption::ParameterRequestList(vec![
-            OptionCode::SubnetMask,
-            OptionCode::Router,
-            OptionCode::DomainNameServer,
-            OptionCode::DomainName,
-        ]));
+        msg.opts_mut()
+            .insert(DhcpOption::ParameterRequestList(param_request_list()));
         let mut buf = Vec::new();
         msg.encode(&mut Encoder::new(&mut buf))
             .map_err(|e| NetError::Msg(format!("dhcp encode request: {e}")))?;
@@ -158,79 +387,351 @@ pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
         if let Err(err) = sock.send_to(&buf, dest) {
             tracing::warn!(interface = iface, error = %err, "DHCP request send failed");
         }
-
-        let mut rbuf = [0u8; 1500];
-        match sock.recv_from(&mut rbuf) {
-            Ok((n, _)) => {
-                if let Ok(resp) = Message::decode(&mut Decoder::new(&rbuf[..n])) {
-                    if resp.xid() != xid {
-                        continue;
-                    }
-                    match resp.opts().get(OptionCode::MessageType) {
-                        Some(DhcpOption::MessageType(MessageType::Ack)) => ack = Some(resp),
-                        Some(DhcpOption::MessageType(MessageType::Nak)) => {
-                            return Err(NetError::Msg(format!("DHCP NAK on {iface}")));
-                        }
-                        _ => {}
-                    }
+        if let Some(resp) = recv_matching(&sock, xid, deadline) {
+            match resp.opts().get(OptionCode::MessageType) {
+                Some(DhcpOption::MessageType(MessageType::Ack)) => ack = Some(resp),
+                Some(DhcpOption::MessageType(MessageType::Nak)) => {
+                    return Err(NetError::Msg(format!("DHCP NAK on {iface}")));
                 }
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(err) => {
-                return Err(NetError::Msg(format!("dhcp recv ack: {err}")));
+                _ => {}
             }
         }
     }
 
     let ack = ack.ok_or_else(|| NetError::Msg(format!("DHCP no ACK on {iface}")))?;
-    let ip = ack.yiaddr();
-    let prefix = match ack.opts().get(OptionCode::SubnetMask) {
-        Some(DhcpOption::SubnetMask(mask)) => ipv4_mask_to_prefix(*mask)?,
-        _ => 24,
+    let lease = lease_from_ack(iface, &ack, server_ip)?;
+    tracing::info!(
+        interface = iface,
+        ip = %lease.ip,
+        prefix = lease.prefix,
+        lease_secs = lease.lease_secs,
+        t1 = lease.t1_secs,
+        t2 = lease.t2_secs,
+        "DHCP bound (builtin)"
+    );
+    Ok(lease)
+}
+
+/// Unicast REQUEST to the leasing server (RENEWING).
+#[cfg(target_os = "linux")]
+fn renew(lease: &Lease) -> Result<Lease, NetError> {
+    request_keep(lease, /*broadcast=*/ false)
+}
+
+/// Broadcast REQUEST (REBINDING).
+#[cfg(target_os = "linux")]
+fn rebind(lease: &Lease) -> Result<Lease, NetError> {
+    request_keep(lease, /*broadcast=*/ true)
+}
+
+#[cfg(target_os = "linux")]
+fn request_keep(lease: &Lease, broadcast: bool) -> Result<Lease, NetError> {
+    use dhcproto::v4::{
+        DhcpOption, Encodable, Encoder, Flags, Message, MessageType, Opcode, OptionCode,
     };
-    let cidr = format!("{ip}/{prefix}");
+    use rand::RngCore;
+    use std::net::SocketAddrV4;
 
-    let mut routers: Vec<Ipv4Addr> = Vec::new();
-    if let Some(DhcpOption::Router(r)) = ack.opts().get(OptionCode::Router) {
-        routers.extend(r.iter().copied());
+    let mac = read_mac(&lease.iface)?;
+    let client_id = client_id_from_mac(&mac);
+    let mut xid_bytes = [0u8; 4];
+    rand::thread_rng().fill_bytes(&mut xid_bytes);
+    let xid = u32::from_be_bytes(xid_bytes);
+
+    // Bind to the leased address so ciaddr traffic is sourced correctly.
+    let sock = open_dhcp_socket(&lease.iface, lease.ip)?;
+    let dest = if broadcast {
+        SocketAddrV4::new(Ipv4Addr::BROADCAST, 67)
+    } else {
+        SocketAddrV4::new(lease.server, 67)
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    let mut msg = Message::default();
+    msg.set_opcode(Opcode::BootRequest);
+    msg.set_xid(xid);
+    if broadcast {
+        msg.set_flags(Flags::default().set_broadcast());
+    } else {
+        msg.set_flags(Flags::default());
     }
+    msg.set_ciaddr(lease.ip);
+    msg.set_chaddr(&mac);
+    msg.opts_mut()
+        .insert(DhcpOption::MessageType(MessageType::Request));
+    msg.opts_mut()
+        .insert(DhcpOption::ClientIdentifier(client_id));
+    msg.opts_mut()
+        .insert(DhcpOption::ParameterRequestList(param_request_list()));
+    // RFC 2131: RENEWING/REBINDING must not include Requested IP / Server ID.
 
-    // ioctl apply — avoids flaky netlink on virtio.
-    crate::link::apply_dhcp_v4_lease(iface, ip, prefix, &routers)?;
+    let mut buf = Vec::new();
+    msg.encode(&mut Encoder::new(&mut buf))
+        .map_err(|e| NetError::Msg(format!("dhcp encode renew/rebind: {e}")))?;
+    let kind = if broadcast { "rebind" } else { "renew" };
+    tracing::debug!(interface = %lease.iface, %dest, kind, "DHCP keep-alive request");
+    sock.send_to(&buf, dest)
+        .map_err(|e| NetError::Msg(format!("dhcp {kind} send: {e}")))?;
 
-    // Verify IPv4 actually landed — IPv6 LL alone must not count as success.
+    while Instant::now() < deadline {
+        if let Some(resp) = recv_matching(&sock, xid, deadline) {
+            match resp.opts().get(OptionCode::MessageType) {
+                Some(DhcpOption::MessageType(MessageType::Ack)) => {
+                    let server = match resp.opts().get(OptionCode::ServerIdentifier) {
+                        Some(DhcpOption::ServerIdentifier(ip)) => *ip,
+                        _ => lease.server,
+                    };
+                    return lease_from_ack(&lease.iface, &resp, server);
+                }
+                Some(DhcpOption::MessageType(MessageType::Nak)) => {
+                    return Err(NetError::Msg(format!(
+                        "DHCP NAK during {kind} on {}",
+                        lease.iface
+                    )));
+                }
+                _ => {}
+            }
+        }
+    }
+    Err(NetError::Msg(format!(
+        "DHCP no ACK during {kind} on {}",
+        lease.iface
+    )))
+}
+
+#[cfg(target_os = "linux")]
+fn apply_lease(lease: &Lease) -> Result<(), NetError> {
+    crate::link::apply_dhcp_v4_lease(&lease.iface, lease.ip, lease.prefix, &lease.routers)?;
     {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| NetError::Msg(e.to_string()))?;
         let addrs = rt
-            .block_on(crate::link::list_addresses(iface))
+            .block_on(crate::link::list_addresses(&lease.iface))
             .unwrap_or_default();
         if !addrs.iter().any(|a| a.contains('.')) {
             return Err(NetError::Msg(format!(
-                "DHCP ACK {cidr} but no IPv4 on {iface} afterwards (addrs={addrs:?})"
+                "DHCP ACK {}/{} but no IPv4 on {} afterwards (addrs={addrs:?})",
+                lease.ip, lease.prefix, lease.iface
             )));
         }
     }
-
-    if let Some(DhcpOption::DomainNameServer(dns)) = ack.opts().get(OptionCode::DomainNameServer) {
-        let servers: Vec<String> = dns.iter().map(ToString::to_string).collect();
-        if !servers.is_empty() {
-            let _ = crate::dns::write_resolv_conf(&servers);
-        }
+    if !lease.dns.is_empty() {
+        let servers: Vec<String> = lease.dns.iter().map(ToString::to_string).collect();
+        let _ = crate::dns::write_resolv_conf(&servers);
     }
-
-    tracing::info!(interface = iface, %cidr, "DHCP bound (builtin)");
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn wait_iface(iface: &str, timeout: std::time::Duration) -> Result<(), NetError> {
-    use std::thread;
-    use std::time::{Duration, Instant};
+fn lease_from_ack(
+    iface: &str,
+    ack: &dhcproto::v4::Message,
+    fallback_server: Ipv4Addr,
+) -> Result<Lease, NetError> {
+    use dhcproto::v4::{DhcpOption, OptionCode};
 
+    let ip = {
+        let y = ack.yiaddr();
+        if y.is_unspecified() {
+            // Renew/rebind ACKs may leave yiaddr unset; keep ciaddr.
+            let c = ack.ciaddr();
+            if c.is_unspecified() {
+                return Err(NetError::Msg("DHCP ACK missing yiaddr/ciaddr".into()));
+            }
+            c
+        } else {
+            y
+        }
+    };
+    let prefix = match ack.opts().get(OptionCode::SubnetMask) {
+        Some(DhcpOption::SubnetMask(mask)) => ipv4_mask_to_prefix(*mask)?,
+        _ => 24,
+    };
+    let server = match ack.opts().get(OptionCode::ServerIdentifier) {
+        Some(DhcpOption::ServerIdentifier(ip)) => *ip,
+        _ => fallback_server,
+    };
+    let mut routers = Vec::new();
+    if let Some(DhcpOption::Router(r)) = ack.opts().get(OptionCode::Router) {
+        routers.extend(r.iter().copied());
+    }
+    let mut dns = Vec::new();
+    if let Some(DhcpOption::DomainNameServer(d)) = ack.opts().get(OptionCode::DomainNameServer) {
+        dns.extend(d.iter().copied());
+    }
+    let lease_secs = match ack.opts().get(OptionCode::AddressLeaseTime) {
+        Some(DhcpOption::AddressLeaseTime(t)) => *t,
+        _ => 3600,
+    };
+    let (t1_secs, t2_secs) = lease_timers(lease_secs, ack);
+    Ok(Lease {
+        iface: iface.to_string(),
+        ip,
+        prefix,
+        server,
+        routers,
+        dns,
+        lease_secs,
+        t1_secs,
+        t2_secs,
+        acquired: Instant::now(),
+    })
+}
+
+/// Compute T1/T2 from ACK options or RFC defaults (50% / 87.5%).
+#[cfg(target_os = "linux")]
+fn lease_timers(lease_secs: u32, ack: &dhcproto::v4::Message) -> (u32, u32) {
+    use dhcproto::v4::{DhcpOption, OptionCode};
+
+    if lease_secs == u32::MAX {
+        return (u32::MAX / 2, u32::MAX / 2 + u32::MAX / 4);
+    }
+    let t1 = match ack.opts().get(OptionCode::Renewal) {
+        Some(DhcpOption::Renewal(t)) if *t > 0 && *t < lease_secs => *t,
+        _ => (lease_secs / 2).max(1),
+    };
+    let t2 = match ack.opts().get(OptionCode::Rebinding) {
+        Some(DhcpOption::Rebinding(t)) if *t > t1 && *t < lease_secs => *t,
+        _ => ((lease_secs as u64 * 7) / 8).min(u64::from(lease_secs.saturating_sub(1))) as u32,
+    };
+    let t2 = t2.max(t1.saturating_add(1).min(lease_secs.saturating_sub(1).max(1)));
+    (t1.min(t2.saturating_sub(1)).max(1), t2.max(1))
+}
+
+#[cfg(target_os = "linux")]
+fn current_v4_lease(iface: &str) -> Option<Lease> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    let addrs = rt.block_on(crate::link::list_addresses(iface)).ok()?;
+    let (ip, prefix) = addrs.iter().find_map(|a| {
+        let (ip_s, pref_s) = a.split_once('/')?;
+        if !ip_s.contains('.') || ip_s.starts_with("127.") {
+            return None;
+        }
+        let ip: Ipv4Addr = ip_s.parse().ok()?;
+        let prefix: u8 = pref_s.parse().unwrap_or(24);
+        Some((ip, prefix))
+    })?;
+    // Unknown server → rebind path (broadcast) after a short T1.
+    Some(Lease {
+        iface: iface.to_string(),
+        ip,
+        prefix,
+        server: Ipv4Addr::BROADCAST,
+        routers: Vec::new(),
+        dns: Vec::new(),
+        lease_secs: 600,
+        t1_secs: 60,
+        t2_secs: 300,
+        acquired: Instant::now(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn iface_has_v4(iface: &str) -> bool {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    let addrs = rt
+        .block_on(crate::link::list_addresses(iface))
+        .unwrap_or_default();
+    addrs
+        .iter()
+        .any(|a| a.contains('.') && !a.starts_with("127."))
+}
+
+#[cfg(target_os = "linux")]
+fn open_dhcp_socket(iface: &str, bind_ip: Ipv4Addr) -> Result<std::net::UdpSocket, NetError> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::SocketAddrV4;
+
+    let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+        .map_err(|e| NetError::Msg(format!("dhcp socket: {e}")))?;
+    sock.set_reuse_address(true)
+        .map_err(|e| NetError::Msg(format!("dhcp reuseaddr: {e}")))?;
+    sock.set_broadcast(true)
+        .map_err(|e| NetError::Msg(format!("dhcp broadcast: {e}")))?;
+    if let Err(err) = sock.bind_device(Some(iface.as_bytes())) {
+        tracing::warn!(interface = iface, error = %err, "DHCP bind_device failed; continuing");
+    }
+    sock.bind(&SocketAddrV4::new(bind_ip, 68).into())
+        .map_err(|e| NetError::Msg(format!("dhcp bind {bind_ip}:68: {e}")))?;
+    sock.set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| NetError::Msg(format!("dhcp timeout: {e}")))?;
+    Ok(sock.into())
+}
+
+#[cfg(target_os = "linux")]
+fn recv_matching(
+    sock: &std::net::UdpSocket,
+    xid: u32,
+    deadline: Instant,
+) -> Option<dhcproto::v4::Message> {
+    use dhcproto::v4::{Decodable, Decoder, Message};
+
+    while Instant::now() < deadline {
+        let mut rbuf = [0u8; 1500];
+        match sock.recv_from(&mut rbuf) {
+            Ok((n, from)) => {
+                tracing::debug!(bytes = n, %from, "DHCP packet received");
+                if let Ok(resp) = Message::decode(&mut Decoder::new(&rbuf[..n])) {
+                    if resp.xid() == xid {
+                        return Some(resp);
+                    }
+                    tracing::debug!(got = resp.xid(), want = xid, "ignoring DHCP xid mismatch");
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return None,
+            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => return None,
+            Err(err) => {
+                tracing::warn!(error = %err, "DHCP recv error");
+                return None;
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn param_request_list() -> Vec<dhcproto::v4::OptionCode> {
+    use dhcproto::v4::OptionCode;
+    vec![
+        OptionCode::SubnetMask,
+        OptionCode::Router,
+        OptionCode::DomainNameServer,
+        OptionCode::DomainName,
+        OptionCode::AddressLeaseTime,
+        OptionCode::Renewal,
+        OptionCode::Rebinding,
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn client_id_from_mac(mac: &[u8; 6]) -> Vec<u8> {
+    let mut client_id = vec![0x01];
+    client_id.extend_from_slice(mac);
+    client_id
+}
+
+#[cfg(target_os = "linux")]
+fn sleep_interruptible(total: Duration, stop: &AtomicBool) {
+    let mut left = total;
+    while left > Duration::ZERO && !stop.load(Ordering::SeqCst) {
+        let slice = left.min(Duration::from_secs(1));
+        std::thread::sleep(slice);
+        left = left.saturating_sub(slice);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wait_iface(iface: &str, timeout: Duration) -> Result<(), NetError> {
     let path = format!("/sys/class/net/{iface}");
     let deadline = Instant::now() + timeout;
     while !std::path::Path::new(&path).exists() {
@@ -239,7 +740,7 @@ fn wait_iface(iface: &str, timeout: std::time::Duration) -> Result<(), NetError>
                 "interface {iface} did not appear within {timeout:?}"
             )));
         }
-        thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(200));
     }
     Ok(())
 }
@@ -261,13 +762,12 @@ fn read_mac(iface: &str) -> Result<[u8; 6], NetError> {
 }
 
 #[cfg(target_os = "linux")]
-fn ipv4_mask_to_prefix(mask: std::net::Ipv4Addr) -> Result<u8, NetError> {
+fn ipv4_mask_to_prefix(mask: Ipv4Addr) -> Result<u8, NetError> {
     let bits = u32::from(mask);
     if bits == 0 {
         return Ok(0);
     }
     let prefix = bits.count_ones() as u8;
-    // Contiguous ones from the MSB.
     if bits.leading_ones() != u32::from(prefix) || bits.trailing_zeros() != 32 - u32::from(prefix) {
         return Err(NetError::Msg(format!("non-contiguous DHCP mask {mask}")));
     }
@@ -276,7 +776,8 @@ fn ipv4_mask_to_prefix(mask: std::net::Ipv4Addr) -> Result<u8, NetError> {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::ipv4_mask_to_prefix;
+    use super::{ipv4_mask_to_prefix, lease_timers};
+    use dhcproto::v4::{DhcpOption, Message, OptionCode};
     use std::net::Ipv4Addr;
 
     #[test]
@@ -293,5 +794,32 @@ mod tests {
             ipv4_mask_to_prefix(Ipv4Addr::new(255, 255, 255, 252)).unwrap(),
             30
         );
+    }
+
+    #[test]
+    fn timers_default_half_and_seven_eighths() {
+        let ack = Message::default();
+        let (t1, t2) = lease_timers(800, &ack);
+        assert_eq!(t1, 400);
+        assert_eq!(t2, 700);
+    }
+
+    #[test]
+    fn timers_honor_server_options() {
+        let mut ack = Message::default();
+        ack.opts_mut().insert(DhcpOption::Renewal(100));
+        ack.opts_mut().insert(DhcpOption::Rebinding(200));
+        let (t1, t2) = lease_timers(400, &ack);
+        assert_eq!(t1, 100);
+        assert_eq!(t2, 200);
+        // Silence unused import warning if OptionCode is only used via DhcpOption.
+        let _ = OptionCode::Renewal;
+    }
+
+    #[test]
+    fn timers_infinite() {
+        let ack = Message::default();
+        let (t1, t2) = lease_timers(u32::MAX, &ack);
+        assert!(t1 > 0 && t2 > t1);
     }
 }

@@ -81,6 +81,8 @@ check "Quote RPC in proto" file_has "proto/pertisk/machine/v1alpha1/machine.prot
 check "pertisk-tpm Quote client" file_has "crates/pertisk-tpm/src/quote.rs" 'produce_quote'
 check "pertiskctl quote" file_has "crates/pertiskctl/src/main.rs" 'Commands::Quote'
 check "persistent AK handle" file_has "crates/pertisk-tpm/src/wire.rs" 'AK_PERSISTENT_HANDLE'
+check "EK cert NV read" file_has "crates/pertisk-tpm/src/ek.rs" 'read_ek_certificate'
+check "EK CA chain verify" file_has "crates/pertisk-tpm/src/ek.rs" 'verify_ek_chain'
 check "mgmt Quote enroll" file_has "crates/pertisk-mgmt/src/node_attestation.rs" 'pub async fn enroll'
 check "mgmt Quote verify" file_has "crates/pertisk-mgmt/src/node_attestation.rs" 'pub async fn verify'
 
@@ -125,6 +127,7 @@ check "iproute2 ip shipped" file_has "${DF}" 'tools/bin/ip ./sbin/ip'
 check "no udhcpc in image" bash -c "! grep -qE 'usr/sbin/udhcpc|pertisk-udhcpc-hook' '${DF}'"
 check "debug profile installs ash via /bin/busybox" file_has "${DF}" 'mv ./usr/lib/pertisk/.busybox-debug ./bin/busybox'
 check "builtin DHCP only" file_has "crates/pertisk-net/src/link.rs" 'crate::dhcp::run_dhcp\(iface\)'
+check "DHCP renew/rebind maintainer" file_has "crates/pertisk-net/src/dhcp.rs" 'ensure_maintainer'
 check "shared ioctl DHCP lease apply" file_has "crates/pertisk-net/src/link.rs" 'apply_dhcp_v4_lease'
 check "no udhcpc_hook module" bash -c "! test -f crates/pertisk-net/src/udhcpc_hook.rs"
 

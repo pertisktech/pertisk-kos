@@ -16,6 +16,13 @@ pub const TPM_CC_QUOTE: u32 = 0x0000_0158;
 pub const TPM_CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
 pub const TPM_CC_READ_PUBLIC: u32 = 0x0000_0173;
 pub const TPM_CC_EVICT_CONTROL: u32 = 0x0000_0120;
+pub const TPM_CC_NV_READ: u32 = 0x0000_014E;
+pub const TPM_CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
+
+/// TCG EK certificate NV indexes (prefer ECC, then RSA).
+pub const NV_EK_CERT_ECC_P256: u32 = 0x01C0_000A;
+pub const NV_EK_CERT_RSA: u32 = 0x01C0_0002;
+pub const NV_EK_CERT_ECC_P384: u32 = 0x01C0_000C;
 
 /// Persistent handle for the lab attestation signing key.
 pub const AK_PERSISTENT_HANDLE: u32 = 0x8100_000A;

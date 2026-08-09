@@ -101,11 +101,25 @@ Pertisk exposes a **read-only** attestation snapshot over gRPC (no `libtss2` in 
 Pure-Rust Quote over `/dev/tpmrm0` (fallback `/dev/tpm0`) — no `tpm2-tools` / `libtss2`:
 
 - Persistent ECC NIST-P256 restricted signing AK at handle `0x8100000A` (created on first Quote)
-- `MachineService.Quote` + `pertiskctl quote [--verify] [--nonce HEX]`
+- `MachineService.Quote` + `pertiskctl quote [--verify] [--nonce HEX] [--ek-cas DIR]`
 - Local verify checks ECDSA signature, nonce (`extraData`), and PCR composite digest vs sysfs
-- **Mgmt trust store (lab):** node detail → Enroll AK / Verify Quote (TOFU store of AK public in SQLite; verify re-Quotes and checks signature against enrolled key)
+- **Mgmt trust store (lab):** node detail → Enroll AK / Verify Quote (TOFU store of AK public + EK fingerprint in SQLite)
 
-Still later: EK cert chain / manufacturer endorsement for production remote attestation.
+### EK certificate / manufacturer endorsement (lab)
+
+Quote also attempts to read the manufacturer **EK certificate** from TCG NV indexes (`0x01C0000A` ECC-P256, `0x01C0000C` ECC-P384, `0x01C00002` RSA) and optionally verify the X.509 chain:
+
+```bash
+# Drop vendor Intermediate/Root PEMs here (or set PERTISK_TPM_EK_CAS):
+mkdir -p /system/state/secrets/tpm-ek-cas   # on the node
+# cp Intel/AMD/Nuvoton/… CA PEMs into that directory
+
+./out/bin/pertiskctl -e <guest-ip>:50000 quote --verify --ek-cas ./tpm-ek-cas
+# verify=ok
+# ek_chain=ok ca=CN=…
+```
+
+On soft-TPM (`swtpm`) there is usually **no** EK certificate provisioned — Quote still works; `ek_chain_status=missing`. Real hardware TPMs typically ship an EK cert in NV.
 
 ```bash
 # On a node with PERTISK_TPM=1 (or a real TPM):

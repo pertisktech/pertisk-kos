@@ -279,6 +279,16 @@ message QuoteResponse {
   repeated PcrValue pcrs = 7;
   string active_slot = 8;
   string version = 9;
+  // Manufacturer EK certificate (DER) from TCG NV, when present.
+  bytes ek_cert_der = 10;
+  uint32 ek_nv_index = 11;
+  string ek_subject = 12;
+  string ek_issuer = 13;
+  // SHA-256 hex of ek_cert_der.
+  string ek_fingerprint = 14;
+  // missing | unverified | ok | failed
+  string ek_chain_status = 15;
+  string ek_chain_message = 16;
 }
 
 message EtcdSnapshotRequest {

@@ -15,7 +15,7 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 | Metrics endpoint auth | pass | mTLS when `PERTISK_TLS_*` set (same PEMs as API); optional bearer: `--metrics-token` / `PERTISK_METRICS_TOKEN` / STATE `secrets/metrics.token` |
 | STATE `secrets/` mode `0700` | pass | Set in `StateVolume::ensure_layout` |
 | Kernel sysctls before kubelet | pass | `pertiskd` `sysctl::apply_hardening_sysctls` |
-| Secure Boot / UKI measured boot | partial | UKI + OVMF enroll + PCR Attest + Quote lab; mgmt remote trust store later ([SECURE_BOOT.md](./SECURE_BOOT.md)) |
+| Secure Boot / UKI measured boot | partial | UKI + OVMF enroll + PCR Attest + Quote + EK CA chain lab ([SECURE_BOOT.md](./SECURE_BOOT.md)) |
 | Minimal kernel modules | gap | Still using Alpine virt kernel for QEMU |
 
 ## Kubelet (CIS §4.2)
@@ -116,6 +116,7 @@ Pertisk goals (DESIGN §8): measured boot where feasible. Not required for v0.1.
 | 5 | TPM PCR attestation of boot chain (optional) | done (lab) — sysfs PCR read; `Attest` RPC / `pertiskctl attest`; QEMU `PERTISK_TPM=1` |
 | 5b | TPM2 Quote (optional) | done (lab) — pure-Rust Quote + persistent AK `0x8100000A`; `pertiskctl quote --verify` |
 | 5c | Mgmt Quote trust store | done (lab) — enroll/verify against stored AK public |
+| 5d | EK cert + manufacturer CA chain | done (lab) — TCG NV read; `PERTISK_TPM_EK_CAS` / `--ek-cas`; mgmt stores EK fingerprint |
 
 See [SECURE_BOOT.md](./SECURE_BOOT.md) for build/sign/enroll steps.
 
@@ -130,5 +131,4 @@ Marker file in the image: `/etc/pertisk/image-profile`.
 
 ## Gaps tracked for later
 
-- EK cert chain / manufacturer endorsement for production remote attestation
-- Lease renew / rebind for long-lived DHCP leases (builtin client is one-shot at boot)
+_(none currently — EK manufacturer endorsement path is in place for lab)_

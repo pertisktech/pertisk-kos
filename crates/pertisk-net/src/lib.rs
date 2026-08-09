@@ -1,7 +1,8 @@
 //! Host networking for Pertisk KOS (Phase 1 / M2).
 //!
 //! Brings links up, applies static addressing via netlink/ioctl, or requests
-//! DHCPv4 via the **in-process** client (`dhcp::run_dhcp`). No BusyBox `udhcpc`.
+//! DHCPv4 via the **in-process** client (`dhcp::run_dhcp`) with T1 renew /
+//! T2 rebind maintainers. No BusyBox `udhcpc`.
 
 mod apply;
 #[cfg(target_os = "linux")]

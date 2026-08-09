@@ -22,11 +22,12 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 | Metrics mTLS (`:50001` with API PEMs) | done |
 | UKI / OVMF enroll (`make enroll-ovmf`) | done |
 | TPM PCR Attest (sysfs / `pertiskctl attest`) | done (lab) |
-| BusyBox-free DHCPv4 (builtin only) | done |
+| BusyBox-free DHCPv4 (builtin only) | done — T1 renew / T2 rebind |
 | util-linux mount/umount + iproute2 ip | done |
 | CRI introspection (`pertiskctl containers`) | done (lab) — kind / pod / ns labels |
 | Net / disk inspect (`pertiskctl interfaces` / `disks`) | done (lab) |
 | TPM2 Quote (`pertiskctl quote --verify`) | done (lab) |
+| EK cert + manufacturer CA chain | done (lab) — `PERTISK_TPM_EK_CAS` / `--ek-cas` |
 | Mgmt Quote trust store (AK enroll / verify) | done (lab) |
 | etcd snapshot / restore (`pertiskctl etcd …`) | done (lab) |
 
@@ -40,7 +41,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 - `pertiskd` PID 1: GPT / STATE / EPHEMERAL disks, DHCP or static net, containerd, kubelet, signed A/B updates, serial console dashboard
 - Multi-arch **amd64** / **arm64** (initramfs + cloud qcow2/raw)
 - A/B OS updates with Ed25519-signed bundles (`pertisk-update` / `pertisk-sign`)
-- In-process DHCPv4 only (no BusyBox `udhcpc`)
+- In-process DHCPv4 only (no BusyBox `udhcpc`); T1 renew + T2 rebind maintainer
 - util-linux `mount`/`umount` + iproute2 `ip` (no BusyBox applets)
 - UKI / Secure Boot lab path (`make uki`, `make enroll-ovmf`, `PERTISK_TPM=1`) — see [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 - Guest extensions: **nfs-client**, **qemu-guest-agent**
@@ -203,6 +204,7 @@ curl -s --cacert out/mtls/ca.crt \
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs container:<id> -n 200  # CRI app logs via /var/log/pods
 ./out/bin/pertiskctl -e 127.0.0.1:50000 attest      # TPM PCRs when present
 ./out/bin/pertiskctl -e 127.0.0.1:50000 quote --verify  # TPM2 Quote + local verify
+# Optional EK manufacturer chain: --ek-cas /path/to/cas  (or PERTISK_TPM_EK_CAS on the node)
 ./out/bin/pertiskctl -e 127.0.0.1:50000 etcd snapshot
 ```## mTLS + signed upgrade smoke
 
@@ -264,4 +266,4 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 
 ## Next
 
-P5 stretch is complete for lab / HA. Soft reset: `pertiskctl reset --force`. Dashboard events: SSE `/api/events`. Log follow: `pertiskctl logs -f` (incl. `container:<id>`).
+P5 stretch complete for lab / HA. Latest: EK cert + manufacturer CA chain (`PERTISK_TPM_EK_CAS` / `pertiskctl quote --verify --ek-cas`). Also: DHCPv4 T1/T2, soft reset, SSE `/api/events`, `pertiskctl logs -f`.

@@ -2,6 +2,7 @@
 
 use crate::commands;
 use crate::device::Device;
+use crate::ek::{read_ek_certificate, EkCertificate, EkChainStatus};
 use crate::error::{Error, Result};
 use crate::verify::PcrDigest;
 use crate::wire::AK_PERSISTENT_HANDLE;
@@ -23,6 +24,8 @@ pub struct QuoteBundle {
     pub device: Option<String>,
     /// Persistent handle used (e.g. 0x8100000A).
     pub ak_handle: u32,
+    /// Manufacturer EK certificate (when present in TPM NV).
+    pub ek: EkCertificate,
 }
 
 impl QuoteBundle {
@@ -36,11 +39,22 @@ impl QuoteBundle {
             ak_public: Vec::new(),
             device: None,
             ak_handle: 0,
+            ek: EkCertificate {
+                available: false,
+                message: String::new(),
+                nv_index: 0,
+                der: Vec::new(),
+                subject: String::new(),
+                issuer: String::new(),
+                fingerprint_sha256: String::new(),
+                chain_status: EkChainStatus::Missing,
+                chain_message: String::new(),
+            },
         }
     }
 }
 
-/// Ensure persistent AK, Quote selected PCRs. Soft-fails without TPM.
+/// Ensure persistent AK, Quote selected PCRs, attach EK cert. Soft-fails without TPM.
 pub fn produce_quote(nonce: &[u8]) -> QuoteBundle {
     match produce_quote_inner(nonce) {
         Ok(b) => b,
@@ -61,19 +75,34 @@ fn produce_quote_inner(nonce: &[u8]) -> Result<QuoteBundle> {
 
     let ak = commands::ensure_persistent_ak(&mut dev)?;
     let (quoted, signature) = commands::quote(&mut dev, ak.handle, &nonce, QUOTE_PCR_INDICES)?;
+    // Drop device before opening again inside EK read (exclusive /dev/tpmrm0).
+    drop(dev);
+    let ek = read_ek_certificate(None);
+
+    let mut message = format!(
+        "quoted {} PCR(s) via {path} (persistent AK handle 0x{AK_PERSISTENT_HANDLE:08x})",
+        QUOTE_PCR_INDICES.len()
+    );
+    if ek.available {
+        message.push_str(&format!(
+            "; EK NV 0x{:08x} chain={}",
+            ek.nv_index,
+            ek.chain_status.as_str()
+        ));
+    } else if !ek.message.is_empty() {
+        message.push_str(&format!("; EK: {}", ek.message));
+    }
 
     Ok(QuoteBundle {
         available: true,
-        message: format!(
-            "quoted {} PCR(s) via {path} (persistent AK handle 0x{AK_PERSISTENT_HANDLE:08x})",
-            QUOTE_PCR_INDICES.len()
-        ),
+        message,
         nonce,
         quoted,
         signature,
         ak_public: ak.public,
         device: Some(path),
         ak_handle: ak.handle,
+        ek,
     })
 }
 

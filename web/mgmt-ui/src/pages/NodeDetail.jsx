@@ -324,6 +324,23 @@ export default function NodeDetail() {
               ok={attest.enrolled ? true : null}
               value={attest.ak_fingerprint ? `…${attest.ak_fingerprint}` : '—'}
             />
+            <HealthPill
+              label="EK"
+              ok={
+                attest.ek_chain_status === 'ok'
+                  ? true
+                  : attest.ek_chain_status === 'failed'
+                    ? false
+                    : attest.ek_fingerprint
+                      ? true
+                      : null
+              }
+              value={
+                attest.ek_fingerprint
+                  ? `…${attest.ek_fingerprint}${attest.ek_chain_status ? ` (${attest.ek_chain_status})` : ''}`
+                  : '—'
+              }
+            />
             {attest.ok != null && (
               <HealthPill
                 label="Verify"

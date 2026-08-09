@@ -6,8 +6,9 @@ use crate::wire::{
     marshal_ecc_ak_public, marshal_ecc_storage_public, marshal_pcr_selection,
     marshal_sensitive_create_empty, parse_response, response_params, Reader, Writer,
     AK_PERSISTENT_HANDLE, TPM_ALG_ECDSA, TPM_ALG_NULL, TPM_CC_CREATE, TPM_CC_CREATE_PRIMARY,
-    TPM_CC_EVICT_CONTROL, TPM_CC_FLUSH_CONTEXT, TPM_CC_LOAD, TPM_CC_QUOTE, TPM_CC_READ_PUBLIC,
-    TPM_RH_OWNER, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS,
+    TPM_CC_EVICT_CONTROL, TPM_CC_FLUSH_CONTEXT, TPM_CC_LOAD, TPM_CC_NV_READ,
+    TPM_CC_NV_READ_PUBLIC, TPM_CC_QUOTE, TPM_CC_READ_PUBLIC, TPM_RH_OWNER, TPM_ST_NO_SESSIONS,
+    TPM_ST_SESSIONS,
 };
 
 pub struct LoadedKey {
@@ -263,4 +264,79 @@ pub fn ensure_persistent_ak(dev: &mut Device) -> Result<LoadedKey> {
         handle: AK_PERSISTENT_HANDLE,
         public,
     })
+}
+
+fn cmd_nv_read_public(nv_index: u32) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u16(TPM_ST_NO_SESSIONS);
+    w.u32(0);
+    w.u32(TPM_CC_NV_READ_PUBLIC);
+    w.u32(nv_index);
+    w.finish_header()
+}
+
+/// Returns NV data size from TPMS_NV_PUBLIC (0 if index missing / unreadable).
+pub fn nv_data_size(dev: &mut Device, nv_index: u32) -> Result<u16> {
+    let resp = dev.transact(&cmd_nv_read_public(nv_index))?;
+    let (tag, _, mut r) = parse_response(&resp)?;
+    let mut p = response_params(&mut r, tag)?;
+    let nv_public = p.tpm2b()?;
+    // TPMS_NV_PUBLIC: nvIndex(u32) + nameAlg(u16) + attributes(u32) + authPolicy(TPM2B) + dataSize(u16)
+    let mut n = Reader::new(nv_public);
+    let _ = n.u32()?;
+    let _ = n.u16()?;
+    let _ = n.u32()?;
+    n.skip_tpm2b()?;
+    Ok(n.u16()?)
+}
+
+fn cmd_nv_read(nv_index: u32, size: u16, offset: u16) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u16(TPM_ST_SESSIONS);
+    w.u32(0);
+    w.u32(TPM_CC_NV_READ);
+    w.u32(nv_index); // authHandle
+    w.u32(nv_index); // nvIndex
+
+    let mut auth = Writer::new();
+    auth.pw_empty_auth();
+    let auth_bytes = auth.into_vec();
+    w.u32(auth_bytes.len() as u32);
+    w.bytes(&auth_bytes);
+
+    w.u16(size);
+    w.u16(offset);
+    w.finish_header()
+}
+
+fn parse_nv_read(resp: &[u8]) -> Result<Vec<u8>> {
+    let (tag, _, mut r) = parse_response(resp)?;
+    let mut p = response_params(&mut r, tag)?;
+    tpm2b_owned(&mut p)
+}
+
+/// Read the full NV index contents (chunked). Soft-fails via `Result` if empty/missing.
+pub fn nv_read_all(dev: &mut Device, nv_index: u32) -> Result<Vec<u8>> {
+    let total = nv_data_size(dev, nv_index)? as usize;
+    if total == 0 {
+        return Err(Error::Parse(format!(
+            "NV 0x{nv_index:08x} exists but dataSize=0"
+        )));
+    }
+    let mut out = Vec::with_capacity(total);
+    let chunk: u16 = 512;
+    while out.len() < total {
+        let remaining = total - out.len();
+        let want = (remaining as u16).min(chunk);
+        let offset = out.len() as u16;
+        let resp = dev.transact(&cmd_nv_read(nv_index, want, offset))?;
+        let piece = parse_nv_read(&resp)?;
+        if piece.is_empty() {
+            return Err(Error::Parse(format!(
+                "NV 0x{nv_index:08x} read returned empty at offset {offset}"
+            )));
+        }
+        out.extend_from_slice(&piece);
+    }
+    Ok(out)
 }
