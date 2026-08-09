@@ -116,6 +116,30 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             updated_at TEXT NOT NULL,
             finished_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS config_templates (
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL DEFAULT 'any',
+            yaml TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS join_tokens (
+            id TEXT PRIMARY KEY NOT NULL,
+            cluster_id TEXT NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+            role TEXT NOT NULL DEFAULT 'worker',
+            label TEXT NOT NULL DEFAULT '',
+            token TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            ca_pem TEXT,
+            expires_at TEXT,
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            revoked_at TEXT
+        );
         "#,
     )
     .execute(pool)
@@ -183,6 +207,11 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN ek_fingerprint TEXT")
         .execute(pool)
         .await;
+    let _ = sqlx::query(
+        "ALTER TABLE nodes ADD COLUMN source TEXT NOT NULL DEFAULT 'proxmox'",
+    )
+    .execute(pool)
+    .await;
 
     // Backfill node hardware from cluster role defaults when unset.
     let _ = sqlx::query(

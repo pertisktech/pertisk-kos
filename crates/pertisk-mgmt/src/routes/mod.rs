@@ -1,13 +1,17 @@
 mod auth_routes;
+mod audit;
 mod clusters;
 mod dashboard;
 mod events;
 mod health;
+mod join_tokens;
 pub(crate) mod k8s;
+mod machines;
 mod meta;
 pub(crate) mod nodes;
 mod providers;
 mod settings;
+mod templates;
 
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::request::Parts;
@@ -32,6 +36,10 @@ pub fn router(state: AppState) -> Router {
         .merge(clusters::routes())
         .merge(nodes::routes())
         .merge(k8s::routes())
+        .merge(audit::routes())
+        .merge(machines::routes())
+        .merge(templates::routes())
+        .merge(join_tokens::routes())
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 
     Router::new()

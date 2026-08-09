@@ -11,7 +11,10 @@ const SIDEBAR_COLLAPSED_KEY = 'pertisk_kos_sidebar_collapsed'
 const NAV = [
   { to: '/', label: 'Dashboard', icon: 'dashboard', end: true },
   { to: '/clusters', label: 'Clusters', icon: 'clusters' },
+  { to: '/machines', label: 'Machines', icon: 'machines' },
+  { to: '/templates', label: 'Templates', icon: 'templates' },
   { to: '/providers', label: 'Providers', icon: 'providers' },
+  { to: '/audit', label: 'Audit', icon: 'audit' },
   { to: '/settings', label: 'Settings', icon: 'settings' },
 ]
 

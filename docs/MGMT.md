@@ -211,6 +211,26 @@ Or `./scripts/deploy-mgmt-lab.sh --mgmt … --with-ssh --pve 10.1.1.195`.
 
 | Role | Capabilities |
 |------|----------------|
-| `viewer` | Read clusters/providers |
-| `operator` | Create/update/delete clusters, providers, nodes, upgrades |
+| `viewer` | Read clusters/providers/machines/templates/audit |
+| `operator` | Create/update/delete clusters, providers, nodes, upgrades, templates |
 | `admin` | Operator + delete providers |
+
+## Phase D — fleet views
+
+| Page | API | Notes |
+|------|-----|--------|
+| **Machines** | `GET /api/machines` | Cross-cluster node inventory; opens node detail |
+| **Templates** | `GET/POST /api/templates`, `GET/PUT/DELETE /api/templates/{id}` | Machine-config YAML blueprints; load into cluster Config tab |
+| **Audit** | `GET /api/audit?limit=&offset=&action=&resource=` | Management action log (`audit_log` table) |
+
+### D2 — adopt / join tokens
+
+| API | Notes |
+|-----|--------|
+| `POST /api/clusters/{id}/nodes/adopt` | Join existing host by IP (`role`, `ip`, optional `name`, `source`=`adopted`\|`baremetal`). Job runs `scripts/adopt-node.sh` (no VM create; `nodes.vmid` null). |
+| `GET/POST /api/clusters/{id}/join-tokens` | Snapshot kube bootstrap token + endpoint from `worker.yaml`; returns copy-paste instructions |
+| `GET/DELETE /api/clusters/{id}/join-tokens/{tid}` | Show instructions / soft-revoke snapshot (does not rotate kube Secret) |
+
+UI: Cluster → Nodes → **Add node** modes — Create VM / Adopt / Join instructions.
+
+Cloud providers (AWS/GCP/Azure) are **paused**; Proxmox + ESXi remain the supported hypervisors.

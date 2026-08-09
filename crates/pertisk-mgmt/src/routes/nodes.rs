@@ -13,6 +13,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/clusters/{id}/nodes", get(list).post(add))
+        .route("/clusters/{id}/nodes/adopt", post(adopt))
         .route("/clusters/{id}/nodes/bulk-delete", axum::routing::post(bulk_delete))
         .route("/clusters/{id}/nodes/bulk-reboot", post(bulk_reboot))
         .route(
@@ -57,13 +58,16 @@ pub struct NodeOut {
     #[serde(skip_serializing)]
     pub ak_public_b64: Option<String>,
     pub ak_enrolled_at: Option<String>,
+    /// proxmox | vsphere | adopted | baremetal
+    pub source: String,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
 }
 
 pub const NODE_SELECT: &str = r#"SELECT id, cluster_id, name, role, vmid, ip, ip6, k8s_version,
-       memory, cores, disk_gb, ak_public_b64, ak_enrolled_at, status, created_at, updated_at
+       memory, cores, disk_gb, ak_public_b64, ak_enrolled_at,
+       COALESCE(source, 'proxmox') AS source, status, created_at, updated_at
        FROM nodes"#;
 
 #[derive(Deserialize)]
@@ -84,6 +88,24 @@ struct AddNode {
 
 fn default_count() -> i64 {
     1
+}
+
+#[derive(Deserialize)]
+struct AdoptNode {
+    /// controlplane | worker
+    role: String,
+    /// Existing node Machine API IPv4 (reachable from mgmt).
+    ip: String,
+    /// Optional hostname; default `{cluster}-wk-N` / `{cluster}-cp-N`.
+    #[serde(default)]
+    name: Option<String>,
+    /// adopted | baremetal (default adopted).
+    #[serde(default = "default_adopt_source")]
+    source: String,
+}
+
+fn default_adopt_source() -> String {
+    "adopted".into()
 }
 
 #[derive(Deserialize)]
@@ -249,6 +271,87 @@ async fn add(
         "node.add",
         Some(&id),
         Some(&format!("{} x{}", body.role, body.count)),
+    )
+    .await;
+    Ok(Json(serde_json::json!({ "job_id": job_id })))
+}
+
+async fn adopt(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<String>,
+    Json(body): Json<AdoptNode>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_mutate(&user)?;
+    if body.role != "controlplane" && body.role != "worker" {
+        return Err(AppError::bad("role must be controlplane or worker"));
+    }
+    let ip = body.ip.trim();
+    if ip.is_empty() {
+        return Err(AppError::bad("ip is required"));
+    }
+    // Basic IPv4 sanity (hostname also ok if it has a label).
+    if ip.contains(' ') || ip.contains('/') {
+        return Err(AppError::bad("ip must be a host address (no CIDR)"));
+    }
+    let source = match body.source.trim().to_ascii_lowercase().as_str() {
+        "adopted" | "" => "adopted",
+        "baremetal" | "bare-metal" | "metal" => "baremetal",
+        other => {
+            return Err(AppError::bad(format!(
+                "source must be adopted|baremetal (got {other})"
+            )));
+        }
+    };
+    if let Some(n) = body.name.as_deref() {
+        let n = n.trim();
+        if n.is_empty() {
+            return Err(AppError::bad("name must not be empty when set"));
+        }
+        if n.len() > 63 || !n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
+            return Err(AppError::bad(
+                "name must be a DNS-ish hostname (alnum, -, ., max 63)",
+            ));
+        }
+    }
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM clusters WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(state.pool())
+        .await?;
+    if exists.is_none() {
+        return Err(AppError::NotFound);
+    }
+    let taken: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM nodes WHERE cluster_id = ? AND ip = ? AND status != 'error'",
+    )
+    .bind(&id)
+    .bind(ip)
+    .fetch_optional(state.pool())
+    .await?;
+    if taken.is_some() {
+        return Err(AppError::bad(format!(
+            "a node with ip {ip} is already registered on this cluster"
+        )));
+    }
+    let job_id = jobs::enqueue(
+        &state,
+        Some(&id),
+        "adopt_node",
+        serde_json::json!({
+            "role": body.role,
+            "ip": ip,
+            "name": body.name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            "source": source,
+        }),
+    )
+    .await
+    .map_err(AppError::Anyhow)?;
+    audit(
+        state.pool(),
+        Some(&user.id),
+        "node.adopt",
+        Some(&id),
+        Some(&format!("{} @ {}", body.role, ip)),
     )
     .await;
     Ok(Json(serde_json::json!({ "job_id": job_id })))

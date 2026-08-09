@@ -84,6 +84,10 @@ Single-port API + UI (`pertisk-mgmt`). Details: [docs/MGMT.md](./docs/MGMT.md).
 | **Create cluster** | Provider, CP/worker counts, arch, CNI, K8s version, max pods, VIP / dual-stack, VMID + live conflict checks, HW sizes |
 | **Cluster detail** | Overview, Nodes, **K8s** workloads, **Shell** (mgmt-host PTY + kubeconfig), Config, Upgrade, Jobs |
 | **Node detail** | Inventory, live health, metrics charts, log tail |
+| **Machines** | Cross-cluster node inventory (Phase D) |
+| **Templates** | Reusable machine-config blueprints (Phase D) |
+| **Audit** | Management action log (Phase D) |
+| **Adopt / join** | Register existing/bare-metal nodes; join-token snapshots (Phase D2) |
 | **Settings** | Session, listen/public URL, JWT TTL, paths, auth mode |
 
 ### Providers
@@ -93,7 +97,7 @@ Single-port API + UI (`pertisk-mgmt`). Details: [docs/MGMT.md](./docs/MGMT.md).
 | Proxmox VE | Supported (API token; optional SSH for arm64 create) | [docs/PROXMOX.md](./docs/PROXMOX.md) |
 | VMware ESXi (standalone) | Supported (qcow2→VMDK) — not vCenter | [docs/VSPHERE.md](./docs/VSPHERE.md) |
 | QEMU / bare metal EFI | Supported | [image/README.md](./image/README.md) |
-| AWS / GCP / Azure | Outlined only | [image/cloud/README.md](./image/cloud/README.md) |
+| AWS / GCP / Azure | Outlined only (**paused**) | [image/cloud/README.md](./image/cloud/README.md) |
 
 ---
 
@@ -266,4 +270,4 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 
 ## Next
 
-P5 stretch complete for lab / HA. Latest: EK cert + manufacturer CA chain (`PERTISK_TPM_EK_CAS` / `pertiskctl quote --verify --ek-cas`). Also: DHCPv4 T1/T2, soft reset, SSE `/api/events`, `pertiskctl logs -f`.
+**Phase D** — D0–D2 done (Audit, Machines, Templates, adopt/join tokens). Next: D3 multi-tenant (later). AWS/GCP/Azure providers paused.

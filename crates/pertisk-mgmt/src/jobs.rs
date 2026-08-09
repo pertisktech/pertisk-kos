@@ -194,6 +194,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             run_delete_cluster(state, cluster_id.as_deref(), &payload, &log_file).await
         }
         "add_node" => run_add_node(state, cluster_id.as_deref(), &payload, &log_file).await,
+        "adopt_node" => run_adopt_node(state, cluster_id.as_deref(), &payload, &log_file).await,
         "remove_node" => run_remove_node(state, cluster_id.as_deref(), &payload, &log_file).await,
         "resize_node" => run_resize_node(state, cluster_id.as_deref(), &payload, &log_file).await,
         "reboot_node" => run_reboot_node(state, cluster_id.as_deref(), &payload, &log_file).await,
@@ -1458,8 +1459,8 @@ async fn run_add_node(
 
         let node_id = Uuid::new_v4().to_string();
         sqlx::query(
-            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, memory, cores, disk_gb, k8s_version, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?)"#,
+            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, memory, cores, disk_gb, k8s_version, source, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'proxmox', 'provisioning', ?, ?)"#,
         )
         .bind(&node_id)
         .bind(cid)
@@ -1675,6 +1676,325 @@ fn add_node_script_path(state: &AppState) -> PathBuf {
         }
     }
     PathBuf::from("./scripts/proxmox-add-node.sh")
+}
+
+fn adopt_node_script_path(state: &AppState) -> PathBuf {
+    let beside = state
+        .cfg()
+        .lab_up
+        .parent()
+        .map(|p| p.join("adopt-node.sh"));
+    if let Some(p) = beside {
+        if p.exists() {
+            return p;
+        }
+    }
+    PathBuf::from("./scripts/adopt-node.sh")
+}
+
+async fn run_adopt_node(
+    state: &AppState,
+    cluster_id: Option<&str>,
+    payload: &str,
+    log_path: &str,
+) -> anyhow::Result<()> {
+    let cid = cluster_id.ok_or_else(|| anyhow::anyhow!("cluster_id required"))?;
+    let p: serde_json::Value = serde_json::from_str(payload)?;
+    let role = p.get("role").and_then(|v| v.as_str()).unwrap_or("worker");
+    let node_ip = p
+        .get("ip")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("ip required"))?
+        .to_string();
+    let source = p
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("adopted");
+    let custom_name = p
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let cluster = sqlx::query_as::<_, ClusterRow>(
+        r#"SELECT id, name, provider_id, controlplanes, workers, vip, vip6, cni, k8s_version,
+                  cp_memory, cp_cores, cp_disk_gb, worker_memory, worker_cores, worker_disk_gb, cp_vmid,
+                  COALESCE(network_mode, 'ipv4') as network_mode,
+                  COALESCE(max_pods, 250) as max_pods,
+                  COALESCE(arch, 'amd64') as arch,
+                  COALESCE(pod_subnet, '10.244.0.0/16') as pod_subnet,
+                  COALESCE(service_subnet, '10.96.0.0/12') as service_subnet,
+                  pod_subnet_ipv6,
+                  service_subnet_ipv6
+           FROM clusters WHERE id = ?"#,
+    )
+    .bind(cid)
+    .fetch_one(state.pool())
+    .await?;
+
+    let cp_ip = resolve_cp_ip(state, cid, &cluster).await?;
+    let cluster_out = state.cfg().kubeconfigs_dir().join(&cluster.name);
+    std::fs::create_dir_all(&cluster_out)?;
+    let adopt_script = adopt_node_script_path(state);
+    if !adopt_script.exists() {
+        anyhow::bail!(
+            "adopt-node script missing at {} — cannot join existing nodes",
+            adopt_script.display()
+        );
+    }
+
+    let now = db::now_rfc3339();
+    sqlx::query("UPDATE clusters SET status = 'provisioning', updated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(cid)
+        .execute(state.pool())
+        .await?;
+
+    append_log(
+        log_path,
+        &format!(
+            "adopt {role} @ {node_ip} → cluster={} (cp_api={cp_ip}, source={source})\n",
+            cluster.name
+        ),
+    )?;
+
+    let now = db::now_rfc3339();
+    let (name, cp_index) = if role == "controlplane" {
+        let (cps_now,): (i64,) =
+            sqlx::query_as("SELECT controlplanes FROM clusters WHERE id = ?")
+                .bind(cid)
+                .fetch_one(state.pool())
+                .await?;
+        let new_cps = cps_now + 1;
+        if new_cps % 2 == 0 {
+            append_log(
+                log_path,
+                "WARNING: even control-plane count reduces etcd quorum safety\n",
+            )?;
+        }
+        let name = custom_name
+            .clone()
+            .unwrap_or_else(|| format!("{}-cp-{new_cps}", cluster.name));
+        sqlx::query("UPDATE clusters SET controlplanes = ?, updated_at = ? WHERE id = ?")
+            .bind(new_cps)
+            .bind(&now)
+            .bind(cid)
+            .execute(state.pool())
+            .await?;
+        (name, Some(new_cps))
+    } else {
+        let (workers_now,): (i64,) = sqlx::query_as("SELECT workers FROM clusters WHERE id = ?")
+            .bind(cid)
+            .fetch_one(state.pool())
+            .await?;
+        let new_w = workers_now + 1;
+        let name = custom_name
+            .clone()
+            .unwrap_or_else(|| format!("{}-wk-{new_w}", cluster.name));
+        sqlx::query("UPDATE clusters SET workers = ?, updated_at = ? WHERE id = ?")
+            .bind(new_w)
+            .bind(&now)
+            .bind(cid)
+            .execute(state.pool())
+            .await?;
+        (name, None)
+    };
+
+    // Unique name check
+    let clash: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM nodes WHERE cluster_id = ? AND name = ?")
+            .bind(cid)
+            .bind(&name)
+            .fetch_optional(state.pool())
+            .await?;
+        if clash.is_some() {
+        // Roll back count bump
+        if role == "controlplane" {
+            let _ = sqlx::query(
+                "UPDATE clusters SET controlplanes = controlplanes - 1, updated_at = ? WHERE id = ?",
+            )
+            .bind(db::now_rfc3339())
+            .bind(cid)
+            .execute(state.pool())
+            .await;
+        } else {
+            let (w,): (i64,) = sqlx::query_as("SELECT workers FROM clusters WHERE id = ?")
+                .bind(cid)
+                .fetch_one(state.pool())
+                .await
+                .unwrap_or((1,));
+            let _ = sqlx::query("UPDATE clusters SET workers = ?, updated_at = ? WHERE id = ?")
+                .bind((w - 1).max(0))
+                .bind(db::now_rfc3339())
+                .bind(cid)
+                .execute(state.pool())
+                .await;
+        }
+        anyhow::bail!("node name {name} already exists on this cluster");
+    }
+
+    let (def_mem, def_cores, def_disk) = if role == "controlplane" {
+        (cluster.cp_memory, cluster.cp_cores, cluster.cp_disk_gb)
+    } else {
+        (
+            cluster.worker_memory,
+            cluster.worker_cores,
+            cluster.worker_disk_gb,
+        )
+    };
+
+    let node_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, ip, memory, cores, disk_gb, k8s_version, source, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?)"#,
+    )
+    .bind(&node_id)
+    .bind(cid)
+    .bind(&name)
+    .bind(role)
+    .bind(&node_ip)
+    .bind(def_mem)
+    .bind(def_cores)
+    .bind(def_disk)
+    .bind(&cluster.k8s_version)
+    .bind(source)
+    .bind(&now)
+    .bind(&now)
+    .execute(state.pool())
+    .await?;
+
+    append_log(
+        log_path,
+        &format!("==> joining existing {name} @ {node_ip} (no VM create)\n"),
+    )?;
+
+    let mut cmd = Command::new(&adopt_script);
+    cmd.arg("--role")
+        .arg(role)
+        .arg("--name")
+        .arg(&name)
+        .arg("--node-ip")
+        .arg(&node_ip)
+        .arg("--cp-ip")
+        .arg(&cp_ip)
+        .arg("--cluster-out")
+        .arg(&cluster_out)
+        .arg("--cluster-name")
+        .arg(&cluster.name)
+        .env("PERTISKCTL", state.cfg().pertiskctl.display().to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(root) = state.cfg().lab_up.parent().and_then(|p| p.parent()) {
+        cmd.env("PERTISK_ROOT", root.display().to_string());
+    }
+    if let Some(idx) = cp_index {
+        cmd.arg("--controlplane-index").arg(idx.to_string());
+    }
+
+    let mode = cluster.network_mode.to_ascii_lowercase();
+    let want_ip6 = mode == "dual-stack" || mode == "ipv6";
+
+    match stream_command(&mut cmd, log_path).await {
+        Ok(_output) => {
+            let now = db::now_rfc3339();
+            sqlx::query(
+                "UPDATE nodes SET status = 'ready', ip = ?, updated_at = ? WHERE id = ?",
+            )
+            .bind(&node_ip)
+            .bind(&now)
+            .bind(&node_id)
+            .execute(state.pool())
+            .await?;
+            append_log(log_path, &format!("ready {name} @ {node_ip}\n"))?;
+        }
+        Err(e) => {
+            let now = db::now_rfc3339();
+            let _ = sqlx::query("UPDATE nodes SET status = 'error', updated_at = ? WHERE id = ?")
+                .bind(&now)
+                .bind(&node_id)
+                .execute(state.pool())
+                .await;
+            let _ = sqlx::query(
+                "UPDATE clusters SET status = 'ready', error = ?, updated_at = ? WHERE id = ?",
+            )
+            .bind(e.to_string())
+            .bind(&now)
+            .bind(cid)
+            .execute(state.pool())
+            .await;
+            return Err(e);
+        }
+    }
+
+    let kc = cluster_out.join("admin.conf");
+    if kc.is_file() {
+        append_log(
+            log_path,
+            &format!(
+                "wait for kubectl addresses on {name}{}\n",
+                if want_ip6 { " (incl. IPv6)" } else { "" }
+            ),
+        )?;
+        match crate::node_sync::wait_node_addresses(
+            &kc,
+            &name,
+            want_ip6,
+            std::time::Duration::from_secs(180),
+        )
+        .await
+        {
+            Ok(snap) => {
+                let now = db::now_rfc3339();
+                let _ = sqlx::query(
+                    r#"UPDATE nodes SET
+                         ip = COALESCE(?, ip),
+                         ip6 = COALESCE(?, ip6),
+                         k8s_version = COALESCE(?, k8s_version),
+                         updated_at = ?
+                       WHERE id = ?"#,
+                )
+                .bind(&snap.ip)
+                .bind(&snap.ip6)
+                .bind(&snap.k8s_version)
+                .bind(&now)
+                .bind(&node_id)
+                .execute(state.pool())
+                .await;
+                append_log(
+                    log_path,
+                    &format!(
+                        "synced {name} ip={} ip6={}\n",
+                        snap.ip.as_deref().unwrap_or("—"),
+                        snap.ip6.as_deref().unwrap_or("—")
+                    ),
+                )?;
+            }
+            Err(e) => {
+                append_log(log_path, &format!("warn: wait addresses {name}: {e}\n"))?;
+            }
+        }
+        let _ = crate::node_sync::sync_cluster_nodes(
+            state.pool(),
+            cid,
+            Some(&kc),
+            Some(log_path),
+        )
+        .await;
+    }
+
+    let now = db::now_rfc3339();
+    sqlx::query(
+        "UPDATE clusters SET status = 'ready', error = NULL, updated_at = ? WHERE id = ?",
+    )
+    .bind(&now)
+    .bind(cid)
+    .execute(state.pool())
+    .await?;
+    append_log(log_path, "adopt-node complete\n")?;
+    Ok(())
 }
 
 async fn resolve_cp_ip(

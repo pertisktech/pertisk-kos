@@ -4,6 +4,10 @@ Build a **pre-installed** GPT disk (raw + qcow2) with EFI systemd-boot, slot A
 kernel/initramfs, and seeded STATE — suitable for QEMU UEFI, AWS AMI import,
 GCP custom images, and Azure VHD conversion.
 
+> **Paused:** AWS / GCP / Azure provider automation in `pertisk-mgmt` is deferred
+> (Phase D focuses on fleet UX first). The cloud image build path below remains
+> valid for manual upload / import.
+
 ## Build
 
 ```bash

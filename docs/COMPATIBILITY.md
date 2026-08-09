@@ -81,9 +81,22 @@ Image needs shared kernel modules + host `iptables-legacy` — see [examples/cni
 ## Explicitly out of scope (v0.1)
 
 - Third-party node OS API wire compatibility
-- Omni-like web fleet manager (Phase D)
 - Secure Boot / UKI enrollment automation (lab path done; see [SECURE_BOOT.md](./SECURE_BOOT.md))
 - Windows / non-Linux hosts as nodes
+- AWS / GCP / Azure cloud providers (**paused**; outlines only — [image/cloud/README.md](../image/cloud/README.md))
+
+## Phase D — Omni-like web fleet manager (in progress)
+
+Building on `pertisk-mgmt` (single-tenant multi-cluster today):
+
+| Milestone | Work | Status |
+|-----------|------|--------|
+| D0 | Audit log API/UI + cross-cluster Machines inventory | done |
+| D1 | Config templates / machine-config blueprints | done |
+| D2 | Bare-metal / machine registration | done |
+| D3 | Multi-tenant orgs / SaaS | later |
+
+See [DESIGN.md](../DESIGN.md) §7 and [MGMT.md](./MGMT.md).
 
 ## Multi-CP HA (lab)
 

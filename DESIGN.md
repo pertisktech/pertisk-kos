@@ -276,7 +276,16 @@ _(none — P5 stretch complete for lab / HA)_
 
 **Later (mgmt / ops parity)**
 
-_(none currently)_
+- AWS / GCP / Azure cloud providers — **paused** (outlines only; see [image/cloud/README.md](./image/cloud/README.md))
+
+**Phase D — Omni-like web fleet manager**
+
+| ID | Milestone | Status |
+|----|-----------|--------|
+| D0 | Audit log API/UI + cross-cluster Machines inventory | Done |
+| D1 | Config templates / cluster blueprints | Done |
+| D2 | Bare-metal / machine registration (join tokens, adopt nodes) | Done |
+| D3 | Multi-tenant orgs / SaaS packaging | Later |
 
 **Done (HA + mgmt)**
 
@@ -338,6 +347,9 @@ Pertisk KOS is a standalone product with its own API and image format.
 | M5j | DHCPv4 lease renew / rebind (T1/T2) | Done |
 | M5k | EK cert + manufacturer CA chain | Done (lab) |
 | M6 | drop BusyBox/`udhcpc` from production | Done |
+| D0 | mgmt audit log + Machines inventory | Done |
+| D1 | mgmt config templates | Done |
+| D2 | mgmt adopt nodes + join-token snapshots | Done |
 
 ---
 

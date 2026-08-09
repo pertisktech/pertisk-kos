@@ -79,7 +79,7 @@ function NodesTable({
           )}
           <th>Name</th>
           <th>Role</th>
-          <th>VMID</th>
+          <th>Source</th>
           <th>{dualStack ? 'IPv4 / IPv6' : 'IP'}</th>
           {showK8s && <th>K8s</th>}
           {showHw && <th>Hardware</th>}
@@ -118,7 +118,13 @@ function NodesTable({
               <td>
                 <span className="badge">{n.role === 'controlplane' ? 'CP' : 'worker'}</span>
               </td>
-              <td className="muted">{n.vmid ?? '—'}</td>
+              <td className="muted">
+                {n.source === 'adopted' || n.source === 'baremetal'
+                  ? n.source
+                  : n.vmid != null
+                    ? `${n.source || 'proxmox'} #${n.vmid}`
+                    : n.source || '—'}
+              </td>
               <td><NodeAddresses node={n} dualStack={dualStack} /></td>
               {showK8s && (
                 <td>
@@ -219,16 +225,25 @@ machine:
     border: bordered
     mgmt_url: https://ptkos.apps.thaidevops.co
 `)
+  const [templates, setTemplates] = useState([])
+  const [templateId, setTemplateId] = useState('')
   const [followLog, setFollowLog] = useState(true)
   const [selectedNodes, setSelectedNodes] = useState(() => new Set())
   const [addOpen, setAddOpen] = useState(false)
+  const [addMode, setAddMode] = useState('create') // create | adopt | join
   const [addForm, setAddForm] = useState({
     role: 'worker',
     count: 1,
     memory: 8192,
     cores: 4,
     disk_gb: 75,
+    ip: '',
+    name: '',
+    source: 'adopted',
   })
+  const [joinTokens, setJoinTokens] = useState([])
+  const [joinDetail, setJoinDetail] = useState(null)
+  const [joinBusy, setJoinBusy] = useState(false)
   const [hwOpen, setHwOpen] = useState(false)
   const [hwNode, setHwNode] = useState(null)
   const [hwForm, setHwForm] = useState({ memory: 4096, cores: 2, disk_gb: 50 })
@@ -286,6 +301,21 @@ machine:
   }, [id])
 
   useMgmtRefresh(load, { clusterId: id })
+
+  useEffect(() => {
+    if (tab !== 'config') return undefined
+    let cancelled = false
+    api('/templates')
+      .then((rows) => {
+        if (!cancelled) setTemplates(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        if (!cancelled) setTemplates([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [tab])
 
   useEffect(() => {
     load()
@@ -371,8 +401,11 @@ machine:
 
   function openAddModal() {
     const d = defaultsForRole(data?.cluster, 'worker')
-    setAddForm({ role: 'worker', count: 1, ...d })
+    setAddMode('create')
+    setAddForm({ role: 'worker', count: 1, ip: '', name: '', source: 'adopted', ...d })
+    setJoinDetail(null)
     setAddOpen(true)
+    loadJoinTokens()
   }
 
   function setAddRole(role) {
@@ -380,10 +413,34 @@ machine:
     setAddForm((f) => ({ ...f, role, ...d }))
   }
 
+  async function loadJoinTokens() {
+    try {
+      const rows = await api(`/clusters/${id}/join-tokens`)
+      setJoinTokens(Array.isArray(rows) ? rows : [])
+    } catch {
+      setJoinTokens([])
+    }
+  }
+
   async function submitAdd() {
     setBusy(true)
     setError('')
     try {
+      if (addMode === 'adopt') {
+        const body = {
+          role: addForm.role,
+          ip: String(addForm.ip || '').trim(),
+          source: addForm.source || 'adopted',
+        }
+        const nm = String(addForm.name || '').trim()
+        if (nm) body.name = nm
+        const res = await api(`/clusters/${id}/nodes/adopt`, { method: 'POST', body })
+        setAddOpen(false)
+        if (res?.job_id) selectJob(res.job_id)
+        setTab('jobs')
+        load()
+        return
+      }
       const res = await api(`/clusters/${id}/nodes`, {
         method: 'POST',
         body: {
@@ -402,6 +459,51 @@ machine:
       setError(err.message)
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function createJoinToken() {
+    setJoinBusy(true)
+    setError('')
+    try {
+      const detail = await api(`/clusters/${id}/join-tokens`, {
+        method: 'POST',
+        body: { role: addForm.role, label: addForm.name || '' },
+      })
+      setJoinDetail(detail)
+      await loadJoinTokens()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setJoinBusy(false)
+    }
+  }
+
+  async function showJoinToken(tid) {
+    setJoinBusy(true)
+    try {
+      const detail = await api(`/clusters/${id}/join-tokens/${tid}`)
+      setJoinDetail(detail)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setJoinBusy(false)
+    }
+  }
+
+  async function revokeJoinToken(tid) {
+    if (!window.confirm('Revoke this join-token snapshot? (Does not delete the kube bootstrap Secret.)')) {
+      return
+    }
+    setJoinBusy(true)
+    try {
+      await api(`/clusters/${id}/join-tokens/${tid}`, { method: 'DELETE' })
+      if (joinDetail?.id === tid) setJoinDetail(null)
+      await loadJoinTokens()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setJoinBusy(false)
     }
   }
 
@@ -1166,6 +1268,30 @@ machine:
                 <code className="mono-inline">machine.type</code> is set per node role
                 so workers are not flipped to controlplane.
               </p>
+              <div
+                className="form-row"
+                style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}
+              >
+                <label className="field" style={{ flex: '1 1 16rem' }}>
+                  Load template
+                  <select
+                    value={templateId}
+                    onChange={(e) => {
+                      const idSel = e.target.value
+                      setTemplateId(idSel)
+                      const t = templates.find((x) => x.id === idSel)
+                      if (t?.yaml) setConfigYaml(t.yaml)
+                    }}
+                  >
+                    <option value="">— choose template —</option>
+                    {templates.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name} ({t.role})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
               <textarea
                 className="config-editor"
                 value={configYaml}
@@ -1287,78 +1413,261 @@ machine:
         onClose={() => setAddOpen(false)}
         wide
       >
-        <p className="modal-hint">
-          Creates a Proxmox VM, waits for DHCP, and joins the cluster. Watch Jobs for live progress;
-          the node shows as <span className="badge provisioning">provisioning</span> until ready.
-        </p>
-        <div className="field">
-          <label>Role</label>
-          <div className="role-pills">
-            <button
-              type="button"
-              className={`role-pill ${addForm.role === 'worker' ? 'active' : ''}`}
-              onClick={() => setAddRole('worker')}
-            >
-              <strong>Worker</strong>
-              <span>Compute capacity</span>
-            </button>
-            <button
-              type="button"
-              className={`role-pill ${addForm.role === 'controlplane' ? 'active' : ''}`}
-              onClick={() => setAddRole('controlplane')}
-            >
-              <strong>Control plane</strong>
-              <span>Keep odd count for etcd</span>
-            </button>
-          </div>
+        <div className="role-pills" style={{ marginBottom: '1rem' }}>
+          <button
+            type="button"
+            className={`role-pill ${addMode === 'create' ? 'active' : ''}`}
+            onClick={() => setAddMode('create')}
+          >
+            <strong>Create VM</strong>
+            <span>Proxmox guest + join</span>
+          </button>
+          <button
+            type="button"
+            className={`role-pill ${addMode === 'adopt' ? 'active' : ''}`}
+            onClick={() => setAddMode('adopt')}
+          >
+            <strong>Adopt</strong>
+            <span>Existing node by IP</span>
+          </button>
+          <button
+            type="button"
+            className={`role-pill ${addMode === 'join' ? 'active' : ''}`}
+            onClick={() => {
+              setAddMode('join')
+              loadJoinTokens()
+            }}
+          >
+            <strong>Join instructions</strong>
+            <span>Bootstrap token copy</span>
+          </button>
         </div>
-        <div className="field">
-          <label>Count</label>
-          <input
-            type="number"
-            min={1}
-            max={16}
-            value={addForm.count}
-            onChange={(e) => setAddForm((f) => ({ ...f, count: e.target.value }))}
-          />
-        </div>
-        <div className="field-row">
+
+        {addMode !== 'join' && (
           <div className="field">
-            <label>vCPU</label>
-            <input
-              type="number"
-              min={1}
-              value={addForm.cores}
-              onChange={(e) => setAddForm((f) => ({ ...f, cores: e.target.value }))}
-            />
+            <label>Role</label>
+            <div className="role-pills">
+              <button
+                type="button"
+                className={`role-pill ${addForm.role === 'worker' ? 'active' : ''}`}
+                onClick={() => setAddRole('worker')}
+              >
+                <strong>Worker</strong>
+                <span>Compute capacity</span>
+              </button>
+              <button
+                type="button"
+                className={`role-pill ${addForm.role === 'controlplane' ? 'active' : ''}`}
+                onClick={() => setAddRole('controlplane')}
+              >
+                <strong>Control plane</strong>
+                <span>Keep odd count for etcd</span>
+              </button>
+            </div>
           </div>
-          <div className="field">
-            <label>Memory (MB)</label>
-            <input
-              type="number"
-              min={512}
-              step={256}
-              value={addForm.memory}
-              onChange={(e) => setAddForm((f) => ({ ...f, memory: e.target.value }))}
-            />
-          </div>
-          <div className="field">
-            <label>Disk (GiB)</label>
-            <input
-              type="number"
-              min={10}
-              value={addForm.disk_gb}
-              onChange={(e) => setAddForm((f) => ({ ...f, disk_gb: e.target.value }))}
-            />
-          </div>
-        </div>
+        )}
+
+        {addMode === 'create' && (
+          <>
+            <p className="modal-hint">
+              Creates a Proxmox VM, waits for DHCP, and joins the cluster. Watch Jobs for live progress;
+              the node shows as <span className="badge provisioning">provisioning</span> until ready.
+            </p>
+            <div className="field">
+              <label>Count</label>
+              <input
+                type="number"
+                min={1}
+                max={16}
+                value={addForm.count}
+                onChange={(e) => setAddForm((f) => ({ ...f, count: e.target.value }))}
+              />
+            </div>
+            <div className="field-row">
+              <div className="field">
+                <label>vCPU</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={addForm.cores}
+                  onChange={(e) => setAddForm((f) => ({ ...f, cores: e.target.value }))}
+                />
+              </div>
+              <div className="field">
+                <label>Memory (MB)</label>
+                <input
+                  type="number"
+                  min={512}
+                  step={256}
+                  value={addForm.memory}
+                  onChange={(e) => setAddForm((f) => ({ ...f, memory: e.target.value }))}
+                />
+              </div>
+              <div className="field">
+                <label>Disk (GiB)</label>
+                <input
+                  type="number"
+                  min={10}
+                  value={addForm.disk_gb}
+                  onChange={(e) => setAddForm((f) => ({ ...f, disk_gb: e.target.value }))}
+                />
+              </div>
+            </div>
+          </>
+        )}
+
+        {addMode === 'adopt' && (
+          <>
+            <p className="modal-hint">
+              Joins a machine that already runs Pertisk KOS (Machine API on :50000). No VM is created —
+              remove only drains/deletes the Kubernetes node.
+            </p>
+            <div className="field">
+              <label>Node IP</label>
+              <input
+                value={addForm.ip}
+                onChange={(e) => setAddForm((f) => ({ ...f, ip: e.target.value }))}
+                placeholder="10.1.1.50"
+                autoComplete="off"
+              />
+            </div>
+            <div className="field">
+              <label>Hostname (optional)</label>
+              <input
+                value={addForm.name}
+                onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="defaults to cluster-wk-N / cluster-cp-N"
+                autoComplete="off"
+              />
+            </div>
+            <div className="field">
+              <label>Source tag</label>
+              <select
+                value={addForm.source}
+                onChange={(e) => setAddForm((f) => ({ ...f, source: e.target.value }))}
+              >
+                <option value="adopted">adopted</option>
+                <option value="baremetal">baremetal</option>
+              </select>
+            </div>
+          </>
+        )}
+
+        {addMode === 'join' && (
+          <>
+            <p className="modal-hint">
+              Snapshots the cluster bootstrap token from <code className="mono-inline">worker.yaml</code> for
+              copy/paste. Prefer <strong>Adopt</strong> when mgmt can reach the node. Revoke only hides the
+              snapshot — it does not rotate the kube Secret.
+            </p>
+            <div className="field">
+              <label>Role for instructions</label>
+              <div className="role-pills">
+                <button
+                  type="button"
+                  className={`role-pill ${addForm.role === 'worker' ? 'active' : ''}`}
+                  onClick={() => setAddRole('worker')}
+                >
+                  <strong>Worker</strong>
+                  <span>apply join-config</span>
+                </button>
+                <button
+                  type="button"
+                  className={`role-pill ${addForm.role === 'controlplane' ? 'active' : ''}`}
+                  onClick={() => setAddRole('controlplane')}
+                >
+                  <strong>Control plane</strong>
+                  <span>get-join-config + etcd</span>
+                </button>
+              </div>
+            </div>
+            <div className="field">
+              <label>Label (optional)</label>
+              <input
+                value={addForm.name}
+                onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="e.g. rack-a bare metal"
+              />
+            </div>
+            <div className="row-actions" style={{ marginBottom: '0.75rem' }}>
+              <button type="button" className="btn-icon" onClick={createJoinToken} disabled={joinBusy}>
+                <Icon name="plus" size={14} /> {joinBusy ? 'Working…' : 'Create snapshot'}
+              </button>
+              <button type="button" className="secondary btn-icon" onClick={loadJoinTokens} disabled={joinBusy}>
+                Refresh
+              </button>
+            </div>
+            {joinTokens.length > 0 && (
+              <table style={{ marginBottom: '0.75rem' }}>
+                <thead>
+                  <tr>
+                    <th>Created</th>
+                    <th>Role</th>
+                    <th>Label</th>
+                    <th>Status</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {joinTokens.map((t) => (
+                    <tr key={t.id}>
+                      <td className="muted">{t.created_at}</td>
+                      <td>{t.role}</td>
+                      <td>{t.label || '—'}</td>
+                      <td>
+                        <span className={`badge ${t.revoked_at ? 'error' : 'ready'}`}>
+                          {t.revoked_at ? 'revoked' : 'active'}
+                        </span>
+                      </td>
+                      <td className="col-actions">
+                        <div className="row-actions-cell">
+                          <button
+                            type="button"
+                            className="secondary btn-icon"
+                            onClick={() => showJoinToken(t.id)}
+                            disabled={joinBusy}
+                          >
+                            Show
+                          </button>
+                          {!t.revoked_at && (
+                            <button
+                              type="button"
+                              className="danger btn-icon"
+                              onClick={() => revokeJoinToken(t.id)}
+                              disabled={joinBusy}
+                            >
+                              Revoke
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {joinDetail && (
+              <pre className="log-box mono" style={{ maxHeight: '16rem' }}>
+                {joinDetail.instructions
+                  || `endpoint: ${joinDetail.endpoint || ''}\ntoken: ${joinDetail.token || ''}`}
+              </pre>
+            )}
+          </>
+        )}
+
         <div className="modal-actions">
           <button type="button" className="secondary" onClick={() => setAddOpen(false)}>
             Cancel
           </button>
-          <button type="button" onClick={submitAdd} disabled={busy}>
-            {busy ? 'Queuing…' : 'Add node'}
-          </button>
+          {addMode !== 'join' && (
+            <button
+              type="button"
+              onClick={submitAdd}
+              disabled={busy || (addMode === 'adopt' && !String(addForm.ip || '').trim())}
+            >
+              {busy ? 'Queuing…' : addMode === 'adopt' ? 'Adopt node' : 'Add node'}
+            </button>
+          )}
         </div>
       </Modal>
 

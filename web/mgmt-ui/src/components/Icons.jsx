@@ -40,6 +40,27 @@ export function Icon({ name, size = 18, className = '' }) {
           <path d="M3 9h18M8 14h2M13 14h3" />
         </svg>
       )
+    case 'machines':
+      return (
+        <svg {...props}>
+          <rect x="4" y="4" width="16" height="12" rx="1.5" />
+          <path d="M8 20h8M12 16v4" />
+        </svg>
+      )
+    case 'templates':
+      return (
+        <svg {...props}>
+          <path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
+          <path d="M14 3v5h5M9 13h6M9 17h4" />
+        </svg>
+      )
+    case 'audit':
+      return (
+        <svg {...props}>
+          <path d="M8 4h8a2 2 0 0 1 2 2v14l-6-3-6 3V6a2 2 0 0 1 2-2z" />
+          <path d="M10 10h4M10 14h2" />
+        </svg>
+      )
     case 'settings':
       return (
         <svg {...props}>
