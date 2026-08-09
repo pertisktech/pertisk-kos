@@ -5,7 +5,6 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Providers from './pages/Providers'
 import Clusters from './pages/ClusterList'
-import ClusterNew from './pages/ClusterNew'
 import ClusterDetail from './pages/ClusterDetail'
 import NodeDetail from './pages/NodeDetail'
 import Settings from './pages/Settings'
@@ -20,7 +19,7 @@ export default function App() {
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/clusters" element={<Clusters />} />
-            <Route path="/clusters/new" element={<ClusterNew />} />
+            <Route path="/clusters/new" element={<Navigate to="/clusters?new=1" replace />} />
             <Route path="/clusters/:id" element={<ClusterDetail />} />
             <Route path="/clusters/:id/nodes/:nid" element={<NodeDetail />} />
             <Route path="/providers" element={<Providers />} />

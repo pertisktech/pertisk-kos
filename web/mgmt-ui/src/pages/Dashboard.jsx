@@ -246,7 +246,7 @@ export default function Dashboard() {
     <div className="dash-page">
       <div className="page-head">
         <h1><Icon name="dashboard" size={22} /> Dashboard</h1>
-        <Link className="btn btn-icon" to="/clusters/new">
+        <Link className="btn btn-icon" to="/clusters?new=1">
           <Icon name="plus" size={16} /> Create cluster
         </Link>
       </div>
@@ -290,7 +290,7 @@ export default function Dashboard() {
             <Link className="btn btn-icon" to="/providers">
               <Icon name="providers" size={16} /> Providers
             </Link>
-            <Link className="btn btn-icon" to="/clusters/new">
+            <Link className="btn btn-icon" to="/clusters?new=1">
               <Icon name="plus" size={16} /> Create cluster
             </Link>
           </div>

@@ -1,7 +1,6 @@
-import { useEffect } from 'react'
 import { Icon } from './Icons'
 
-/** Form / content modal (distinct from confirm). */
+/** Form / content modal (distinct from confirm). Closes only via Close button. */
 export default function Modal({
   open,
   title,
@@ -11,25 +10,15 @@ export default function Modal({
   icon = 'edit',
   tone = 'primary',
 }) {
-  useEffect(() => {
-    if (!open) return
-    function onKey(e) {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
-
   if (!open) return null
 
   return (
-    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+    <div className="modal-backdrop" role="presentation">
       <div
         className={`modal-card ${wide ? 'modal-wide' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-head">
           <div className={`modal-icon ${tone}`}>

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
-import { Icon } from '../components/Icons'
-import K8sVersionSelect from '../components/K8sVersionSelect'
+import { Icon } from './Icons'
+import K8sVersionSelect from './K8sVersionSelect'
+import WizardModal from './WizardModal'
 
 function VerifyRow({ state, label, message }) {
   let icon = null
@@ -25,8 +26,41 @@ function VerifyRow({ state, label, message }) {
   )
 }
 
-export default function ClusterNew() {
+const STEPS = [
+  { id: 'general', label: 'General' },
+  { id: 'network', label: 'Network' },
+  { id: 'size', label: 'Size' },
+  { id: 'verify', label: 'Verify' },
+]
+
+const defaultForm = {
+  name: 'lab-ha',
+  provider_id: '',
+  controlplanes: 3,
+  workers: 2,
+  network_mode: 'ipv4',
+  arch: 'amd64',
+  vip: '10.1.1.200',
+  vip6: 'fd00:1::200',
+  cni: 'cilium',
+  k8s_version: '',
+  max_pods: 250,
+  pod_subnet: '10.244.0.0/16',
+  service_subnet: '10.96.0.0/12',
+  pod_subnet_ipv6: '2001:db8:10:0::/56',
+  service_subnet_ipv6: '2001:db8:96:1::/112',
+  cp_memory: 4096,
+  cp_cores: 2,
+  cp_disk_gb: 50,
+  worker_memory: 8192,
+  worker_cores: 4,
+  worker_disk_gb: 75,
+  cp_vmid: 210,
+}
+
+export default function ClusterWizard({ open, onClose, onCreated }) {
   const nav = useNavigate()
+  const [step, setStep] = useState(0)
   const [providers, setProviders] = useState([])
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -34,43 +68,29 @@ export default function ClusterNew() {
   const [vmidChecking, setVmidChecking] = useState(false)
   const [vipCheck, setVipCheck] = useState(null)
   const [vipChecking, setVipChecking] = useState(false)
-  const [form, setForm] = useState({
-    name: 'lab-ha',
-    provider_id: '',
-    controlplanes: 3,
-    workers: 2,
-    network_mode: 'ipv4', // ipv4 | ipv6 | dual-stack
-    arch: 'amd64', // amd64 | arm64
-    vip: '10.1.1.200',
-    vip6: 'fd00:1::200',
-    cni: 'cilium',
-    k8s_version: '',
-    max_pods: 250,
-    pod_subnet: '10.244.0.0/16',
-    service_subnet: '10.96.0.0/12',
-    pod_subnet_ipv6: '2001:db8:10:0::/56',
-    service_subnet_ipv6: '2001:db8:96:1::/112',
-    cp_memory: 4096,
-    cp_cores: 2,
-    cp_disk_gb: 50,
-    worker_memory: 8192,
-    worker_cores: 4,
-    worker_disk_gb: 75,
-    cp_vmid: 210,
-  })
+  const [form, setForm] = useState({ ...defaultForm })
 
   useEffect(() => {
-    api('/providers').then((p) => {
-      setProviders(p)
-      if (p[0]) {
-        const arch = p[0].arch === 'arm64' ? 'arm64' : 'amd64'
-        setForm((f) => ({ ...f, provider_id: p[0].id, arch }))
-      }
-    })
-  }, [])
+    if (!open) return
+    setStep(0)
+    setError('')
+    setSaving(false)
+    setVmidCheck(null)
+    setVipCheck(null)
+    setForm({ ...defaultForm })
+    api('/providers')
+      .then((p) => {
+        setProviders(p)
+        if (p[0]) {
+          const arch = p[0].arch === 'arm64' ? 'arm64' : 'amd64'
+          setForm((f) => ({ ...f, provider_id: p[0].id, arch }))
+        }
+      })
+      .catch((e) => setError(e.message))
+  }, [open])
 
-  // Live VMID conflict check against the provider node.
   useEffect(() => {
+    if (!open) return
     const providerId = form.provider_id
     const cpVmid = Number(form.cp_vmid)
     const cps = Number(form.controlplanes)
@@ -116,10 +136,10 @@ export default function ClusterNew() {
       cancelled = true
       clearTimeout(t)
     }
-  }, [form.provider_id, form.cp_vmid, form.controlplanes, form.workers])
+  }, [open, form.provider_id, form.cp_vmid, form.controlplanes, form.workers])
 
-  // Live VIP free check (ping / :6443 / other clusters) when HA.
   useEffect(() => {
+    if (!open) return
     const cps = Number(form.controlplanes)
     const mode = form.network_mode
     if (cps <= 1) {
@@ -162,17 +182,15 @@ export default function ClusterNew() {
       cancelled = true
       clearTimeout(t)
     }
-  }, [form.controlplanes, form.network_mode, form.vip, form.vip6])
+  }, [open, form.controlplanes, form.network_mode, form.vip, form.vip6])
 
   function set(k, v) {
     setForm((f) => {
       const next = { ...f, [k]: v }
-      // VIP is HA-only — clear when dropping to a single control plane.
       if (k === 'controlplanes' && Number(v) <= 1) {
         next.vip = ''
         next.vip6 = ''
       }
-      // Inherit guest arch from the selected provider.
       if (k === 'provider_id') {
         const p = providers.find((x) => x.id === v)
         if (p) next.arch = p.arch === 'arm64' ? 'arm64' : 'amd64'
@@ -248,39 +266,55 @@ export default function ClusterNew() {
     }
   }
 
-  async function submit(e) {
-    e.preventDefault()
-    setError('')
+  function validateStep(i) {
+    if (i === 0) {
+      if (!form.name.trim()) return 'Name is required'
+      if (!form.provider_id) return 'Select a provider'
+      if (!String(form.k8s_version || '').trim()) return 'Select a Kubernetes version'
+      if (vmidBlocked) return vmidCheck.message || 'Selected VMID range is already in use'
+    }
+    if (i === 1) {
+      if (!String(form.pod_subnet || '').trim()) return 'Pod CIDR is required'
+      if (!String(form.service_subnet || '').trim()) return 'Service CIDR is required'
+      if (mode === 'dual-stack' || mode === 'ipv6') {
+        if (!String(form.pod_subnet_ipv6 || '').trim()) return 'Pod IPv6 CIDR is required'
+        if (!String(form.service_subnet_ipv6 || '').trim()) return 'Service IPv6 CIDR is required'
+      }
+      if (ha) {
+        if ((mode === 'ipv4' || mode === 'dual-stack') && !String(form.vip || '').trim()) {
+          return 'IPv4 VIP is required when controlplanes > 1'
+        }
+        if ((mode === 'ipv6' || mode === 'dual-stack') && !String(form.vip6 || '').trim()) {
+          return 'IPv6 VIP is required for this network mode when controlplanes > 1'
+        }
+        if (vipBlocked) return vipCheck.message || 'Selected VIP is not available'
+      }
+    }
+    return ''
+  }
 
-    if (ha) {
-      if ((mode === 'ipv4' || mode === 'dual-stack') && !String(form.vip || '').trim()) {
-        setError('IPv4 VIP is required when controlplanes > 1')
-        return
-      }
-      if ((mode === 'ipv6' || mode === 'dual-stack') && !String(form.vip6 || '').trim()) {
-        setError('IPv6 VIP is required for this network mode when controlplanes > 1')
-        return
-      }
-    }
-    if (!String(form.k8s_version || '').trim()) {
-      setError('Select a Kubernetes version')
+  function next() {
+    const e = validateStep(step)
+    if (e) {
+      setError(e)
       return
     }
-    if (!String(form.pod_subnet || '').trim()) {
-      setError('Pod CIDR is required')
-      return
-    }
-    if (!String(form.service_subnet || '').trim()) {
-      setError('Service CIDR is required')
-      return
-    }
-    if (mode === 'dual-stack' || mode === 'ipv6') {
-      if (!String(form.pod_subnet_ipv6 || '').trim()) {
-        setError('Pod IPv6 CIDR is required for dual-stack / IPv6')
-        return
-      }
-      if (!String(form.service_subnet_ipv6 || '').trim()) {
-        setError('Service IPv6 CIDR is required for dual-stack / IPv6')
+    setError('')
+    setStep((s) => Math.min(s + 1, STEPS.length - 1))
+  }
+
+  function back() {
+    setError('')
+    setStep((s) => Math.max(s - 1, 0))
+  }
+
+  async function submit() {
+    setError('')
+    for (let i = 0; i < STEPS.length - 1; i++) {
+      const e = validateStep(i)
+      if (e) {
+        setError(e)
+        setStep(i)
         return
       }
     }
@@ -300,7 +334,6 @@ export default function ClusterNew() {
       workers: Number(form.workers),
       network_mode: form.network_mode,
       arch: form.arch,
-      // Single-CP talks to the node IP — never store / pass a VIP.
       vip: ha && mode !== 'ipv6' ? (form.vip || null) : null,
       vip6: ha && mode !== 'ipv4' ? (form.vip6 || null) : null,
       cni: form.cni,
@@ -327,6 +360,8 @@ export default function ClusterNew() {
     setSaving(true)
     try {
       const res = await api('/clusters', { method: 'POST', body })
+      onCreated?.(res)
+      onClose?.()
       nav(`/clusters/${res.id}?tab=overview`)
     } catch (err) {
       setError(err.message)
@@ -347,30 +382,50 @@ export default function ClusterNew() {
   }
 
   return (
-    <div>
-      <div className="page-head">
-        <h1>
-          <Icon name="plus" size={22} /> Create cluster
-        </h1>
-        <Link className="btn secondary btn-icon" to="/clusters">
-          <Icon name="back" size={16} /> Cancel
-        </Link>
-      </div>
+    <WizardModal
+      open={open}
+      title="Create cluster"
+      icon="plus"
+      onClose={onClose}
+      steps={STEPS}
+      stepIndex={step}
+      onStepChange={(i) => {
+        setError('')
+        setStep(i)
+      }}
+      footer={
+        <>
+          <button type="button" className="secondary" onClick={step === 0 ? onClose : back} disabled={saving}>
+            {step === 0 ? 'Cancel' : 'Back'}
+          </button>
+          <div className="wizard-footer-right">
+            {step < STEPS.length - 1 ? (
+              <button type="button" onClick={next} disabled={saving || (step === 0 && vmidBlocked) || (step === 1 && vipBlocked)}>
+                Next
+              </button>
+            ) : (
+              <button type="button" className="btn-icon" onClick={submit} disabled={createDisabled}>
+                {createIcon}
+                {createLabel}
+              </button>
+            )}
+          </div>
+        </>
+      }
+    >
       {error && <div className="error">{error}</div>}
 
-      <form onSubmit={submit}>
-        <section className="card">
-          <h2 className="card-title">
-            <Icon name="clusters" size={18} /> General
-          </h2>
+      {step === 0 && (
+        <>
+          <p className="wizard-section-title">General</p>
           <div className="form-grid">
             <div className="field">
               <label>Name</label>
-              <input value={form.name} onChange={(e) => set('name', e.target.value)} required />
+              <input value={form.name} onChange={(e) => set('name', e.target.value)} autoFocus />
             </div>
             <div className="field">
               <label>Provider</label>
-              <select value={form.provider_id} onChange={(e) => set('provider_id', e.target.value)} required>
+              <select value={form.provider_id} onChange={(e) => set('provider_id', e.target.value)}>
                 <option value="">Select…</option>
                 {providers.map((p) => (
                   <option key={p.id} value={p.id}>{p.name}</option>
@@ -391,10 +446,7 @@ export default function ClusterNew() {
                 <option value="amd64">amd64 (x86_64)</option>
                 <option value="arm64">arm64 (aarch64)</option>
               </select>
-              <p className="hint muted">
-                Defaults from the provider; override per cluster if needed.
-                Uses <code>pertisk-cloud-{'{arch}'}.qcow2</code>. arm64 needs Proxmox root SSH.
-              </p>
+              <p className="hint muted">Defaults from the provider; override per cluster if needed.</p>
             </div>
             <div className="field">
               <label>CNI</label>
@@ -411,9 +463,6 @@ export default function ClusterNew() {
                 onChange={(v) => set('k8s_version', v)}
                 preferImage
               />
-              <p className="hint muted">
-                Latest 10 stable releases. Picking a version other than the image pin rebuilds the cloud image.
-              </p>
             </div>
             <div className="field">
               <label>Max pods (kubelet)</label>
@@ -424,21 +473,10 @@ export default function ClusterNew() {
                 value={form.max_pods}
                 onChange={(e) => set('max_pods', e.target.value)}
               />
-              <p className="hint muted">
-                Written as <code>machine.kubelet.extraConfig.maxPods</code> (Kubernetes default is 110).
-              </p>
             </div>
             <div className="field">
               <label>Base VMID</label>
               <input type="number" value={form.cp_vmid} onChange={(e) => set('cp_vmid', e.target.value)} />
-              {providers.find((p) => p.id === form.provider_id)?.kind === 'vsphere' ? (
-                <p className="hint muted">
-                  Inventory IDs only (cp={form.cp_vmid}, then +1…). ESXi Host Client URLs use a different
-                  MoRef (e.g. <code>/ui/#/host/vms/31</code>) — that is not the Base VMID.
-                </p>
-              ) : (
-                <p className="hint muted">First control-plane QEMU ID on Proxmox; workers follow sequentially.</p>
-              )}
               {!vmidChecking && vmidCheck?.ok && (
                 <p className="hint muted">
                   VMIDs {vmidCheck.range_start}–{vmidCheck.range_end} are free on {vmidCheck.node}.
@@ -447,15 +485,6 @@ export default function ClusterNew() {
               {!vmidChecking && vmidBlocked && (
                 <p className="hint" style={{ color: 'var(--danger, #b91c1c)' }}>
                   {vmidCheck.message}
-                  {vmidCheck.conflicts?.length > 0 && (
-                    <>
-                      {' '}
-                      In use:{' '}
-                      {vmidCheck.conflicts
-                        .map((c) => `${c.vmid}${c.name ? ` (${c.name})` : ''}`)
-                        .join(', ')}
-                    </>
-                  )}
                 </p>
               )}
             </div>
@@ -465,12 +494,12 @@ export default function ClusterNew() {
               HA mode (M&gt;1): stacked etcd + kube-vip — VIP required for the selected stack.
             </p>
           )}
-        </section>
+        </>
+      )}
 
-        <section className="card">
-          <h2 className="card-title">
-            <Icon name="network" size={18} /> Network
-          </h2>
+      {step === 1 && (
+        <>
+          <p className="wizard-section-title">Network</p>
           <div className="segment" role="radiogroup" aria-label="Network mode">
             {[
               { id: 'ipv4', label: 'IPv4' },
@@ -496,7 +525,6 @@ export default function ClusterNew() {
                   value={form.vip}
                   onChange={(e) => set('vip', e.target.value)}
                   placeholder="10.1.1.200"
-                  required
                 />
               </div>
             )}
@@ -507,34 +535,26 @@ export default function ClusterNew() {
                   value={form.vip6}
                   onChange={(e) => set('vip6', e.target.value)}
                   placeholder="fd00:1::200"
-                  required
                 />
               </div>
             )}
-          </div>
-
-          <div className="form-grid" style={{ marginTop: '1rem' }}>
             <div className="field">
               <label>Pod subnet (IPv4)</label>
               <input
                 value={form.pod_subnet}
                 onChange={(e) => set('pod_subnet', e.target.value)}
                 placeholder="10.244.0.0/16"
-                required
               />
             </div>
-            {(mode === 'dual-stack' || mode === 'ipv6') ? (
+            {(mode === 'dual-stack' || mode === 'ipv6') && (
               <div className="field">
                 <label>Pod subnet (IPv6)</label>
                 <input
                   value={form.pod_subnet_ipv6}
                   onChange={(e) => set('pod_subnet_ipv6', e.target.value)}
                   placeholder="2001:db8:10:0::/56"
-                  required
                 />
               </div>
-            ) : (
-              <div className="field" />
             )}
             <div className="field">
               <label>Service subnet (IPv4)</label>
@@ -542,103 +562,80 @@ export default function ClusterNew() {
                 value={form.service_subnet}
                 onChange={(e) => set('service_subnet', e.target.value)}
                 placeholder="10.96.0.0/12"
-                required
               />
             </div>
-            {(mode === 'dual-stack' || mode === 'ipv6') ? (
+            {(mode === 'dual-stack' || mode === 'ipv6') && (
               <div className="field">
                 <label>Service subnet (IPv6)</label>
                 <input
                   value={form.service_subnet_ipv6}
                   onChange={(e) => set('service_subnet_ipv6', e.target.value)}
                   placeholder="2001:db8:96:1::/112"
-                  required
                 />
               </div>
-            ) : (
-              <div className="field" />
             )}
           </div>
-          <p className="hint muted" style={{ marginTop: '0.5rem' }}>
-            {mode === 'dual-stack' || mode === 'ipv6'
-              ? 'Written as cluster.network.podSubnets / serviceSubnets (IPv4 + IPv6).'
-              : 'Written as cluster.network.podSubnets / serviceSubnets (IPv4 only).'}
-          </p>
-          {ha && !vipChecking && vipCheck?.ok && (
-            <p className="hint muted">{vipCheck.message}</p>
-          )}
           {ha && !vipChecking && vipBlocked && (
             <p className="hint" style={{ color: 'var(--danger, #b91c1c)' }}>
               {vipCheck.message}
             </p>
           )}
-          <p className="hint muted">
-            {!ha && 'Single control plane: kubeconfig uses the CP node IP (no kube-vip).'}
-            {ha && mode === 'ipv4' && 'HA: kube-vip ARP VIP is the API endpoint — must be free on the LAN.'}
-            {ha && mode === 'ipv6' && 'HA: IPv6 VIP is the API endpoint — must be free on the LAN.'}
-            {ha && mode === 'dual-stack' && 'HA dual-stack: both VIPs must be free (ping / :6443 / other clusters).'}
-          </p>
-        </section>
+        </>
+      )}
 
-        <div className="panel-grid">
-          <section className="card panel">
-            <h2 className="card-title">
-              <Icon name="cpu" size={18} /> Control plane
-            </h2>
-            <p className="muted panel-sub">{form.controlplanes} VM{Number(form.controlplanes) === 1 ? '' : 's'}</p>
-            <div className="field">
-              <label>Memory (MB)</label>
-              <input type="number" min={1024} step={512} value={form.cp_memory} onChange={(e) => set('cp_memory', e.target.value)} />
+      {step === 2 && (
+        <>
+          <p className="wizard-section-title">VM size</p>
+          <div className="wizard-panel-grid">
+            <div>
+              <h3 className="card-title" style={{ fontSize: '0.95rem' }}>
+                <Icon name="cpu" size={16} /> Control plane ({form.controlplanes})
+              </h3>
+              <div className="field">
+                <label>Memory (MB)</label>
+                <input type="number" min={1024} step={512} value={form.cp_memory} onChange={(e) => set('cp_memory', e.target.value)} />
+              </div>
+              <div className="field">
+                <label>vCPUs</label>
+                <input type="number" min={1} value={form.cp_cores} onChange={(e) => set('cp_cores', e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Disk (GiB)</label>
+                <input type="number" min={10} value={form.cp_disk_gb} onChange={(e) => set('cp_disk_gb', e.target.value)} />
+              </div>
             </div>
-            <div className="field">
-              <label>vCPUs</label>
-              <input type="number" min={1} value={form.cp_cores} onChange={(e) => set('cp_cores', e.target.value)} />
+            <div>
+              <h3 className="card-title" style={{ fontSize: '0.95rem' }}>
+                <Icon name="worker" size={16} /> Workers ({form.workers})
+              </h3>
+              <div className="field">
+                <label>Memory (MB)</label>
+                <input type="number" min={1024} step={512} value={form.worker_memory} onChange={(e) => set('worker_memory', e.target.value)} />
+              </div>
+              <div className="field">
+                <label>vCPUs</label>
+                <input type="number" min={1} value={form.worker_cores} onChange={(e) => set('worker_cores', e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Disk (GiB)</label>
+                <input type="number" min={10} value={form.worker_disk_gb} onChange={(e) => set('worker_disk_gb', e.target.value)} />
+              </div>
             </div>
-            <div className="field">
-              <label>Disk (GiB)</label>
-              <input type="number" min={10} value={form.cp_disk_gb} onChange={(e) => set('cp_disk_gb', e.target.value)} />
-            </div>
-          </section>
+          </div>
+        </>
+      )}
 
-          <section className="card panel">
-            <h2 className="card-title">
-              <Icon name="worker" size={18} /> Workers
-            </h2>
-            <p className="muted panel-sub">{form.workers} VM{Number(form.workers) === 1 ? '' : 's'}</p>
-            <div className="field">
-              <label>Memory (MB)</label>
-              <input type="number" min={1024} step={512} value={form.worker_memory} onChange={(e) => set('worker_memory', e.target.value)} />
-            </div>
-            <div className="field">
-              <label>vCPUs</label>
-              <input type="number" min={1} value={form.worker_cores} onChange={(e) => set('worker_cores', e.target.value)} />
-            </div>
-            <div className="field">
-              <label>Disk (GiB)</label>
-              <input type="number" min={10} value={form.worker_disk_gb} onChange={(e) => set('worker_disk_gb', e.target.value)} />
-            </div>
-          </section>
-        </div>
-
-        <section className="card verify-panel" aria-label="Verification">
-          <h2 className="card-title">
-            <Icon name="check" size={18} /> Verification
-          </h2>
+      {step === 3 && (
+        <>
+          <p className="wizard-section-title">Verification</p>
           <ul className="verify-list">
             <VerifyRow state={providerVerify.state} label="Provider" message={providerVerify.message} />
             <VerifyRow state={k8sVerify.state} label="K8s version" message={k8sVerify.message} />
             <VerifyRow state={vmidVerify.state} label="VMID range" message={vmidVerify.message} />
             <VerifyRow state={vipVerify.state} label="VIP" message={vipVerify.message} />
           </ul>
-        </section>
-
-        <div className="form-footer">
-          <button type="submit" className="btn-icon" disabled={createDisabled}>
-            {createIcon}
-            {createLabel}
-          </button>
-        </div>
-      </form>
-    </div>
+        </>
+      )}
+    </WizardModal>
   )
 }

@@ -1185,6 +1185,109 @@ a.btn-icon.secondary {
   gap: 0.6rem;
 }
 .modal-card.modal-wide { width: min(520px, 100%); }
+.modal-card.modal-wizard {
+  width: min(720px, 100%);
+  max-height: min(92vh, 900px);
+  display: flex;
+  flex-direction: column;
+}
+.wizard-backdrop .modal-card {
+  overflow: hidden;
+}
+.wizard-steps {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin: 0.25rem 0 0.85rem;
+  padding: 0;
+}
+.wizard-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.wizard-step:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.wizard-step.current {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: var(--accent-soft-strong);
+  color: var(--accent);
+  opacity: 1;
+}
+.wizard-step.done {
+  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+  color: var(--success);
+  opacity: 1;
+}
+.wizard-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+.wizard-step.current .wizard-step-num {
+  background: var(--accent);
+  color: #fff;
+}
+.wizard-step.done .wizard-step-num {
+  background: color-mix(in srgb, var(--success) 35%, transparent);
+  color: var(--success);
+}
+.wizard-body {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding-right: 0.15rem;
+  margin-top: 0;
+}
+.wizard-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+.wizard-footer-right {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+.wizard-section-title {
+  font-size: 0.85rem;
+  font-weight: 650;
+  margin: 0 0 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.wizard-panel-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+@media (max-width: 640px) {
+  .wizard-panel-grid { grid-template-columns: 1fr; }
+  .wizard-step-label { display: none; }
+  .wizard-step.current .wizard-step-label { display: inline; }
+}
 .modal-head {
   display: flex;
   align-items: flex-start;

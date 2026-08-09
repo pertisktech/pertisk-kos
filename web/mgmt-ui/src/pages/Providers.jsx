@@ -2,36 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { useConfirm } from '../components/Confirm'
-
-const emptyProxmox = {
-  kind: 'proxmox',
-  name: 'lab-pve',
-  url: 'https://10.1.1.197:8006',
-  token_id: '',
-  token_secret: '',
-  node: 'pve',
-  storage: 'local-lvm',
-  bridge: 'vmbr0',
-  insecure: true,
-  arch: 'auto',
-}
-
-const emptyVsphere = {
-  kind: 'vsphere',
-  name: 'lab-esxi',
-  url: 'https://10.1.1.20',
-  token_id: 'root',
-  token_secret: '',
-  node: 'localhost.lan',
-  storage: 'datastore1',
-  bridge: 'VM Network',
-  insecure: true,
-  arch: 'auto',
-}
-
-function emptyForKind(kind) {
-  return kind === 'vsphere' ? { ...emptyVsphere } : { ...emptyProxmox }
-}
+import ProviderWizard from '../components/ProviderWizard'
 
 function formatProbe(r, kind) {
   const label = kind === 'vsphere' ? 'ESXi' : 'Proxmox'
@@ -59,12 +30,11 @@ function formatProbe(r, kind) {
 export default function Providers() {
   const confirm = useConfirm()
   const [list, setList] = useState([])
-  const [editingId, setEditingId] = useState(null)
-  const [form, setForm] = useState({ ...emptyProxmox })
-  const [storageOptions, setStorageOptions] = useState([])
+  const [wizardOpen, setWizardOpen] = useState(false)
+  const [wizardMode, setWizardMode] = useState('create')
+  const [editing, setEditing] = useState(null)
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
-  const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
 
   function load() {
@@ -72,118 +42,20 @@ export default function Providers() {
   }
   useEffect(load, [])
 
-  function set(k, v) {
-    setForm((f) => ({ ...f, [k]: v }))
-  }
-
-  function setKind(kind) {
-    setStorageOptions([])
-    setForm((f) => {
-      const base = emptyForKind(kind)
-      return {
-        ...base,
-        name: f.name || base.name,
-        token_secret: f.token_secret,
-      }
-    })
-  }
-
   function startCreate() {
     setError('')
     setMsg('')
-    setStorageOptions([])
-    setEditingId('new')
-    setForm({ ...emptyProxmox })
+    setWizardMode('create')
+    setEditing(null)
+    setWizardOpen(true)
   }
 
   function startEdit(p) {
     setError('')
     setMsg('')
-    setStorageOptions(p.storage ? [p.storage] : [])
-    setEditingId(p.id)
-    setForm({
-      kind: p.kind || 'proxmox',
-      name: p.name,
-      url: p.url,
-      token_id: p.token_id,
-      token_secret: '',
-      node: p.node,
-      storage: p.storage,
-      bridge: p.bridge || (p.kind === 'vsphere' ? 'VM Network' : 'vmbr0'),
-      insecure: !!p.insecure,
-      arch: p.arch === 'arm64' || p.arch === 'amd64' ? p.arch : 'auto',
-    })
-  }
-
-  function cancelForm() {
-    setEditingId(null)
-    setStorageOptions([])
-    setForm({ ...emptyProxmox })
-  }
-
-  function applyProbeResult(r) {
-    const available = r.storage?.available || []
-    setForm((f) => {
-      let next = { ...f }
-      if (available.length && f.storage && !available.includes(f.storage)) {
-        next = { ...next, storage: available[0] }
-      }
-      // Auto-fill guest arch from host detection (unless user locked amd64/arm64).
-      if (r.arch && (f.arch === 'auto' || !f.arch)) {
-        next = { ...next, arch: r.arch }
-      }
-      return next
-    })
-    if (available.length) {
-      setStorageOptions(available)
-    } else if (r.storage?.storage) {
-      setStorageOptions([r.storage.storage])
-    }
-    const text = formatProbe(r, form.kind)
-    if (r.ok) {
-      setMsg(`OK — ${text}`)
-      setError('')
-    } else {
-      setMsg('')
-      setError(text)
-    }
-  }
-
-  async function save(e) {
-    e.preventDefault()
-    setError('')
-    setMsg('')
-    setSaving(true)
-    try {
-      if (editingId === 'new') {
-        if (!form.token_secret) {
-          throw new Error(form.kind === 'vsphere' ? 'Password is required' : 'Token secret is required')
-        }
-        await api('/providers', { method: 'POST', body: form })
-        setMsg('Provider created')
-      } else {
-        const body = {
-          name: form.name,
-          url: form.url,
-          token_id: form.token_id,
-          node: form.node,
-          storage: form.storage,
-          bridge: form.bridge,
-          insecure: form.insecure,
-          arch: form.arch,
-        }
-        if (form.token_secret) body.token_secret = form.token_secret
-        await api(`/providers/${editingId}`, { method: 'PUT', body })
-        setMsg('Provider updated')
-      }
-      setEditingId(null)
-      setStorageOptions([])
-      load()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setSaving(false)
-    }
+    setWizardMode('edit')
+    setEditing(p)
+    setWizardOpen(true)
   }
 
   async function testSaved(id) {
@@ -209,48 +81,6 @@ export default function Providers() {
     }
   }
 
-  async function testDraft() {
-    setError('')
-    setMsg('Testing…')
-    setTesting(true)
-    try {
-      if (editingId === 'new' || form.token_secret) {
-        if (!form.token_secret) {
-          throw new Error(
-            form.kind === 'vsphere'
-              ? 'Password is required to test'
-              : 'Token secret is required to test',
-          )
-        }
-        const r = await api('/providers/probe', {
-          method: 'POST',
-          body: {
-            kind: form.kind,
-            url: form.url,
-            token_id: form.token_id,
-            token_secret: form.token_secret,
-            node: form.node,
-            storage: form.storage,
-            bridge: form.bridge,
-            insecure: form.insecure,
-          },
-        })
-        applyProbeResult(r)
-      } else {
-        const r = await api(`/providers/${editingId}/test`, {
-          method: 'POST',
-          body: { node: form.node, storage: form.storage, bridge: form.bridge },
-        })
-        applyProbeResult(r)
-      }
-    } catch (err) {
-      setMsg('')
-      setError(err.message)
-    } finally {
-      setTesting(false)
-    }
-  }
-
   async function remove(id, name) {
     const ok = await confirm({
       title: 'Delete provider',
@@ -262,178 +92,39 @@ export default function Providers() {
     setError('')
     try {
       await api(`/providers/${id}`, { method: 'DELETE' })
-      if (editingId === id) cancelForm()
+      if (editing?.id === id) {
+        setWizardOpen(false)
+        setEditing(null)
+      }
       load()
     } catch (err) {
       setError(err.message)
     }
   }
 
-  const isVsphere = form.kind === 'vsphere'
-  const formTitle =
-    editingId === 'new'
-      ? isVsphere
-        ? 'New vSphere (ESXi) provider'
-        : 'New Proxmox provider'
-      : isVsphere
-        ? 'Edit vSphere (ESXi) provider'
-        : 'Edit Proxmox provider'
-  const storageList = storageOptions.length
-    ? storageOptions
-    : form.storage
-      ? [form.storage]
-      : []
-
   return (
     <div>
       <div className="page-head">
         <h1><Icon name="providers" size={22} /> Providers</h1>
-        {editingId ? (
-          <button type="button" className="secondary btn-icon" onClick={cancelForm}>
-            <Icon name="x" size={16} /> Cancel
-          </button>
-        ) : (
-          <button type="button" className="btn-icon" onClick={startCreate}>
-            <Icon name="plus" size={16} /> Add provider
-          </button>
-        )}
+        <button type="button" className="btn-icon" onClick={startCreate}>
+          <Icon name="plus" size={16} /> Add provider
+        </button>
       </div>
       {error && <div className="error">{error}</div>}
       {msg && <p className="muted">{msg}</p>}
-      {editingId && (
-        <form className="card" onSubmit={save}>
-          <h2 className="card-title"><Icon name="edit" size={18} /> {formTitle}</h2>
-          <p className="muted">
-            {isVsphere ? (
-              <>
-                Standalone ESXi uses a self-signed cert — keep <strong>Insecure TLS = Yes</strong>.
-                Leave password blank when editing to keep the existing secret.
-                Use <strong>Test</strong> to validate login, host, datastore, and network before saving.
-              </>
-            ) : (
-              <>
-                Lab Proxmox uses a self-signed cert — keep <strong>Insecure TLS = Yes</strong>.
-                Leave token secret blank when editing to keep the existing secret.
-                Use <strong>Test</strong> to validate connection, node, and storage before saving.
-              </>
-            )}
-          </p>
-          <div className="form-grid">
-            {editingId === 'new' && (
-              <div className="field">
-                <label>Kind</label>
-                <select value={form.kind} onChange={(e) => setKind(e.target.value)}>
-                  <option value="proxmox">Proxmox</option>
-                  <option value="vsphere">vSphere (ESXi)</option>
-                </select>
-              </div>
-            )}
-            <div className="field"><label>Name</label><input value={form.name} onChange={(e) => set('name', e.target.value)} required /></div>
-            <div className="field">
-              <label>URL</label>
-              <input
-                value={form.url}
-                onChange={(e) => set('url', e.target.value)}
-                placeholder={isVsphere ? 'https://10.1.1.20' : 'https://10.1.1.197:8006'}
-                required
-              />
-            </div>
-            <div className="field">
-              <label>{isVsphere ? 'Username' : 'Token ID'}</label>
-              <input
-                value={form.token_id}
-                onChange={(e) => set('token_id', e.target.value)}
-                placeholder={isVsphere ? 'root' : 'root@pam!pertisk'}
-                required
-              />
-            </div>
-            <div className="field">
-              <label>
-                {isVsphere ? 'Password' : 'Token secret'}
-                {editingId !== 'new' ? ' (leave blank to keep)' : ''}
-              </label>
-              <input
-                type="password"
-                value={form.token_secret}
-                onChange={(e) => set('token_secret', e.target.value)}
-                required={editingId === 'new'}
-                placeholder={editingId !== 'new' ? '••••••••' : ''}
-                autoComplete="new-password"
-              />
-            </div>
-            <div className="field">
-              <label>{isVsphere ? 'Host' : 'Node'}</label>
-              <input value={form.node} onChange={(e) => set('node', e.target.value)} required />
-            </div>
-            <div className="field">
-              <label>{isVsphere ? 'Datastore' : 'Storage'}</label>
-              {storageList.length > 1 ? (
-                <select value={form.storage} onChange={(e) => set('storage', e.target.value)} required>
-                  {storageList.map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  value={form.storage}
-                  onChange={(e) => set('storage', e.target.value)}
-                  list="provider-storage-options"
-                  required
-                />
-              )}
-              <datalist id="provider-storage-options">
-                {storageList.map((s) => (
-                  <option key={s} value={s} />
-                ))}
-              </datalist>
-              <p className="hint muted">
-                {isVsphere
-                  ? 'Run Test to discover datastores on this host.'
-                  : 'Run Test to discover storages that support images on this node.'}
-              </p>
-            </div>
-            <div className="field">
-              <label>{isVsphere ? 'Network' : 'Bridge'}</label>
-              <input
-                value={form.bridge}
-                onChange={(e) => set('bridge', e.target.value)}
-                placeholder={isVsphere ? 'VM Network' : 'vmbr0'}
-              />
-            </div>
-            <div className="field">
-              <label>Guest arch</label>
-              <select value={form.arch} onChange={(e) => set('arch', e.target.value)}>
-                <option value="auto">Auto (detect from host)</option>
-                <option value="amd64">amd64 (x86_64)</option>
-                <option value="arm64">arm64 (aarch64)</option>
-              </select>
-              <p className="hint muted">
-                Auto reads the Proxmox node kernel machine via Test/Save.
-                Override only for cross-arch guests (e.g. aarch64 VMs on amd64 PVE).
-              </p>
-            </div>
-            <div className="field">
-              <label>Insecure TLS</label>
-              <select value={form.insecure ? '1' : '0'} onChange={(e) => set('insecure', e.target.value === '1')}>
-                <option value="1">Yes (lab / self-signed)</option>
-                <option value="0">No</option>
-              </select>
-            </div>
-          </div>
-          <div className="form-footer" style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
-            <button type="button" className="secondary btn-icon" onClick={testDraft} disabled={testing || saving}>
-              <Icon name="play" size={16} /> {testing ? 'Testing…' : 'Test'}
-            </button>
-            <button type="submit" className="btn-icon" disabled={saving || testing}>
-              <Icon name="check" size={16} /> {saving ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        </form>
-      )}
       <div className="card">
         <table>
           <thead>
-            <tr><th>Name</th><th>Kind</th><th>Arch</th><th>URL</th><th>{/* host/node */}Host / Node</th><th>Storage</th><th>TLS</th><th></th></tr>
+            <tr>
+              <th>Name</th>
+              <th>Kind</th>
+              <th>Arch</th>
+              <th>URL</th>
+              <th>Host / Node</th>
+              <th>Storage</th>
+              <th>TLS</th>
+              <th></th>
+            </tr>
           </thead>
           <tbody>
             {list.map((p) => (
@@ -462,6 +153,20 @@ export default function Providers() {
         </table>
         {list.length === 0 && <p className="muted">No providers configured.</p>}
       </div>
+
+      <ProviderWizard
+        open={wizardOpen}
+        mode={wizardMode}
+        provider={editing}
+        onClose={() => {
+          setWizardOpen(false)
+          setEditing(null)
+        }}
+        onSaved={() => {
+          setMsg(wizardMode === 'edit' ? 'Provider updated' : 'Provider created')
+          load()
+        }}
+      />
     </div>
   )
 }

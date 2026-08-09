@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 import { formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
+import ClusterWizard from '../components/ClusterWizard'
 
 const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 const AVAIL_POLL_MS = 15000
@@ -14,6 +15,16 @@ export default function Clusters() {
   const [error, setError] = useState('')
   const [search, setSearch] = useSearchParams()
   const expectDelete = search.get('deleting')
+  const [wizardOpen, setWizardOpen] = useState(search.get('new') === '1')
+
+  useEffect(() => {
+    if (search.get('new') === '1') {
+      setWizardOpen(true)
+      const next = new URLSearchParams(search)
+      next.delete('new')
+      setSearch(next, { replace: true })
+    }
+  }, [search, setSearch])
 
   const load = useCallback(() => {
     api('/clusters')
@@ -60,9 +71,9 @@ export default function Clusters() {
     <div>
       <div className="page-head">
         <h1><Icon name="clusters" size={22} /> Clusters</h1>
-        <Link className="btn btn-icon" to="/clusters/new">
+        <button type="button" className="btn btn-icon" onClick={() => setWizardOpen(true)}>
           <Icon name="plus" size={16} /> Create cluster
-        </Link>
+        </button>
       </div>
       {error && <div className="error">{error}</div>}
       {expectDelete && (
@@ -145,6 +156,8 @@ export default function Clusters() {
           <p className="muted">No clusters. Create with M control planes (+ VIP if M&gt;1) and N workers.</p>
         )}
       </div>
+
+      <ClusterWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
     </div>
   )
 }
