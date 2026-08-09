@@ -1024,6 +1024,20 @@ async fn validate_vips(
     let mut conflicts = Vec::new();
 
     for addr in [vip, vip6].into_iter().flatten() {
+        if addr.parse::<std::net::IpAddr>().is_err() {
+            return Ok(VipCheck {
+                ok: false,
+                message: format!(
+                    "VIP not available — {addr}: not a valid IP address (IPv4 octets must be 0–255)"
+                ),
+                conflicts: vec![VipConflict {
+                    address: addr.to_string(),
+                    reason: "invalid IP address".into(),
+                    cluster_id: None,
+                    cluster_name: None,
+                }],
+            });
+        }
         // Another Pertisk cluster already claims this VIP.
         let rows: Vec<(String, String, String)> = sqlx::query_as(
             r#"SELECT id, name, status FROM clusters

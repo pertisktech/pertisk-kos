@@ -691,6 +691,8 @@ wait_apiserver_ready() {
       log "WARNING: VIP ${endpoint} not up — falling back kubeconfig to ${cp_ip} (check kube-vip static pod)"
       rewrite_kubeconfig_server "$kc" "https://${cp_ip}:6443"
       API_ENDPOINT="$cp_ip"
+      # Workers still had cluster.endpoint=VIP; rewrite so TLS bootstrap can reach the API.
+      rewrite_cluster_out_endpoints "https://${cp_ip}:6443"
       rm -f "$tmpkc"
       return 0
     fi
@@ -796,6 +798,64 @@ set_hostname_yaml() {
     innet && /^    hostname:/ && !done { print "    hostname: " h; done=1; next }
     { print }
   ' "$src" >"$dest"
+}
+
+# Rewrite cluster.endpoint in machine config YAML (in-place).
+rewrite_machine_endpoint() {
+  local file="$1" url="$2"
+  [[ -f "$file" ]] || return 0
+  python3 - "$file" "$url" <<'PY'
+import sys
+path, url = sys.argv[1], sys.argv[2]
+text = open(path).read()
+out = []
+in_cluster = False
+done = False
+for line in text.splitlines(True):
+    stripped = line.lstrip()
+    indent = len(line) - len(stripped)
+    if stripped.startswith("cluster:") and indent == 0:
+        in_cluster = True
+        out.append(line)
+        continue
+    if in_cluster and indent == 0 and stripped and not stripped.startswith("#"):
+        in_cluster = False
+    if in_cluster and not done and stripped.startswith("endpoint:"):
+        pad = line[:indent]
+        out.append(f"{pad}endpoint: {url}\n")
+        done = True
+        continue
+    out.append(line)
+open(path, "w").write("".join(out))
+PY
+}
+
+# After VIP fallback, point all generated machine configs at a live CP API.
+rewrite_cluster_out_endpoints() {
+  local url="$1"
+  local f
+  for f in "$CLUSTER_OUT"/controlplane.yaml \
+           "$CLUSTER_OUT"/controlplane-*.yaml \
+           "$CLUSTER_OUT"/worker.yaml \
+           "$CLUSTER_OUT"/worker-*.yaml; do
+    [[ -f "$f" ]] || continue
+    rewrite_machine_endpoint "$f" "$url"
+  done
+  log "rewrote cluster.endpoint → ${url} in ${CLUSTER_OUT} machine configs"
+}
+
+# Valid IPv4 (reject octets >255 like 10.1.1.270) or IPv6.
+require_valid_ip() {
+  local addr="$1" label="${2:-address}"
+  [[ -n "$addr" ]] || return 0
+  python3 - "$addr" "$label" <<'PY'
+import ipaddress, sys
+addr, label = sys.argv[1], sys.argv[2]
+try:
+    ipaddress.ip_address(addr)
+except ValueError as e:
+    raise SystemExit(f"ERROR: {label} {addr!r} is not a valid IP ({e})")
+PY
 }
 
 # Ensure machine.dashboard.mgmt_url (Public URL) is set in generated YAML.
@@ -1232,6 +1292,7 @@ ensure_api_endpoint_reachable() {
   log "         (pick a free --vip; ensure guest image has af_packet for kube-vip ARP)"
   rewrite_kubeconfig_server "$kc" "https://${cp_ip}:6443"
   API_ENDPOINT="$cp_ip"
+  rewrite_cluster_out_endpoints "https://${cp_ip}:6443"
   curl -sk --connect-timeout 2 "https://${API_ENDPOINT}:6443/readyz" >/dev/null 2>&1 \
     || die "apiserver still unreachable after fallback to ${cp_ip}:6443"
 }
@@ -1240,6 +1301,7 @@ ensure_api_endpoint_reachable() {
 require_vip_free() {
   local vip="$1" label="${2:-VIP}"
   [[ -n "$vip" ]] || return 0
+  require_valid_ip "$vip" "$label"
   log "checking ${label} ${vip} is free on the LAN"
   if ping -c 1 -W 1 "$vip" >/dev/null 2>&1 \
     || ping -c 1 -W 1 -6 "$vip" >/dev/null 2>&1; then
