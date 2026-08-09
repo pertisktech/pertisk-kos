@@ -15,7 +15,7 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 | Metrics endpoint auth | pass | mTLS when `PERTISK_TLS_*` set (same PEMs as API); optional bearer: `--metrics-token` / `PERTISK_METRICS_TOKEN` / STATE `secrets/metrics.token` |
 | STATE `secrets/` mode `0700` | pass | Set in `StateVolume::ensure_layout` |
 | Kernel sysctls before kubelet | pass | `pertiskd` `sysctl::apply_hardening_sysctls` |
-| Secure Boot / UKI measured boot | partial | UKI + OVMF enroll + sysfs PCR Attest lab; no TPM2 Quote / remote verify yet ([SECURE_BOOT.md](./SECURE_BOOT.md)) |
+| Secure Boot / UKI measured boot | partial | UKI + OVMF enroll + PCR Attest + Quote lab; mgmt remote trust store later ([SECURE_BOOT.md](./SECURE_BOOT.md)) |
 | Minimal kernel modules | gap | Still using Alpine virt kernel for QEMU |
 
 ## Kubelet (CIS §4.2)
@@ -114,6 +114,7 @@ Pertisk goals (DESIGN §8): measured boot where feasible. Not required for v0.1.
 | 3 | Optional UKI (`*.efi` with kernel+initrd+cmdline) per slot | done — `./image/build-uki.sh`, ESP `EFI/Linux/` |
 | 4 | Enroll PK/KEK/db in OVMF / firmware; reject unsigned UKI | done — keygen + signed UKI + `scripts/enroll-ovmf-vars.sh` |
 | 5 | TPM PCR attestation of boot chain (optional) | done (lab) — sysfs PCR read; `Attest` RPC / `pertiskctl attest`; QEMU `PERTISK_TPM=1` |
+| 5b | TPM2 Quote (optional) | done (lab) — pure-Rust Quote RPC / `pertiskctl quote --verify`; no libtss2 |
 
 See [SECURE_BOOT.md](./SECURE_BOOT.md) for build/sign/enroll steps.
 
@@ -128,6 +129,6 @@ Marker file in the image: `/etc/pertisk/image-profile`.
 
 ## Gaps tracked for later
 
-- TPM2 Quote / AK enrollment + remote attestation verifier
 - etcd snapshot / restore
+- Mgmt remote trust store / persistent AK enrollment for Quotes
 - Drop BusyBox/`udhcpc` fallback entirely (optional)

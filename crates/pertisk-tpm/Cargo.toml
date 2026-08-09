@@ -1,0 +1,15 @@
+[package]
+name = "pertisk-tpm"
+description = "Minimal pure-Rust TPM 2.0 Quote client (lab; no libtss2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8"] }
+sha2 = "0.10"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -13,6 +13,7 @@ Pertisk boots with **systemd-boot** today (kernel + initramfs on the ESP). A **U
 | Sign UKI with db key | done — optional `PERTISK_SB_*` |
 | Enroll PK/KEK/db in firmware | done — `./scripts/enroll-ovmf-vars.sh` (or manual OVMF UI) |
 | TPM PCR attestation | done (lab) — sysfs PCR read via `MachineService.Attest` / `pertiskctl attest` |
+| TPM2 Quote | done (lab) — pure-Rust `/dev/tpmrm0` Quote + `pertiskctl quote --verify` |
 
 ## Build a UKI
 
@@ -94,7 +95,21 @@ Pertisk exposes a **read-only** attestation snapshot over gRPC (no `libtss2` in 
 
 - Source: Linux sysfs `/sys/class/tpm/tpm0/pcr-sha256/{N}`
 - Indices: **0–7** (firmware / Secure Boot) and **11** (UKI stub when measured)
-- Out of scope for now: TPM2 Quote / AK / remote verifier
+
+## TPM2 Quote (lab)
+
+Pure-Rust Quote over `/dev/tpmrm0` (fallback `/dev/tpm0`) — no `tpm2-tools` / `libtss2`:
+
+- Ephemeral ECC NIST-P256 restricted signing AK per request
+- `MachineService.Quote` + `pertiskctl quote [--verify] [--nonce HEX]`
+- Local verify checks ECDSA signature, nonce (`extraData`), and PCR composite digest vs sysfs
+
+Still later: persistent AK / EK certs, mgmt UI remote trust store.
+
+```bash
+# On a node with PERTISK_TPM=1 (or a real TPM):
+./out/bin/pertiskctl -e 127.0.0.1:50000 quote --verify
+```
 
 ### QEMU soft-TPM
 
@@ -134,9 +149,13 @@ On arm64 use `-device tpm-tis-device,tpmdev=tpm0` instead of `tpm-tis`.
 # available=true slot=A version=… — read N SHA-256 PCR(s) from …
 # PCR    ALGO     DIGEST
 # 0      sha256   …
+
+./out/bin/pertiskctl -e <guest-ip>:50000 quote --verify
+# available=true … — quoted 9 PCR(s) via /dev/tpmrm0 …
+# verify=ok
 ```
 
-Without a TPM device the RPC still succeeds with `available=false` and an explanatory message.
+Without a TPM device the RPCs still succeed with `available=false` and an explanatory message.
 
 ## Upgrade path note
 

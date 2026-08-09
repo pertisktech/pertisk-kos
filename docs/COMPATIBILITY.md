@@ -83,7 +83,8 @@ Image needs shared kernel modules + host `iptables-legacy` — see [examples/cni
 - Third-party node OS API wire compatibility
 - Omni-like web fleet manager (Phase D)
 - Secure Boot / UKI enrollment automation (lab path done; see [SECURE_BOOT.md](./SECURE_BOOT.md))
-- TPM2 Quote / remote attestation verifier (sysfs PCR Attest is lab-ready)
+- Mgmt remote trust store / persistent AK for Quotes (Quote + local verify is lab-ready)
+- etcd snapshot / restore
 - Windows / non-Linux hosts as nodes
 
 ## Multi-CP HA (lab)

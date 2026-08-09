@@ -76,6 +76,11 @@ check "sysfs PCR reader" file_has "crates/pertisk-api/src/attest.rs" 'pcr-sha256
 check "pertiskctl attest" file_has "crates/pertiskctl/src/main.rs" 'Commands::Attest'
 check "QEMU PERTISK_TPM" file_has "image/run-qemu-uefi.sh" 'PERTISK_TPM'
 
+# --- TPM2 Quote (pure-Rust lab path) ---
+check "Quote RPC in proto" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'rpc Quote'
+check "pertisk-tpm Quote client" file_has "crates/pertisk-tpm/src/quote.rs" 'produce_quote'
+check "pertiskctl quote" file_has "crates/pertiskctl/src/main.rs" 'Commands::Quote'
+
 # --- Mount hardening ---
 LINUX="crates/pertiskd/src/linux.rs"
 check "proc nosuid/noexec/nodev" file_has "${LINUX}" 'MS_NOSUID \| MsFlags::MS_NOEXEC \| MsFlags::MS_NODEV'

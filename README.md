@@ -11,7 +11,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 
 ## Status
 
-**P5 (productize) — mostly done for lab / HA.** Remaining stretch: TPM2 Quote + remote verifier; etcd snapshot / restore.
+**P5 (productize) — mostly done for lab / HA.** Remaining stretch: etcd snapshot / restore; mgmt remote trust store for Quotes; optional BusyBox/`udhcpc` drop.
 
 | Area | Progress |
 |------|----------|
@@ -25,6 +25,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 | BusyBox-free DHCPv4 (builtin primary) | done |
 | util-linux mount/umount + iproute2 ip | done |
 | CRI introspection (`pertiskctl containers`) | done (lab) |
+| TPM2 Quote (`pertiskctl quote --verify`) | done (lab) |
 
 ---
 
@@ -41,7 +42,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 - UKI / Secure Boot lab path (`make uki`, `make enroll-ovmf`, `PERTISK_TPM=1`) — see [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 - Guest extensions: **nfs-client**, **qemu-guest-agent**
 - Machine config `v1alpha1`: network, install disk, cluster endpoint/token/CA, kubelet `maxPods`, `machine.dashboard.mgmt_url`
-- Observability: gRPC mTLS **:50000**, Prometheus **:50001** (mTLS when TLS PEMs set; optional bearer), `pertiskctl logs` / `attest` / `containers`
+- Observability: gRPC mTLS **:50000**, Prometheus **:50001** (mTLS when TLS PEMs set; optional bearer), `pertiskctl logs` / `attest` / `quote` / `containers`
 - Hardening checklist + `make check-hardening` — [docs/HARDENING.md](./docs/HARDENING.md)
 
 ### Cluster lifecycle
@@ -194,6 +195,7 @@ curl -s --cacert out/mtls/ca.crt \
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs dmesg -n 50
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs pertiskd
 ./out/bin/pertiskctl -e 127.0.0.1:50000 attest      # TPM PCRs when present
+./out/bin/pertiskctl -e 127.0.0.1:50000 quote --verify  # TPM2 Quote + local verify
 ./out/bin/pertiskctl -e 127.0.0.1:50000 containers # containerd k8s.io via ctr
 ```
 
@@ -257,6 +259,6 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 
 ## Next
 
-1. TPM2 Quote / AK enrollment + remote attestation verifier (mgmt)
-2. etcd snapshot / restore
+1. etcd snapshot / restore
+2. Mgmt remote trust store / AK enrollment for Quotes
 3. Optional: drop BusyBox/`udhcpc` DHCP fallback entirely

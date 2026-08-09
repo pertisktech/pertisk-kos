@@ -13,6 +13,7 @@ pertisk-bootstrap = { workspace = true }
 pertisk-config = { workspace = true }
 pertisk-disk = { workspace = true }
 pertisk-proto = { workspace = true }
+pertisk-tpm = { workspace = true }
 pertisk-update = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"

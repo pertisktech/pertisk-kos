@@ -14,8 +14,8 @@ use pertisk_proto::machine_service_client::MachineServiceClient;
 use pertisk_proto::{
     ApplyConfigurationRequest, AttestRequest, BootstrapRequest, ContainersRequest,
     GetJoinConfigRequest, GrowDiskRequest, HealthRequest, JoinControlPlaneRequest,
-    KubeconfigRequest, LogsRequest, MarkBootGoodRequest, RebootRequest, ServiceListRequest,
-    ShutdownRequest, UpgradeRequest, UpgradeStatusRequest, VersionRequest,
+    KubeconfigRequest, LogsRequest, MarkBootGoodRequest, QuoteRequest, RebootRequest,
+    ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest, VersionRequest,
 };
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
@@ -62,6 +62,15 @@ enum Commands {
     Attest,
     /// List containers via containerd (`ctr` / k8s.io namespace).
     Containers,
+    /// TPM2 Quote (ephemeral ECC AK) + optional local verify.
+    Quote {
+        /// Hex-encoded qualifyingData nonce (default: random 32 bytes).
+        #[arg(long)]
+        nonce: Option<String>,
+        /// Verify signature, nonce, and PCR digest locally.
+        #[arg(long, default_value_t = false)]
+        verify: bool,
+    },
     Services,
     Validate {
         #[arg(short = 'f', long)]
@@ -284,6 +293,78 @@ async fn main() -> Result<()> {
                         id, c.name, c.state, c.image
                     );
                 }
+            }
+        }
+        Commands::Quote { ref nonce, verify } => {
+            let nonce_bytes = match nonce {
+                Some(h) => hex_decode(h).context("invalid --nonce hex")?,
+                None => random_nonce_32(),
+            };
+            let mut client = connect(&cli).await?;
+            let resp = client
+                .quote(QuoteRequest {
+                    nonce: nonce_bytes.clone(),
+                })
+                .await?
+                .into_inner();
+            println!(
+                "available={} slot={} version={} — {}",
+                resp.available, resp.active_slot, resp.version, resp.message
+            );
+            println!("nonce={}", hex_encode(&resp.nonce));
+            if !resp.quoted.is_empty() {
+                println!(
+                    "quoted_b64={} ({} bytes)",
+                    base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &resp.quoted
+                    ),
+                    resp.quoted.len()
+                );
+                println!(
+                    "signature_b64={} ({} bytes)",
+                    base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &resp.signature
+                    ),
+                    resp.signature.len()
+                );
+                println!(
+                    "ak_public_b64={} ({} bytes)",
+                    base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &resp.ak_public
+                    ),
+                    resp.ak_public.len()
+                );
+            }
+            if !resp.pcrs.is_empty() {
+                println!("{:<6} {:<8} {}", "PCR", "ALGO", "DIGEST");
+                for p in &resp.pcrs {
+                    println!("{:<6} {:<8} {}", p.index, p.algo, p.digest_hex);
+                }
+            }
+            if verify {
+                if !resp.available {
+                    anyhow::bail!("cannot --verify: Quote unavailable ({})", resp.message);
+                }
+                let pcrs: Vec<pertisk_tpm::PcrDigest> = resp
+                    .pcrs
+                    .iter()
+                    .map(|p| pertisk_tpm::PcrDigest {
+                        index: p.index,
+                        digest_hex: p.digest_hex.clone(),
+                    })
+                    .collect();
+                pertisk_tpm::verify_quote(
+                    &resp.quoted,
+                    &resp.signature,
+                    &resp.ak_public,
+                    &resp.nonce,
+                    &pcrs,
+                )
+                .map_err(|e| anyhow::anyhow!("quote verify failed: {e}"))?;
+                println!("verify=ok");
             }
         }
         Commands::Services => {
@@ -645,4 +726,38 @@ async fn connect(cli: &Cli) -> Result<MachineServiceClient<Channel>> {
         }
         _ => anyhow::bail!("mTLS requires --ca, --cert, and --key together"),
     }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hex_decode(s: &str) -> Result<Vec<u8>> {
+    let s = s.trim();
+    if s.len() % 2 != 0 {
+        anyhow::bail!("odd hex length");
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|e| anyhow::anyhow!("hex digit: {e}"))
+        })
+        .collect()
+}
+
+fn random_nonce_32() -> Vec<u8> {
+    use std::fs::File;
+    use std::io::Read;
+    let mut buf = vec![0u8; 32];
+    if File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut buf))
+        .is_err()
+    {
+        // Best-effort fallback for hosts without /dev/urandom (should not happen on Linux nodes).
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(31).wrapping_add(0xA5);
+        }
+    }
+    buf
 }

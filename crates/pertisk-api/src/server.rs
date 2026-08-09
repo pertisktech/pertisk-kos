@@ -16,9 +16,10 @@ use pertisk_proto::{
     GetJoinConfigRequest, GetJoinConfigResponse, GrowDiskRequest, GrowDiskResponse, HealthRequest,
     HealthResponse, JoinControlPlaneRequest, JoinControlPlaneResponse, KubeconfigRequest,
     KubeconfigResponse, LogsRequest, LogsResponse, MarkBootGoodRequest, MarkBootGoodResponse,
-    PcrValue, RebootRequest, RebootResponse, ServiceListRequest, ServiceListResponse, ServiceStatus,
-    ShutdownRequest, ShutdownResponse, UpgradeRequest, UpgradeResponse, UpgradeStatusRequest,
-    UpgradeStatusResponse, ValidateConfigurationResponse, VersionRequest, VersionResponse,
+    PcrValue, QuoteRequest, QuoteResponse, RebootRequest, RebootResponse, ServiceListRequest,
+    ServiceListResponse, ServiceStatus, ShutdownRequest, ShutdownResponse, UpgradeRequest,
+    UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse, ValidateConfigurationResponse,
+    VersionRequest, VersionResponse,
 };
 use pertisk_update::{apply_bundle, mark_boot_good, BootMeta, SlotLayout};
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
@@ -532,6 +533,47 @@ impl MachineService for MachineSvc {
                     namespace: c.namespace,
                 })
                 .collect(),
+        }))
+    }
+
+    async fn quote(
+        &self,
+        request: Request<QuoteRequest>,
+    ) -> Result<Response<QuoteResponse>, Status> {
+        let nonce = request.into_inner().nonce;
+        let (state_root, version) = {
+            let st = lock(&self.state)?;
+            (st.state_root.clone(), st.version.clone())
+        };
+        let (active_slot, version) = match BootMeta::load(&state_root) {
+            Ok(meta) => (
+                meta.active.to_string(),
+                meta.active_version.unwrap_or(version),
+            ),
+            Err(_) => ("unknown".into(), version),
+        };
+        let snap = tokio::task::spawn_blocking(move || pertisk_tpm::produce_quote(&nonce))
+            .await
+            .map_err(|e| Status::internal(format!("quote task: {e}")))?;
+        let pcrs = crate::attest::read_host_pcrs()
+            .pcrs
+            .into_iter()
+            .map(|p| PcrValue {
+                index: p.index,
+                algo: p.algo,
+                digest_hex: p.digest_hex,
+            })
+            .collect();
+        Ok(Response::new(QuoteResponse {
+            available: snap.available,
+            message: snap.message,
+            nonce: snap.nonce,
+            quoted: snap.quoted,
+            signature: snap.signature,
+            ak_public: snap.ak_public,
+            pcrs,
+            active_slot,
+            version,
         }))
     }
 }

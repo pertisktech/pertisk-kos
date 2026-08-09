@@ -1,0 +1,200 @@
+//! TPM2 command builders / response parsers for Quote.
+
+use crate::device::Device;
+use crate::error::{Error, Result};
+use crate::wire::{
+    marshal_ecc_ak_public, marshal_ecc_storage_public, marshal_pcr_selection,
+    marshal_sensitive_create_empty, parse_response, response_params, Reader, Writer,
+    TPM_ALG_ECDSA, TPM_ALG_NULL, TPM_CC_CREATE, TPM_CC_CREATE_PRIMARY, TPM_CC_FLUSH_CONTEXT,
+    TPM_CC_LOAD, TPM_CC_QUOTE, TPM_CC_READ_PUBLIC, TPM_RH_OWNER, TPM_ST_NO_SESSIONS,
+    TPM_ST_SESSIONS,
+};
+
+pub struct LoadedKey {
+    pub handle: u32,
+    /// TPMT_PUBLIC bytes (without TPM2B size prefix).
+    pub public: Vec<u8>,
+}
+
+fn cmd_create_primary() -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u16(TPM_ST_SESSIONS);
+    w.u32(0);
+    w.u32(TPM_CC_CREATE_PRIMARY);
+    w.u32(TPM_RH_OWNER);
+
+    let mut auth = Writer::new();
+    auth.pw_empty_auth();
+    let auth_bytes = auth.into_vec();
+    w.u32(auth_bytes.len() as u32);
+    w.bytes(&auth_bytes);
+
+    w.bytes(&marshal_sensitive_create_empty());
+    w.bytes(&marshal_ecc_storage_public());
+    w.tpm2b(&[]); // outsideInfo
+    w.u32(0); // creationPCR count
+
+    w.finish_header()
+}
+
+fn parse_create_primary(resp: &[u8]) -> Result<(u32, Vec<u8>)> {
+    let (tag, _, mut r) = parse_response(resp)?;
+    let handle = r.u32()?;
+    let mut p = response_params(&mut r, tag)?;
+    let public = tpm2b_owned(&mut p)?;
+    Ok((handle, public))
+}
+
+fn cmd_create(parent: u32) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u16(TPM_ST_SESSIONS);
+    w.u32(0);
+    w.u32(TPM_CC_CREATE);
+    w.u32(parent);
+
+    let mut auth = Writer::new();
+    auth.pw_empty_auth();
+    let auth_bytes = auth.into_vec();
+    w.u32(auth_bytes.len() as u32);
+    w.bytes(&auth_bytes);
+
+    w.bytes(&marshal_sensitive_create_empty());
+    w.bytes(&marshal_ecc_ak_public());
+    w.tpm2b(&[]); // outsideInfo
+    w.u32(0); // creationPCR
+
+    w.finish_header()
+}
+
+fn parse_create(resp: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    let (tag, _, mut r) = parse_response(resp)?;
+    let mut p = response_params(&mut r, tag)?;
+    let private = tpm2b_owned(&mut p)?;
+    let public = tpm2b_owned(&mut p)?;
+    Ok((private, public))
+}
+
+fn cmd_load(parent: u32, private: &[u8], public: &[u8]) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u16(TPM_ST_SESSIONS);
+    w.u32(0);
+    w.u32(TPM_CC_LOAD);
+    w.u32(parent);
+
+    let mut auth = Writer::new();
+    auth.pw_empty_auth();
+    let auth_bytes = auth.into_vec();
+    w.u32(auth_bytes.len() as u32);
+    w.bytes(&auth_bytes);
+
+    w.tpm2b(private);
+    w.tpm2b(public);
+    w.finish_header()
+}
+
+fn parse_load(resp: &[u8]) -> Result<u32> {
+    let (tag, _, mut r) = parse_response(resp)?;
+    let handle = r.u32()?;
+    let _ = response_params(&mut r, tag)?;
+    Ok(handle)
+}
+
+fn cmd_read_public(handle: u32) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u16(TPM_ST_NO_SESSIONS);
+    w.u32(0);
+    w.u32(TPM_CC_READ_PUBLIC);
+    w.u32(handle);
+    w.finish_header()
+}
+
+fn parse_read_public(resp: &[u8]) -> Result<Vec<u8>> {
+    let (tag, _, mut r) = parse_response(resp)?;
+    let mut p = response_params(&mut r, tag)?;
+    tpm2b_owned(&mut p)
+}
+
+fn cmd_quote(ak: u32, nonce: &[u8], pcr_indices: &[u32]) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u16(TPM_ST_SESSIONS);
+    w.u32(0);
+    w.u32(TPM_CC_QUOTE);
+    w.u32(ak);
+
+    let mut auth = Writer::new();
+    auth.pw_empty_auth();
+    let auth_bytes = auth.into_vec();
+    w.u32(auth_bytes.len() as u32);
+    w.bytes(&auth_bytes);
+
+    w.tpm2b(nonce);
+    w.u16(TPM_ALG_NULL);
+    w.bytes(&marshal_pcr_selection(pcr_indices));
+    w.finish_header()
+}
+
+fn parse_quote(resp: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    let (tag, _, mut r) = parse_response(resp)?;
+    // Parameters live in a sub-slice; capture signature from that sub-slice.
+    let param_size = if tag == TPM_ST_SESSIONS {
+        r.u32()? as usize
+    } else {
+        r.remaining()
+    };
+    let params = r.take(param_size)?;
+    let mut p = Reader::new(params);
+    let quoted = tpm2b_owned(&mut p)?;
+    let sig_off = p.absolute_pos();
+    let alg = p.u16()?;
+    if alg != TPM_ALG_ECDSA {
+        return Err(Error::Parse(format!("unsupported sig alg 0x{alg:04x}")));
+    }
+    let _hash = p.u16()?;
+    p.skip_tpm2b()?;
+    p.skip_tpm2b()?;
+    let signature = params[sig_off..p.absolute_pos()].to_vec();
+    Ok((quoted, signature))
+}
+
+fn cmd_flush(handle: u32) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u16(TPM_ST_NO_SESSIONS);
+    w.u32(0);
+    w.u32(TPM_CC_FLUSH_CONTEXT);
+    w.u32(handle);
+    w.finish_header()
+}
+
+fn tpm2b_owned(r: &mut Reader<'_>) -> Result<Vec<u8>> {
+    Ok(r.tpm2b()?.to_vec())
+}
+
+pub fn flush(dev: &mut Device, handle: u32) {
+    let _ = dev.transact(&cmd_flush(handle));
+}
+
+pub fn create_primary(dev: &mut Device) -> Result<LoadedKey> {
+    let resp = dev.transact(&cmd_create_primary())?;
+    let (handle, public) = parse_create_primary(&resp)?;
+    Ok(LoadedKey { handle, public })
+}
+
+pub fn create_and_load_ak(dev: &mut Device, parent: u32) -> Result<LoadedKey> {
+    let resp = dev.transact(&cmd_create(parent))?;
+    let (private, public) = parse_create(&resp)?;
+    let resp = dev.transact(&cmd_load(parent, &private, &public))?;
+    let handle = parse_load(&resp)?;
+    let pub_resp = dev.transact(&cmd_read_public(handle))?;
+    let public = parse_read_public(&pub_resp).unwrap_or(public);
+    Ok(LoadedKey { handle, public })
+}
+
+pub fn quote(
+    dev: &mut Device,
+    ak: u32,
+    nonce: &[u8],
+    pcr_indices: &[u32],
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let resp = dev.transact(&cmd_quote(ak, nonce, pcr_indices))?;
+    parse_quote(&resp)
+}

@@ -17,5 +17,6 @@ clap = { workspace = true }
 pertisk-bootstrap = { workspace = true }
 pertisk-config = { workspace = true }
 pertisk-proto = { workspace = true }
+pertisk-tpm = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }

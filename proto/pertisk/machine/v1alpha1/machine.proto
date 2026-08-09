@@ -32,6 +32,8 @@ service MachineService {
   rpc Attest(AttestRequest) returns (AttestResponse);
   // List containers via containerd `ctr` (k8s.io namespace).
   rpc Containers(ContainersRequest) returns (ContainersResponse);
+  // TPM2 Quote over /dev/tpmrm0 (ephemeral ECC AK; lab, no libtss2).
+  rpc Quote(QuoteRequest) returns (QuoteResponse);
 }
 
 message VersionRequest {}
@@ -237,4 +239,24 @@ message ContainersResponse {
   bool available = 1;
   string message = 2;
   repeated ContainerInfo containers = 3;
+}
+
+message QuoteRequest {
+  // qualifyingData; empty → server generates 32 random bytes.
+  bytes nonce = 1;
+}
+
+message QuoteResponse {
+  bool available = 1;
+  string message = 2;
+  bytes nonce = 3;
+  // TPMS_ATTEST (contents of TPM2B_ATTEST).
+  bytes quoted = 4;
+  // Marshaled TPMT_SIGNATURE (ECDSA-SHA256).
+  bytes signature = 5;
+  // TPMT_PUBLIC for the ephemeral AK.
+  bytes ak_public = 6;
+  repeated PcrValue pcrs = 7;
+  string active_slot = 8;
+  string version = 9;
 }
