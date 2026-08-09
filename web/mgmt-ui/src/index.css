@@ -752,10 +752,63 @@ tr.row-click:focus-visible {
 }
 .badge.unknown { background: color-mix(in srgb, var(--border) 55%, transparent); color: var(--text-muted); }
 .badge.error, .badge.failed, .badge.offline { background: rgba(232, 93, 93, 0.2); color: var(--danger); }
-.status-badges {
+.badge.arch {
+  background: color-mix(in srgb, var(--border) 45%, transparent);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.badge.arch-arm64 {
+  background: color-mix(in srgb, #5b8def 22%, transparent);
+  color: #9ec0ff;
+}
+.badge.arch-amd64 {
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  color: var(--text-muted);
+}
+.badge.kind {
+  font-weight: 600;
+}
+.badge.kind-proxmox {
+  background: color-mix(in srgb, #e67e22 22%, transparent);
+  color: #f0b27a;
+}
+.badge.kind-vsphere {
+  background: color-mix(in srgb, #3498db 22%, transparent);
+  color: #85c1e9;
+}
+.status-badges,
+.cluster-meta-badges {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  flex-wrap: wrap;
+}
+.detail-title-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.cluster-provider-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.cluster-provider-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.cluster-provider-node {
+  font-size: 0.75rem;
+}
+.cluster-provider-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   flex-wrap: wrap;
 }
 
@@ -1298,6 +1351,9 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   align-items: center;
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+.detail-title h1 {
+  margin: 0;
 }
 .detail-stats { margin-bottom: 1rem; }
 .stat .value.sm { font-size: 1.05rem; }

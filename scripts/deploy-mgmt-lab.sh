@@ -109,7 +109,24 @@ if [[ "$SKIP_RPM" != "1" ]]; then
   [[ -n "$RPM" && -f "$RPM" ]] || RPM="$(ls -1t "${ROOT}/out/rpm/pertisk-mgmt-"*.rpm 2>/dev/null | head -1 || true)"
   [[ -n "$RPM" && -f "$RPM" ]] || { echo "ERROR: no RPM in out/rpm/" >&2; exit 1; }
   scp "$RPM" "${MGMT_HOST}:/tmp/pertisk-mgmt.rpm"
-  ssh "$MGMT_HOST" 'sudo rpm -Uvh /tmp/pertisk-mgmt.rpm && sudo systemctl enable pertisk-mgmt'
+  # Same NEVRA is already installed after a prior deploy (e.g. amd64 then arm64-only
+  # with the same VERSION) — rpm -Uvh alone exits non-zero; --replacepkgs refreshes.
+  ssh "$MGMT_HOST" 'sudo bash -c "
+    set -euo pipefail
+    if rpm -q pertisk-mgmt >/dev/null 2>&1; then
+      have=\$(rpm -q --qf \"%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\" pertisk-mgmt)
+      want=\$(rpm -qp --qf \"%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\" /tmp/pertisk-mgmt.rpm)
+      if [[ \"\$have\" == \"\$want\" ]]; then
+        echo \"RPM \$want already installed — reinstall (--replacepkgs)\"
+        rpm -Uvh --replacepkgs /tmp/pertisk-mgmt.rpm
+      else
+        rpm -Uvh /tmp/pertisk-mgmt.rpm
+      fi
+    else
+      rpm -Uvh /tmp/pertisk-mgmt.rpm
+    fi
+    systemctl enable pertisk-mgmt
+  "'
 else
   echo "==> [2/3] skip RPM"
 fi

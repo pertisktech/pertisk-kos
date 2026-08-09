@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
+import { formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
 
 const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 const AVAIL_POLL_MS = 15000
@@ -75,6 +76,7 @@ export default function Clusters() {
             <tr>
               <th>Name</th>
               <th>Status</th>
+              <th>Arch</th>
               <th>Provider</th>
               <th>CP / Workers</th>
               <th>Network</th>
@@ -85,6 +87,7 @@ export default function Clusters() {
             {list.map((c) => {
               const net = c.network_mode || (c.vip6 && c.vip ? 'dual-stack' : c.vip6 ? 'ipv6' : 'ipv4')
               const to = `/clusters/${c.id}`
+              const kind = normalizeProviderKind(c.provider_kind)
               return (
                 <tr
                   key={c.id}
@@ -104,10 +107,20 @@ export default function Clusters() {
                     <ClusterStatusBadges status={c.status} availability={c.availability} />
                   </td>
                   <td>
+                    <span className={`badge arch arch-${c.arch === 'arm64' ? 'arm64' : 'amd64'}`}>
+                      {c.arch === 'arm64' ? 'arm64' : 'amd64'}
+                    </span>
+                  </td>
+                  <td>
                     {c.provider_name ? (
-                      <div>
-                        <div>{c.provider_name}</div>
-                        <div className="muted" style={{ fontSize: '0.75rem' }}>
+                      <div className="cluster-provider-cell">
+                        <div className="cluster-provider-name">
+                          <span className={`badge kind kind-${kind}`}>
+                            {formatProviderKind(kind)}
+                          </span>
+                          <span>{c.provider_name}</span>
+                        </div>
+                        <div className="muted cluster-provider-node">
                           {c.provider_node || '—'}
                         </div>
                       </div>

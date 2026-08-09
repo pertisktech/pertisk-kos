@@ -18,13 +18,21 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 MGMT="${MGMT:-almalinux@10.1.1.150}"
 CP_GB="${CP_GB:-50}"
 WORKER_GB="${WORKER_GB:-75}"
-# Default amd64 (this lab). Override: ARCH=arm64|both ./deploy-13900hx.sh
-ARCHS=(amd64)
-case "$(printf '%s' "${ARCH:-amd64}" | tr '[:upper:]' '[:lower:]')" in
+
+# Default amd64 (this lab). Override with either:
+#   ARCH=arm64|both ./deploy-13900hx.sh
+#   ARCHS=arm64|both ./deploy-13900hx.sh   # alias (matches internal name)
+# Capture before ARCHS=() would clobber an exported ARCHS=arm64.
+_ARCH_IN="$(printf '%s' "${ARCH:-${ARCHS:-amd64}}" | tr '[:upper:]' '[:lower:]' | tr ',' ' ')"
+# If someone passed ARCHS="amd64 arm64", normalize to both.
+case "$_ARCH_IN" in
+  *"amd64"*"arm64"*|*"arm64"*"amd64"*) _ARCH_IN=both ;;
+esac
+case "$_ARCH_IN" in
   amd64|x86_64) ARCHS=(amd64) ;;
   arm64|aarch64) ARCHS=(arm64) ;;
   both|all) ARCHS=(amd64 arm64) ;;
-  *) echo "unsupported ARCH=${ARCH} (use amd64|arm64|both)" >&2; exit 1 ;;
+  *) echo "unsupported ARCH/ARCHS=${_ARCH_IN} (use amd64|arm64|both)" >&2; exit 1 ;;
 esac
 
 echo "==> deploy-13900hx → ${MGMT} version=${VERSION} arch=${ARCHS[*]} pve=${PVE}"

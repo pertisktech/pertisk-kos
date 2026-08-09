@@ -38,6 +38,8 @@ pub struct ClusterOut {
     pub name: String,
     pub provider_id: String,
     pub provider_name: Option<String>,
+    /// `proxmox` | `vsphere` (from providers.kind).
+    pub provider_kind: Option<String>,
     pub provider_url: Option<String>,
     pub provider_node: Option<String>,
     pub status: String,
@@ -168,7 +170,9 @@ fn default_service_subnet_ipv6() -> String {
 
 const CLUSTER_SELECT: &str = r#"
 SELECT c.id, c.name, c.provider_id,
-       p.name as provider_name, p.url as provider_url, p.node as provider_node,
+       p.name as provider_name,
+       COALESCE(p.kind, 'proxmox') as provider_kind,
+       p.url as provider_url, p.node as provider_node,
        c.status, c.controlplanes, c.workers, c.vip, c.vip6, c.cni, c.k8s_version,
        c.cp_memory, c.cp_cores, c.cp_disk_gb, c.worker_memory, c.worker_cores, c.worker_disk_gb,
        c.cp_vmid, c.endpoint, c.error, COALESCE(c.network_mode, 'ipv4') as network_mode,

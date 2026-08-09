@@ -4,6 +4,7 @@ import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
+import { ClusterMetaBadges } from '../components/ClusterMetaBadges'
 
 const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 const RESOURCES_POLL_MS = 15000
@@ -316,7 +317,7 @@ export default function Dashboard() {
           </div>
           <table>
             <thead>
-              <tr><th>Name</th><th>Status</th><th>Topology</th></tr>
+              <tr><th>Name</th><th>Status</th><th>Arch / Provider</th><th>Topology</th></tr>
             </thead>
             <tbody>
               {recent.map((c) => {
@@ -338,6 +339,9 @@ export default function Dashboard() {
                     <td><span className="row-click-label">{c.name}</span></td>
                     <td>
                       <ClusterStatusBadges status={c.status} availability={c.availability} />
+                    </td>
+                    <td>
+                      <ClusterMetaBadges arch={c.arch} providerKind={c.provider_kind} />
                     </td>
                     <td>{c.controlplanes} CP / {c.workers} WK{c.vip ? ` · VIP ${c.vip}` : ''}</td>
                   </tr>

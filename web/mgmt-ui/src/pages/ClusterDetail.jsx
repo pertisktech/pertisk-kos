@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, getToken } from '../api'
 import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
+import { ClusterMetaBadges, formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
 import { useConfirm } from '../components/Confirm'
 import Checkbox from '../components/Checkbox'
 import Modal from '../components/Modal'
@@ -744,7 +745,10 @@ machine:
           <h1>
             <Icon name="clusters" size={22} /> {c.name}
           </h1>
-          <ClusterStatusBadges status={c.status} availability={c.availability} />
+          <div className="detail-title-meta">
+            <ClusterStatusBadges status={c.status} availability={c.availability} />
+            <ClusterMetaBadges arch={c.arch} providerKind={c.provider_kind} />
+          </div>
         </div>
         <div className="row-actions">
           <Link className="btn secondary btn-icon" to="/clusters">
@@ -848,14 +852,31 @@ machine:
       <div className="grid-stats detail-stats">
         <div className="stat">
           <div className="label">Provider</div>
-          <div className="value sm">
-            {c.provider_name || <span className="badge error">missing</span>}
+          <div className="value sm cluster-provider-stat">
+            {c.provider_name ? (
+              <>
+                <span className={`badge kind kind-${normalizeProviderKind(c.provider_kind)}`}>
+                  {formatProviderKind(c.provider_kind)}
+                </span>
+                <span>{c.provider_name}</span>
+              </>
+            ) : (
+              <span className="badge error">missing</span>
+            )}
           </div>
           {c.provider_node && (
             <div className="muted" style={{ fontSize: '0.75rem', marginTop: 4 }}>
               {c.provider_node}
             </div>
           )}
+        </div>
+        <div className="stat">
+          <div className="label">Arch</div>
+          <div className="value sm">
+            <span className={`badge arch arch-${c.arch === 'arm64' ? 'arm64' : 'amd64'}`}>
+              {c.arch === 'arm64' ? 'arm64' : 'amd64'}
+            </span>
+          </div>
         </div>
         <div className="stat">
           <div className="label">Topology</div>
@@ -922,6 +943,9 @@ machine:
                       <dd>
                         {c.provider_name ? (
                           <>
+                            <span className={`badge kind kind-${normalizeProviderKind(c.provider_kind)}`} style={{ marginRight: 6 }}>
+                              {formatProviderKind(c.provider_kind)}
+                            </span>
                             <Link to="/providers">{c.provider_name}</Link>
                             <div className="muted" style={{ fontSize: '0.8rem' }}>
                               {c.provider_url}
@@ -931,6 +955,14 @@ machine:
                         ) : (
                           <span className="badge error">missing</span>
                         )}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Arch</dt>
+                      <dd>
+                        <span className={`badge arch arch-${c.arch === 'arm64' ? 'arm64' : 'amd64'}`}>
+                          {c.arch === 'arm64' ? 'arm64' : 'amd64'}
+                        </span>
                       </dd>
                     </div>
                     <div><dt>Base VMID</dt><dd>{c.cp_vmid ?? '—'}</dd></div>
