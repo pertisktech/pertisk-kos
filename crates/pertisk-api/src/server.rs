@@ -3,7 +3,10 @@
 use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::MutexGuard;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, MutexGuard};
+use std::task::{Context, Poll};
 
 use pertisk_bootstrap::{
     bootstrap_control_plane, default_restore_identity, detect_advertise_ip, etcd_restore,
@@ -14,21 +17,24 @@ use pertisk_proto::machine_service_server::{MachineService, MachineServiceServer
 use pertisk_proto::{
     ApplyConfigurationRequest, ApplyConfigurationResponse, AttestRequest, AttestResponse,
     BootstrapRequest, BootstrapResponse, ContainerInfo, ContainersRequest, ContainersResponse,
-    EtcdRestoreRequest, EtcdRestoreResponse, EtcdSnapshotRequest, EtcdSnapshotResponse,
-    GetJoinConfigRequest, GetJoinConfigResponse, GrowDiskRequest, GrowDiskResponse, HealthRequest,
-    HealthResponse, JoinControlPlaneRequest, JoinControlPlaneResponse, KubeconfigRequest,
-    KubeconfigResponse, LogsRequest, LogsResponse, MarkBootGoodRequest, MarkBootGoodResponse,
-    PcrValue, QuoteRequest, QuoteResponse, RebootRequest, RebootResponse, ServiceListRequest,
-    ServiceListResponse, ServiceStatus, ShutdownRequest, ShutdownResponse, UpgradeRequest,
-    UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse, ValidateConfigurationResponse,
-    VersionRequest, VersionResponse,
+    DiskInspectRequest, DiskInspectResponse, DiskVolume, EtcdRestoreRequest, EtcdRestoreResponse,
+    EtcdSnapshotRequest, EtcdSnapshotResponse, GetJoinConfigRequest, GetJoinConfigResponse,
+    GrowDiskRequest, GrowDiskResponse, HealthRequest, HealthResponse, JoinControlPlaneRequest,
+    JoinControlPlaneResponse, KubeconfigRequest, KubeconfigResponse, LogsRequest, LogsResponse,
+    MarkBootGoodRequest, MarkBootGoodResponse, NetInspectRequest, NetInspectResponse, NetInterface,
+    PcrValue, QuoteRequest, QuoteResponse, RebootRequest, RebootResponse, ResetRequest,
+    ResetResponse, ServiceListRequest, ServiceListResponse, ServiceStatus, ShutdownRequest,
+    ShutdownResponse, UpgradeRequest, UpgradeResponse, UpgradeStatusRequest,
+    UpgradeStatusResponse, ValidateConfigurationResponse, VersionRequest, VersionResponse,
 };
 use pertisk_update::{apply_bundle, mark_boot_good, BootMeta, SlotLayout};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::Stream;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
-use crate::logs::tail_logs;
+use crate::logs::{follow_logs, follow_source, tail_logs};
 use crate::state::{PowerAction, SharedState};
 
 /// Default management listen address.
@@ -276,7 +282,13 @@ impl MachineService for MachineSvc {
         }))
     }
 
-    async fn logs(&self, request: Request<LogsRequest>) -> Result<Response<LogsResponse>, Status> {
+    type LogsStream =
+        Pin<Box<dyn tokio_stream::Stream<Item = Result<LogsResponse, Status>> + Send + 'static>>;
+
+    async fn logs(
+        &self,
+        request: Request<LogsRequest>,
+    ) -> Result<Response<Self::LogsStream>, Status> {
         let req = request.into_inner();
         let state_root = {
             let st = lock(&self.state)?;
@@ -287,13 +299,77 @@ impl MachineService for MachineSvc {
         } else {
             req.service
         };
-        let tail = tail_logs(&state_root, &service, req.tail_lines)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
-        Ok(Response::new(LogsResponse {
-            service: tail.service,
-            lines: tail.lines,
-            source: tail.source,
-        }))
+        let follow = req.follow;
+        let tail_lines = req.tail_lines;
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<LogsResponse, Status>>(16);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_worker = Arc::clone(&cancel);
+
+        tokio::task::spawn_blocking(move || {
+            let send = |tail: crate::logs::LogTail| {
+                tx.blocking_send(Ok(LogsResponse {
+                    service: tail.service,
+                    lines: tail.lines,
+                    source: tail.source,
+                }))
+                .is_ok()
+            };
+
+            let initial = match tail_logs(&state_root, &service, tail_lines) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(Status::invalid_argument(e.to_string())));
+                    return;
+                }
+            };
+            if !send(initial) {
+                return;
+            }
+            if !follow {
+                return;
+            }
+
+            let source = match follow_source(&state_root, &service) {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(Status::invalid_argument(e.to_string())));
+                    return;
+                }
+            };
+
+            let (ftx, frx) = mpsc::channel();
+            let svc = service.clone();
+            let cancel_f = Arc::clone(&cancel_worker);
+            let follow_handle = std::thread::spawn(move || {
+                let _ = follow_logs(source, &svc, &ftx, &cancel_f);
+            });
+
+            while !cancel_worker.load(Ordering::Relaxed) {
+                match frx.recv_timeout(std::time::Duration::from_millis(500)) {
+                    Ok(chunk) => {
+                        if !send(chunk) {
+                            break;
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            cancel_worker.store(true, Ordering::Relaxed);
+            let _ = follow_handle.join();
+        });
+
+        // When the client disconnects, drop of `rx` stops the sender; also flip cancel
+        // via a wrapper stream that observes drop... ReceiverStream alone is enough:
+        // blocking_send fails → worker exits → follow thread sees disconnect / cancel.
+        // Set cancel when the async stream is dropped by wrapping.
+        let stream = DropCancelStream {
+            inner: ReceiverStream::new(rx),
+            cancel,
+        };
+
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn bootstrap(
@@ -657,6 +733,129 @@ impl MachineService for MachineSvc {
             ok: result.ok,
             message: result.message,
         }))
+    }
+
+    async fn net_inspect(
+        &self,
+        _request: Request<NetInspectRequest>,
+    ) -> Result<Response<NetInspectResponse>, Status> {
+        let snap = tokio::task::spawn_blocking(crate::net_inspect::inspect_net)
+            .await
+            .map_err(|e| Status::internal(format!("net inspect task: {e}")))?;
+        Ok(Response::new(NetInspectResponse {
+            available: snap.available,
+            message: snap.message,
+            interfaces: snap
+                .interfaces
+                .into_iter()
+                .map(|i| NetInterface {
+                    name: i.name,
+                    operstate: i.operstate,
+                    addresses: i.addresses,
+                })
+                .collect(),
+        }))
+    }
+
+    async fn disk_inspect(
+        &self,
+        _request: Request<DiskInspectRequest>,
+    ) -> Result<Response<DiskInspectResponse>, Status> {
+        let snap = tokio::task::spawn_blocking(crate::disk_inspect::inspect_disks)
+            .await
+            .map_err(|e| Status::internal(format!("disk inspect task: {e}")))?;
+        Ok(Response::new(DiskInspectResponse {
+            available: snap.available,
+            message: snap.message,
+            volumes: snap
+                .volumes
+                .into_iter()
+                .map(|v| DiskVolume {
+                    label: v.label,
+                    mountpoint: v.mountpoint,
+                    device: v.device,
+                    mounted: v.mounted,
+                    total_bytes: v.total_bytes,
+                    used_bytes: v.used_bytes,
+                })
+                .collect(),
+        }))
+    }
+
+    async fn reset(
+        &self,
+        request: Request<ResetRequest>,
+    ) -> Result<Response<ResetResponse>, Status> {
+        let req = request.into_inner();
+        if !req.force {
+            return Err(Status::failed_precondition(
+                "reset requires force=true (destroys STATE identity + local runtime data; GPT kept)",
+            ));
+        }
+        let state_root = {
+            let st = lock(&self.state)?;
+            st.state_root.clone()
+        };
+        let result = tokio::task::spawn_blocking(move || pertisk_disk::soft_reset(&state_root))
+            .await
+            .map_err(|e| Status::internal(format!("reset task: {e}")))?
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let mut message = format!(
+            "soft reset cleared {} path(s)",
+            result.cleared.len()
+        );
+        if !result.warnings.is_empty() {
+            message.push_str(&format!("; {} warning(s)", result.warnings.len()));
+        }
+        if !result.cleared.is_empty() {
+            message.push_str(&format!(": {}", result.cleared.join(", ")));
+        }
+
+        let mut reboot_scheduled = false;
+        if req.reboot {
+            let mut st = lock(&self.state)?;
+            st.power = PowerAction::Reboot;
+            st.ready = false;
+            st.message = "soft reset complete; reboot scheduled".into();
+            reboot_scheduled = true;
+            message.push_str("; reboot scheduled");
+        } else if let Ok(mut st) = self.state.lock() {
+            st.message = "soft reset complete (no reboot)".into();
+            st.ready = false;
+        }
+
+        info!(
+            cleared = result.cleared.len(),
+            warnings = result.warnings.len(),
+            reboot_scheduled,
+            "reset accepted via API"
+        );
+        Ok(Response::new(ResetResponse {
+            ok: true,
+            message,
+            reboot_scheduled,
+        }))
+    }
+}
+
+/// Stops the follow worker when the gRPC client disconnects.
+struct DropCancelStream<S> {
+    inner: S,
+    cancel: Arc<AtomicBool>,
+}
+
+impl<S> Drop for DropCancelStream<S> {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+impl<S: Stream + Unpin> Stream for DropCancelStream<S> {
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
     }
 }
 

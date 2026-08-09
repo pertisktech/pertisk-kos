@@ -676,6 +676,7 @@ async fn delete(
         .bind(&id)
         .execute(state.pool())
         .await?;
+    state.emit_cluster(&id, "deleting");
 
     // Cancel queued work for this cluster so delete is not blocked.
     let _ = sqlx::query(

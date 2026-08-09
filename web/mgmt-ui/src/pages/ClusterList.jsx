@@ -5,9 +5,12 @@ import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 import { formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
 import ClusterWizard from '../components/ClusterWizard'
+import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 
 const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 const AVAIL_POLL_MS = 15000
+/** Slow fallback while busy if SSE drops; primary updates come from events. */
+const BUSY_FALLBACK_MS = 8000
 
 export default function Clusters() {
   const nav = useNavigate()
@@ -42,11 +45,13 @@ export default function Clusters() {
     load()
   }, [load])
 
-  // Keep polling while any cluster is mid-create/delete, or until a just-deleted id disappears.
+  useMgmtRefresh(load)
+
+  // Slow fallback while mid-job (SSE is primary).
   useEffect(() => {
     const busy = list.some((c) => BUSY.has(c.status)) || !!expectDelete
     if (!busy) return undefined
-    const t = setInterval(load, 2000)
+    const t = setInterval(load, BUSY_FALLBACK_MS)
     return () => clearInterval(t)
   }, [list, load, expectDelete])
 

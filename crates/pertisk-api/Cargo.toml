@@ -12,6 +12,7 @@ http = "1"
 pertisk-bootstrap = { workspace = true }
 pertisk-config = { workspace = true }
 pertisk-disk = { workspace = true }
+pertisk-net = { workspace = true }
 pertisk-proto = { workspace = true }
 pertisk-tpm = { workspace = true }
 pertisk-update = { workspace = true }
@@ -20,10 +21,14 @@ rustls-pemfile = "2"
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = "0.1"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tonic = { workspace = true }
 tower = "0.5"
 tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 rcgen = { version = "0.14", features = ["pem"] }

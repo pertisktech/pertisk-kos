@@ -6,6 +6,7 @@ mod install;
 mod layout;
 mod partlabel;
 mod plan;
+mod reset;
 mod state;
 
 pub use ephemeral::{
@@ -26,4 +27,5 @@ pub use plan::{
     default_fixed_partitions, minimum_disk_size, plan_disk, DiskPlan, FsType, PartitionSpec,
     PlanError,
 };
+pub use reset::{soft_reset, ResetError, SoftResetResult};
 pub use state::{prepare_state, StateError, StateSource, StateVolume, DEFAULT_CONFIG_NAME};

@@ -17,7 +17,9 @@ service MachineService {
   rpc MarkBootGood(MarkBootGoodRequest) returns (MarkBootGoodResponse);
   rpc UpgradeStatus(UpgradeStatusRequest) returns (UpgradeStatusResponse);
   // Tail recent log lines for a node service (or kernel dmesg).
-  rpc Logs(LogsRequest) returns (LogsResponse);
+  // Unary-shaped usage: follow=false → one response then EOF.
+  // follow=true → initial tail, then streamed chunks until the client cancels.
+  rpc Logs(LogsRequest) returns (stream LogsResponse);
   // Bootstrap the first control-plane (PKI + static pods). Idempotent.
   rpc Bootstrap(BootstrapRequest) returns (BootstrapResponse);
   // Fetch admin kubeconfig after bootstrap (control-plane only).
@@ -38,6 +40,12 @@ service MachineService {
   rpc EtcdSnapshot(EtcdSnapshotRequest) returns (EtcdSnapshotResponse);
   // Offline restore of an etcd snapshot into /var/lib/etcd (destructive; force required).
   rpc EtcdRestore(EtcdRestoreRequest) returns (EtcdRestoreResponse);
+  // Host network interfaces + addresses (lab ops inspect).
+  rpc NetInspect(NetInspectRequest) returns (NetInspectResponse);
+  // STATE / EPHEMERAL volume mount + capacity (lab ops inspect).
+  rpc DiskInspect(DiskInspectRequest) returns (DiskInspectResponse);
+  // Soft reset: clear STATE identity + EPHEMERAL runtime (keep GPT). Requires force.
+  rpc Reset(ResetRequest) returns (ResetResponse);
 }
 
 message VersionRequest {}
@@ -144,6 +152,8 @@ message LogsRequest {
   string service = 1;
   // Number of trailing lines (default 100, max 5000).
   uint32 tail_lines = 2;
+  // When true, keep streaming new lines after the initial tail.
+  bool follow = 3;
 }
 
 message LogsResponse {
@@ -301,4 +311,50 @@ message EtcdRestoreRequest {
 message EtcdRestoreResponse {
   bool ok = 1;
   string message = 2;
+}
+
+message NetInspectRequest {}
+
+message NetInterface {
+  string name = 1;
+  // sysfs operstate (up/down/unknown/…)
+  string operstate = 2;
+  repeated string addresses = 3;
+}
+
+message NetInspectResponse {
+  bool available = 1;
+  string message = 2;
+  repeated NetInterface interfaces = 3;
+}
+
+message DiskInspectRequest {}
+
+message DiskVolume {
+  // STATE | EPHEMERAL
+  string label = 1;
+  string mountpoint = 2;
+  string device = 3;
+  bool mounted = 4;
+  uint64 total_bytes = 5;
+  uint64 used_bytes = 6;
+}
+
+message DiskInspectResponse {
+  bool available = 1;
+  string message = 2;
+  repeated DiskVolume volumes = 3;
+}
+
+message ResetRequest {
+  // Must be true — reset destroys node identity and local cluster data.
+  bool force = 1;
+  // Schedule reboot after clear (clients should default to true).
+  bool reboot = 2;
+}
+
+message ResetResponse {
+  bool ok = 1;
+  string message = 2;
+  bool reboot_scheduled = 3;
 }

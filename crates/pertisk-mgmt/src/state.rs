@@ -4,6 +4,7 @@ use sqlx::SqlitePool;
 use tokio::sync::Notify;
 
 use crate::config::{Config, MetricsTls};
+use crate::events::EventBus;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -14,6 +15,7 @@ pub struct Inner {
     pub cfg: Config,
     pub pool: SqlitePool,
     pub job_notify: Notify,
+    pub events: EventBus,
     pub http: reqwest::Client,
     /// Dedicated client for guest `:50001/metrics` (HTTP or mTLS HTTPS).
     pub metrics_http: reqwest::Client,
@@ -39,6 +41,7 @@ impl AppState {
                 cfg,
                 pool,
                 job_notify: Notify::new(),
+                events: EventBus::new(),
                 http,
                 metrics_http,
             }),
@@ -55,6 +58,22 @@ impl AppState {
 
     pub fn notify_jobs(&self) {
         self.inner.job_notify.notify_one();
+    }
+
+    pub fn emit_job(
+        &self,
+        cluster_id: Option<&str>,
+        job_id: &str,
+        job_kind: Option<&str>,
+        status: &str,
+    ) {
+        self.inner
+            .events
+            .job(cluster_id, job_id, job_kind, status);
+    }
+
+    pub fn emit_cluster(&self, cluster_id: &str, status: &str) {
+        self.inner.events.cluster(cluster_id, status);
     }
 }
 

@@ -13,10 +13,10 @@ use pertisk_config::Cluster;
 use pertisk_proto::machine_service_client::MachineServiceClient;
 use pertisk_proto::{
     ApplyConfigurationRequest, AttestRequest, BootstrapRequest, ContainersRequest,
-    EtcdRestoreRequest, EtcdSnapshotRequest, GetJoinConfigRequest, GrowDiskRequest, HealthRequest,
-    JoinControlPlaneRequest, KubeconfigRequest, LogsRequest, MarkBootGoodRequest, QuoteRequest,
-    RebootRequest, ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest,
-    VersionRequest,
+    DiskInspectRequest, EtcdRestoreRequest, EtcdSnapshotRequest, GetJoinConfigRequest,
+    GrowDiskRequest, HealthRequest, JoinControlPlaneRequest, KubeconfigRequest, LogsRequest,
+    MarkBootGoodRequest, NetInspectRequest, QuoteRequest, RebootRequest, ResetRequest,
+    ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest, VersionRequest,
 };
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
@@ -63,6 +63,10 @@ enum Commands {
     Attest,
     /// List containers via containerd (`ctr` / k8s.io namespace).
     Containers,
+    /// Host network interfaces + addresses.
+    Interfaces,
+    /// STATE / EPHEMERAL volume mount + capacity.
+    Disks,
     /// TPM2 Quote (ephemeral ECC AK) + optional local verify.
     Quote {
         /// Hex-encoded qualifyingData nonce (default: random 32 bytes).
@@ -173,6 +177,15 @@ enum Commands {
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
+    /// Soft reset: clear STATE identity + EPHEMERAL runtime (keep GPT). Requires --force.
+    Reset {
+        /// Required — destroys node identity and local cluster data.
+        #[arg(long)]
+        force: bool,
+        /// Skip reboot after clear (default: reboot).
+        #[arg(long, default_value_t = false)]
+        no_reboot: bool,
+    },
     Reboot,
     Shutdown,
     /// Grow EPHEMERAL (/var) to fill a resized Proxmox disk.
@@ -191,6 +204,9 @@ enum Commands {
         service: String,
         #[arg(long, short = 'n', default_value_t = 100)]
         tail: u32,
+        /// Keep streaming new lines (like `kubectl logs -f`).
+        #[arg(long, short = 'f', default_value_t = false)]
+        follow: bool,
     },
 }
 
@@ -346,6 +362,47 @@ async fn main() -> Result<()> {
                         truncate(ns, 16),
                         c.state,
                         c.image
+                    );
+                }
+            }
+        }
+        Commands::Interfaces => {
+            let mut client = connect(&cli).await?;
+            let resp = client.net_inspect(NetInspectRequest {}).await?.into_inner();
+            println!("available={} — {}", resp.available, resp.message);
+            if !resp.interfaces.is_empty() {
+                println!("{:<12} {:<10} {}", "IFACE", "STATE", "ADDRESSES");
+                for i in resp.interfaces {
+                    let addrs = if i.addresses.is_empty() {
+                        "—".into()
+                    } else {
+                        i.addresses.join(", ")
+                    };
+                    println!("{:<12} {:<10} {}", i.name, i.operstate, addrs);
+                }
+            }
+        }
+        Commands::Disks => {
+            let mut client = connect(&cli).await?;
+            let resp = client
+                .disk_inspect(DiskInspectRequest {})
+                .await?
+                .into_inner();
+            println!("available={} — {}", resp.available, resp.message);
+            if !resp.volumes.is_empty() {
+                println!(
+                    "{:<10} {:<16} {:<8} {:>10} {:>10} {}",
+                    "LABEL", "MOUNT", "MOUNTED", "USED", "TOTAL", "DEVICE"
+                );
+                for v in resp.volumes {
+                    println!(
+                        "{:<10} {:<16} {:<8} {:>10} {:>10} {}",
+                        v.label,
+                        v.mountpoint,
+                        if v.mounted { "yes" } else { "no" },
+                        human_bytes(v.used_bytes),
+                        human_bytes(v.total_bytes),
+                        if v.device.is_empty() { "—" } else { &v.device }
                     );
                 }
             }
@@ -692,6 +749,28 @@ async fn main() -> Result<()> {
                 println!("etcd_endpoints={}", resp.etcd_endpoints.join(","));
             }
         }
+        Commands::Reset { force, no_reboot } => {
+            if !force {
+                anyhow::bail!(
+                    "reset requires --force (clears STATE identity + EPHEMERAL runtime; GPT kept)"
+                );
+            }
+            let mut client = connect(&cli).await?;
+            let resp = client
+                .reset(ResetRequest {
+                    force,
+                    reboot: !no_reboot,
+                })
+                .await?
+                .into_inner();
+            println!(
+                "ok={} reboot_scheduled={} — {}",
+                resp.ok, resp.reboot_scheduled, resp.message
+            );
+            if !resp.ok {
+                anyhow::bail!("{}", resp.message);
+            }
+        }
         Commands::Reboot => {
             let mut client = connect(&cli).await?;
             let resp = client
@@ -765,18 +844,29 @@ async fn main() -> Result<()> {
                 resp.ok, resp.active_slot, resp.message
             );
         }
-        Commands::Logs { ref service, tail } => {
+        Commands::Logs {
+            ref service,
+            tail,
+            follow,
+        } => {
             let mut client = connect(&cli).await?;
-            let resp = client
+            let mut stream = client
                 .logs(LogsRequest {
                     service: service.clone(),
                     tail_lines: tail,
+                    follow,
                 })
                 .await?
                 .into_inner();
-            eprintln!("# {} from {}", resp.service, resp.source);
-            for line in resp.lines {
-                println!("{line}");
+            let mut header = false;
+            while let Some(resp) = stream.message().await? {
+                if !header {
+                    eprintln!("# {} from {}", resp.service, resp.source);
+                    header = true;
+                }
+                for line in resp.lines {
+                    println!("{line}");
+                }
             }
         }
     }
@@ -839,6 +929,21 @@ fn truncate(s: &str, max: usize) -> String {
         let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
         out.push('…');
         out
+    }
+}
+
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{n}{}", UNITS[i])
+    } else {
+        format!("{v:.1}{}", UNITS[i])
     }
 }
 

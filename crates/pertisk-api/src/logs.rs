@@ -1,9 +1,11 @@
-//! Collect recent log lines for management API `Logs`.
+//! Collect recent log lines for management API `Logs` (unary tail + follow).
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use thiserror::Error;
 
@@ -28,6 +30,17 @@ pub struct LogTail {
     pub lines: Vec<String>,
 }
 
+/// How to continue after the initial tail when `follow=true`.
+#[derive(Debug, Clone)]
+pub enum FollowSource {
+    /// Append-only file (pertiskd / containerd / kubelet / CRI).
+    File { path: PathBuf },
+    /// Poll `dmesg -T` for new lines.
+    Dmesg,
+    /// Nothing to follow (soft-fail / missing file).
+    None,
+}
+
 /// Tail logs for a named service.
 pub fn tail_logs(state_root: &Path, service: &str, tail_lines: u32) -> Result<LogTail, LogsError> {
     let n = normalize_tail(tail_lines);
@@ -50,6 +63,176 @@ pub fn tail_logs(state_root: &Path, service: &str, tail_lines: u32) -> Result<Lo
         }
         other => Err(LogsError::UnknownService(other.into())),
     }
+}
+
+/// Resolve follow source after a successful `tail_logs`.
+pub fn follow_source(state_root: &Path, service: &str) -> Result<FollowSource, LogsError> {
+    if let Some(id) = service.strip_prefix("container:") {
+        let resolved = containers::resolve_cri_log(id);
+        return Ok(match resolved.path {
+            Some(p) if Path::new(&p).exists() => FollowSource::File {
+                path: PathBuf::from(p),
+            },
+            _ => FollowSource::None,
+        });
+    }
+    match service {
+        "dmesg" => Ok(FollowSource::Dmesg),
+        "pertiskd" => {
+            let path = state_root.join("log/pertiskd.log");
+            Ok(if path.exists() {
+                FollowSource::File { path }
+            } else {
+                FollowSource::None
+            })
+        }
+        "containerd" => {
+            let path = PathBuf::from("/var/log/containerd.log");
+            Ok(if path.exists() {
+                FollowSource::File { path }
+            } else {
+                FollowSource::None
+            })
+        }
+        "kubelet" => {
+            let path = PathBuf::from("/var/log/kubelet.log");
+            Ok(if path.exists() {
+                FollowSource::File { path }
+            } else {
+                FollowSource::None
+            })
+        }
+        other => Err(LogsError::UnknownService(other.into())),
+    }
+}
+
+/// Blocking follow loop: send chunks of new lines until `cancel` is set or the
+/// receiver drops.
+pub fn follow_logs(
+    source: FollowSource,
+    service: &str,
+    tx: &mpsc::Sender<LogTail>,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(), LogsError> {
+    match source {
+        FollowSource::None => Ok(()),
+        FollowSource::File { path } => follow_file(&path, service, tx, cancel),
+        FollowSource::Dmesg => follow_dmesg(service, tx, cancel),
+    }
+}
+
+fn follow_file(
+    path: &Path,
+    service: &str,
+    tx: &mpsc::Sender<LogTail>,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(), LogsError> {
+    let mut f = File::open(path)?;
+    let mut pos = f.seek(SeekFrom::End(0))?;
+    let mut partial = String::new();
+    let source = path.display().to_string();
+
+    while !cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        // Truncation / rotation: restart from beginning.
+        let meta_len = f.metadata()?.len();
+        if meta_len < pos {
+            pos = 0;
+            partial.clear();
+            f.seek(SeekFrom::Start(0))?;
+        }
+
+        f.seek(SeekFrom::Start(pos))?;
+        let mut buf = String::new();
+        let n = f.read_to_string(&mut buf)?;
+        if n == 0 {
+            std::thread::sleep(Duration::from_millis(400));
+            continue;
+        }
+        pos += n as u64;
+
+        partial.push_str(&buf);
+        let mut lines = Vec::new();
+        while let Some(idx) = partial.find('\n') {
+            let mut line = partial[..idx].to_string();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            lines.push(line);
+            partial = partial[idx + 1..].to_string();
+        }
+        if !lines.is_empty()
+            && tx
+                .send(LogTail {
+                    service: service.into(),
+                    source: source.clone(),
+                    lines,
+                })
+                .is_err()
+        {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn follow_dmesg(
+    service: &str,
+    tx: &mpsc::Sender<LogTail>,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(), LogsError> {
+    let mut last: Vec<String> = Vec::new();
+    while !cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        let snap = match Command::new("dmesg").arg("-T").output() {
+            Ok(out) if out.status.success() => {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(|l| l.to_string())
+                    .collect::<Vec<_>>()
+            }
+            _ => {
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+        };
+        if snap.len() > last.len() && snap[..last.len()] == *last {
+            let new_lines: Vec<String> = snap[last.len()..].to_vec();
+            if !new_lines.is_empty()
+                && tx
+                    .send(LogTail {
+                        service: service.into(),
+                        source: "dmesg".into(),
+                        lines: new_lines,
+                    })
+                    .is_err()
+            {
+                break;
+            }
+        } else if snap != last && !last.is_empty() {
+            // Buffer rotated — emit last few new-looking lines only if suffix differs.
+            let emit = snap
+                .iter()
+                .rev()
+                .take(20)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>();
+            if tx
+                .send(LogTail {
+                    service: service.into(),
+                    source: "dmesg".into(),
+                    lines: emit,
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+        last = snap;
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    Ok(())
 }
 
 fn tail_container_logs(id: &str, n: usize) -> Result<LogTail, LogsError> {
@@ -163,6 +346,8 @@ pub fn append_pertiskd_log(state_root: &Path, line: &str) -> std::io::Result<()>
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
     use tempfile::tempdir;
 
     #[test]
@@ -201,5 +386,35 @@ mod tests {
                 || tail.lines[0].contains("no container")
                 || tail.lines[0].contains("no log file")
         );
+    }
+
+    #[test]
+    fn follow_file_emits_appends() {
+        use std::sync::Arc;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("f.log");
+        File::create(&path).unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let path_c = path.clone();
+        let cancel_c = Arc::clone(&cancel);
+        let handle = thread::spawn(move || {
+            follow_file(&path_c, "test", &tx, &cancel_c)
+        });
+
+        thread::sleep(Duration::from_millis(100));
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(f, "hello-follow").unwrap();
+        }
+        let chunk = rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(chunk.lines, vec!["hello-follow".to_string()]);
+        cancel.store(true, Ordering::Relaxed);
+        let _ = handle.join();
     }
 }

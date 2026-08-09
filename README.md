@@ -25,6 +25,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 | BusyBox-free DHCPv4 (builtin only) | done |
 | util-linux mount/umount + iproute2 ip | done |
 | CRI introspection (`pertiskctl containers`) | done (lab) — kind / pod / ns labels |
+| Net / disk inspect (`pertiskctl interfaces` / `disks`) | done (lab) |
 | TPM2 Quote (`pertiskctl quote --verify`) | done (lab) |
 | Mgmt Quote trust store (AK enroll / verify) | done (lab) |
 | etcd snapshot / restore (`pertiskctl etcd …`) | done (lab) |
@@ -44,7 +45,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 - UKI / Secure Boot lab path (`make uki`, `make enroll-ovmf`, `PERTISK_TPM=1`) — see [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 - Guest extensions: **nfs-client**, **qemu-guest-agent**
 - Machine config `v1alpha1`: network, install disk, cluster endpoint/token/CA, kubelet `maxPods`, `machine.dashboard.mgmt_url`
-- Observability: gRPC mTLS **:50000**, Prometheus **:50001** (mTLS when TLS PEMs set; optional bearer), `pertiskctl logs` / `attest` / `quote` / `etcd` / `containers`
+- Observability: gRPC mTLS **:50000**, Prometheus **:50001** (mTLS when TLS PEMs set; optional bearer), `pertiskctl logs` / `attest` / `quote` / `etcd` / `containers` / `interfaces` / `disks`
 - Hardening checklist + `make check-hardening` — [docs/HARDENING.md](./docs/HARDENING.md)
 
 ### Cluster lifecycle
@@ -197,12 +198,13 @@ curl -s --cacert out/mtls/ca.crt \
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs dmesg -n 50
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs pertiskd
 ./out/bin/pertiskctl -e 127.0.0.1:50000 containers # containerd k8s.io via ctr (+ CRI labels)
+./out/bin/pertiskctl -e 127.0.0.1:50000 interfaces
+./out/bin/pertiskctl -e 127.0.0.1:50000 disks
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs container:<id> -n 200  # CRI app logs via /var/log/pods
 ./out/bin/pertiskctl -e 127.0.0.1:50000 attest      # TPM PCRs when present
 ./out/bin/pertiskctl -e 127.0.0.1:50000 quote --verify  # TPM2 Quote + local verify
 ./out/bin/pertiskctl -e 127.0.0.1:50000 etcd snapshot
-```
-## mTLS + signed upgrade smoke
+```## mTLS + signed upgrade smoke
 
 ```bash
 ./scripts/gen-mtls-certs.sh
@@ -262,4 +264,4 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 
 ## Next
 
-P5 stretch is complete for lab / HA. Later ops parity (when needed): net/disk inspect, reset/wipe, dashboard events stream; CRI log follow/stream.
+P5 stretch is complete for lab / HA. Soft reset: `pertiskctl reset --force`. Dashboard events: SSE `/api/events`. Log follow: `pertiskctl logs -f` (incl. `container:<id>`).

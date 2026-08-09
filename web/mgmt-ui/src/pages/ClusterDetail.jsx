@@ -8,6 +8,7 @@ import { useConfirm } from '../components/Confirm'
 import Checkbox from '../components/Checkbox'
 import Modal from '../components/Modal'
 import K8sVersionSelect from '../components/K8sVersionSelect'
+import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import K8sTab from './cluster-k8s/K8sTab'
 import ShellTab from './cluster-k8s/ShellTab'
 
@@ -284,6 +285,8 @@ machine:
     }
   }, [id])
 
+  useMgmtRefresh(load, { clusterId: id })
+
   useEffect(() => {
     load()
     const status = data?.cluster?.status
@@ -292,7 +295,8 @@ machine:
       status === 'pending' ||
       status === 'upgrading' ||
       status === 'deleting'
-    const t = setInterval(load, busy ? 2000 : 4000)
+    // While busy, poll logs (SSE covers status; logs still need a slow tick).
+    const t = setInterval(load, busy ? 3000 : 20000)
     return () => clearInterval(t)
   }, [load, data?.cluster?.status])
 

@@ -5,9 +5,11 @@ import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 import { ClusterMetaBadges } from '../components/ClusterMetaBadges'
+import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 
 const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 const RESOURCES_POLL_MS = 15000
+const BUSY_FALLBACK_MS = 8000
 
 const GAUGE_BASE = {
   cpu: 'var(--accent)',
@@ -217,10 +219,12 @@ export default function Dashboard() {
     loadResources()
   }, [load, loadResources])
 
+  useMgmtRefresh(load)
+
   useEffect(() => {
     const busy = clusters.some((c) => BUSY.has(c.status))
     if (!busy) return undefined
-    const t = setInterval(load, 2000)
+    const t = setInterval(load, BUSY_FALLBACK_MS)
     return () => clearInterval(t)
   }, [clusters, load])
 

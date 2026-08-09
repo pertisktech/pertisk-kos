@@ -95,7 +95,13 @@ check "ContainerInfo pod_namespace" file_has "proto/pertisk/machine/v1alpha1/mac
 check "ctr info label parse" file_has "crates/pertisk-api/src/containers.rs" 'parse_container_info_labels'
 check "CRI log resolve" file_has "crates/pertisk-api/src/containers.rs" 'resolve_cri_log'
 check "logs container: service" file_has "crates/pertisk-api/src/logs.rs" 'container:'
+check "logs follow stream" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'stream LogsResponse'
+check "logs follow flag" file_has "crates/pertisk-api/src/logs.rs" 'follow_logs'
 check "pertiskctl containers" file_has "crates/pertiskctl/src/main.rs" 'Commands::Containers'
+check "NetInspect RPC" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'rpc NetInspect'
+check "DiskInspect RPC" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'rpc DiskInspect'
+check "pertiskctl interfaces" file_has "crates/pertiskctl/src/main.rs" 'Commands::Interfaces'
+check "pertiskctl disks" file_has "crates/pertiskctl/src/main.rs" 'Commands::Disks'
 
 # --- Mount hardening ---
 LINUX="crates/pertiskd/src/linux.rs"

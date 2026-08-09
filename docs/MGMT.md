@@ -48,7 +48,7 @@ Home (`/`) shows cluster counts plus a **Cluster resources** section: one card p
 | CPU / memory usage | `kubectl top nodes` (needs metrics-server) vs provisioned cores / memory from inventory |
 | Disk | kubelet stats summary (`/proxy/stats/summary` filesystem) when reachable; else provisioned `disk_gb` totals without % |
 
-Polls `GET /api/dashboard/resources` about every 15s. Click a card to open the cluster.
+Polls `GET /api/dashboard/resources` about every 15s. Cluster list / job status updates push via **SSE** (`GET /api/events?token=…`) with a slow poll fallback. Click a card to open the cluster.
 
 ## Node detail
 
@@ -64,7 +64,7 @@ The page shows inventory (VMID, IPs, K8s, hardware), live Machine Health, and ch
 
 Charts poll every ~4s and keep ~60 samples **in the browser** only. Soft errors show under each section.
 
-A **Logs** panel tails `pertiskd` / `containerd` / `kubelet` / `dmesg` via `pertiskctl logs`.
+A **Logs** panel tails `pertiskd` / `containerd` / `kubelet` / `dmesg` via `pertiskctl logs` (unary poll). For live follow on the node CLI: `pertiskctl logs -f` / `pertiskctl logs -f container:<id>`.
 
 ## Cluster K8s tab
 

@@ -202,9 +202,13 @@ Shipped:
 - BusyBox-free DHCPv4: in-process client only (`pertisk-net::dhcp`)
 - util-linux `mount`/`umount` + iproute2 `ip` in the initramfs (BusyBox only in `debug` profile as ash)
 - CRI introspection lab path (`MachineService.Containers` + `logs container:<id>` via `/var/log/pods`)
+- Net / disk inspect (`MachineService.NetInspect` / `DiskInspect`, `pertiskctl interfaces` / `disks`)
 - TPM2 Quote lab path (`MachineService.Quote`, pure-Rust `/dev/tpmrm0`, persistent AK, `pertiskctl quote --verify`)
 - etcd snapshot / restore lab path (`MachineService.EtcdSnapshot` / `EtcdRestore`, `pertiskctl etcd …`)
 - Mgmt Quote trust store (TOFU AK enroll / verify on node detail)
+- Soft reset (`MachineService.Reset`, `pertiskctl reset --force`; clears STATE + runtime, keeps GPT)
+- Dashboard events stream (`GET /api/events` SSE for job/cluster status)
+- CRI / service log follow (`MachineService.Logs` stream, `pertiskctl logs -f`)
 
 Still open (stretch): none for P5; see **Later** under §7.
 
@@ -245,8 +249,9 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 - `Version` / `Health` / `Attest` (sysfs PCR digests + boot slot)
 - `Quote` (TPM2 Quote via `/dev/tpmrm0`, ephemeral ECC AK)
 - `EtcdSnapshot` / `EtcdRestore` (live snapshot; offline restore with `--force`)
+- `Reset` (soft: clear STATE identity + EPHEMERAL runtime; keep GPT; requires `force`)
 - `Containers` (containerd `ctr` list in `k8s.io` + CRI kind/pod labels)
-- `Logs` (pertiskd, containerd, kubelet, dmesg, `container:<id>` CRI tails)
+- `Logs` (pertiskd, containerd, kubelet, dmesg, `container:<id>`; stream + `follow`)
 - `Upgrade` / `MarkBootGood` / `UpgradeStatus`
 - Metrics HTTP(S) `/metrics` (Prometheus text; mTLS when TLS PEMs set)
 
@@ -269,16 +274,16 @@ _(none — P5 stretch complete for lab / HA)_
 
 **Later (mgmt / ops parity)**
 
-- net / disk inspect
-- reset / wipe
-- dashboard events stream
-- CRI log *follow*/stream (unary `logs container:<id>` tail is done)
+_(none — ops parity stretch complete for lab)_
 
 **Done (HA + mgmt)**
 
 - Stacked etcd HA (3 CP) + kube-vip ARP/ND VIP + `pertiskctl join-controlplane` / `get-join-config`
 - Lab: `proxmox-lab-up.sh --controlplanes 3 --vip <IP>`
 - `pertisk-mgmt` web UI (Proxmox + standalone ESXi providers)
+- Soft reset (`MachineService.Reset`, `pertiskctl reset --force`)
+- Dashboard events stream (`GET /api/events` SSE; job/cluster push)
+- CRI / service log follow (`pertiskctl logs -f` / `Logs` stream)
 ---
 
 ## 8. Security model (non-negotiable)

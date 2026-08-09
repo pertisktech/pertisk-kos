@@ -147,6 +147,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
                 .bind(&id)
                 .execute(state.pool())
                 .await?;
+                state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "cancelled");
                 return Ok(());
             }
         }
@@ -158,6 +159,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         .bind(&id)
         .execute(state.pool())
         .await?;
+    state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "running");
 
     if let Some(cid) = &cluster_id {
         if kind != "delete_cluster" && !is_node_maintenance_job(&kind) {
@@ -168,6 +170,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             .bind(cid)
             .execute(state.pool())
             .await;
+            state.emit_cluster(cid, "provisioning");
         }
     }
 
@@ -212,6 +215,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             .bind(&id)
             .execute(state.pool())
             .await?;
+            state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "succeeded");
             if let Some(cid) = &cluster_id {
                 if kind == "delete_cluster" {
                     // handled above — skip
@@ -225,6 +229,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
                     .bind(cid)
                     .execute(state.pool())
                     .await;
+                    state.emit_cluster(cid, "ready");
                 } else {
                     let _ = sqlx::query(
                         "UPDATE clusters SET status = 'ready', updated_at = ?, error = NULL WHERE id = ?",
@@ -233,6 +238,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
                     .bind(cid)
                     .execute(state.pool())
                     .await;
+                    state.emit_cluster(cid, "ready");
                 }
             }
         }
@@ -249,10 +255,12 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             .bind(&id)
             .execute(state.pool())
             .await?;
+            state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "failed");
             if let Some(cid) = &cluster_id {
                 if kind == "delete_cluster" {
                     // Best-effort: still purge DB so UI is not stuck on "deleting".
                     let _ = purge_cluster_db(state, cid).await;
+                    state.emit_cluster(cid, "deleted");
                 } else if is_node_maintenance_job(&kind) {
                     // Node-level ops must not mark a healthy cluster as broken.
                     // Clear sticky cluster.error from older update_config failures.
@@ -263,6 +271,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
                     .bind(cid)
                     .execute(state.pool())
                     .await;
+                    state.emit_cluster(cid, "ready");
                 } else {
                     let _ = sqlx::query(
                         "UPDATE clusters SET status = 'error', error = ?, updated_at = ? WHERE id = ?",
@@ -272,6 +281,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
                     .bind(cid)
                     .execute(state.pool())
                     .await;
+                    state.emit_cluster(cid, "error");
                 }
             }
         }
@@ -1153,6 +1163,7 @@ pub async fn purge_cluster_db(state: &AppState, cid: &str) -> anyhow::Result<()>
         .bind(cid)
         .execute(state.pool())
         .await?;
+    state.emit_cluster(cid, "deleted");
     Ok(())
 }
 
@@ -3351,6 +3362,7 @@ pub async fn enqueue(
     .bind(&now)
     .execute(state.pool())
     .await?;
+    state.emit_job(cluster_id, &id, Some(kind), "queued");
     state.notify_jobs();
     Ok(id)
 }

@@ -1,6 +1,7 @@
 mod auth_routes;
 mod clusters;
 mod dashboard;
+mod events;
 mod health;
 pub(crate) mod k8s;
 mod meta;
@@ -26,6 +27,7 @@ pub fn router(state: AppState) -> Router {
         .merge(meta::routes())
         .merge(settings::routes())
         .merge(dashboard::routes())
+        .merge(events::routes())
         .merge(providers::routes())
         .merge(clusters::routes())
         .merge(nodes::routes())
@@ -52,8 +54,8 @@ async fn auth_middleware(
         return Ok(next.run(req).await);
     }
 
-    // Host shell WebSocket: JWT arrives as ?token= (browsers cannot set WS Authorization).
-    if path.ends_with("/k8s/shell") {
+    // Host shell WebSocket + SSE: JWT arrives as ?token= (browsers cannot set Authorization).
+    if path.ends_with("/k8s/shell") || path == "/events" {
         return Ok(next.run(req).await);
     }
 
