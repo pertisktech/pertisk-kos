@@ -103,7 +103,7 @@ pub async fn gather(state: &AppState, node: NodeOut, cluster_id: &str) -> NodeSt
     };
 
     let health_fut = fetch_health(state.cfg(), ip);
-    let metrics_fut = scrape_metrics(&state.inner.http, ip, state.cfg());
+    let metrics_fut = scrape_metrics(&state.inner.metrics_http, ip, state.cfg());
     let resources_fut = fetch_resources(state, cluster_id, &node.name);
 
     let (health, metrics, resources) = tokio::join!(health_fut, metrics_fut, resources_fut);
@@ -180,7 +180,12 @@ fn parse_health_line(line: &str) -> HealthOut {
 }
 
 async fn scrape_metrics(http: &reqwest::Client, ip: &str, cfg: &Config) -> MetricsOut {
-    let url = format!("http://{ip}:50001/metrics");
+    let scheme = if cfg.metrics_tls.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+    let url = format!("{scheme}://{ip}:50001/metrics");
     let mut req = http.get(&url).timeout(Duration::from_secs(2));
     if let Some(tok) = cfg.metrics_token.as_deref() {
         req = req.bearer_auth(tok);

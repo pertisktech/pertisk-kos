@@ -1,58 +1,136 @@
 //! Prometheus text exposition for node health / boot metrics.
 
+use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use anyhow::Context;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::server::WebPkiClientVerifier;
+use rustls::{RootCertStore, ServerConfig};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tracing::info;
+use tokio_rustls::TlsAcceptor;
+use tracing::{info, warn};
 
+use crate::server::TlsPaths;
 use crate::state::SharedState;
 
 static METRICS_SCRAPES: AtomicU64 = AtomicU64::new(0);
 
 /// Bind and serve `GET /metrics` (Prometheus text format).
 ///
-/// When `bearer_token` is `Some`, requests must include
-/// `Authorization: Bearer <token>` (case-insensitive scheme).
+/// When `tls` is `Some`, connections are TLS with **required client certificates**
+/// (same CA as the management API). When `bearer_token` is `Some`, requests must
+/// also include `Authorization: Bearer <token>` (case-insensitive scheme).
 pub async fn serve_metrics(
     state: SharedState,
     listen: SocketAddr,
     bearer_token: Option<String>,
+    tls: Option<TlsPaths>,
 ) -> anyhow::Result<()> {
+    let acceptor = match tls.as_ref() {
+        Some(paths) => Some(TlsAcceptor::from(Arc::new(build_metrics_tls(paths)?))),
+        None => None,
+    };
+
     let listener = TcpListener::bind(listen).await?;
-    if bearer_token.is_some() {
-        info!(%listen, auth = "bearer", "metrics endpoint listening");
-    } else {
-        info!(%listen, auth = "none", "metrics endpoint listening");
-    }
+    let auth = match (acceptor.is_some(), bearer_token.is_some()) {
+        (true, true) => "mtls+bearer",
+        (true, false) => "mtls",
+        (false, true) => "bearer",
+        (false, false) => "none",
+    };
+    info!(%listen, auth, "metrics endpoint listening");
 
     loop {
-        let (mut sock, _) = listener.accept().await?;
+        let (sock, _) = listener.accept().await?;
         let state = state.clone();
         let token = bearer_token.clone();
+        let acceptor = acceptor.clone();
         tokio::spawn(async move {
-            let mut buf = [0u8; 4096];
-            let n = sock.read(&mut buf).await.unwrap_or(0);
-            let req = String::from_utf8_lossy(&buf[..n]);
-
-            if !path_is_metrics(&req) {
-                let _ = write_http(&mut sock, 404, "text/plain", b"not found\n").await;
-                return;
-            }
-
-            if let Some(ref expected) = token {
-                if !bearer_authorized(&req, expected) {
-                    let _ = write_http(&mut sock, 401, "text/plain", b"unauthorized\n").await;
-                    return;
+            if let Some(acceptor) = acceptor {
+                match acceptor.accept(sock).await {
+                    Ok(tls_sock) => handle_metrics_conn(tls_sock, state, token).await,
+                    Err(err) => {
+                        warn!(error = %err, "metrics TLS handshake failed");
+                    }
                 }
+            } else {
+                handle_metrics_conn(sock, state, token).await;
             }
-
-            METRICS_SCRAPES.fetch_add(1, Ordering::Relaxed);
-            let body = render_metrics(&state);
-            let _ = write_http(&mut sock, 200, "text/plain; version=0.0.4", body.as_bytes()).await;
         });
     }
+}
+
+async fn handle_metrics_conn<S>(mut sock: S, state: SharedState, token: Option<String>)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut buf = [0u8; 4096];
+    let n = sock.read(&mut buf).await.unwrap_or(0);
+    let req = String::from_utf8_lossy(&buf[..n]);
+
+    if !path_is_metrics(&req) {
+        let _ = write_http(&mut sock, 404, "text/plain", b"not found\n").await;
+        return;
+    }
+
+    if let Some(ref expected) = token {
+        if !bearer_authorized(&req, expected) {
+            let _ = write_http(&mut sock, 401, "text/plain", b"unauthorized\n").await;
+            return;
+        }
+    }
+
+    METRICS_SCRAPES.fetch_add(1, Ordering::Relaxed);
+    let body = render_metrics(&state);
+    let _ = write_http(&mut sock, 200, "text/plain; version=0.0.4", body.as_bytes()).await;
+}
+
+/// Build a rustls server config that requires client certificates signed by `tls.ca_cert`.
+pub fn build_metrics_tls(tls: &TlsPaths) -> anyhow::Result<ServerConfig> {
+    let certs = load_certs(&tls.server_cert)?;
+    let key = load_private_key(&tls.server_key)?;
+    let mut roots = RootCertStore::empty();
+    for cert in load_certs(&tls.ca_cert)? {
+        roots
+            .add(cert)
+            .map_err(|e| anyhow::anyhow!("invalid metrics CA: {e}"))?;
+    }
+    let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
+        .build()
+        .map_err(|e| anyhow::anyhow!("metrics client verifier: {e}"))?;
+    let mut config = ServerConfig::builder()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(certs, key)
+        .context("metrics TLS identity")?;
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(config)
+}
+
+fn load_certs(path: &std::path::Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+    let data = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut reader = Cursor::new(data);
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("parse certs {}", path.display()))?;
+    if certs.is_empty() {
+        anyhow::bail!("no certificates in {}", path.display());
+    }
+    Ok(certs)
+}
+
+fn load_private_key(path: &std::path::Path) -> anyhow::Result<PrivateKeyDer<'static>> {
+    let data = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut reader = Cursor::new(&data);
+    if let Some(key) = rustls_pemfile::private_key(&mut reader)
+        .with_context(|| format!("parse key {}", path.display()))?
+    {
+        return Ok(key);
+    }
+    anyhow::bail!("no private key in {}", path.display());
 }
 
 fn path_is_metrics(req: &str) -> bool {
@@ -84,12 +162,15 @@ fn bearer_authorized(req: &str, expected: &str) -> bool {
     false
 }
 
-async fn write_http(
-    sock: &mut tokio::net::TcpStream,
+async fn write_http<S>(
+    sock: &mut S,
     status: u16,
     content_type: &str,
     body: &[u8],
-) -> std::io::Result<()> {
+) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     let reason = match status {
         200 => "OK",
         401 => "Unauthorized",
@@ -175,6 +256,7 @@ pertisk_info{{version="{version}",api="{api}",platform="{platform}"}} 1
 mod tests {
     use super::*;
     use crate::state::shared;
+    use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
     use tempfile::tempdir;
 
     #[test]
@@ -205,5 +287,41 @@ mod tests {
         assert!(path_is_metrics("GET /metrics?foo=1 HTTP/1.1"));
         assert!(!path_is_metrics("GET / HTTP/1.1"));
         assert!(!path_is_metrics("POST /metrics HTTP/1.1"));
+    }
+
+    #[test]
+    fn builds_metrics_tls_config() {
+        let dir = tempdir().unwrap();
+        let ca_key = KeyPair::generate().unwrap();
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "pertisk-test-ca");
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let issuer = Issuer::from_ca_cert_pem(&ca_cert.pem(), KeyPair::from_pem(&ca_key.serialize_pem()).unwrap())
+            .unwrap();
+
+        let server_key = KeyPair::generate().unwrap();
+        let mut server_params = CertificateParams::new(vec!["localhost".into()]).unwrap();
+        server_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "pertiskd");
+        let server_cert = server_params.signed_by(&server_key, &issuer).unwrap();
+
+        let ca_path = dir.path().join("ca.crt");
+        let cert_path = dir.path().join("server.crt");
+        let key_path = dir.path().join("server.key");
+        std::fs::write(&ca_path, ca_cert.pem()).unwrap();
+        std::fs::write(&cert_path, server_cert.pem()).unwrap();
+        std::fs::write(&key_path, server_key.serialize_pem()).unwrap();
+
+        let cfg = build_metrics_tls(&TlsPaths {
+            ca_cert: ca_path,
+            server_cert: cert_path,
+            server_key: key_path,
+        })
+        .expect("build_metrics_tls");
+        assert!(!cfg.alpn_protocols.is_empty());
     }
 }

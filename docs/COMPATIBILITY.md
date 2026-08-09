@@ -64,7 +64,7 @@ Image needs shared kernel modules + host `iptables-legacy` — see [examples/cni
 | Surface | Port | Auth | Notes |
 |---------|------|------|-------|
 | gRPC Machine API | `:50000` | mTLS (`PERTISK_TLS_*`) | Required for production |
-| Prometheus metrics | `:50001` | optional bearer (`PERTISK_METRICS_TOKEN`) | Prefer loopback or token on untrusted nets |
+| Prometheus metrics | `:50001` | mTLS when `PERTISK_TLS_*` set; optional bearer (`PERTISK_METRICS_TOKEN`) | Plain HTTP if TLS unset; prefer mTLS or loopback on untrusted nets |
 | Logs RPC | via gRPC | mTLS | `pertiskctl logs` |
 
 ## Image / build matrix
@@ -82,7 +82,8 @@ Image needs shared kernel modules + host `iptables-legacy` — see [examples/cni
 
 - Third-party node OS API wire compatibility
 - Omni-like web fleet manager (Phase D)
-- Secure Boot / UKI enrollment (tracked as hardening gap)
+- Secure Boot / UKI enrollment automation (lab path done; see [SECURE_BOOT.md](./SECURE_BOOT.md))
+- TPM2 Quote / remote attestation verifier (sysfs PCR Attest is lab-ready)
 - Windows / non-Linux hosts as nodes
 
 ## Multi-CP HA (lab)

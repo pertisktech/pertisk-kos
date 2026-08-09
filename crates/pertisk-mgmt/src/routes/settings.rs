@@ -33,6 +33,7 @@ struct SettingsResp {
     auth: AuthInfo,
     jwt_ttl_secs: i64,
     metrics_token_configured: bool,
+    metrics_tls_configured: bool,
 }
 
 #[derive(Serialize)]
@@ -85,5 +86,6 @@ async fn settings(State(state): State<AppState>) -> Json<SettingsResp> {
         },
         jwt_ttl_secs: cfg.jwt_ttl_secs,
         metrics_token_configured: cfg.metrics_token.is_some(),
+        metrics_tls_configured: cfg.metrics_tls.is_some(),
     })
 }

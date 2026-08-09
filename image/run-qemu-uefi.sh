@@ -7,6 +7,7 @@
 #   PERTISK_DISK=out/pertisk-cloud-arm64.raw ./image/run-qemu-uefi.sh
 #   PERTISK_ARCH=arm64 PERTISK_DISK=out/pertisk-cloud-arm64.raw ./image/run-qemu-uefi.sh
 #   PERTISK_OVMF_VARS=out/secureboot/OVMF_VARS.secboot.fd ./image/run-qemu-uefi.sh  # after enroll-ovmf-vars.sh
+#   PERTISK_TPM=1 ./image/run-qemu-uefi.sh   # soft-TPM via swtpm (skip if swtpm missing)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,6 +15,17 @@ OUT="${ROOT}/out"
 DISK="${PERTISK_DISK:-${OUT}/pertisk-disk.raw}"
 OVMF_CODE="${PERTISK_OVMF_CODE:-}"
 OVMF_VARS_SRC="${PERTISK_OVMF_VARS:-}"
+ENABLE_TPM="${PERTISK_TPM:-0}"
+TPM_ARGS=()
+SWTPM_PID=""
+
+cleanup_swtpm() {
+  if [[ -n "${SWTPM_PID}" ]] && kill -0 "${SWTPM_PID}" 2>/dev/null; then
+    kill "${SWTPM_PID}" 2>/dev/null || true
+    wait "${SWTPM_PID}" 2>/dev/null || true
+  fi
+}
+trap cleanup_swtpm EXIT
 
 # Infer arch from env or disk filename (*-arm64* / *-amd64*).
 ARCH="${PERTISK_ARCH:-}"
@@ -129,13 +141,58 @@ elif [[ ! -f "${VARS_DST}" ]]; then
   fi
 fi
 
+if [[ "${ENABLE_TPM}" == "1" || "${ENABLE_TPM}" == "true" || "${ENABLE_TPM}" == "yes" ]]; then
+  if ! command -v swtpm >/dev/null 2>&1; then
+    echo "==> PERTISK_TPM=1 but swtpm not found; continuing without TPM" >&2
+    echo "    install: brew install swtpm   # or apt install swtpm" >&2
+  else
+    TPM_DIR="${OUT}/swtpm-${ARCH}"
+    mkdir -p "${TPM_DIR}"
+    TPM_SOCK="${TPM_DIR}/swtpm-sock"
+    rm -f "${TPM_SOCK}" "${TPM_SOCK}.lock" 2>/dev/null || true
+    echo "==> starting swtpm (${TPM_DIR})"
+    swtpm socket \
+      --tpmstate "dir=${TPM_DIR}" \
+      --ctrl "type=unixio,path=${TPM_SOCK}" \
+      --tpm2 \
+      --daemon \
+      --pid "file=${TPM_DIR}/swtpm.pid"
+    if [[ -f "${TPM_DIR}/swtpm.pid" ]]; then
+      SWTPM_PID="$(cat "${TPM_DIR}/swtpm.pid")"
+    fi
+    # Give the control socket a moment to appear.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      [[ -S "${TPM_SOCK}" ]] && break
+      sleep 0.1
+    done
+    if [[ ! -S "${TPM_SOCK}" ]]; then
+      echo "==> swtpm socket missing; continuing without TPM" >&2
+      cleanup_swtpm
+      SWTPM_PID=""
+    else
+      TPM_ARGS=(
+        -chardev "socket,id=chrtpm,path=${TPM_SOCK}"
+        -tpmdev "emulator,id=tpm0,chardev=chrtpm"
+      )
+      if [[ "${ARCH}" == "arm64" ]]; then
+        TPM_ARGS+=(-device tpm-tis-device,tpmdev=tpm0)
+      else
+        TPM_ARGS+=(-device tpm-tis,tpmdev=tpm0)
+      fi
+      echo "    tpm=${TPM_SOCK}"
+    fi
+  fi
+fi
+
 echo "==> UEFI boot (${ARCH}) from ${DISK} via ${QEMU_BIN} (Ctrl-A X to exit)"
 echo "    code=${OVMF_CODE}"
 echo "    vars=${VARS_DST}"
-exec "${QEMU_BIN}" \
+# Do not exec: keep trap so swtpm is cleaned up when QEMU exits.
+"${QEMU_BIN}" \
   "${MACHINE_ARGS[@]}" \
   -nographic \
   -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
   -drive if=pflash,format=raw,file="${VARS_DST}" \
   "${NET_ARGS[@]}" \
-  "${DISK_ARGS[@]}"
+  "${DISK_ARGS[@]}" \
+  "${TPM_ARGS[@]}"

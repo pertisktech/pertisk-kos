@@ -183,18 +183,28 @@ pertisk-kos/
 
 ### Phase 5 — Productize (ongoing)
 
+Shipped:
+
 - Multi-arch initramfs (`amd64` / `arm64` via `image/build-all.sh`)
 - systemd-boot A/B slot switching when ESP is present
 - Metal EFI first-boot install (`PERTISK_EMBED_BOOT=1`, `run-qemu-uefi.sh`)
 - Bridge CNI (`bridge` / `host-local` / `portmap`) + `cluster.podCidr`
 - Cluster CNI mode `none` + Flannel / Calico / Cilium (`examples/cni/`)
 - CI (fmt/clippy/test + initramfs) and CycloneDX SBOM (`scripts/generate-sbom.sh`)
-- Observability: `Logs` RPC + Prometheus `/metrics` (`:50001`)
+- Observability: `Logs` RPC + Prometheus `/metrics` (`:50001`) with optional **mTLS** (same `PERTISK_TLS_*` as gRPC) + bearer
 - Cloud disk images (`image/build-cloud-image.sh` → raw/qcow2; AWS/GCP/Azure notes)
-- Compatibility matrix: Kubernetes versions, CNI choices (bridge, Flannel, Cilium) — [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md)
-- CIS-ish hardening checklist ([docs/HARDENING.md](./docs/HARDENING.md)): kubelet 4.2.x, sysctls, STATE secrets modes, metrics bearer token, CI gate (`scripts/check-hardening.sh`)
-- Image profiles: `production` (no `/bin/busybox`) vs `debug` (BusyBox ash) via `PERTISK_IMAGE_PROFILE` / `make PROFILE=`
-- UKI build + ESP install (`image/build-uki.sh`, optional SB signing) — [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
+- Compatibility matrix — [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md)
+- CIS-ish hardening checklist + `make check-hardening` — [docs/HARDENING.md](./docs/HARDENING.md)
+- Image profiles: `production` vs `debug` via `PERTISK_IMAGE_PROFILE` / `make PROFILE=`
+- UKI build + ESP install + OVMF enroll automation (`make uki`, `make enroll-ovmf`) — [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
+- TPM PCR Attest lab path (`MachineService.Attest`, `pertiskctl attest`, QEMU `PERTISK_TPM=1`)
+- Management plane: `pertisk-mgmt` UI + Proxmox / ESXi providers — [docs/MGMT.md](./docs/MGMT.md)
+
+Still open (stretch):
+
+- TPM2 Quote / AK + remote attestation verifier
+- BusyBox-free DHCP (Rust lease hook already applies addresses)
+- etcd snapshot / restore; CRI introspection
 
 ---
 
@@ -230,47 +240,42 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 
 - `ApplyConfiguration` / `ValidateConfiguration`
 - `Reboot` / `Shutdown`
-- `Version` / `Health`
+- `Version` / `Health` / `Attest` (sysfs PCR digests + boot slot)
 - `Logs` (pertiskd, containerd, kubelet, dmesg)
-- `Upgrade`
-- Metrics HTTP `/metrics` (Prometheus text)
+- `Upgrade` / `MarkBootGood` / `UpgradeStatus`
+- Metrics HTTP(S) `/metrics` (Prometheus text; mTLS when TLS PEMs set)
+
 **Control plane (Phase A — lab-proven on Proxmox)**
 
 Done:
 
-- `Bootstrap` / `Kubeconfig` / `JoinConfig` RPCs
-- `pertiskctl gen config` / `apply` / `bootstrap` / `kubeconfig` / `join-config`
+- `Bootstrap` / `Kubeconfig` / `JoinConfig` / `GetJoinConfig` / `JoinControlPlane` RPCs
+- `pertiskctl gen config` / `apply` / `bootstrap` / `kubeconfig` / `join-config` / `attest`
 - Static-pod etcd + apiserver + controller-manager + scheduler (`pertisk-bootstrap`)
 - Worker TLS bootstrap (bootstrap-kubeconfig → CSR → node cert)
-- Persistent STATE + EPHEMERAL on virtio-scsi (ship/load `sd_mod` deps + `ext4`/`vfat`)
-- Cloud qcow2 → Proxmox cluster VMs (`scripts/proxmox-create-cluster-vms.sh`)
+- Post-bootstrap finalize: token Secret, node-join RBAC, CP labels/taints, CoreDNS + metrics-server
+- Cluster CNI: Cilium / Calico / Flannel via `proxmox-lab-up.sh --cni` (and mgmt UI)
+- Persistent STATE + EPHEMERAL on virtio-scsi
+- Cloud qcow2 → Proxmox / ESXi cluster VMs (lab-up + mgmt jobs)
 
-Still manual / incomplete:
+**Next (P5 stretch)**
 
-- Post-bootstrap finalize (best-effort once apiserver is up): token Secret,
-  node-join RBAC, CP role label, **CoreDNS + metrics-server** basic addons
-- Cluster CNI: Cilium / Calico / Flannel via `proxmox-lab-up.sh --cni`
-
-**Next (Phase A finish → v0.1)**
-
-1. Fix Flannel (or ship a known-good CNI path) so multi-node pod networking works
-2. Cross-node smoke (Deployment/Service) + reboot endurance without re-bootstrap
-3. Document Proxmox cluster flow in [docs/PROXMOX.md](./docs/PROXMOX.md) (fold lab pitfalls from `note.txt`)
+1. TPM2 Quote / AK + remote attestation verifier
+2. BusyBox-free DHCP
+3. etcd snapshot / restore; CRI introspection
 
 **Later (mgmt / ops parity)**
 
-- etcd snapshot / restore
-- Proxmox provider automation + Omni-like web — see [docs/MGMT.md](./docs/MGMT.md) (`pertisk-mgmt`)
 - container/CRI introspection
 - net / disk inspect
 - reset / wipe
 - dashboard events stream
 
-**Done (HA)**
+**Done (HA + mgmt)**
 
-- Stacked etcd HA (3 CP) + kube-vip ARP VIP + `pertiskctl join-controlplane` / `get-join-config`
+- Stacked etcd HA (3 CP) + kube-vip ARP/ND VIP + `pertiskctl join-controlplane` / `get-join-config`
 - Lab: `proxmox-lab-up.sh --controlplanes 3 --vip <IP>`
-
+- `pertisk-mgmt` web UI (Proxmox + standalone ESXi providers)
 ---
 
 ## 8. Security model (non-negotiable)
@@ -280,7 +285,7 @@ Still manual / incomplete:
 3. **mTLS** for all management traffic.
 4. **Signed OS images**; reject unsigned upgrades.
 5. **Least kernel surface** — drop unused drivers/modules.
-6. **Root of trust** — measured boot path where feasible (Phase 5).
+6. **Root of trust** — measured boot where feasible (UKI + OVMF enroll + PCR Attest lab; Quote stretch).
 
 ---
 
@@ -303,13 +308,16 @@ Pertisk KOS is a standalone product with its own API and image format.
 | ID | Goal | Status |
 |----|------|--------|
 | M0 | Workspace + `pertiskd` PID 1 in QEMU | Done |
-| M1 | STATE/EPHEMERAL mounts + config load (persist across reboot) | Done (Proxmox virtio-scsi + ext4 modules) |
+| M1 | STATE/EPHEMERAL mounts + config load (persist across reboot) | Done |
 | M2 | DHCP + containerd start | Done |
 | M3 | kubelet → Ready node | Done (CP + workers) |
 | M4 | gRPC `ApplyConfiguration` + `pertiskctl apply` | Done |
-| M4b | Self-hosted CP bootstrap + worker join | Done (token/RBAC still manual) |
-| M4c | Working cluster CNI + cross-node pods | **Next** |
-| M5 | A/B upgrade with rollback | Not started |
+| M4b | Self-hosted CP bootstrap + worker join | Done |
+| M4c | Working cluster CNI + cross-node pods | Done (Cilium lab default; Calico/Flannel paths) |
+| M5 | A/B upgrade with rollback | Done (signed bundles + boot attempts / mark-good) |
+| M5b | HA + mgmt UI (Proxmox / ESXi) | Done |
+| M5c | Secure Boot lab (UKI + OVMF enroll + PCR Attest) | Done (lab); Quote/remote verify stretch |
+| M6 | TPM2 Quote + remote verifier; BusyBox-free DHCP | **Next** |
 
 ---
 
@@ -329,9 +337,10 @@ Pertisk KOS is a standalone product with its own API and image format.
 ## 12. What “done” looks like for v0.1
 
 - One command builds a bootable image (`make cloud` / initramfs).
-- QEMU and Proxmox (cloud qcow2) paths documented; bare-metal install path exists.
+- QEMU, Proxmox, and ESXi (standalone) paths documented; bare-metal EFI install path exists.
 - Control plane forms via `pertiskctl bootstrap`; workers join via apply + TLS bootstrap (token/RBAC automatic).
 - Cluster CNI healthy; a sample workload schedules across nodes.
 - Config and etcd data survive host/VM reboot (STATE + EPHEMERAL on disk).
-- Upgrade and reboot only through the API (A/B may still be partial).
+- Upgrade and reboot through the API (signed A/B + mark-boot-good).
 - No SSH in the default (`production`) image.
+- Optional lab measured-boot path: UKI + OVMF enroll + PCR Attest (`pertiskctl attest`).

@@ -12,7 +12,7 @@ Pertisk boots with **systemd-boot** today (kernel + initramfs on the ESP). A **U
 | ESP install UKI (`EFI/Linux/pertisk-{a,b}.efi`) | done — when `uki` present in slot/assets |
 | Sign UKI with db key | done — optional `PERTISK_SB_*` |
 | Enroll PK/KEK/db in firmware | done — `./scripts/enroll-ovmf-vars.sh` (or manual OVMF UI) |
-| TPM PCR attestation | todo |
+| TPM PCR attestation | done (lab) — sysfs PCR read via `MachineService.Attest` / `pertiskctl attest` |
 
 ## Build a UKI
 
@@ -87,6 +87,56 @@ Override the blank template with `PERTISK_OVMF_VARS_TEMPLATE=/path/to/VARS.fd` i
 6. Enable Secure Boot and reboot.
 
 Without enrolled `db`, a signed UKI still boots when Secure Boot is off; with Secure Boot on, unsigned or foreign-signed images are rejected.
+
+## TPM PCR attestation (lab)
+
+Pertisk exposes a **read-only** attestation snapshot over gRPC (no `libtss2` in the image):
+
+- Source: Linux sysfs `/sys/class/tpm/tpm0/pcr-sha256/{N}`
+- Indices: **0–7** (firmware / Secure Boot) and **11** (UKI stub when measured)
+- Out of scope for now: TPM2 Quote / AK / remote verifier
+
+### QEMU soft-TPM
+
+Requires [`swtpm`](https://github.com/stefanberger/swtpm).
+
+```bash
+# amd64 example
+PERTISK_TPM=1 ./image/run-qemu-uefi.sh
+
+# With enrolled Secure Boot vars:
+PERTISK_TPM=1 \
+PERTISK_OVMF_VARS=out/secureboot/OVMF_VARS.secboot.fd \
+  ./image/run-qemu-uefi.sh
+```
+
+If `swtpm` is missing, the script prints a warning and boots without a TPM.
+
+Manual equivalent (amd64):
+
+```bash
+mkdir -p out/swtpm-amd64
+swtpm socket --tpmstate dir=out/swtpm-amd64 \
+  --ctrl type=unixio,path=out/swtpm-amd64/swtpm-sock \
+  --tpm2 --daemon
+qemu-system-x86_64 … \
+  -chardev socket,id=chrtpm,path=out/swtpm-amd64/swtpm-sock \
+  -tpmdev emulator,id=tpm0,chardev=chrtpm \
+  -device tpm-tis,tpmdev=tpm0
+```
+
+On arm64 use `-device tpm-tis-device,tpmdev=tpm0` instead of `tpm-tis`.
+
+### Verify from the host
+
+```bash
+./out/bin/pertiskctl -e <guest-ip>:50000 attest
+# available=true slot=A version=… — read N SHA-256 PCR(s) from …
+# PCR    ALGO     DIGEST
+# 0      sha256   …
+```
+
+Without a TPM device the RPC still succeeds with `available=false` and an explanatory message.
 
 ## Upgrade path note
 

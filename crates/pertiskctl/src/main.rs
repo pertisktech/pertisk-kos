@@ -12,10 +12,10 @@ use pertisk_bootstrap::{
 use pertisk_config::Cluster;
 use pertisk_proto::machine_service_client::MachineServiceClient;
 use pertisk_proto::{
-    ApplyConfigurationRequest, BootstrapRequest, GetJoinConfigRequest, GrowDiskRequest,
-    HealthRequest, JoinControlPlaneRequest, KubeconfigRequest, LogsRequest, MarkBootGoodRequest,
-    RebootRequest, ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest,
-    VersionRequest,
+    ApplyConfigurationRequest, AttestRequest, BootstrapRequest, GetJoinConfigRequest,
+    GrowDiskRequest, HealthRequest, JoinControlPlaneRequest, KubeconfigRequest, LogsRequest,
+    MarkBootGoodRequest, RebootRequest, ServiceListRequest, ShutdownRequest, UpgradeRequest,
+    UpgradeStatusRequest, VersionRequest,
 };
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
@@ -58,6 +58,8 @@ struct Cli {
 enum Commands {
     Version,
     Health,
+    /// Read TPM PCR digests (sysfs) + active boot slot.
+    Attest,
     Services,
     Validate {
         #[arg(short = 'f', long)]
@@ -245,6 +247,20 @@ async fn main() -> Result<()> {
                 "ready={} containerd={} kubelet={} — {}",
                 resp.ready, resp.containerd, resp.kubelet, resp.message
             );
+        }
+        Commands::Attest => {
+            let mut client = connect(&cli).await?;
+            let resp = client.attest(AttestRequest {}).await?.into_inner();
+            println!(
+                "available={} slot={} version={} — {}",
+                resp.available, resp.active_slot, resp.version, resp.message
+            );
+            if !resp.pcrs.is_empty() {
+                println!("{:<6} {:<8} {}", "PCR", "ALGO", "DIGEST");
+                for p in resp.pcrs {
+                    println!("{:<6} {:<8} {}", p.index, p.algo, p.digest_hex);
+                }
+            }
         }
         Commands::Services => {
             let mut client = connect(&cli).await?;

@@ -5,15 +5,23 @@ Immutable, API-only Kubernetes node OS, plus an optional management plane for pr
 - **Node OS** — Rust `pertiskd` as PID 1, gRPC management (`pertiskctl`), containerd + kubelet; no SSH in production images
 - **Management plane** — `pertisk-mgmt` (API + React UI) creates and operates clusters on **Proxmox** and standalone **ESXi**
 
-Architecture and phases: [DESIGN.md](./DESIGN.md).
+Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md).
 
 ![Pertisk KOS management dashboard](docs/resources/1786259533199.jpg)
 
 ## Status
 
-**P5 (partial)** — production images, HA bootstrap, mgmt UI, Proxmox + ESXi providers, dual-stack, CNI lab paths, UKI/Secure Boot lab, hardening CI.
+**P5 (productize) — mostly done for lab / HA.** Remaining stretch: TPM2 Quote + remote verifier; BusyBox-free DHCP.
 
-Still open: TPM attestation; metrics mTLS.
+| Area | Progress |
+|------|----------|
+| Node OS + A/B + hardening CI | done |
+| HA bootstrap (stacked etcd + kube-vip) | done |
+| CNI lab (Cilium / Calico / Flannel) | done |
+| Mgmt UI (Proxmox + ESXi) | done |
+| Metrics mTLS (`:50001` with API PEMs) | done |
+| UKI / OVMF enroll (`make enroll-ovmf`) | done |
+| TPM PCR Attest (sysfs / `pertiskctl attest`) | done (lab) |
 
 ---
 
@@ -25,10 +33,10 @@ Still open: TPM attestation; metrics mTLS.
 - `pertiskd` PID 1: GPT / STATE / EPHEMERAL disks, DHCP or static net, containerd, kubelet, signed A/B updates, serial console dashboard
 - Multi-arch **amd64** / **arm64** (initramfs + cloud qcow2/raw)
 - A/B OS updates with Ed25519-signed bundles (`pertisk-update` / `pertisk-sign`)
-- UKI / Secure Boot lab path (`make uki`, `make enroll-ovmf`) — see [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
+- UKI / Secure Boot lab path (`make uki`, `make enroll-ovmf`, `PERTISK_TPM=1`) — see [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 - Guest extensions: **nfs-client**, **qemu-guest-agent**
 - Machine config `v1alpha1`: network, install disk, cluster endpoint/token/CA, kubelet `maxPods`, `machine.dashboard.mgmt_url`
-- Observability: gRPC mTLS **:50000**, Prometheus **:50001**, `pertiskctl logs`
+- Observability: gRPC mTLS **:50000**, Prometheus **:50001** (mTLS when TLS PEMs set; optional bearer), `pertiskctl logs` / `attest`
 - Hardening checklist + `make check-hardening` — [docs/HARDENING.md](./docs/HARDENING.md)
 
 ### Cluster lifecycle
@@ -169,11 +177,18 @@ Artifacts: `out/initramfs-<arch>.cpio.gz` (or `-debug`), versioned copies, `out/
 ## Observability
 
 ```bash
+# Plaintext (lab default when TLS unset)
 curl -s http://127.0.0.1:50001/metrics
-# Optional bearer: --metrics-token / PERTISK_METRICS_TOKEN / STATE secrets/metrics.token
+
+# mTLS (same PEMs as the management API; enabled whenever --tls-* is set)
+curl -s --cacert out/mtls/ca.crt \
+  --cert out/mtls/client.crt --key out/mtls/client.key \
+  https://127.0.0.1:50001/metrics
+# Optional bearer still applies: --metrics-token / PERTISK_METRICS_TOKEN / STATE secrets/metrics.token
 
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs dmesg -n 50
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs pertiskd
+./out/bin/pertiskctl -e 127.0.0.1:50000 attest   # TPM PCRs when present
 ```
 
 ## mTLS + signed upgrade smoke
@@ -205,6 +220,7 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 ./image/create-disk.sh
 ./image/run-qemu-disk.sh          # first boot: GPT install + ESP
 ./image/run-qemu-uefi.sh          # boot from disk (OVMF)
+# PERTISK_TPM=1 ./image/run-qemu-uefi.sh   # soft-TPM (swtpm) for PCR Attest lab
 ```
 
 ## Compatibility / CI / SBOM
@@ -226,7 +242,7 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 | [docs/VSPHERE.md](./docs/VSPHERE.md) | ESXi provider |
 | [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md) | Platforms, runtime pins, CNI |
 | [docs/HARDENING.md](./docs/HARDENING.md) | CIS-ish worker checklist |
-| [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md) | UKI + OVMF enroll (`enroll-ovmf-vars.sh`) |
+| [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md) | UKI + OVMF enroll + TPM PCR Attest lab |
 | [image/README.md](./image/README.md) | Initramfs / QEMU |
 | [image/cloud/README.md](./image/cloud/README.md) | Cloud upload outlines |
 | [image/extensions/README.md](./image/extensions/README.md) | nfs-client, qemu-ga |
@@ -235,4 +251,6 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 
 ## Next
 
-P5 remainder: TPM attestation; metrics mTLS.
+1. TPM2 Quote / AK enrollment + remote attestation verifier (mgmt)
+2. BusyBox-free DHCP (replace multi-call `udhcpc`; leases already applied by Rust hook)
+3. etcd snapshot / restore; container/CRI introspection

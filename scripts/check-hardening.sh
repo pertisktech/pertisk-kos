@@ -63,8 +63,18 @@ check "sysctl applied before runtime" file_has "crates/pertiskd/src/main.rs" 'ap
 
 # --- Metrics auth surface ---
 check "metrics bearer support" file_has "crates/pertisk-api/src/metrics.rs" 'bearer_authorized'
+check "metrics mTLS builder" file_has "crates/pertisk-api/src/metrics.rs" 'build_metrics_tls'
+check "metrics mTLS client verifier" file_has "crates/pertisk-api/src/metrics.rs" 'WebPkiClientVerifier'
 check "metrics token CLI/env" file_has "crates/pertiskd/src/main.rs" 'PERTISK_METRICS_TOKEN'
 check "metrics token from STATE" file_has "crates/pertiskd/src/main.rs" 'secrets/metrics.token'
+check "metrics TLS wired from pertiskd" file_has "crates/pertiskd/src/main.rs" 'serve_metrics\(state, addr, bearer_token, tls\)'
+check "mgmt metrics TLS env" file_has "crates/pertisk-mgmt/src/config.rs" 'MGMT_METRICS_TLS_CA'
+
+# --- TPM PCR attestation (sysfs lab path) ---
+check "Attest RPC in proto" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'rpc Attest'
+check "sysfs PCR reader" file_has "crates/pertisk-api/src/attest.rs" 'pcr-sha256'
+check "pertiskctl attest" file_has "crates/pertiskctl/src/main.rs" 'Commands::Attest'
+check "QEMU PERTISK_TPM" file_has "image/run-qemu-uefi.sh" 'PERTISK_TPM'
 
 # --- Mount hardening ---
 LINUX="crates/pertiskd/src/linux.rs"

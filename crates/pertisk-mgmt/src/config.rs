@@ -26,8 +26,19 @@ pub struct Config {
     pub public_url: String,
     /// Optional Bearer for scraping guest `:50001/metrics`.
     pub metrics_token: Option<String>,
+    /// Optional mTLS client material for scraping guest metrics over HTTPS.
+    /// When set (all three), scrapes use `https://{ip}:50001/metrics`.
+    pub metrics_tls: Option<MetricsTls>,
     /// Directory of prebuilt cloud qcow2 images (lab-up --skip-build).
     pub images_dir: PathBuf,
+}
+
+/// Client PEMs for scraping guest metrics when nodes enable metrics mTLS.
+#[derive(Debug, Clone)]
+pub struct MetricsTls {
+    pub ca_cert: PathBuf,
+    pub client_cert: PathBuf,
+    pub client_key: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +94,7 @@ impl Config {
         let metrics_token = std::env::var("MGMT_METRICS_TOKEN")
             .ok()
             .filter(|s| !s.is_empty());
+        let metrics_tls = resolve_metrics_tls()?;
         let images_dir = std::env::var("PERTISK_IMAGES_DIR")
             .or_else(|_| std::env::var("MGMT_IMAGES_DIR"))
             .map(PathBuf::from)
@@ -117,6 +129,7 @@ impl Config {
             auth0_audience,
             public_url,
             metrics_token,
+            metrics_tls,
             images_dir,
         })
     }
@@ -142,6 +155,39 @@ fn hash_key(raw: &str) -> Vec<u8> {
     let mut h = Sha256::new();
     h.update(raw.as_bytes());
     h.finalize().to_vec()
+}
+
+fn resolve_metrics_tls() -> anyhow::Result<Option<MetricsTls>> {
+    let ca = std::env::var("MGMT_METRICS_TLS_CA").ok().filter(|s| !s.is_empty());
+    let cert = std::env::var("MGMT_METRICS_TLS_CERT")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let key = std::env::var("MGMT_METRICS_TLS_KEY")
+        .ok()
+        .filter(|s| !s.is_empty());
+    match (ca, cert, key) {
+        (Some(ca), Some(cert), Some(key)) => {
+            let tls = MetricsTls {
+                ca_cert: PathBuf::from(ca),
+                client_cert: PathBuf::from(cert),
+                client_key: PathBuf::from(key),
+            };
+            for (label, path) in [
+                ("MGMT_METRICS_TLS_CA", &tls.ca_cert),
+                ("MGMT_METRICS_TLS_CERT", &tls.client_cert),
+                ("MGMT_METRICS_TLS_KEY", &tls.client_key),
+            ] {
+                if !path.is_file() {
+                    bail!("{label}={} is not a readable file", path.display());
+                }
+            }
+            Ok(Some(tls))
+        }
+        (None, None, None) => Ok(None),
+        _ => bail!(
+            "incomplete metrics TLS env; set all of MGMT_METRICS_TLS_CA, MGMT_METRICS_TLS_CERT, MGMT_METRICS_TLS_KEY"
+        ),
+    }
 }
 
 #[allow(dead_code)]

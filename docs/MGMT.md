@@ -34,6 +34,7 @@ cd web/mgmt-ui && npm run dev   # http://127.0.0.1:5173 proxies /api → :8080
 | `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET` | SSO |
 | `MGMT_PUBLIC_URL` | Public base URL for OIDC callback |
 | `MGMT_METRICS_TOKEN` | Optional Bearer when scraping guest `:50001/metrics` |
+| `MGMT_METRICS_TLS_CA` / `MGMT_METRICS_TLS_CERT` / `MGMT_METRICS_TLS_KEY` | Optional client mTLS for `https://{ip}:50001/metrics` (all three required together) |
 | `MGMT_PERTISKCTL` | Path to `pertiskctl` (default `./out/bin/pertiskctl`) |
 
 Auth0 role claim: `https://pertisk.io/role` or `role` → `admin` \| `operator` \| `viewer`.
@@ -58,7 +59,7 @@ The page shows inventory (VMID, IPs, K8s, hardware), live Machine Health, and ch
 | Source | How mgmt collects it |
 |--------|----------------------|
 | Health | `pertiskctl -e {ip}:50000 health` |
-| Gauges + API metrics | HTTP scrape `http://{ip}:50001/metrics` |
+| Gauges + API metrics | HTTP(S) scrape `{http\|https}://{ip}:50001/metrics` (HTTPS + client cert when `MGMT_METRICS_TLS_*` set) |
 | CPU / memory % | `kubectl top node` via cluster kubeconfig (needs metrics-server) |
 
 Charts poll every ~4s and keep ~60 samples **in the browser** only. Soft errors show under each section.

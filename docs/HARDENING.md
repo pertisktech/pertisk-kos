@@ -12,10 +12,10 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 | Immutable root FS | partial | Initramfs root; STATE/EPHEMERAL writable; full SquashFS/EROFS root still Phase 4/5 |
 | Management API mTLS | pass | `PERTISK_TLS_*` + `scripts/gen-mtls-certs.sh` |
 | Signed A/B OS upgrades | pass | Ed25519 trust key on STATE; unsigned rejected |
-| Metrics endpoint auth | pass | Optional bearer: `--metrics-token` / `PERTISK_METRICS_TOKEN` / STATE `secrets/metrics.token` |
+| Metrics endpoint auth | pass | mTLS when `PERTISK_TLS_*` set (same PEMs as API); optional bearer: `--metrics-token` / `PERTISK_METRICS_TOKEN` / STATE `secrets/metrics.token` |
 | STATE `secrets/` mode `0700` | pass | Set in `StateVolume::ensure_layout` |
 | Kernel sysctls before kubelet | pass | `pertiskd` `sysctl::apply_hardening_sysctls` |
-| Secure Boot / UKI measured boot | partial | UKI build + ESP install done; firmware enrollment is lab/docs ([SECURE_BOOT.md](./SECURE_BOOT.md)) |
+| Secure Boot / UKI measured boot | partial | UKI + OVMF enroll + sysfs PCR Attest lab; no TPM2 Quote / remote verify yet ([SECURE_BOOT.md](./SECURE_BOOT.md)) |
 | Minimal kernel modules | gap | Still using Alpine virt kernel for QEMU |
 
 ## Kubelet (CIS §4.2)
@@ -51,7 +51,7 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 2. Place `os-trust.pk` under `STATE/secrets/` before first upgrade.
 3. Always set `cluster.ca` for join configs (avoid insecure-skip).
 4. Prefer `cluster.cni: none` + audited CNI (Cilium) for multi-tenant clusters.
-5. Set a metrics bearer token (`PERTISK_METRICS_TOKEN` or STATE `secrets/metrics.token`) and/or bind `--metrics-listen 127.0.0.1:50001`.
+5. Prefer metrics mTLS (`PERTISK_TLS_*` also covers `:50001`) and/or a bearer token (`PERTISK_METRICS_TOKEN` / STATE `secrets/metrics.token`); otherwise bind `--metrics-listen 127.0.0.1:50001`.
 6. Approve kubelet serving certificate CSRs after first join (`serverTLSBootstrap`).
 7. Keep SBOM (`scripts/generate-sbom.sh`) and CI green on release tags.
 
@@ -113,7 +113,7 @@ Pertisk goals (DESIGN §8): measured boot where feasible. Not required for v0.1.
 | 2 | systemd-boot ESP entries for A/B | done |
 | 3 | Optional UKI (`*.efi` with kernel+initrd+cmdline) per slot | done — `./image/build-uki.sh`, ESP `EFI/Linux/` |
 | 4 | Enroll PK/KEK/db in OVMF / firmware; reject unsigned UKI | done — keygen + signed UKI + `scripts/enroll-ovmf-vars.sh` |
-| 5 | TPM PCR attestation of boot chain (optional) | todo |
+| 5 | TPM PCR attestation of boot chain (optional) | done (lab) — sysfs PCR read; `Attest` RPC / `pertiskctl attest`; QEMU `PERTISK_TPM=1` |
 
 See [SECURE_BOOT.md](./SECURE_BOOT.md) for build/sign/enroll steps.
 
@@ -128,6 +128,5 @@ Marker file in the image: `/etc/pertisk/image-profile`.
 
 ## Gaps tracked for later
 
-- Metrics over mTLS (bearer is interim)
-- TPM PCR attestation of boot chain
+- TPM2 Quote / AK enrollment + remote attestation verifier
 - BusyBox-free DHCP (leases already applied by Rust `pertisk-udhcpc-hook`; replace multi-call `udhcpc` itself next)

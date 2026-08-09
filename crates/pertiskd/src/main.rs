@@ -109,6 +109,7 @@ struct Args {
 
     /// Optional bearer token for GET /metrics (`Authorization: Bearer …`).
     /// Also loaded from STATE `secrets/metrics.token` when unset.
+    /// When `--tls-*` is set, metrics are served over mTLS (same PEMs as the API).
     #[arg(long, env = "PERTISK_METRICS_TOKEN")]
     metrics_token: Option<String>,
 
@@ -497,7 +498,8 @@ fn run() -> Result<()> {
 
     if !args.skip_metrics {
         let token = resolve_metrics_token(&args, &volume);
-        if let Err(err) = start_metrics_thread(api_state.clone(), &args.metrics_listen, token) {
+        let tls = resolve_tls(&args);
+        if let Err(err) = start_metrics_thread(api_state.clone(), &args.metrics_listen, token, tls) {
             warn!(error = %err, "metrics endpoint failed to start");
         }
     }
@@ -576,14 +578,16 @@ fn start_metrics_thread(
     state: SharedState,
     listen: &str,
     bearer_token: Option<String>,
+    tls: Option<TlsPaths>,
 ) -> Result<()> {
     let addr: SocketAddr = listen
         .parse()
         .with_context(|| format!("invalid --metrics-listen {listen}"))?;
-    let auth = if bearer_token.is_some() {
-        "bearer"
-    } else {
-        "none"
+    let auth = match (tls.is_some(), bearer_token.is_some()) {
+        (true, true) => "mtls+bearer",
+        (true, false) => "mtls",
+        (false, true) => "bearer",
+        (false, false) => "none",
     };
     thread::Builder::new()
         .name("pertisk-metrics".into())
@@ -598,7 +602,9 @@ fn start_metrics_thread(
                     return;
                 }
             };
-            if let Err(err) = rt.block_on(pertisk_api::serve_metrics(state, addr, bearer_token)) {
+            if let Err(err) =
+                rt.block_on(pertisk_api::serve_metrics(state, addr, bearer_token, tls))
+            {
                 warn!(error = %err, "metrics endpoint stopped");
             }
         })?;

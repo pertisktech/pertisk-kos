@@ -11,13 +11,14 @@ use pertisk_bootstrap::{
 use pertisk_config::MachineConfig;
 use pertisk_proto::machine_service_server::{MachineService, MachineServiceServer};
 use pertisk_proto::{
-    ApplyConfigurationRequest, ApplyConfigurationResponse, BootstrapRequest, BootstrapResponse,
-    GetJoinConfigRequest, GetJoinConfigResponse, GrowDiskRequest, GrowDiskResponse, HealthRequest,
-    HealthResponse, JoinControlPlaneRequest, JoinControlPlaneResponse, KubeconfigRequest,
-    KubeconfigResponse, LogsRequest, LogsResponse, MarkBootGoodRequest, MarkBootGoodResponse,
-    RebootRequest, RebootResponse, ServiceListRequest, ServiceListResponse, ServiceStatus,
-    ShutdownRequest, ShutdownResponse, UpgradeRequest, UpgradeResponse, UpgradeStatusRequest,
-    UpgradeStatusResponse, ValidateConfigurationResponse, VersionRequest, VersionResponse,
+    ApplyConfigurationRequest, ApplyConfigurationResponse, AttestRequest, AttestResponse,
+    BootstrapRequest, BootstrapResponse, GetJoinConfigRequest, GetJoinConfigResponse,
+    GrowDiskRequest, GrowDiskResponse, HealthRequest, HealthResponse, JoinControlPlaneRequest,
+    JoinControlPlaneResponse, KubeconfigRequest, KubeconfigResponse, LogsRequest, LogsResponse,
+    MarkBootGoodRequest, MarkBootGoodResponse, PcrValue, RebootRequest, RebootResponse,
+    ServiceListRequest, ServiceListResponse, ServiceStatus, ShutdownRequest, ShutdownResponse,
+    UpgradeRequest, UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse,
+    ValidateConfigurationResponse, VersionRequest, VersionResponse,
 };
 use pertisk_update::{apply_bundle, mark_boot_good, BootMeta, SlotLayout};
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
@@ -475,6 +476,39 @@ impl MachineService for MachineSvc {
                 }))
             }
         }
+    }
+
+    async fn attest(
+        &self,
+        _request: Request<AttestRequest>,
+    ) -> Result<Response<AttestResponse>, Status> {
+        let (state_root, version) = {
+            let st = lock(&self.state)?;
+            (st.state_root.clone(), st.version.clone())
+        };
+        let (active_slot, version) = match BootMeta::load(&state_root) {
+            Ok(meta) => (
+                meta.active.to_string(),
+                meta.active_version.unwrap_or(version),
+            ),
+            Err(_) => ("unknown".into(), version),
+        };
+        let snap = crate::attest::read_host_pcrs();
+        Ok(Response::new(AttestResponse {
+            available: snap.available,
+            message: snap.message,
+            active_slot,
+            version,
+            pcrs: snap
+                .pcrs
+                .into_iter()
+                .map(|p| PcrValue {
+                    index: p.index,
+                    algo: p.algo,
+                    digest_hex: p.digest_hex,
+                })
+                .collect(),
+        }))
     }
 }
 

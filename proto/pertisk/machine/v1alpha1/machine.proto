@@ -28,6 +28,8 @@ service MachineService {
   rpc GetJoinConfig(GetJoinConfigRequest) returns (GetJoinConfigResponse);
   // Expand EPHEMERAL GPT + ext4 after hypervisor disk resize (safe while /var mounted).
   rpc GrowDisk(GrowDiskRequest) returns (GrowDiskResponse);
+  // Read TPM PCR digests (sysfs lab path) + active boot slot/version.
+  rpc Attest(AttestRequest) returns (AttestResponse);
 }
 
 message VersionRequest {}
@@ -198,4 +200,21 @@ message GrowDiskResponse {
   string message = 2;
   bool partition_grew = 3;
   bool filesystem_grew = 4;
+}
+
+message AttestRequest {}
+
+message PcrValue {
+  uint32 index = 1;
+  string algo = 2;
+  string digest_hex = 3;
+}
+
+message AttestResponse {
+  // True when a TPM sysfs bank was found and at least one PCR was read.
+  bool available = 1;
+  string message = 2;
+  string active_slot = 3;
+  string version = 4;
+  repeated PcrValue pcrs = 5;
 }

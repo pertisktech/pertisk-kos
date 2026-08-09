@@ -378,7 +378,7 @@ You can still join Pertisk workers to a non-Pertisk control plane with `examples
 | Guest NIC | virtio on `vmbr0` (or VLAN bridge); MAC pinned as `BC:24:11:` + VMID |
 | Guest IP | DHCP (default seed) or static in machine config; reserve DHCP by MAC for stable lab IPs |
 | Management API | `:50000` (mTLS); firewall carefully |
-| Metrics | `:50001` (optional bearer token) |
+| Metrics | `:50001` (mTLS when `PERTISK_TLS_*` set; optional bearer) |
 | CNI | Prefer `cni: none` + Cilium, Calico, or Flannel on multi-node Proxmox |
 | Loopback | `lo` + `127.0.0.1/8` brought up by `pertisk-net` (required for containerd CRI) |
 
