@@ -399,6 +399,7 @@ else
     }
   else
     echo "==> creating VM ${VMID} (${NAME}) arch=${PVE_ARCH} bios=ovmf machine=${PVE_MACHINE} agent=1"
+    EFI_STORAGE="${PROXMOX_EFI_STORAGE:-${STORAGE}}"
     CREATE_ARGS=(
       --data-urlencode "vmid=${VMID}"
       --data-urlencode "name=${NAME}"
@@ -413,13 +414,28 @@ else
       --data-urlencode "agent=enabled=1"
       --data-urlencode "onboot=1"
     )
+    # Prefer allocating EFI vars at create time (avoids locked-VM race on a follow-up PUT).
+    CREATE_WITH_EFI=(
+      "${CREATE_ARGS[@]}"
+      --data-urlencode "efidisk0=${EFI_STORAGE}:1,efitype=4m,pre-enrolled-keys=0"
+    )
     # Do NOT send arch= via API: Proxmox returns "only root can set 'arch' config"
     # for API tokens. amd64 defaults to x86_64.
-    RESP="$(api_post_form "/nodes/${NODE}/qemu" "${CREATE_ARGS[@]}")"
-    echo "${RESP}" | jq -e '.data != null' >/dev/null || {
+    RESP="$(api_post_form "/nodes/${NODE}/qemu" "${CREATE_WITH_EFI[@]}")"
+    if echo "${RESP}" | jq -e 'has("errors") or (.message|type=="string" and length>0)' >/dev/null 2>&1 \
+      || ! echo "${RESP}" | jq -e 'has("data")' >/dev/null 2>&1; then
+      echo "    create with efidisk0 failed (${RESP}); retrying without EFI (ensure_efidisk will attach)" >&2
+      RESP="$(api_post_form "/nodes/${NODE}/qemu" "${CREATE_ARGS[@]}")"
+    fi
+    if echo "${RESP}" | jq -e 'has("errors") or (.message|type=="string" and length>0)' >/dev/null 2>&1 \
+      || ! echo "${RESP}" | jq -e 'has("data")' >/dev/null 2>&1; then
       echo "create failed: ${RESP}" >&2
       exit 1
-    }
+    fi
+    CREATE_UPID="$(echo "${RESP}" | jq -r '.data // empty')"
+    if [[ "${CREATE_UPID}" == UPID:* ]]; then
+      wait_task "${CREATE_UPID}" "vm-create" || exit 1
+    fi
   fi
   if [[ "${DUAL_STACK:-${PERTISK_DUAL_STACK:-0}}" == "1" ]]; then
     echo "    net0=${NET0_SPEC} (MAC pinned from VMID; dual-stack: IPv6 after machine config apply)"
@@ -435,7 +451,12 @@ EFI_STORAGE="${PROXMOX_EFI_STORAGE:-${STORAGE}}"
 vm_has_efidisk() {
   local conf
   conf="$(api_get "/nodes/${NODE}/qemu/${VMID}/config" 2>/dev/null || echo '{}')"
-  if echo "${conf}" | jq -e '.data.efidisk0 != null and (.data.efidisk0|type=="string") and (.data.efidisk0|length>0)' >/dev/null 2>&1; then
+  # Accept string or any non-null non-empty value (PVE JSON shapes vary by version).
+  if echo "${conf}" | jq -e '
+      .data.efidisk0 != null and (
+        (.data.efidisk0|type=="string" and (.data.efidisk0|length>0)) or
+        (.data.efidisk0|type!="string" and .data.efidisk0 != false)
+      )' >/dev/null 2>&1; then
     return 0
   fi
   if [[ -n "${PROXMOX_SSH:-}" ]]; then
@@ -443,6 +464,23 @@ vm_has_efidisk() {
       "qm config ${VMID} | grep -q '^efidisk0:'" >/dev/null 2>&1 && return 0
   fi
   return 1
+}
+
+# Apply efidisk0 via API; wait if Proxmox returns an allocation UPID.
+api_set_efidisk() {
+  local spec="$1"
+  local body upid
+  body="$(api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+    --data-urlencode "efidisk0=${spec}" 2>/dev/null || echo '{}')"
+  if ! api_response_ok "${body:-{}}"; then
+    echo "    API efidisk0=${spec} rejected: ${body}" >&2
+    return 1
+  fi
+  upid="$(echo "${body}" | jq -r '.data // empty')"
+  if [[ "${upid}" == UPID:* ]]; then
+    wait_task "${upid}" "efidisk0" || return 1
+  fi
+  return 0
 }
 
 ensure_efidisk() {
@@ -456,24 +494,36 @@ ensure_efidisk() {
     if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" \
       "qm set ${VMID} --efidisk0 ${EFI_STORAGE}:1,efitype=4m,pre-enrolled-keys=0"; then
       ok=1
+    else
+      echo "    qm set efidisk0 failed; trying API" >&2
     fi
   fi
   if [[ "$ok" != "1" ]]; then
-    local body
-    body="$(api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
-      --data-urlencode "efidisk0=${EFI_STORAGE}:1,efitype=4m,pre-enrolled-keys=0" 2>/dev/null || true)"
-    if api_response_ok "${body:-{}}"; then
-      ok=1
-    fi
+    local spec
+    for spec in \
+      "${EFI_STORAGE}:1,efitype=4m,pre-enrolled-keys=0" \
+      "${EFI_STORAGE}:0,efitype=4m,pre-enrolled-keys=0" \
+      "${EFI_STORAGE}:1,efitype=4m" \
+      "${EFI_STORAGE}:0,efitype=4m"
+    do
+      if api_set_efidisk "${spec}"; then
+        ok=1
+        break
+      fi
+    done
   fi
-  # Brief wait for config to settle.
+  # Brief wait for config to settle (API lag after volume allocate).
   local i
-  for i in 1 2 3 4 5; do
+  for i in 1 2 3 4 5 6 7 8 9 10; do
     vm_has_efidisk && return 0
     sleep 1
   done
   echo "ERROR: efidisk0 missing after create — UEFI will use a temporary efivars disk" >&2
+  echo "  current config:" >&2
+  api_get "/nodes/${NODE}/qemu/${VMID}/config" \
+    | jq '{efidisk0:.data.efidisk0,bios:.data.bios,scsi0:.data.scsi0}' >&2 || true
   echo "  try: ssh ${PROXMOX_SSH:-root@pve} qm set ${VMID} --efidisk0 ${EFI_STORAGE}:1,efitype=4m,pre-enrolled-keys=0" >&2
+  echo "  or set PROXMOX_SSH=root@${NODE} / PROXMOX_EFI_STORAGE=local and re-run" >&2
   exit 1
 }
 

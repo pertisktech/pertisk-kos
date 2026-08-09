@@ -959,8 +959,8 @@ async fn apply_create_log_progress(
         return Ok(());
     }
 
-    // bootstrap CP1
-    if raw.starts_with("bootstrap CP1") || raw == "bootstrap CP1" {
+    // bootstrap CP1 done (must be before the "bootstrap CP1" prefix match)
+    if raw.starts_with("bootstrap CP1 done") {
         let name = format!("{cluster_name}-cp-1");
         touch_node_progress(
             pool,
@@ -970,6 +970,23 @@ async fn apply_create_log_progress(
             None,
             None,
             "ready",
+            &now,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // bootstrap CP1 — still provisioning until kubeconfig / joins finish
+    if raw.starts_with("bootstrap CP1") || raw == "bootstrap CP1" {
+        let name = format!("{cluster_name}-cp-1");
+        touch_node_progress(
+            pool,
+            cluster_id,
+            &name,
+            "controlplane",
+            None,
+            None,
+            "provisioning",
             &now,
         )
         .await?;

@@ -85,9 +85,10 @@ pub async fn join_control_plane(
         // Give pertiskd a beat to honor the kubelet-reload flag from restore.
         thread::sleep(Duration::from_secs(5));
         let admin_path = paths.admin_kubeconfig();
-        finalize_bootstrap_when_ready(&admin_path, None, &hostname).with_context(|| {
-            format!("already-joined control-plane missing finalize/label for {hostname}")
-        })?;
+        let defer_addons = matches!(cluster.cni, pertisk_config::CniMode::None);
+        finalize_bootstrap_when_ready(&admin_path, None, &hostname, defer_addons).with_context(
+            || format!("already-joined control-plane missing finalize/label for {hostname}"),
+        )?;
         return Ok(JoinControlPlaneResult {
             already_joined: true,
             message: "already bootstrapped / joined".into(),
@@ -244,7 +245,8 @@ pub async fn join_control_plane(
     // Must succeed: unlabeled joined CPs show ROLES=<none> in `kubectl get nodes`.
     let admin_path = paths.admin_kubeconfig();
     let node_name = hostname.clone();
-    finalize_bootstrap_when_ready(&admin_path, None, &node_name)
+    let defer_addons = matches!(cluster.cni, pertisk_config::CniMode::None);
+    finalize_bootstrap_when_ready(&admin_path, None, &node_name, defer_addons)
         .with_context(|| format!("post-join finalize failed for {node_name}"))?;
 
     Ok(JoinControlPlaneResult {

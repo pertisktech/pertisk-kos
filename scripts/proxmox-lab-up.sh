@@ -1131,9 +1131,14 @@ step_cluster() {
   wait_api "$CP_IP"
   log "apply controlplane → ${CP_IP}"
   "$CTL" -e "${CP_IP}:50000" apply -f "$CLUSTER_OUT/controlplane.yaml"
+  # Apply only writes STATE + flags reload; give pertiskd a moment to start
+  # containerd/kubelet as controlplane before the long bootstrap RPC.
+  sleep 8
+  wait_api "$CP_IP"
 
-  log "bootstrap CP1"
-  "$CTL" -e "${CP_IP}:50000" bootstrap
+  log "bootstrap CP1 (advertise=${CP_IP}; waits for registry.k8s.io pulls + :6443, up to ~10m)"
+  "$CTL" -e "${CP_IP}:50000" bootstrap --advertise-address "$CP_IP"
+  log "bootstrap CP1 done"
 
   # Join additional control planes (stacked etcd + kube-vip).
   # Use C-style for: macOS `seq 2 1` counts down and would iterate wrongly.
@@ -1476,7 +1481,7 @@ step_dns() {
   local kc="$CLUSTER_OUT/admin.conf"
   ensure_api_endpoint_reachable
   command -v kubectl >/dev/null || die "kubectl required"
-  log "ensure CoreDNS (kube-dns 10.96.0.10) — also applied by bootstrap finalize"
+  log "ensure CoreDNS (kube-dns 10.96.0.10) — after CNI (cni:none defers this past bootstrap)"
   kubectl --kubeconfig "$kc" apply -f "${ROOT}/examples/dns/coredns.yaml"
 }
 

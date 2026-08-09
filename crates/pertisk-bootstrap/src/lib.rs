@@ -219,7 +219,13 @@ pub fn bootstrap_control_plane(
     let admin_path = paths.admin_kubeconfig();
     let token = cluster.token.clone();
     let node_name = hostname.clone();
-    if let Err(err) = finalize_bootstrap_when_ready(&admin_path, token.as_deref(), &node_name) {
+    let defer_addons = matches!(cluster.cni, pertisk_config::CniMode::None);
+    if let Err(err) = finalize_bootstrap_when_ready(
+        &admin_path,
+        token.as_deref(),
+        &node_name,
+        defer_addons,
+    ) {
         tracing::warn!(
             error = %err,
             "post-bootstrap API finalize incomplete; apply token Secret / node-rbac / CP label manually if needed"
@@ -415,10 +421,15 @@ fn apiserver_tcp_ready(timeout: Duration) -> bool {
 }
 
 /// After apiserver is healthy: bootstrap-token Secret, join RBAC, CP node label.
+///
+/// When `defer_addons` is true (`cluster.cni: none`), skip CoreDNS/metrics-server —
+/// they need a cluster CNI and otherwise spam kubelet with
+/// "failed to find network info for sandbox".
 pub(crate) fn finalize_bootstrap_when_ready(
     admin_kubeconfig: &Path,
     token: Option<&str>,
     node_name: &str,
+    defer_addons: bool,
 ) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(300);
     while Instant::now() < deadline {
@@ -505,8 +516,11 @@ pub(crate) fn finalize_bootstrap_when_ready(
     // original window; CP3 join especially was left unlabeled (looked like a worker).
     let label_deadline = Instant::now() + Duration::from_secs(300);
     ensure_control_plane_node_role(&client, node_name, label_deadline)?;
-    // Basic addons: CoreDNS + metrics-server (usable cluster after CNI is up).
-    if let Err(err) = addons::ensure_basic_addons(&client) {
+    // Basic addons need pod networking. With cluster.cni:none, lab-up/helm installs
+    // Cilium/Calico/Flannel first, then CoreDNS + metrics-server.
+    if defer_addons {
+        info!("deferring CoreDNS/metrics-server until cluster CNI is installed (cni: none)");
+    } else if let Err(err) = addons::ensure_basic_addons(&client) {
         tracing::warn!(
             error = %err,
             "basic addons incomplete; apply examples/dns/coredns.yaml and examples/addons/metrics-server.yaml"
