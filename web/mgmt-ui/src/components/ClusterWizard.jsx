@@ -79,12 +79,26 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
     setVipCheck(null)
     setForm({ ...defaultForm })
     api('/providers')
-      .then((p) => {
+      .then(async (p) => {
         setProviders(p)
-        if (p[0]) {
-          const arch = p[0].arch === 'arm64' ? 'arm64' : 'amd64'
-          setForm((f) => ({ ...f, provider_id: p[0].id, arch }))
+        if (!p[0]) return
+        const arch = p[0].arch === 'arm64' ? 'arm64' : 'amd64'
+        let cp_vmid = defaultForm.cp_vmid
+        try {
+          const sug = await api('/clusters/suggest-vmid', {
+            method: 'POST',
+            body: {
+              provider_id: p[0].id,
+              cp_vmid: defaultForm.cp_vmid,
+              controlplanes: defaultForm.controlplanes,
+              workers: defaultForm.workers,
+            },
+          })
+          if (sug?.cp_vmid) cp_vmid = sug.cp_vmid
+        } catch {
+          /* keep default 210; check-vmids will still validate */
         }
+        setForm((f) => ({ ...f, provider_id: p[0].id, arch, cp_vmid }))
       })
       .catch((e) => setError(e.message))
   }, [open])
@@ -197,6 +211,21 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
       }
       return next
     })
+    if (k === 'provider_id' && v) {
+      api('/clusters/suggest-vmid', {
+        method: 'POST',
+        body: {
+          provider_id: v,
+          cp_vmid: defaultForm.cp_vmid,
+          controlplanes: Number(form.controlplanes) || 1,
+          workers: Number(form.workers) || 1,
+        },
+      })
+        .then((sug) => {
+          if (sug?.cp_vmid) setForm((f) => ({ ...f, cp_vmid: sug.cp_vmid }))
+        })
+        .catch(() => {})
+    }
   }
 
   const ha = Number(form.controlplanes) > 1
@@ -477,6 +506,9 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
             <div className="field">
               <label>Base VMID</label>
               <input type="number" value={form.cp_vmid} onChange={(e) => set('cp_vmid', e.target.value)} />
+              <p className="hint muted">
+                Suggested after existing clusters so VMIDs (and DHCP leases) do not collide across labs.
+              </p>
               {!vmidChecking && vmidCheck?.ok && (
                 <p className="hint muted">
                   VMIDs {vmidCheck.range_start}–{vmidCheck.range_end} are free on {vmidCheck.node}.

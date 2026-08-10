@@ -416,6 +416,12 @@ async fn run_create_cluster(
             .env("PROXMOX_TOKEN_ID", &provider.token_id)
             .env("PROXMOX_TOKEN_SECRET", &secret)
             .env("PROXMOX_NODE", &provider.node)
+            // Keep guest MACs unique across Proxmox hosts on the same LAN
+            // (MAC = OUI + salt(url|node) + VMID); see proxmox-upload-vm.sh.
+            .env(
+                "PROXMOX_MAC_SALT",
+                format!("{}|{}", provider.url.trim_end_matches('/'), provider.node),
+            )
             .env("PROXMOX_STORAGE", &provider.storage)
             .env("PROXMOX_BRIDGE", &provider.bridge);
         apply_lab_env(&mut cmd, state, &provider.url);
@@ -1508,6 +1514,10 @@ async fn run_add_node(
             .env("PROXMOX_TOKEN_ID", &provider.token_id)
             .env("PROXMOX_TOKEN_SECRET", &secret)
             .env("PROXMOX_NODE", &provider.node)
+            .env(
+                "PROXMOX_MAC_SALT",
+                format!("{}|{}", provider.url.trim_end_matches('/'), provider.node),
+            )
             .env("PROXMOX_STORAGE", &provider.storage)
             .env("PROXMOX_BRIDGE", &provider.bridge)
             .stdout(Stdio::piped())

@@ -54,6 +54,8 @@ message VersionResponse {
   string version = 1;
   string api_version = 2;
   string platform = 3;
+  // Applied machine.network.hostname, or /etc/hostname when unset.
+  string hostname = 4;
 }
 
 message HealthRequest {}

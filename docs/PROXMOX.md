@@ -371,6 +371,8 @@ kubectl --kubeconfig ./out/cluster/admin.conf get nodes
 
 **HA VIP:** pick an IPv4 address that is **free on the L2** and **outside your DHCP pool** (not leased to any guest). kube-vip announces it with gratuitous ARP, which needs the `af_packet` module in the guest image (`make fetch-kernel` / rebuild cloud image). If DHCP assigns the VIP to a control-plane (lab-up will now hard-fail after IP resolve), join/finalize fails with `node … not registered`. A busy VIP or a guest without `af_packet` leaves `:6443` unreachable off-node even while CP apiservers are healthy on their node IPs.
 
+**ARM / HA create tip:** if create fails with `already bootstrapped` / `node not registered`, guests likely reused disks from a prior run. Lab-up now soft-resets CP1 and each joining CP before apply/join. Destroy VMs when deleting a cluster, or run `pertiskctl reset --force` on leftover guests.
+
 ### 4c. Worker-only join (existing external CP)
 
 You can still join Pertisk workers to a non-Pertisk control plane with `examples/worker-join.yaml` + `pertiskctl apply`.

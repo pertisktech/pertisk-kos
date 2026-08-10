@@ -18,10 +18,21 @@ STORAGE="${PROXMOX_EFI_STORAGE:-${PROXMOX_STORAGE:-local-zfs}}"
 BRIDGE="${PROXMOX_BRIDGE:-vmbr0}"
 SSH_HOST="${PROXMOX_SSH:-}"
 
-# Stable MAC in Proxmox OUI space: BC:24:11 + 24-bit VMID (clones overwrite net0).
+# Stable MAC in Proxmox OUI space (see proxmox-upload-vm.sh — host-salted).
 mac_for_vmid() {
   local id="$1"
-  printf 'BC:24:11:%02X:%02X:%02X' $(( (id >> 16) & 255 )) $(( (id >> 8) & 255 )) $(( id & 255 ))
+  local salt_src="${PROXMOX_MAC_SALT:-${PROXMOX_NODE:-}}"
+  if [[ -z "$salt_src" && -n "${PROXMOX_URL:-}" ]]; then
+    salt_src="$(printf '%s' "$PROXMOX_URL" | sed -E 's|https?://([^/:]+).*|\1|')"
+  fi
+  local salt=0
+  if [[ -n "$salt_src" ]]; then
+    salt=$(( $(printf '%s' "$salt_src" | cksum | awk '{print $1}') % 256 ))
+  fi
+  printf 'BC:24:11:%02X:%02X:%02X' \
+    "$salt" \
+    $(( ((id >> 8) ^ (id >> 16)) & 255 )) \
+    $(( id & 255 ))
 }
 NET0_MAC="$(mac_for_vmid "${VMID}")"
 NET0_SPEC="virtio=${NET0_MAC},bridge=${BRIDGE}"

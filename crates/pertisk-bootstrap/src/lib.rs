@@ -65,6 +65,31 @@ pub fn bootstrap_control_plane(
 
     let paths = BootstrapPaths::default_state(state_root);
     if paths.is_bootstrapped() {
+        let expected = advertise_address
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if let Some(want) = expected {
+            if let Some(stored) = paths.read_advertise() {
+                if stored != want {
+                    bail!(
+                        "already bootstrapped with advertise {stored}, but requested {want}. \
+Guest IP changed or STATE was reused from a previous cluster. \
+Destroy the VM (or run: pertiskctl -e {want}:50000 reset --force) and recreate"
+                    );
+                }
+            } else {
+                // Legacy STATE without advertise file — compare live detection.
+                if let Some(live) = detect_advertise_ip() {
+                    if live != want {
+                        bail!(
+                            "already bootstrapped (no stored advertise); live IP is {live} but \
+lab expects {want}. Soft-reset this node and recreate: pertiskctl -e {want}:50000 reset --force"
+                        );
+                    }
+                }
+                let _ = paths.write_advertise(want);
+            }
+        }
         // Re-publish live paths (reboot / re-bootstrap repair).
         if let Err(err) = restore_control_plane(state_root) {
             tracing::warn!(error = %err, "restore after already-bootstrapped failed");
@@ -213,6 +238,7 @@ pub fn bootstrap_control_plane(
     }
 
     fs::create_dir_all("/var/lib/etcd").ok();
+    paths.write_advertise(&advertise)?;
     fs::write(
         paths.marker(),
         format!("bootstrapped at {}\n", chrono_like_now()),
@@ -668,8 +694,8 @@ fn ensure_control_plane_node_role(
     if status != 200 {
         bail!(
             "node {node_name} not registered before timeout (HTTP {status}). \
-If this is an HA join, check whether the node's advertise IP equals the kube-vip \
-(DHCP must not assign the VIP to a guest)"
+Check kubelet logs on that node; if STATE was reused after a failed create, \
+soft-reset it (pertiskctl reset --force) and re-join"
         );
     }
     // Already labeled (retry after a previous partial finalize) — still ensure taint.

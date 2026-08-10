@@ -18,6 +18,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/clusters", get(list).post(create))
         .route("/clusters/check-vmids", axum::routing::post(check_vmids))
+        .route("/clusters/suggest-vmid", axum::routing::post(suggest_vmid))
         .route("/clusters/check-vip", axum::routing::post(check_vip))
         .route(
             "/clusters/{id}",
@@ -972,6 +973,100 @@ async fn check_vmids(
     }
     let check = provider_check_vmids(&state, &body.provider_id, body.cp_vmid, count).await?;
     Ok(Json(check))
+}
+
+#[derive(Serialize)]
+struct SuggestVmidOut {
+    cp_vmid: i64,
+    range_start: i64,
+    range_end: i64,
+    node: String,
+    message: String,
+    /// True when the suggested range is free on the provider.
+    ok: bool,
+}
+
+/// Next base VMID: after all mgmt cluster ranges, then bump until free on provider.
+async fn suggest_vmid(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Json(body): Json<CheckVmidsIn>,
+) -> ApiResult<Json<SuggestVmidOut>> {
+    let count = body.controlplanes + body.workers;
+    if count < 1 {
+        return Err(AppError::bad("controlplanes + workers must be >= 1"));
+    }
+
+    // Start after every known cluster's VMID span (all providers — shared LAN).
+    let rows = sqlx::query_as::<_, (Option<i64>, i64, i64)>(
+        "SELECT cp_vmid, controlplanes, workers FROM clusters WHERE status != 'deleting'",
+    )
+    .fetch_all(state.pool())
+    .await?;
+
+    let mut next = 210i64;
+    for (cp_vmid, cps, workers) in rows {
+        let base = cp_vmid.unwrap_or(210);
+        let span = cps + workers;
+        if span < 1 {
+            continue;
+        }
+        let end = base + span - 1;
+        if end + 1 > next {
+            next = end + 1;
+        }
+    }
+    // Align to 10s for readable lab ranges (210, 220, …).
+    if next > 210 {
+        next = ((next + 9) / 10) * 10;
+    }
+    if body.cp_vmid > next {
+        // Caller already chose a higher base — still validate / bump from there.
+        next = body.cp_vmid;
+    }
+
+    let mut last_msg = String::new();
+    let mut last_node = String::new();
+    for _ in 0..50 {
+        let check = provider_check_vmids(&state, &body.provider_id, next, count).await?;
+        last_msg = check.message.clone();
+        last_node = check.node.clone();
+        if check.ok {
+            let node = check.node.clone();
+            return Ok(Json(SuggestVmidOut {
+                cp_vmid: next,
+                range_start: check.range_start,
+                range_end: check.range_end,
+                node: check.node,
+                message: format!(
+                    "suggested base VMID {next} (range {}–{} free on {node})",
+                    check.range_start, check.range_end
+                ),
+                ok: true,
+            }));
+        }
+        // Skip past the first conflict.
+        let bump = check
+            .conflicts
+            .iter()
+            .map(|c| c.vmid)
+            .max()
+            .unwrap_or(next)
+            + 1;
+        next = ((bump + 9) / 10) * 10;
+        if next < bump {
+            next = bump;
+        }
+    }
+
+    Ok(Json(SuggestVmidOut {
+        cp_vmid: next,
+        range_start: next,
+        range_end: next + count - 1,
+        node: last_node,
+        message: format!("could not find a free VMID range near {next}: {last_msg}"),
+        ok: false,
+    }))
 }
 
 #[derive(Deserialize)]

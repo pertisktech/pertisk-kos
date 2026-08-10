@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end lab: build image → create Proxmox VMs → wait for DHCP IPs (MAC→ARP)
-# → bootstrap control-plane → join workers → install CNI + DNS + addons (+ optional apps).
+# → bootstrap control-plane → join workers → install CNI → workers Ready → DNS + addons (+ optional apps).
 #
 # Prerequisites: ./proxmox.sh (or PROXMOX_* env), jq, curl, kubectl; helm if CNI=cilium.
 # Recommended: PROXMOX_SSH=root@<pve> so MAC→IP can read the node's ARP/neigh table.
@@ -205,8 +205,14 @@ case "$(printf '%s' "$ARCH" | tr '[:upper:]' '[:lower:]')" in
 esac
 export PERTISK_ARCH="$ARCH" ARCH="$ARCH"
 
-# Re-resolve default disk if --arch changed and --disk / PROXMOX_DISK were not set.
-if [[ "$DISK_FROM_CLI" != "1" && -z "${PROXMOX_DISK:-}" ]]; then
+# Re-resolve default disk when --disk was not set, or when inherited PROXMOX_DISK
+# points at a different arch (mgmt often has PROXMOX_DISK=…-amd64.qcow2).
+_disk_arch_ok=0
+[[ "$DISK" == *"pertisk-cloud-${ARCH}"* ]] && _disk_arch_ok=1
+if [[ "$DISK_FROM_CLI" != "1" && ( -z "${PROXMOX_DISK:-}" || "$_disk_arch_ok" -eq 0 ) ]]; then
+  if [[ -n "${PROXMOX_DISK:-}" && "$_disk_arch_ok" -eq 0 ]]; then
+    echo "==> note: PROXMOX_DISK=${DISK} does not match ARCH=${ARCH} — re-resolving" >&2
+  fi
   DISK=""
   for _cand in \
     "${IMAGES_DIR}/pertisk-cloud-${ARCH}.qcow2" \
@@ -219,6 +225,7 @@ if [[ "$DISK_FROM_CLI" != "1" && -z "${PROXMOX_DISK:-}" ]]; then
   DISK="${DISK:-${IMAGES_DIR}/pertisk-cloud-${ARCH}.qcow2}"
   unset _cand
 fi
+unset _disk_arch_ok
 
 # Proxmox VM names follow cluster name unless --prefix was set explicitly.
 if [[ "$PREFIX_SET" -eq 0 ]]; then
@@ -347,7 +354,10 @@ if [[ -z "${PROXMOX_SSH:-}" ]]; then
 else
   echo "==> disk import via SSH ${PROXMOX_SSH}"
 fi
-echo "==> images dir=${IMAGES_DIR} disk=${DISK}"
+echo "==> images dir=${IMAGES_DIR} arch=${ARCH} disk=${DISK}"
+if [[ "${CP_DISK:-$DISK}" != "$DISK" || "${WORKER_DISK:-$DISK}" != "$DISK" ]]; then
+  echo "==> sized disks cp=${CP_DISK:-$DISK} wk=${WORKER_DISK:-$DISK}"
+fi
 fi # PROVIDER_KIND != vsphere
 
 command -v curl >/dev/null || { echo "curl required" >&2; exit 1; }
@@ -643,6 +653,33 @@ wait_api() {
   die "pertiskctl API not ready at ${ip}:50000"
 }
 
+# Refuse soft-reset/apply only when :50000 already belongs to a *different*
+# Pertisk cluster node (hostname like other-*-cp-N / *-wk-N). Leftover short
+# names on reused disks (e.g. 51fad4-wk) must still be soft-resettable.
+assert_guest_identity() {
+  local ip="$1" expected_host="${2:-}" out host prefix
+  out="$("$CTL" -e "${ip}:50000" version 2>/dev/null || true)"
+  host="$(printf '%s\n' "$out" | sed -n 's/.*hostname=\([^ ]*\).*/\1/p' | head -1)"
+  [[ -n "$host" && -n "$expected_host" ]] || return 0
+  case "$host" in
+    pertisk|localhost|"$expected_host") return 0 ;;
+  esac
+  # Expected is always {cluster}-cp-N or {cluster}-wk-N.
+  prefix="${expected_host%-cp-*}"
+  prefix="${prefix%-wk-*}"
+  if [[ "$host" == "$prefix"-cp-* || "$host" == "$prefix"-wk-* ]]; then
+    # Same cluster, different role/index — still OK to reset before re-apply.
+    log "note: guest ${ip} hostname='${host}' (will become ${expected_host})"
+    return 0
+  fi
+  if [[ "$host" =~ ^.+-cp-[0-9]+$ || "$host" =~ ^.+-wk-[0-9]+$ ]]; then
+    die "refusing to touch ${ip}: guest hostname is '${host}', expected '${expected_host}'.
+Likely DHCP/MAC collision with another cluster on this LAN (same base VMID on two Proxmox hosts).
+Pick a free --cp-vmid (wizard suggests one) and redeploy MAC-salted upload scripts before recreate."
+  fi
+  log "note: guest ${ip} hostname='${host}' (leftover; soft-reset will clear → ${expected_host})"
+}
+
 # Rewrite kubeconfig server URL (portable; works on macOS/Linux).
 rewrite_kubeconfig_server() {
   local kc="$1" url="$2"
@@ -773,16 +810,57 @@ ensure_worker_roles() {
   done
 }
 
-wait_nodes_ready() {
+# Dump node / CSR / Ready condition hints when a wait fails.
+diagnose_node_wait() {
+  local kc="$1" node="$2"
+  echo "---- diagnose node ${node} ----" >&2
+  kubectl --kubeconfig "$kc" get nodes -o wide 2>&1 | sed 's/^/  /' >&2 || true
+  if kubectl --kubeconfig "$kc" get node "$node" >/dev/null 2>&1; then
+    kubectl --kubeconfig "$kc" get node "$node" -o jsonpath='Ready={.status.conditions[?(@.type=="Ready")].status} reason={.status.conditions[?(@.type=="Ready")].reason} msg={.status.conditions[?(@.type=="Ready")].message}{"\n"}' 2>&1 \
+      | sed 's/^/  /' >&2 || true
+    kubectl --kubeconfig "$kc" describe node "$node" 2>&1 | grep -E 'Ready|NetworkUnavailable|Taints|InternalIP|Kubelet' | sed 's/^/  /' >&2 || true
+  else
+    echo "  node object missing (TLS bootstrap / CSR / endpoint?)" >&2
+  fi
+  kubectl --kubeconfig "$kc" get csr 2>&1 | sed 's/^/  /' >&2 || true
+  echo "---- end diagnose ----" >&2
+}
+
+# Wait until the Node object exists (TLS bootstrap succeeded). Ready may need CNI.
+wait_nodes_registered() {
   local kc="$1"
   shift
   local node deadline
   for node in "$@"; do
+    log "waiting for node ${node} registered"
+    deadline=$((SECONDS + BOOTSTRAP_TIMEOUT))
+    until kubectl --kubeconfig "$kc" get node "$node" >/dev/null 2>&1; do
+      if (( SECONDS >= deadline )); then
+        diagnose_node_wait "$kc" "$node"
+        die "node ${node} not registered within timeout (check bootstrap-token Secret / kubelet logs / CSR)"
+      fi
+      sleep 5
+    done
+    log "node ${node} registered"
+  done
+}
+
+wait_nodes_ready() {
+  local kc="$1"
+  shift
+  local node deadline ready
+  for node in "$@"; do
     log "waiting for node ${node} Ready"
     deadline=$((SECONDS + BOOTSTRAP_TIMEOUT))
-    until kubectl --kubeconfig "$kc" get node "$node" >/dev/null 2>&1 \
-      && [[ "$(kubectl --kubeconfig "$kc" get node "$node" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" == "True" ]]; do
-      (( SECONDS < deadline )) || die "node ${node} not Ready within timeout (check bootstrap-token Secret / kubelet logs)"
+    until true; do
+      if kubectl --kubeconfig "$kc" get node "$node" >/dev/null 2>&1; then
+        ready="$(kubectl --kubeconfig "$kc" get node "$node" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+        [[ "$ready" == "True" ]] && break
+      fi
+      if (( SECONDS >= deadline )); then
+        diagnose_node_wait "$kc" "$node"
+        die "node ${node} not Ready within timeout (check CNI / bootstrap-token / kubelet logs)"
+      fi
       sleep 5
     done
     log "node ${node} Ready"
@@ -1127,6 +1205,7 @@ step_resolve_ips() {
   fi
   log "CPs=${CP_IPS[*]} VIP=${VIP:-none} VIP6=${VIP6:-none} API_ENDPOINT=${API_ENDPOINT} workers=${WORKER_IPS[*]:-}"
   assert_guest_ips_not_vip
+  WORKER_HOSTS=()
 }
 
 # DHCP must not hand a guest the kube-vip address (ARP fight → join/finalize 404).
@@ -1209,6 +1288,17 @@ step_cluster() {
   fi
 
   wait_api "$CP_IP"
+  # Reused disks / failed creates leave BOOTSTRAPPED with a stale advertise IP.
+  assert_guest_identity "$CP_IP" "${CLUSTER_NAME}-cp-1"
+  log "soft-reset CP1 @ ${CP_IP} before apply (clear leftover STATE)"
+  if "$CTL" -e "${CP_IP}:50000" reset --force 2>&1; then
+    sleep 8
+    CP_IP="$(wait_ip "$CP_VMID" "${CLUSTER_NAME}-cp-1")"
+    CP_IPS[0]="$CP_IP"
+    wait_api "$CP_IP"
+  else
+    log "WARNING: reset CP1 failed — continuing (fresh guests are fine)"
+  fi
   log "apply controlplane → ${CP_IP}"
   "$CTL" -e "${CP_IP}:50000" apply -f "$CLUSTER_OUT/controlplane.yaml"
   # Apply only writes STATE + flags reload; give pertiskd a moment to start
@@ -1217,16 +1307,32 @@ step_cluster() {
   wait_api "$CP_IP"
 
   log "bootstrap CP1 (advertise=${CP_IP}; waits for registry.k8s.io pulls + :6443, up to ~10m)"
-  "$CTL" -e "${CP_IP}:50000" bootstrap --advertise-address "$CP_IP"
+  local boot_out
+  boot_out="$("$CTL" -e "${CP_IP}:50000" bootstrap --advertise-address "$CP_IP" 2>&1)" || {
+    echo "$boot_out" >&2
+    die "bootstrap CP1 failed"
+  }
+  echo "$boot_out"
+  if echo "$boot_out" | grep -q 'already=true'; then
+    log "CP1 already bootstrapped — verifying apiserver on ${CP_IP}"
+    local host="$CP_IP"
+    [[ "$CP_IP" == *:* ]] && host="[${CP_IP}]"
+    if ! curl -sk --connect-timeout 3 "https://${host}:6443/readyz" 2>/dev/null | grep -qi ok; then
+      die "CP1 already bootstrapped but https://${CP_IP}:6443/readyz failed.
+STATE is likely leftover from a previous create (guest IP may have changed).
+Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate the cluster."
+    fi
+  fi
   log "bootstrap CP1 done"
 
   # Join additional control planes (stacked etcd + kube-vip).
   # Use C-style for: macOS `seq 2 1` counts down and would iterate wrongly.
-  local i ip host cpyaml etcd_ep
+  local i ip host cpyaml etcd_ep cvid
   etcd_ep="https://${CP_IP}:2379"
   for ((i = 2; i <= CONTROLPLANES; i++)); do
     ip="${CP_IPS[$((i - 1))]}"
     host="${CLUSTER_NAME}-cp-${i}"
+    cvid=$((CP_VMID + i - 1))
     cpyaml="${CLUSTER_OUT}/controlplane-${i}.yaml"
     log "get-join-config for ${host}"
     "$CTL" -e "${CP_IP}:50000" get-join-config \
@@ -1239,6 +1345,17 @@ step_cluster() {
       mv "${cpyaml}.tmp" "$cpyaml"
     fi
     wait_api "$ip"
+    # Clear leftover BOOTSTRAPPED from a previous failed join on reused disks.
+    assert_guest_identity "$ip" "$host"
+    log "soft-reset ${host} @ ${ip} before join (clear leftover STATE)"
+    if "$CTL" -e "${ip}:50000" reset --force 2>&1; then
+      sleep 8
+      ip="$(wait_ip "$cvid" "$host")"
+      CP_IPS[$((i - 1))]="$ip"
+      wait_api "$ip"
+    else
+      log "WARNING: reset ${host} failed — continuing (fresh guests are fine)"
+    fi
     log "apply + join-controlplane ${host} @ ${ip}"
     "$CTL" -e "${ip}:50000" apply -f "$cpyaml"
     # apply reloads runtime; give Machine API a moment before the long join RPC
@@ -1277,19 +1394,36 @@ step_cluster() {
   wait_nodes_ready "$CLUSTER_OUT/admin.conf" "${cp_hosts[@]}"
   ensure_control_plane_roles "$CLUSTER_OUT/admin.conf" "$CONTROLPLANES"
 
-  local wyaml worker_hosts=()
+  WORKER_HOSTS=()
+  local wyaml wvid i ip host
   for i in $(seq 1 "$WORKERS"); do
     ip="${WORKER_IPS[$((i - 1))]}"
     host="${CLUSTER_NAME}-wk-${i}"
+    wvid=$((CP_VMID + CONTROLPLANES + i - 1))
     wyaml="${CLUSTER_OUT}/worker-${i}.yaml"
     set_hostname_yaml "$CLUSTER_OUT/worker.yaml" "$wyaml" "$host"
     wait_api "$ip"
+    # Clear leftover kubelet/bootstrap STATE on reused disks (same as joining CPs).
+    assert_guest_identity "$ip" "$host"
+    log "soft-reset ${host} @ ${ip} before join (clear leftover STATE)"
+    if "$CTL" -e "${ip}:50000" reset --force 2>&1; then
+      sleep 8
+      ip="$(wait_ip "$wvid" "$host")"
+      WORKER_IPS[$((i - 1))]="$ip"
+      wait_api "$ip"
+    else
+      log "WARNING: reset ${host} failed — continuing (fresh guests are fine)"
+    fi
     log "join worker ${host} @ ${ip}"
     "$CTL" -e "${ip}:50000" apply -f "$wyaml"
-    worker_hosts+=("$host")
+    # apply reloads kubelet; give TLS bootstrap a moment before the wait loop
+    sleep 5
+    wait_api "$ip"
+    WORKER_HOSTS+=("$host")
   done
-  if ((${#worker_hosts[@]} > 0)); then
-    wait_nodes_ready "$CLUSTER_OUT/admin.conf" "${worker_hosts[@]}"
+  if ((${#WORKER_HOSTS[@]} > 0)); then
+    # Node object = TLS bootstrap OK. Ready often needs cluster CNI (cni:none).
+    wait_nodes_registered "$CLUSTER_OUT/admin.conf" "${WORKER_HOSTS[@]}"
     ensure_worker_roles "$CLUSTER_OUT/admin.conf" "$WORKERS"
   fi
   # Re-check after workers (late CP node registration can miss join-time label).
@@ -1439,6 +1573,16 @@ step_cni() {
       die "unknown CNI=$CNI (use cilium|calico|flannel|none)"
       ;;
   esac
+}
+
+# After cluster CNI is installed, workers (cni:none) can become Ready.
+step_workers_ready() {
+  [[ ${#WORKER_HOSTS[@]} -gt 0 ]] || return 0
+  local kc="$CLUSTER_OUT/admin.conf"
+  ensure_api_endpoint_reachable
+  log "waiting for workers Ready after CNI=${CNI}"
+  wait_nodes_ready "$kc" "${WORKER_HOSTS[@]}"
+  ensure_worker_roles "$kc" "$WORKERS"
 }
 
 # kube-proxy for Flannel/Calico (Cilium uses kubeProxyReplacement instead).
@@ -1652,6 +1796,7 @@ step_vms
 step_resolve_ips
 step_cluster
 step_cni
+step_workers_ready
 step_dns
 step_addons
 step_apps

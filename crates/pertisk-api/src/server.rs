@@ -68,10 +68,23 @@ impl MachineService for MachineSvc {
         _request: Request<VersionRequest>,
     ) -> Result<Response<VersionResponse>, Status> {
         let st = lock(&self.state)?;
+        let hostname = fs::read_to_string(&st.config_path)
+            .ok()
+            .and_then(|y| MachineConfig::from_yaml(&y).ok())
+            .and_then(|c| c.machine.network.hostname)
+            .filter(|h| !h.is_empty())
+            .or_else(|| {
+                fs::read_to_string("/etc/hostname")
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_default();
         Ok(Response::new(VersionResponse {
             version: st.version.clone(),
             api_version: st.api_version.clone(),
             platform: st.platform.clone(),
+            hostname,
         }))
     }
 

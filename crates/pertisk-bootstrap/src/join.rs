@@ -250,6 +250,7 @@ delete the cluster, and recreate (do not reuse this node)"
     }
 
     fs::create_dir_all("/var/lib/etcd").ok();
+    paths.write_advertise(&advertise)?;
     // Marker after join material is on disk so reboot restore works; finalize may
     // still fail (slow CP3). Retries hit already_joined and re-run finalize/label.
     fs::write(
@@ -377,7 +378,10 @@ pub fn get_join_config(
         .unwrap_or_else(|| DEFAULT_K8S_VERSION.into());
     let cni = cluster.cni;
 
-    let advertise = detect_advertise_ip().unwrap_or_else(|| "127.0.0.1".into());
+    let advertise = paths
+        .read_advertise()
+        .or_else(detect_advertise_ip)
+        .unwrap_or_else(|| "127.0.0.1".into());
     let etcd_endpoints = vec![format!("https://{advertise}:2379")];
 
     let cp_hostname = if controlplane_index == 0 {

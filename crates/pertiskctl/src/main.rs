@@ -294,10 +294,17 @@ async fn main() -> Result<()> {
             match connect(&cli).await {
                 Ok(mut client) => {
                     let resp = client.version(VersionRequest {}).await?.into_inner();
-                    println!(
-                        "node {} (api {} / {})",
-                        resp.version, resp.api_version, resp.platform
-                    );
+                    if resp.hostname.is_empty() {
+                        println!(
+                            "node {} (api {} / {})",
+                            resp.version, resp.api_version, resp.platform
+                        );
+                    } else {
+                        println!(
+                            "node {} hostname={} (api {} / {})",
+                            resp.version, resp.hostname, resp.api_version, resp.platform
+                        );
+                    }
                 }
                 Err(err) => {
                     println!("node: unreachable ({err})");

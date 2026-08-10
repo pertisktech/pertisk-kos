@@ -44,6 +44,25 @@ impl BootstrapPaths {
         self.root.join("BOOTSTRAPPED")
     }
 
+    /// Advertise address used when this node was bootstrapped/joined (IPv4).
+    pub fn advertise_path(&self) -> PathBuf {
+        self.root.join("advertise-address")
+    }
+
+    pub fn write_advertise(&self, ip: &str) -> Result<()> {
+        fs::create_dir_all(&self.root)?;
+        fs::write(self.advertise_path(), format!("{}\n", ip.trim()))
+            .with_context(|| format!("write {}", self.advertise_path().display()))?;
+        Ok(())
+    }
+
+    pub fn read_advertise(&self) -> Option<String> {
+        fs::read_to_string(self.advertise_path())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
     pub fn ensure_dirs(&self) -> Result<()> {
         for d in [
             self.pki(),
