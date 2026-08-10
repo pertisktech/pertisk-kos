@@ -1126,6 +1126,26 @@ step_resolve_ips() {
     API_ENDPOINT="$CP_IP"
   fi
   log "CPs=${CP_IPS[*]} VIP=${VIP:-none} VIP6=${VIP6:-none} API_ENDPOINT=${API_ENDPOINT} workers=${WORKER_IPS[*]:-}"
+  assert_guest_ips_not_vip
+}
+
+# DHCP must not hand a guest the kube-vip address (ARP fight → join/finalize 404).
+assert_guest_ips_not_vip() {
+  local vip ip kind
+  for kind in "IPv4 VIP:${VIP:-}" "IPv6 VIP:${VIP6:-}"; do
+    vip="${kind#*:}"
+    kind="${kind%%:*}"
+    [[ -n "$vip" ]] || continue
+    for ip in "${CP_IPS[@]}" "${WORKER_IPS[@]}"; do
+      [[ -n "$ip" ]] || continue
+      if [[ "$ip" == "$vip" ]]; then
+        die "${kind} ${vip} was assigned by DHCP to a guest node.
+kube-vip and that node cannot share the same address (join/finalize will fail with node not registered).
+Pick a VIP outside your DHCP pool (and do not reserve it as a client lease), delete this cluster, and recreate.
+Guest IPs: CPs=${CP_IPS[*]} workers=${WORKER_IPS[*]:-none}"
+      fi
+    done
+  done
 }
 
 ensure_pertiskctl() {
@@ -1305,7 +1325,7 @@ require_vip_free() {
   log "checking ${label} ${vip} is free on the LAN"
   if ping -c 1 -W 1 "$vip" >/dev/null 2>&1 \
     || ping -c 1 -W 1 -6 "$vip" >/dev/null 2>&1; then
-    die "${label} ${vip} already responds to ping — kube-vip cannot use a busy address. Pick a free VIP."
+    die "${label} ${vip} already responds to ping — kube-vip cannot use a busy address. Pick a free VIP outside your DHCP pool."
   fi
   # Bracket IPv6 for URL.
   local host="$vip"
@@ -1315,7 +1335,7 @@ require_vip_free() {
   if curl -sk --connect-timeout 1 "https://${host}:6443/readyz" >/dev/null 2>&1; then
     die "${label} ${vip}:6443 already serves an apiserver — pick a free VIP."
   fi
-  log "${label} ${vip} looks free"
+  log "${label} ${vip} looks free (still must stay outside the DHCP pool so guests are not assigned it)"
 }
 
 warn_if_vip_busy() {

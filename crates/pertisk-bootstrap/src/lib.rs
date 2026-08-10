@@ -666,7 +666,11 @@ fn ensure_control_plane_node_role(
         .get(&path)
         .with_context(|| format!("get node {node_name}"))?;
     if status != 200 {
-        bail!("node {node_name} not registered before timeout (HTTP {status})");
+        bail!(
+            "node {node_name} not registered before timeout (HTTP {status}). \
+If this is an HA join, check whether the node's advertise IP equals the kube-vip \
+(DHCP must not assign the VIP to a guest)"
+        );
     }
     // Already labeled (retry after a previous partial finalize) — still ensure taint.
     if node_has_control_plane_label(&body) {

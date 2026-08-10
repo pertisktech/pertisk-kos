@@ -40,8 +40,8 @@ const defaultForm = {
   workers: 2,
   network_mode: 'ipv4',
   arch: 'amd64',
-  vip: '10.1.1.200',
-  vip6: 'fd00:1::200',
+  vip: '10.1.1.250',
+  vip6: 'fd00:1::250',
   cni: 'cilium',
   k8s_version: '',
   max_pods: 250,
@@ -492,6 +492,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
           {ha && (
             <p className="hint">
               HA mode (M&gt;1): stacked etcd + kube-vip — VIP required for the selected stack.
+              Use an address <strong>outside your DHCP pool</strong> (not leased to any VM).
             </p>
           )}
         </>
@@ -524,7 +525,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
                 <input
                   value={form.vip}
                   onChange={(e) => set('vip', e.target.value)}
-                  placeholder="10.1.1.200"
+                  placeholder="10.1.1.250"
                 />
               </div>
             )}

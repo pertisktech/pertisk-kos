@@ -80,6 +80,19 @@ pub async fn join_control_plane(
         .unwrap_or_else(|| "pertisk-cp".into());
     if paths.is_bootstrapped() {
         let _ = crate::restore_control_plane(state_root);
+        let endpoint_host = endpoint_host(&cluster.endpoint);
+        let advertise = advertise_address
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(detect_advertise_ip)
+            .unwrap_or_default();
+        if !endpoint_host.is_empty() && !advertise.is_empty() && advertise == endpoint_host {
+            bail!(
+                "already-joined node advertise {advertise} equals cluster.endpoint VIP — \
+DHCP assigned the kube-vip to this guest. Delete the cluster and recreate with a VIP \
+outside the DHCP pool"
+            );
+        }
         // Prior joins could write BOOTSTRAPPED before the CP role label stuck
         // (especially CP3). Re-run finalize so retries actually fix ROLES=<none>.
         // Give pertiskd a beat to honor the kubelet-reload flag from restore.
@@ -102,6 +115,14 @@ pub async fn join_control_plane(
         .or_else(detect_advertise_ip)
         .context("could not determine advertise address")?;
     let endpoint_host = endpoint_host(&cluster.endpoint);
+    // DHCP sometimes hands a CP the kube-vip address. That breaks ARP + node registration.
+    if !endpoint_host.is_empty() && advertise == endpoint_host {
+        bail!(
+            "advertise address {advertise} equals cluster.endpoint host (VIP) — \
+this guest was given the kube-vip IP by DHCP. Pick a VIP outside the DHCP pool, \
+delete the cluster, and recreate (do not reuse this node)"
+        );
+    }
     let k8s_ver = cluster
         .kubernetes_version
         .as_deref()
