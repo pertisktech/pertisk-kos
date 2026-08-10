@@ -50,6 +50,10 @@ Home (`/`) shows cluster counts plus a **Cluster resources** section: one card p
 
 Polls `GET /api/dashboard/resources` about every 15s. Cluster list / job status updates push via **SSE** (`GET /api/events?token=…`) with a slow poll fallback. Click a card to open the cluster.
 
+## Nodes tab
+
+Cluster detail **Nodes** shows lifecycle status (`ready` / `provisioning` / …) plus live **online** / **offline** from a TCP probe to each guest Machine API (`:50000`).
+
 ## Node detail
 
 Cluster → Nodes → click a node name → `/clusters/:id/nodes/:nid`.

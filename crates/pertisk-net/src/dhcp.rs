@@ -3,6 +3,11 @@
 //! Sole lease path for production images. After the initial DISCOVER/REQUEST,
 //! a per-interface maintainer thread renews at T1 (unicast) and rebinds at T2
 //! (broadcast) so long-lived nodes keep their address past the first lease.
+//!
+//! Across reboot, the last ACK is persisted under STATE (`machine/dhcp/`) and
+//! the boot path tries RFC 2131 INIT-REBOOT (REQUEST previous IP) before a
+//! full DISCOVER — so Proxmox stop/start keeps the same address when the DHCP
+//! server still honors that binding.
 
 #[cfg(target_os = "linux")]
 use crate::apply::NetError;
@@ -12,15 +17,40 @@ use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::net::Ipv4Addr;
 #[cfg(target_os = "linux")]
+use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "linux")]
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(target_os = "linux")]
 use std::thread::JoinHandle;
 #[cfg(target_os = "linux")]
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Active DHCPv4 lease (in-memory; rediscovered after reboot).
+/// Directory under STATE where DHCP leases are persisted (`machine/dhcp`).
+#[cfg(target_os = "linux")]
+fn lease_dir_slot() -> &'static Mutex<Option<PathBuf>> {
+    static D: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    D.get_or_init(|| Mutex::new(None))
+}
+
+/// Point the DHCP client at STATE so leases survive reboot.
+///
+/// Call after STATE is mounted (e.g. `{state_root}/machine/dhcp`).
+#[cfg(target_os = "linux")]
+pub fn set_lease_dir(dir: Option<&Path>) {
+    let mut g = match lease_dir_slot().lock() {
+        Ok(m) => m,
+        Err(p) => p.into_inner(),
+    };
+    *g = dir.map(|p| p.to_path_buf());
+    if let Some(p) = dir {
+        let _ = std::fs::create_dir_all(p);
+        tracing::info!(path = %p.display(), "DHCP lease dir set");
+    }
+}
+
+/// Active DHCPv4 lease (in-memory; also persisted under STATE when configured).
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone)]
 pub struct Lease {
@@ -37,6 +67,21 @@ pub struct Lease {
     /// Seconds from acquire until broadcast rebind (T2).
     pub t2_secs: u32,
     pub acquired: Instant,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedLease {
+    iface: String,
+    ip: String,
+    prefix: u8,
+    server: String,
+    routers: Vec<String>,
+    dns: Vec<String>,
+    lease_secs: u32,
+    t1_secs: u32,
+    t2_secs: u32,
+    acquired_unix: u64,
 }
 
 #[cfg(target_os = "linux")]
@@ -59,6 +104,104 @@ impl Lease {
         } else {
             self.acquired + Duration::from_secs(u64::from(self.lease_secs))
         }
+    }
+
+    fn to_persisted(&self) -> PersistedLease {
+        let acquired_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        PersistedLease {
+            iface: self.iface.clone(),
+            ip: self.ip.to_string(),
+            prefix: self.prefix,
+            server: self.server.to_string(),
+            routers: self.routers.iter().map(ToString::to_string).collect(),
+            dns: self.dns.iter().map(ToString::to_string).collect(),
+            lease_secs: self.lease_secs,
+            t1_secs: self.t1_secs,
+            t2_secs: self.t2_secs,
+            acquired_unix,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn lease_path(iface: &str) -> Option<PathBuf> {
+    let dir = match lease_dir_slot().lock() {
+        Ok(g) => g.clone(),
+        Err(p) => p.into_inner().clone(),
+    }?;
+    let safe: String = iface
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    Some(dir.join(format!("{safe}.lease")))
+}
+
+#[cfg(target_os = "linux")]
+fn persist_lease(lease: &Lease) {
+    let Some(path) = lease_path(&lease.iface) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(&lease.to_persisted()) {
+        Ok(body) => {
+            if let Err(err) = std::fs::write(&path, body) {
+                tracing::warn!(
+                    interface = %lease.iface,
+                    path = %path.display(),
+                    error = %err,
+                    "DHCP lease persist failed"
+                );
+            } else {
+                tracing::debug!(
+                    interface = %lease.iface,
+                    path = %path.display(),
+                    ip = %lease.ip,
+                    "DHCP lease persisted"
+                );
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "DHCP lease serialize failed"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn peek_persisted_ip(iface: &str) -> Option<Ipv4Addr> {
+    let path = lease_path(iface)?;
+    let body = std::fs::read_to_string(&path).ok()?;
+    let p: PersistedLease = serde_json::from_str(&body).ok()?;
+    let ip: Ipv4Addr = p.ip.parse().ok()?;
+    if ip.is_unspecified() || ip.is_broadcast() {
+        return None;
+    }
+    Some(ip)
+}
+
+#[cfg(target_os = "linux")]
+fn load_persisted_ip(iface: &str) -> Option<Ipv4Addr> {
+    let ip = peek_persisted_ip(iface)?;
+    if let Some(path) = lease_path(iface) {
+        tracing::info!(
+            interface = iface,
+            ip = %ip,
+            path = %path.display(),
+            "DHCP loaded previous lease from STATE"
+        );
+    }
+    Some(ip)
+}
+
+/// True when STATE has a preferred IP that differs from the address currently on the iface.
+#[cfg(target_os = "linux")]
+pub fn should_reclaim(iface: &str, current_v4: Option<Ipv4Addr>) -> bool {
+    match (peek_persisted_ip(iface), current_v4) {
+        (Some(want), Some(have)) => want != have,
+        (Some(_), None) => true,
+        _ => false,
     }
 }
 
@@ -132,10 +275,13 @@ pub fn ensure_maintainer(iface: &str) {
 }
 
 /// One-shot DISCOVER → REQUEST → ACK and apply the lease (boot path).
+///
+/// Prefers INIT-REBOOT from a STATE-persisted lease when available.
 #[cfg(target_os = "linux")]
 pub fn run_dhcp(iface: &str) -> Result<(), NetError> {
     let lease = acquire(iface)?;
     apply_lease(&lease)?;
+    persist_lease(&lease);
     seed_lease(lease);
     ensure_maintainer(iface);
     Ok(())
@@ -179,6 +325,7 @@ fn maintain_loop(iface: &str, stop: &AtomicBool) {
                         sleep_interruptible(Duration::from_secs(15), stop);
                         continue;
                     }
+                    persist_lease(&l);
                     lease = Some(l);
                 }
                 Err(err) => {
@@ -231,6 +378,7 @@ fn maintain_loop(iface: &str, stop: &AtomicBool) {
                             lease_secs = l.lease_secs,
                             "DHCP lease renewed"
                         );
+                        persist_lease(&l);
                         lease = Some(l);
                     }
                     continue;
@@ -259,6 +407,7 @@ fn maintain_loop(iface: &str, stop: &AtomicBool) {
                             lease_secs = l.lease_secs,
                             "DHCP lease rebound"
                         );
+                        persist_lease(&l);
                         lease = Some(l);
                     }
                     continue;
@@ -288,6 +437,111 @@ fn maintain_loop(iface: &str, stop: &AtomicBool) {
 
 #[cfg(target_os = "linux")]
 fn acquire(iface: &str) -> Result<Lease, NetError> {
+    if let Some(prev_ip) = load_persisted_ip(iface) {
+        match init_reboot(iface, prev_ip) {
+            Ok(lease) => {
+                tracing::info!(
+                    interface = iface,
+                    ip = %lease.ip,
+                    prefix = lease.prefix,
+                    lease_secs = lease.lease_secs,
+                    "DHCP bound (INIT-REBOOT)"
+                );
+                return Ok(lease);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    interface = iface,
+                    previous_ip = %prev_ip,
+                    error = %err,
+                    "DHCP INIT-REBOOT failed; falling back to DISCOVER"
+                );
+            }
+        }
+    }
+    acquire_discover(iface)
+}
+
+/// RFC 2131 INIT-REBOOT: broadcast REQUEST for a previously bound address.
+#[cfg(target_os = "linux")]
+fn init_reboot(iface: &str, requested: Ipv4Addr) -> Result<Lease, NetError> {
+    use dhcproto::v4::{
+        DhcpOption, Encodable, Encoder, Flags, Message, MessageType, Opcode, OptionCode,
+    };
+    use rand::RngCore;
+    use std::net::SocketAddrV4;
+
+    wait_iface(iface, Duration::from_secs(15))?;
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| NetError::Msg(e.to_string()))?;
+        let _ = rt.block_on(crate::link::set_link_up(iface));
+    }
+    let mac = read_mac(iface)?;
+    let mut xid_bytes = [0u8; 4];
+    rand::thread_rng().fill_bytes(&mut xid_bytes);
+    let xid = u32::from_be_bytes(xid_bytes);
+    let client_id = client_id_from_mac(&mac);
+    let sock = open_dhcp_socket(iface, Ipv4Addr::UNSPECIFIED)?;
+    let dest = SocketAddrV4::new(Ipv4Addr::BROADCAST, 67);
+    let deadline = Instant::now() + Duration::from_secs(12);
+
+    let mut attempts = 0u32;
+    while Instant::now() < deadline {
+        attempts += 1;
+        let mut msg = Message::default();
+        msg.set_opcode(Opcode::BootRequest);
+        msg.set_xid(xid);
+        msg.set_flags(Flags::default().set_broadcast());
+        msg.set_chaddr(&mac);
+        // INIT-REBOOT: ciaddr must be 0; Requested-IP set; Server-ID must NOT be set.
+        msg.opts_mut()
+            .insert(DhcpOption::MessageType(MessageType::Request));
+        msg.opts_mut()
+            .insert(DhcpOption::ClientIdentifier(client_id.clone()));
+        msg.opts_mut()
+            .insert(DhcpOption::RequestedIpAddress(requested));
+        msg.opts_mut()
+            .insert(DhcpOption::ParameterRequestList(param_request_list()));
+        let mut buf = Vec::new();
+        msg.encode(&mut Encoder::new(&mut buf))
+            .map_err(|e| NetError::Msg(format!("dhcp encode init-reboot: {e}")))?;
+        tracing::debug!(
+            interface = iface,
+            %requested,
+            attempts,
+            "DHCP INIT-REBOOT request"
+        );
+        if let Err(err) = sock.send_to(&buf, dest) {
+            tracing::warn!(interface = iface, error = %err, "DHCP INIT-REBOOT send failed");
+        }
+        if let Some(resp) = recv_matching(&sock, xid, deadline) {
+            match resp.opts().get(OptionCode::MessageType) {
+                Some(DhcpOption::MessageType(MessageType::Ack)) => {
+                    let server_ip = match resp.opts().get(OptionCode::ServerIdentifier) {
+                        Some(DhcpOption::ServerIdentifier(ip)) => *ip,
+                        _ => resp.siaddr(),
+                    };
+                    return lease_from_ack(iface, &resp, server_ip);
+                }
+                Some(DhcpOption::MessageType(MessageType::Nak)) => {
+                    return Err(NetError::Msg(format!(
+                        "DHCP NAK on INIT-REBOOT for {requested}"
+                    )));
+                }
+                _ => {}
+            }
+        }
+    }
+    Err(NetError::Msg(format!(
+        "DHCP no ACK on INIT-REBOOT for {requested} after {attempts} attempts"
+    )))
+}
+
+#[cfg(target_os = "linux")]
+fn acquire_discover(iface: &str) -> Result<Lease, NetError> {
     use dhcproto::v4::{
         DhcpOption, Encodable, Encoder, Flags, Message, MessageType, Opcode, OptionCode,
     };
@@ -821,5 +1075,41 @@ mod tests {
         let ack = Message::default();
         let (t1, t2) = lease_timers(u32::MAX, &ack);
         assert!(t1 > 0 && t2 > t1);
+    }
+
+    #[test]
+    fn persists_and_loads_preferred_ip() {
+        use super::{peek_persisted_ip, persist_lease, set_lease_dir, should_reclaim, Lease};
+        use std::time::Instant;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        set_lease_dir(Some(dir.path()));
+        let lease = Lease {
+            iface: "eth0".into(),
+            ip: Ipv4Addr::new(10, 1, 1, 50),
+            prefix: 24,
+            server: Ipv4Addr::new(10, 1, 1, 1),
+            routers: vec![Ipv4Addr::new(10, 1, 1, 1)],
+            dns: vec![],
+            lease_secs: 3600,
+            t1_secs: 1800,
+            t2_secs: 3150,
+            acquired: Instant::now(),
+        };
+        persist_lease(&lease);
+        assert_eq!(
+            peek_persisted_ip("eth0"),
+            Some(Ipv4Addr::new(10, 1, 1, 50))
+        );
+        assert!(!should_reclaim(
+            "eth0",
+            Some(Ipv4Addr::new(10, 1, 1, 50))
+        ));
+        assert!(should_reclaim(
+            "eth0",
+            Some(Ipv4Addr::new(10, 1, 1, 99))
+        ));
+        set_lease_dir(None);
     }
 }

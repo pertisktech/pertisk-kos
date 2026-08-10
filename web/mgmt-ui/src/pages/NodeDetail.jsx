@@ -14,6 +14,7 @@ import {
 } from 'recharts'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+import { NodeStatusBadges } from '../components/NodeStatusBadges'
 
 const POLL_MS = 4000
 const LOG_POLL_MS = 3000
@@ -246,7 +247,16 @@ export default function NodeDetail() {
                 {' '}
                 <span className="badge">{node.role === 'controlplane' ? 'CP' : 'worker'}</span>
                 {' '}
-                <span className={`badge ${node.status}`}>{node.status}</span>
+                <NodeStatusBadges
+                  status={node.status}
+                  availability={
+                    health?.error
+                      ? 'offline'
+                      : health?.ready != null || health?.containerd
+                        ? 'online'
+                        : node.availability || 'unknown'
+                  }
+                />
               </>
             )}
           </h1>

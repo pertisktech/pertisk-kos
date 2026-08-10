@@ -4,6 +4,7 @@ import { api, getToken } from '../api'
 import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 import { ClusterMetaBadges, formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
+import { NodeStatusBadges } from '../components/NodeStatusBadges'
 import { useConfirm } from '../components/Confirm'
 import Checkbox from '../components/Checkbox'
 import Modal from '../components/Modal'
@@ -137,7 +138,9 @@ function NodesTable({
                 </td>
               )}
               {showHw && <td className="hw-cell">{formatHw(n)}</td>}
-              <td><span className={`badge ${n.status}`}>{n.status}</span></td>
+              <td>
+                <NodeStatusBadges status={n.status} availability={n.availability} />
+              </td>
               {(onHardware || onReboot) && (
                 <td className="col-actions">
                   <div className="row-actions-cell">
@@ -1176,6 +1179,18 @@ machine:
                       <>
                         {' · '}
                         <span className="badge ready">{nodes.filter((n) => n.status === 'ready').length} ready</span>
+                        {' '}
+                        <span className="badge online">
+                          {nodes.filter((n) => n.availability === 'online').length} online
+                        </span>
+                        {nodes.some((n) => n.availability === 'offline') && (
+                          <>
+                            {' '}
+                            <span className="badge offline">
+                              {nodes.filter((n) => n.availability === 'offline').length} offline
+                            </span>
+                          </>
+                        )}
                         {' '}
                         <span className="badge provisioning">
                           {nodes.filter((n) => n.status === 'provisioning' || n.status === 'pending').length} provisioning

@@ -72,8 +72,17 @@ mod linux {
                 let existing = rt.block_on(link::list_addresses(&name)).unwrap_or_default();
                 // IPv6 SLAAC/link-local often appears before DHCPv4 — only skip DHCP
                 // when we already have an IPv4 address.
-                let has_v4 = existing.iter().any(|a| a.contains('.'));
-                if has_v4 {
+                let current_v4 = existing.iter().find_map(|a| {
+                    let ip = a.split('/').next().unwrap_or(a.as_str());
+                    if ip.contains('.') && !ip.starts_with("127.") {
+                        ip.parse::<std::net::Ipv4Addr>().ok()
+                    } else {
+                        None
+                    }
+                });
+                let has_v4 = current_v4.is_some();
+                let reclaim = crate::dhcp::should_reclaim(&name, current_v4);
+                if has_v4 && !reclaim {
                     info!(
                         interface = %name,
                         addresses = ?existing,
@@ -82,6 +91,13 @@ mod linux {
                     // Still renew/rebind so the address survives past the first lease.
                     crate::dhcp::ensure_maintainer(&name);
                 } else {
+                    if reclaim {
+                        info!(
+                            interface = %name,
+                            current = ?current_v4,
+                            "DHCP reclaiming STATE lease (INIT-REBOOT)"
+                        );
+                    }
                     match link::run_dhcp(&name) {
                         Ok(()) => {
                             let addrs = rt.block_on(link::list_addresses(&name)).unwrap_or_default();

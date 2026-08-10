@@ -12,6 +12,7 @@ mod jobs;
 mod k8s;
 mod kubeconfig;
 mod node_attestation;
+mod node_availability;
 mod node_status;
 mod node_sync;
 mod proxmox;

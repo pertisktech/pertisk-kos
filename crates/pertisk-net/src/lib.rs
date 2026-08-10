@@ -15,6 +15,14 @@ pub use link::{
     ipv6_enabled, is_ula_ipv6, is_usable_global_ipv6, prefer_global_ipv6, set_ipv6_enabled,
 };
 
+/// Point DHCP lease persistence at STATE (`machine/dhcp`). No-op off Linux.
+#[cfg(target_os = "linux")]
+pub use dhcp::set_lease_dir;
+
+/// Point DHCP lease persistence at STATE (`machine/dhcp`). No-op off Linux.
+#[cfg(not(target_os = "linux"))]
+pub fn set_lease_dir(_dir: Option<&std::path::Path>) {}
+
 /// Comma-separated `v4,v6` for kubelet `--node-ip` when dual-stack (required by k8s).
 /// Prefers SLAAC GUA over synthetic ULA so the node InternalIP matches eth0.
 pub fn dual_stack_node_ip(iface: &str) -> Option<String> {

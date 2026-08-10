@@ -285,9 +285,43 @@ fn run() -> Result<()> {
         }
     };
 
-    // Bring up DHCP before install — install can warn/fail on cloud (/dev/vda
-    // vs scsi) and must not delay addressing. Default IPv4-only: disable IPv6
-    // unless machine config opts into dual-stack.
+    // Mount STATE before DHCP so INIT-REBOOT can reclaim the previous lease
+    // across Proxmox stop/start (lease file under machine/dhcp/).
+    if let Ok(mut st) = api_state.lock() {
+        st.set_message("mounting STATE");
+    }
+    let volume = match prepare_boot_state(args.state_dir.as_deref()) {
+        Ok(v) => v,
+        Err(err) => {
+            warn!(error = %err, "STATE prepare failed; using /tmp/pertisk-state");
+            let fallback = PathBuf::from("/tmp/pertisk-state");
+            let _ = std::fs::create_dir_all(&fallback);
+            match prepare_boot_state(Some(&fallback)) {
+                Ok(v) => v,
+                Err(err2) => {
+                    warn!(error = %err2, "fallback STATE failed");
+                    return Err(err2);
+                }
+            }
+        }
+    };
+    log_ring().set_state_root(&volume.root);
+    pertisk_net::set_lease_dir(Some(&volume.root.join("machine/dhcp")));
+    let trust_key = resolve_trust_key(&args, &volume);
+    if let Ok(mut st) = api_state.lock() {
+        st.bind_state(volume.root.clone(), trust_key.clone());
+        st.set_message("STATE ready");
+    }
+    info!(
+        path = %volume.root.display(),
+        source = ?volume.source,
+        layout_present = layout_present(),
+        config_exists = volume.config_path().exists(),
+        "STATE volume ready"
+    );
+
+    // DHCP after STATE so a persisted lease can INIT-REBOOT before DISCOVER.
+    // Install still runs after addressing so lab wait_ip can see :50000 early.
     let early_dual = early_cfg
         .as_ref()
         .and_then(|c| c.cluster.as_ref())
@@ -313,7 +347,7 @@ fn run() -> Result<()> {
         }
     } else if !args.skip_network {
         // Cloud images: no /config.yaml early path. Still DHCP eth0 so Serial/API
-        // are reachable while STATE mounts (seed is applied again after mount).
+        // are reachable; seed is re-applied after boot config load.
         let early_net = pertisk_config::Network {
             hostname: None,
             interfaces: vec![pertisk_config::Interface {
@@ -329,42 +363,34 @@ fn run() -> Result<()> {
         }
     }
 
-    if let Ok(mut st) = api_state.lock() {
-        st.set_message("mounting STATE");
-    }
-    let volume = match prepare_boot_state(args.state_dir.as_deref()) {
-        Ok(v) => v,
-        Err(err) => {
-            // Never abort PID 1 for STATE — keep going with a tmp dir.
-            // Use tracing (ring only while dashboard owns Serial) — eprintln
-            // after `\x1b[2J`/paint races leaves a blank Proxmox console.
-            warn!(error = %err, "STATE prepare failed; using /tmp/pertisk-state");
-            let fallback = PathBuf::from("/tmp/pertisk-state");
-            let _ = std::fs::create_dir_all(&fallback);
-            match prepare_boot_state(Some(&fallback)) {
-                Ok(v) => v,
-                Err(err2) => {
-                    warn!(error = %err2, "fallback STATE failed");
-                    return Err(err2);
+    // First-boot install may have just created STATE on disk — remount PARTLABEL.
+    let volume = if args.state_dir.is_none() {
+        match prepare_boot_state(None) {
+            Ok(v) => {
+                if v.root != volume.root {
+                    log_ring().set_state_root(&v.root);
+                    pertisk_net::set_lease_dir(Some(&v.root.join("machine/dhcp")));
+                    info!(
+                        path = %v.root.display(),
+                        source = ?v.source,
+                        "STATE remounted after install"
+                    );
                 }
+                v
+            }
+            Err(err) => {
+                warn!(error = %err, "STATE re-prepare after install failed; keeping prior volume");
+                volume
             }
         }
+    } else {
+        volume
     };
-    log_ring().set_state_root(&volume.root);
     let trust_key = resolve_trust_key(&args, &volume);
     if let Ok(mut st) = api_state.lock() {
         st.bind_state(volume.root.clone(), trust_key.clone());
-        st.set_message("STATE ready");
     }
-    // Early STATE/module lines are buffered before the file sink attaches; emit
-    // a durable summary so `pertiskctl logs` shows whether reboot will persist.
-    info!(
-        path = %volume.root.display(),
-        source = ?volume.source,
-        layout_present = layout_present(),
-        config_exists = volume.config_path().exists(),
-        "STATE volume ready"
-    );
+
     let _esp = try_prepare_esp();
     let cfg = load_boot_config(&args, &volume)
         .unwrap_or_else(|err| {
@@ -379,7 +405,7 @@ fn run() -> Result<()> {
                 warn!(error = %err, "hostname apply failed");
             }
         }
-        // Re-apply after STATE mount (seed config may differ from initramfs).
+        // Re-apply after seed/config load (may reclaim lease if early DHCP differed).
         if !args.skip_network {
             let dual = cfg
                 .cluster

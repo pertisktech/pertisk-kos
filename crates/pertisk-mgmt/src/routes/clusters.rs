@@ -305,13 +305,15 @@ async fn get_one(
         }
     }
 
-    let nodes = sqlx::query_as::<_, crate::routes::nodes::NodeOut>(&format!(
+    let mut nodes = sqlx::query_as::<_, crate::routes::nodes::NodeOut>(&format!(
         "{} WHERE cluster_id = ? ORDER BY role, name",
         crate::routes::nodes::NODE_SELECT
     ))
     .bind(&id)
     .fetch_all(state.pool())
     .await?;
+
+    crate::node_availability::fill(&mut nodes).await;
 
     cluster.availability =
         crate::cluster_availability::probe(&state, &id, &cluster.status).await;

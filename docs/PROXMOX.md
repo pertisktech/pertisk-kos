@@ -209,7 +209,11 @@ ip neigh | grep -i bc:24:11:00:00:d2
 # or your router's DHCP lease table for that MAC
 ```
 
-**Stable guest IPs (lab):** Proxmox does not assign DHCP — your router does (e.g. OpenWrt at `10.1.1.10`). New VMs get `net0=virtio=BC:24:11:…,bridge=…` with MAC derived from VMID so recreate keeps the same MAC. Add **Static Leases** on the DHCP server (LuCI → Network → DHCP and DNS) for each MAC → desired IPv4. Do not reserve the HA kube-vip.
+**Stable guest IPs (lab):** Proxmox does not assign DHCP — your router does (e.g. OpenWrt at `10.1.1.10`). New VMs get `net0=virtio=BC:24:11:…,bridge=…` with MAC derived from VMID so recreate keeps the same MAC.
+
+Guest images persist the last DHCP ACK under STATE (`machine/dhcp/*.lease`) and on reboot try **INIT-REBOOT** (REQUEST the previous IP) before a full DISCOVER. That usually keeps the same address across Proxmox stop/start when the DHCP server still honors the binding.
+
+For a hard guarantee, add **Static Leases** on the DHCP server (LuCI → Network → DHCP and DNS) for each MAC → desired IPv4. Do not reserve the HA kube-vip.
 
 To force a known address without DHCP, bake static config into the image (`dhcp: false` + `addresses` / `gateway` in the seed YAML) and rebuild.
 

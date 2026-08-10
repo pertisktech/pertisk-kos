@@ -372,10 +372,11 @@ fi
 # --- Create VM skeleton (UEFI: OVMF on amd64, AAVMF on arm64) ---
 EXISTS="$(api_get "/nodes/${NODE}/qemu/${VMID}/status/current" 2>/dev/null || echo '{}')"
 if echo "${EXISTS}" | jq -e '.data != null' >/dev/null 2>&1; then
-  echo "==> VM ${VMID} already exists — updating memory=${MEMORY} cores=${CORES}"
+  echo "==> VM ${VMID} already exists — updating memory=${MEMORY} cores=${CORES} net0=${NET0_SPEC}"
   api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
     --data-urlencode "memory=${MEMORY}" \
-    --data-urlencode "cores=${CORES}" >/dev/null 2>&1 || true
+    --data-urlencode "cores=${CORES}" \
+    --data-urlencode "net0=${NET0_SPEC}" >/dev/null 2>&1 || true
   if [[ "$ARCH" == "arm64" && -z "$ARM64_TEMPLATE" ]]; then
     echo "==> ensure arch=aarch64 machine=virt via ${PROXMOX_SSH}"
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" \

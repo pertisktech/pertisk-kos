@@ -128,6 +128,8 @@ check "no udhcpc in image" bash -c "! grep -qE 'usr/sbin/udhcpc|pertisk-udhcpc-h
 check "debug profile installs ash via /bin/busybox" file_has "${DF}" 'mv ./usr/lib/pertisk/.busybox-debug ./bin/busybox'
 check "builtin DHCP only" file_has "crates/pertisk-net/src/link.rs" 'crate::dhcp::run_dhcp\(iface\)'
 check "DHCP renew/rebind maintainer" file_has "crates/pertisk-net/src/dhcp.rs" 'ensure_maintainer'
+check "DHCP lease persist under STATE" file_has "crates/pertisk-net/src/dhcp.rs" 'persist_lease'
+check "DHCP INIT-REBOOT before DISCOVER" file_has "crates/pertisk-net/src/dhcp.rs" 'init_reboot'
 check "shared ioctl DHCP lease apply" file_has "crates/pertisk-net/src/link.rs" 'apply_dhcp_v4_lease'
 check "no udhcpc_hook module" bash -c "! test -f crates/pertisk-net/src/udhcpc_hook.rs"
 

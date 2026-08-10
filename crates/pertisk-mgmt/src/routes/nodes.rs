@@ -61,8 +61,16 @@ pub struct NodeOut {
     /// proxmox | vsphere | adopted | baremetal
     pub source: String,
     pub status: String,
+    /// Live Machine API reachability: `online` | `offline` | `unknown` (not stored).
+    #[sqlx(skip)]
+    #[serde(default = "default_availability")]
+    pub availability: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+fn default_availability() -> String {
+    "unknown".into()
 }
 
 pub const NODE_SELECT: &str = r#"SELECT id, cluster_id, name, role, vmid, ip, ip6, k8s_version,
@@ -133,12 +141,13 @@ async fn list(
     CurrentUser(_): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Vec<NodeOut>>> {
-    let rows = sqlx::query_as::<_, NodeOut>(&format!(
+    let mut rows = sqlx::query_as::<_, NodeOut>(&format!(
         "{NODE_SELECT} WHERE cluster_id = ? ORDER BY role, name"
     ))
     .bind(&id)
     .fetch_all(state.pool())
     .await?;
+    crate::node_availability::fill(&mut rows).await;
     Ok(Json(rows))
 }
 
@@ -154,9 +163,10 @@ async fn get_one(
     .bind(&cid)
     .fetch_optional(state.pool())
     .await?;
-    let Some(node) = row else {
+    let Some(mut node) = row else {
         return Err(AppError::NotFound);
     };
+    node.availability = crate::node_availability::probe_node(&node).await;
     Ok(Json(node))
 }
 
