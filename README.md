@@ -257,6 +257,7 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 |-----|--------|
 | [DESIGN.md](./DESIGN.md) | Architecture, phases, security model |
 | [docs/MGMT.md](./docs/MGMT.md) | Management UI/API, auth, create, RPM |
+| [docs/KERNEL.md](./docs/KERNEL.md) | Kernel cmdline (dashboard, defaults, deferred) |
 | [docs/PROXMOX.md](./docs/PROXMOX.md) | Proxmox token, upload, cluster bootstrap |
 | [docs/VSPHERE.md](./docs/VSPHERE.md) | ESXi provider |
 | [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md) | Platforms, runtime pins, CNI |

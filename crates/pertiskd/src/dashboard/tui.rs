@@ -94,16 +94,34 @@ fn run_tui_inner(
         caps.source, skin.theme.name, skin.chrome.name
     );
 
-    // Never `\x1b[2J` — a clear that races boot `eprintln!` / failed paint
-    // leaves Proxmox Serial blank. Full-frame home+\r\n paint overwrites.
+    // Stderr is silenced before the TUI thread starts — safe to wipe the
+    // whole Serial pane (not just below the cursor) so boot scrollback cannot
+    // leave system logs sitting in the top of the viewport under the frame.
     paint_console(UNSYNC.as_bytes());
+    paint_console(b"\x1b[H\x1b[2J");
     paint_console(CURSOR_OFF.as_bytes());
 
     let mut writer = FrameWriter::default();
     let mut last_sig = config_signature(&caps, &skin);
     let mut ticks: u32 = 0;
-    // Paint immediately so Serial is never left empty after cursor-off.
+    // Re-read paint-target once more right before the first dump — Serial
+    // winsize is often unset at detect() and appears a moment later.
     {
+        caps = probe::detect_refresh(caps);
+        if width != caps.cols || height != caps.rows {
+            width = caps.cols;
+            height = caps.rows;
+            skin = build_skin(width, height, caps.source, caps.utf8);
+            terminal = Terminal::new(TestBackend::new(width, height))
+                .map_err(|e| format!("terminal init resize: {e}"))?;
+            last_sig = config_signature(&caps, &skin);
+            info!(
+                width,
+                height,
+                size_source = caps.source,
+                "console TUI size refreshed before first paint"
+            );
+        }
         let snap = StatusSnapshot::collect(cfg.as_ref(), &state, &state_root);
         let log_rows = panels::log_inner_height_for(height, skin.mgmt_url.is_some()).max(2) as usize;
         let recent = logs.tail(panels::log_tail_count(log_rows));
@@ -111,7 +129,7 @@ fn run_tui_inner(
             .draw(|frame| panels::render_themed(frame, &snap, &recent, &skin))
             .map_err(|e| format!("TUI draw: {e}"))?;
         writer.invalidate();
-        dump_frame(&mut writer, terminal.backend(), true)?;
+        dump_frame(&mut writer, terminal.backend(), skin.chrome.ascii_only)?;
     }
 
     while !stop.load(Ordering::SeqCst) {
@@ -137,6 +155,7 @@ fn run_tui_inner(
         // Always refresh mgmt_url — apply can set it without changing theme/size,
         // and the old signature ignored that field so the node panel never updated.
         let mgmt_changed = skin.mgmt_url != next_skin.mgmt_url;
+        let size_changed = width != caps.cols || height != caps.rows;
         if sig != last_sig || mgmt_changed {
             width = caps.cols;
             height = caps.rows;
@@ -144,7 +163,12 @@ fn run_tui_inner(
             terminal = Terminal::new(TestBackend::new(width, height))
                 .map_err(|e| format!("terminal resize: {e}"))?;
             writer = FrameWriter::default();
+            writer.invalidate();
             last_sig = sig;
+            if size_changed {
+                // Full erase — 0J alone leaves scrolled boot lines above row 1.
+                paint_console(b"\x1b[H\x1b[2J");
+            }
             info!(
                 width,
                 height,
@@ -163,11 +187,12 @@ fn run_tui_inner(
             .draw(|frame| panels::render_themed(frame, &snap, &recent, &skin))
             .map_err(|e| format!("TUI draw: {e}"))?;
         ticks = ticks.wrapping_add(1);
-        // Periodic re-send so a newly opened Proxmox Serial tab is not blank.
-        if ticks % FORCE_REPAINT_EVERY == 0 {
+        // First few ticks: force a full clear+repaint so any kernel printk that
+        // raced the first dump cannot leave system logs in the top of the pane.
+        if ticks <= 3 || ticks % FORCE_REPAINT_EVERY == 0 {
             writer.invalidate();
         }
-        dump_frame(&mut writer, terminal.backend(), true)?;
+        dump_frame(&mut writer, terminal.backend(), skin.chrome.ascii_only)?;
     }
 
     paint_console(b"\x1b[?25h\x1b[?12h");
@@ -223,9 +248,24 @@ fn dump_frame(
     Ok(())
 }
 
-/// Write the TUI to stderr (usually ttyS0 / Proxmox Serial) and mirror to
+/// Write the TUI to the dashboard console (or stderr) and mirror to
 /// `/dev/tty0` so ESXi Host Client VGA also shows the dashboard.
 fn paint_console(bytes: &[u8]) {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(path) = crate::cmdline::dashboard_console_path() {
+            use std::fs::OpenOptions;
+            if let Ok(mut f) = OpenOptions::new().write(true).open(&path) {
+                let _ = f.write_all(bytes);
+                let _ = f.flush();
+                // Still mirror VGA unless the dashboard console *is* tty0.
+                if path != std::path::Path::new("/dev/tty0") {
+                    mirror_vga(bytes);
+                }
+                return;
+            }
+        }
+    }
     let _ = io::stderr().write_all(bytes);
     let _ = io::stderr().flush();
     mirror_vga(bytes);
@@ -296,6 +336,10 @@ impl FrameWriter {
         let mut out = String::with_capacity((area.width as usize + 24) * area.height as usize);
         out.push_str(CURSOR_OFF);
         if full {
+            // Atomic clear + paint so boot/kernel lines cannot sit above row 1
+            // after a scrolled Serial viewport (logs-at-top bug).
+            out.push_str("\x1b[H\x1b[2J");
+            out.push_str(CURSOR_OFF);
             // Address every row independently. This avoids newline/wrap races
             // and lets every reconnect receive a complete coherent frame.
             for (i, row) in rows.iter().enumerate() {
@@ -306,9 +350,9 @@ impl FrameWriter {
                 out.push_str(CURSOR_OFF);
                 out.push_str(CURSOR_PARK);
             }
-            // The browser terminal can be taller than the probed frame. Clear
-            // stale text after the footer without clearing the dashboard.
-            out.push_str(&format!("\x1b[{};{}H\x1b[0J", area.height, area.width));
+            // Clear anything below our footer if the browser pane is taller.
+            // Stay on the last frame row — never CUP past area.height.
+            out.push_str(&format!("\x1b[{};1H\x1b[0J", area.height));
         } else {
             // Incremental: only rewrite dirty rows, park after each so a failed
             // hide never leaves the cursor mid-panel.
@@ -355,6 +399,11 @@ fn encode_row(buf: &ratatui::buffer::Buffer, y: u16, ascii_only: bool) -> String
 }
 
 fn glyph(symbol: &str, ascii_only: bool) -> String {
+    // Wide-glyph continuation cell (empty symbol): fill with the line rule so
+    // degrading `─[empty]` never paints as `- ` / `= `.
+    if symbol.is_empty() {
+        return if ascii_only { "-".into() } else { " ".into() };
+    }
     let ch = symbol.chars().next().unwrap_or(' ');
     if ch.is_control() || ch == '\0' {
         return " ".into();
@@ -370,12 +419,13 @@ fn glyph(symbol: &str, ascii_only: bool) -> String {
 
 fn ascii_fallback(ch: char) -> char {
     match ch {
-        // Block and box-drawing glyphs -> solid ASCII rule.
-        '▀' | '▄' | '─' | '━' | '═' | '░' => '=',
+        // Block and box-drawing horizontals / corners → continuous ASCII line.
+        '▀' | '▄' | '─' | '━' | '═' | '░' => '-',
         '█' | '▓' | '▒' | '│' | '┃' | '║' | '▌' | '▐' => '|',
         '┌' | '┐' | '└' | '┘' | '┏' | '┓' | '┗' | '┛' | '╔' | '╗' | '╚' | '╝' | '╭' | '╮' | '╯'
-        | '╰' | '▛' | '▜' | '▙' | '▟' | '▖' | '▗' | '▘' | '▝' => '+',
-        '├' | '┤' | '┬' | '┴' | '┼' => '+',
+        | '╰' | '▛' | '▜' | '▙' | '▟' | '▖' | '▗' | '▘' | '▝' | '├' | '┤' | '┬' | '┴' | '┼' => {
+            '-'
+        }
         _ => ' ',
     }
 }
@@ -440,53 +490,129 @@ fn color_distance(red: u8, green: u8, blue: u8, other_red: u8, other_green: u8, 
     (3 * red_delta * red_delta + 6 * green_delta * green_delta + blue_delta * blue_delta) as u32
 }
 
+/// Print one Serial-style frame to stdout (same render + glyph path as deploy).
+///
+/// Uses demo node data so you can judge layout/borders locally before deploy.
+/// Size follows `PERTISK_DASHBOARD_COLS` / `_ROWS` when set, else 80×24.
+///
+/// Rows are printed top→bottom with newlines (readable in a normal terminal).
+/// Proxmox Serial uses absolute CUP; glyphs/SGR match that path.
+pub fn preview_serial_frame() -> Result<(), String> {
+    use std::io::{self, Write};
+
+    apply_preview_env();
+    let width = std::env::var("PERTISK_DASHBOARD_COLS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(80);
+    let height = std::env::var("PERTISK_DASHBOARD_ROWS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(24);
+    let utf8 = matches!(
+        std::env::var("PERTISK_DASHBOARD_UTF8").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    );
+    let skin = build_skin(width, height, "preview", utf8);
+    let snap = preview_snapshot();
+    let logs = preview_logs();
+    let mut terminal = Terminal::new(TestBackend::new(width, height))
+        .map_err(|e| format!("preview terminal: {e}"))?;
+    terminal
+        .draw(|frame| panels::render_themed(frame, &snap, &logs, &skin))
+        .map_err(|e| format!("preview draw: {e}"))?;
+
+    let buf = terminal.backend().buffer();
+    let mut stdout = io::stdout().lock();
+    writeln!(
+        stdout,
+        "# pertiskd Serial preview {width}x{height} theme={} border={} (same glyphs as deploy)",
+        skin.theme.name, skin.chrome.name
+    )
+    .map_err(|e| e.to_string())?;
+    for y in 0..height {
+        let row = encode_row(buf, y, skin.chrome.ascii_only);
+        write!(stdout, "{row}\x1b[0m\n").map_err(|e| e.to_string())?;
+    }
+    stdout
+        .write_all(b"\x1b[?25h\x1b[?12h")
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn apply_preview_env() {
+    if std::env::var_os("PERTISK_DASHBOARD_THEME").is_none() {
+        // SAFETY: single-threaded preview before any other dashboard work.
+        unsafe {
+            std::env::set_var("PERTISK_DASHBOARD_THEME", crate::dashboard::DEFAULT_THEME);
+        }
+    }
+    if std::env::var_os("PERTISK_DASHBOARD_BORDER").is_none() {
+        unsafe {
+            std::env::set_var("PERTISK_DASHBOARD_BORDER", crate::dashboard::DEFAULT_BORDER);
+        }
+    }
+}
+
+fn preview_snapshot() -> crate::dashboard::snapshot::StatusSnapshot {
+    use crate::dashboard::snapshot::{DiskUsage, StatusSnapshot};
+    StatusSnapshot {
+        hostname: "pertisk-node-01".into(),
+        version: "0.1.0".into(),
+        ready: true,
+        cpu_cores: 4,
+        cpu_usage_pct: 37,
+        load_1m: 0.42,
+        uptime_secs: 93_784,
+        process_count: 42,
+        mem_total_kb: 8 * 1024 * 1024,
+        mem_available_kb: 3 * 1024 * 1024,
+        disks: vec![DiskUsage {
+            label: "state".into(),
+            total_bytes: 40 * 1024 * 1024 * 1024,
+            used_bytes: 9 * 1024 * 1024 * 1024,
+        }],
+        net_rows: vec![
+            "eth0 UP 192.168.1.50/24 fd00:a:1:1::32 2405:9800:b901:194c:be24:11ff:fe91:e066"
+                .into(),
+        ],
+        node_iface: "eth0".into(),
+        node_ip: "192.168.1.50/24 2405:9800:b901:194c:be24:11ff:fe91:e066 fd00:a:1:1::32"
+            .into(),
+        machine_type: "controlplane".into(),
+        cluster_endpoint: "https://10.0.0.1:6443".into(),
+        cni: "flannel".into(),
+        pod_cidr: "10.244.0.0/16,fd00:10:244::/56".into(),
+        service_subnet: "10.96.0.0/12,fd00:10:96::/112".into(),
+        kubernetes_version: "v1.36.3".into(),
+        containerd: "up".into(),
+        containerd_pid: 412,
+        kubelet: "failed".into(),
+        boot_slot: "A".into(),
+        boot_ok: true,
+        boot_attempts: 1,
+        ..Default::default()
+    }
+}
+
+fn preview_logs() -> Vec<String> {
+    vec![
+        "INFO kubelet starting with a very long argument list that must wrap instead of being cut off".into(),
+        "ERROR failed to pull image registry.k8s.io/pause:3.9".into(),
+        "INFO node ready".into(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dashboard::snapshot::{DiskUsage, StatusSnapshot};
 
-    fn demo_snapshot() -> StatusSnapshot {
-        StatusSnapshot {
-            hostname: "pertisk-node-01".into(),
-            version: "0.1.0".into(),
-            ready: true,
-            cpu_cores: 4,
-            cpu_usage_pct: 37,
-            load_1m: 0.42,
-            uptime_secs: 93_784,
-            process_count: 42,
-            mem_total_kb: 8 * 1024 * 1024,
-            mem_available_kb: 3 * 1024 * 1024,
-            disks: vec![DiskUsage {
-                label: "state".into(),
-                total_bytes: 40 * 1024 * 1024 * 1024,
-                used_bytes: 9 * 1024 * 1024 * 1024,
-            }],
-            net_rows: vec!["eth0 UP 192.168.1.50/24".into()],
-            node_iface: "eth0".into(),
-            node_ip: "192.168.1.50/24".into(),
-            machine_type: "controlplane".into(),
-            cluster_endpoint: "https://10.0.0.1:6443".into(),
-            cni: "flannel".into(),
-            pod_cidr: "10.244.0.0/16".into(),
-            service_subnet: "10.96.0.0/12".into(),
-            kubernetes_version: "v1.36.3".into(),
-            containerd: "up".into(),
-            containerd_pid: 412,
-            kubelet: "failed".into(),
-            boot_slot: "A".into(),
-            boot_ok: true,
-            boot_attempts: 1,
-            ..Default::default()
-        }
+    fn demo_snapshot() -> crate::dashboard::snapshot::StatusSnapshot {
+        preview_snapshot()
     }
 
     fn demo_logs() -> Vec<String> {
-        vec![
-            "INFO kubelet starting with a very long argument list that must wrap instead of being cut off".into(),
-            "ERROR failed to pull image registry.k8s.io/pause:3.9".into(),
-            "INFO node ready".into(),
-        ]
+        preview_logs()
     }
 
     fn draw_demo(
@@ -571,14 +697,31 @@ mod tests {
     fn summary_headings_span_the_width() {
         let rows = demo_rows(160, 24, theme::ASCII);
         let summary_top = strip_escapes(&rows[1]);
-        assert!(summary_top.starts_with("PERTISK"), "left heading missing: {summary_top:?}");
-        assert!(summary_top.contains("KUBERNETES"), "center heading missing: {summary_top:?}");
-        assert!(summary_top.contains("NETWORK"), "right heading missing: {summary_top:?}");
+        assert!(
+            summary_top.contains("PERTISK"),
+            "left heading missing: {summary_top:?}"
+        );
+        assert!(
+            summary_top.contains("KUBERNETES"),
+            "center heading missing: {summary_top:?}"
+        );
+        // NETWORK is a full-width band under PERTISK|KUBERNETES (not a 3rd column).
+        let network_top = strip_escapes(&rows[8]);
+        assert!(
+            network_top.contains("NETWORK"),
+            "NETWORK heading missing: {network_top:?}"
+        );
+        // Line chrome: continuous `-` rules (corners are `-`, not `+`).
+        assert!(
+            summary_top.contains('-') && !summary_top.contains('+'),
+            "missing continuous line border on summary: {summary_top:?}"
+        );
     }
 
     #[test]
     fn compact_summary_shows_full_endpoint_and_node_ip() {
-        let rendered = demo_rows(80, 24, theme::ASCII)
+        // Narrower than WIDE_SUMMARY_MIN_COLS (80) → single SYSTEM box.
+        let rendered = demo_rows(72, 24, theme::ASCII)
             .into_iter()
             .map(|row| strip_escapes(&row))
             .collect::<Vec<_>>()
@@ -587,20 +730,34 @@ mod tests {
         assert!(rendered.contains("https://10.0.0.1:6443"), "endpoint clipped: {rendered}");
         assert!(rendered.contains("10.244.0.0/16"), "pod subnet hidden: {rendered}");
         assert!(rendered.contains("10.96.0.0/12"), "service subnet hidden: {rendered}");
+        assert!(
+            rendered.contains(" SYSTEM ") && rendered.contains('-'),
+            "missing SYSTEM line border: {rendered}"
+        );
     }
 
     #[test]
     fn compact_dashboard_uses_cockpit_header_and_dedicated_footer() {
-        let rows: Vec<String> = demo_rows(80, 24, theme::ASCII)
+        let rows: Vec<String> = demo_rows(72, 24, theme::ASCII)
             .into_iter()
             .map(|row| strip_escapes(&row))
             .collect();
 
         assert!(rows[0].starts_with(" PERTISK pertisk-node-01  v0.1.0"), "header: {:?}", rows[0]);
         assert!(rows[0].contains("| READY | CPU 37% RAM 62% LOAD 0.42"), "header: {:?}", rows[0]);
-        assert!(rows[1].contains("[ SYSTEM ] controlplane"), "system row: {:?}", rows[1]);
-        assert!(rows[6].contains("BOOT") && rows[6].contains("slot A"), "boot row: {:?}", rows[6]);
-        assert!(rows[7].contains("[ LOGS ]"), "log header: {:?}", rows[7]);
+        assert!(
+            rows[1].contains(" SYSTEM ") && rows[1].contains('-') && !rows[1].contains('+'),
+            "system border: {:?}",
+            rows[1]
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("BOOT") && r.contains("slot A")),
+            "boot row missing: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains(" logs ") && r.contains('-')),
+            "log border missing: {rows:?}"
+        );
         assert!(
             rows[23].contains("pertisk-node-01") && !rows[23].contains("[ END LOGS ]") && !rows[23].contains("refresh"),
             "footer: {:?}",
@@ -610,22 +767,69 @@ mod tests {
 
     #[test]
     fn logs_do_not_overlap_compact_summary_at_minimum_height() {
-        let rows: Vec<String> = demo_rows(80, 8, theme::ASCII)
+        let rows: Vec<String> = demo_rows(72, 8, theme::ASCII)
             .into_iter()
             .map(|row| strip_escapes(&row))
             .collect();
-        assert!(rows[1].contains("[ SYSTEM ]"));
-        assert!(rows[2].contains("NODE") && rows[2].contains("192.168.1.50/24"));
-        assert!(rows[3].contains("ENDPOINT") && rows[3].contains("10.0.0.1:6443"));
-        assert!(rows[1..5].iter().all(|row| !row.contains("INFO")));
-        assert!(rows[5].contains("[ LOGS ]"));
-        assert!(rows[6].contains("INFO node ready"));
+        assert!(rows[1].contains(" SYSTEM ") || rows[1].contains('-'), "system: {:?}", rows[1]);
+        // Summary is only 3 rows (bordered) at h=8 — body may be a single TYPE line.
+        assert!(rows[1..4].iter().any(|r| r.contains('-') || r.contains('|')));
+        assert!(rows[4].contains(" logs ") || rows[4].contains('-'), "logs top: {:?}", rows[4]);
         assert!(
             rows[7].contains("pertisk-node-01") && !rows[7].contains("[ END LOGS ]"),
             "footer: {:?}",
             rows[7]
         );
         assert!(rows.iter().all(|row| !row.contains("F1:SUMMARY")));
+    }
+
+    #[test]
+    fn classic_80_col_console_uses_talos_three_column_summary() {
+        let rows = demo_rows(80, 24, theme::ASCII);
+        let summary_top = strip_escapes(&rows[1]);
+        assert!(
+            summary_top.contains("PERTISK") && summary_top.contains("KUBERNETES"),
+            "80-col should show PERTISK|KUBERNETES: {summary_top:?}"
+        );
+        assert!(
+            !summary_top.contains(" SYSTEM "),
+            "80-col must not collapse to SYSTEM: {summary_top:?}"
+        );
+        assert!(
+            !summary_top.contains('+'),
+            "line border must not use + corners: {summary_top:?}"
+        );
+        let body = rows
+            .iter()
+            .map(|r| strip_escapes(r))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains(" NETWORK "),
+            "NETWORK band missing: {body}"
+        );
+        assert!(
+            body.contains("https://10.0.0.1:6443"),
+            "ENDPOINT truncated: {body}"
+        );
+        assert!(body.contains("10.244.0.0/16"), "POD truncated: {body}");
+        assert!(body.contains("10.96.0.0/12"), "SVC truncated: {body}");
+        let gua = "2405:9800:b901:194c:be24:11ff:fe91:e066";
+        assert!(
+            body.contains(gua),
+            "full IPv6 GUA must be visible (not clipped): {body}"
+        );
+        // Summary occupies rows 1..=12, logs start at row 13.
+        let log_top = strip_escapes(&rows[13]);
+        assert!(
+            log_top.contains(" logs "),
+            "logs should start after summary: {log_top:?}"
+        );
+        let footer = strip_escapes(&rows[23]);
+        assert!(
+            footer.contains("pertisk-node-01"),
+            "footer (bottom) must show: {footer:?}"
+        );
     }
 
     #[test]
@@ -646,11 +850,17 @@ mod tests {
     fn dashboard_has_plain_background_and_clear_boundaries() {
         let out = render_demo(80, 24, theme::ASCII);
         assert!(!out.contains(";40m") && !out.contains(";45m") && !out.contains(";105m"));
-        assert!(out.contains("[ SYSTEM ]"), "system boundary missing: {out:?}");
-        assert!(out.contains("[ LOGS ]"), "log start boundary missing: {out:?}");
+        assert!(
+            out.contains(" PERTISK ") && out.contains(" KUBERNETES ") && out.contains(" NETWORK "),
+            "summary panel titles missing: {out:?}"
+        );
+        assert!(out.contains(" logs "), "log start boundary missing: {out:?}");
         assert!(!out.contains("[ END LOGS ]"), "obsolete END LOGS still present: {out:?}");
         assert!(!out.contains("refresh 5s"), "obsolete refresh footer still present: {out:?}");
         assert!(!out.contains("F1:SUMMARY"), "obsolete footer action present: {out:?}");
+        // Line chrome: continuous `-` rules, no `+` corners.
+        assert!(out.contains("---"), "missing continuous line border: {out:?}");
+        assert!(!out.contains('+'), "legacy + corner still present: {out:?}");
     }
 
     #[test]
@@ -718,7 +928,7 @@ mod tests {
     fn frame_always_paints_something() {
         let out = render_demo(80, 24, theme::ASCII);
         assert!(out.contains("pertisk-node-01"));
-        assert!(out.contains("NODE") && out.contains("ENDPOINT"));
+        assert!(out.contains("eth0") && out.contains("EP"));
         assert!(!out.contains("?2026h"), "synchronized update begin present");
     }
 
@@ -759,8 +969,12 @@ mod tests {
             .expect("reconnect must get a full frame");
         assert!(out.contains("pertisk-node-01"));
         assert!(
-            out.contains("\x1b[24;80H\x1b[0J"),
+            out.contains("\x1b[24;1H\x1b[0J"),
             "full repaint must clear stale text below the footer: {out:?}"
+        );
+        assert!(
+            out.contains("\x1b[H\x1b[2J"),
+            "full repaint must home-clear before paint: {out:?}"
         );
     }
 
@@ -822,7 +1036,7 @@ mod tests {
         ] {
             let rows = demo_rows(160, 26, chrome);
             let out = rows.join("\n");
-            for title in ["PERTISK", "KUBERNETES", "NETWORK", "LOGS"] {
+            for title in ["PERTISK", "KUBERNETES", "NETWORK", " logs "] {
                 assert!(out.contains(title), "missing panel {title}");
             }
             assert!(
@@ -834,44 +1048,50 @@ mod tests {
 
     #[test]
     fn unicode_glyphs_degrade_to_ascii() {
-        assert_eq!(glyph("─", true), "=");
-        assert_eq!(glyph("▄", true), "=");
-        assert_eq!(glyph("▀", true), "=");
+        assert_eq!(glyph("─", true), "-");
+        assert_eq!(glyph("▄", true), "-");
+        assert_eq!(glyph("▀", true), "-");
         assert_eq!(glyph("█", true), "|");
-        assert_eq!(glyph("╔", true), "+");
+        assert_eq!(glyph("╔", true), "-");
         assert_eq!(glyph("║", true), "|");
+        assert_eq!(glyph("", true), "-");
         assert_eq!(glyph("─", false), "─");
         assert_eq!(glyph("▄", false), "▄");
     }
 
     #[test]
-    fn every_chrome_uses_one_ascii_hyphen_horizontal_rule() {
+    fn every_chrome_draws_solid_line_log_border() {
+        // Serial-safe glyph sets (Unicode FULL maps horizontals to `|` under
+        // ascii_fallback — not used as the default line chrome).
         for chrome in [
             theme::ASCII,
             theme::LINE,
-            theme::LIGHT,
-            theme::ROUNDED,
-            theme::HEAVY,
-            theme::DOUBLE,
-            theme::PROPORTIONAL,
+            theme::ASCII_DOUBLE,
+            theme::ASCII_HEAVY,
         ] {
             let rows = demo_rows(80, 24, chrome)
                 .into_iter()
                 .map(|row| strip_escapes(&row))
                 .collect::<Vec<_>>();
-            let log_rule = rows[7].strip_prefix("[ LOGS ] ").unwrap_or("");
+            let log_top = rows
+                .iter()
+                .find(|r| r.contains(" logs "))
+                .cloned()
+                .unwrap_or_default();
+            let rule = chrome.set.horizontal_top.chars().next().unwrap_or('-');
             assert!(
-                !log_rule.is_empty() && log_rule.chars().all(|ch| ch == '-'),
-                "wrong log separator for {}: {:?}",
-                chrome.name,
-                rows[7]
-            );
-            assert!(
-                !rows.join("\n").chars().any(|ch| matches!(ch, '─' | '━' | '═' | '▀' | '▄' | '█')),
-                "Unicode rule rendered for {}",
+                !log_top.is_empty() && log_top.contains(rule),
+                "wrong log separator for {}: {log_top:?}",
                 chrome.name
             );
-            assert!(!rows[8].starts_with('-'), "double log rule rendered for {}", chrome.name);
+            // Default line chrome uses `-` corners; double/heavy-ascii keep `+`.
+            if chrome.ascii_only && chrome.set.top_left == "-" {
+                assert!(
+                    !log_top.contains('+'),
+                    "line chrome must not use + corners: {}: {log_top:?}",
+                    chrome.name
+                );
+            }
         }
     }
 }

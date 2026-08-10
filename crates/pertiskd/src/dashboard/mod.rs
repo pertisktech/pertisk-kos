@@ -7,8 +7,11 @@
 //!
 //! Size is probed once at startup (see `probe`). Overrides, in order:
 //! 1. `machine.dashboard` in config.yaml (overwrites early built-ins)
-//! 2. Kernel cmdline `PERTISK_DASHBOARD_*` when YAML omits that field
+//! 2. Kernel cmdline `PERTISK_DASHBOARD_*` / `pertisk.dashboard.*` when YAML omits that field
 //! 3. Built-in defaults ([`DEFAULT_THEME`], [`DEFAULT_BORDER`], …)
+//!
+//! Enable/disable: `--no-dashboard`, smoke mode, or `pertisk.dashboard.disabled=1`
+//! (see [`crate::cmdline`]). Console device: `pertisk.dashboard.console=ttyS0`.
 
 mod banner;
 mod panels;
@@ -113,12 +116,12 @@ fn set_var(key: &str, value: &str) {
 }
 
 #[cfg(test)]
+pub(crate) static DASH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use pertisk_config::{Dashboard, Machine, MachineType, Network, CONFIG_VERSION};
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn clear_dash_env() {
         unsafe {
@@ -139,7 +142,7 @@ mod tests {
 
     #[test]
     fn apply_config_leaves_builtin_utf8_to_console_probe() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = DASH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_dash_env();
         apply_config(None);
         assert_eq!(
@@ -159,7 +162,7 @@ mod tests {
 
     #[test]
     fn cmdline_env_wins_over_early_builtins() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = DASH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_dash_env();
         unsafe {
             std::env::set_var("PERTISK_DASHBOARD_THEME", "nord");
@@ -173,7 +176,7 @@ mod tests {
 
     #[test]
     fn yaml_overwrites_early_builtins() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = DASH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_dash_env();
         apply_config(None);
         assert_eq!(
@@ -254,8 +257,38 @@ impl Drop for DashboardHandle {
     }
 }
 
-pub fn should_enable_dashboard(no_dashboard: bool, smoke: bool) -> bool {
-    !no_dashboard && !smoke
+pub fn should_enable_dashboard(no_dashboard: bool, smoke: bool, cmdline_disabled: bool) -> bool {
+    !no_dashboard && !smoke && !cmdline_disabled
+}
+
+/// Dump one Serial-style dashboard frame to stdout (local layout check).
+pub fn preview_serial_frame() -> Result<(), String> {
+    tui::preview_serial_frame()
+}
+
+#[cfg(test)]
+mod enable_tests {
+    use super::should_enable_dashboard;
+
+    #[test]
+    fn enabled_by_default() {
+        assert!(should_enable_dashboard(false, false, false));
+    }
+
+    #[test]
+    fn disabled_by_flag() {
+        assert!(!should_enable_dashboard(true, false, false));
+    }
+
+    #[test]
+    fn disabled_by_smoke() {
+        assert!(!should_enable_dashboard(false, true, false));
+    }
+
+    #[test]
+    fn disabled_by_cmdline() {
+        assert!(!should_enable_dashboard(false, false, true));
+    }
 }
 
 /// Start the console panel TUI (falls back to text banner only if TUI panics).

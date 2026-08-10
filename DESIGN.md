@@ -297,6 +297,7 @@ _(none — P5 stretch complete for lab / HA)_
 - CRI / service log follow (`pertiskctl logs -f` / `Logs` stream)
 - DHCPv4 lease renew / rebind (builtin client T1/T2 maintainer)
 - EK cert + manufacturer CA chain (NV read + `PERTISK_TPM_EK_CAS` / `--ek-cas`)
+- Console dashboard cmdline: `pertisk.dashboard.disabled` / `pertisk.dashboard.console` ([docs/KERNEL.md](./docs/KERNEL.md))
 ---
 
 ## 8. Security model (non-negotiable)

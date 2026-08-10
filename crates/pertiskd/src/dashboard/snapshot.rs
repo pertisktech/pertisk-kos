@@ -169,26 +169,24 @@ fn cluster_network_display(cluster: &Cluster) -> (String, String, String) {
         "none" => "external".into(),
         configured => configured.to_string(),
     };
-    // Dashboard always shows IPv4 CIDRs only — dual-stack IPv6 lives in
-    // cluster.network.podSubnets / serviceSubnets (or legacy podCidrIPv6) and is omitted here.
-    let pod_subnet = ipv4_cidr_only(&cluster.ipv4_pod_subnet());
-    let service_subnet = ipv4_cidr_only(&cluster.ipv4_service_subnet());
+    // Keep dual-stack CIDRs visible (v4,v6) — do not strip IPv6.
+    let pod_subnet = display_cidrs(&cluster.cluster_cidr());
+    let service_subnet = display_cidrs(&cluster.effective_service_subnets().join(","));
     (cni, pod_subnet, service_subnet)
 }
 
-/// First IPv4 CIDR from a value that may be `v4`, `v4,v6`, or `-`.
-fn ipv4_cidr_only(raw: &str) -> String {
-    for part in raw.split(',') {
-        let cidr = part.trim();
-        if cidr.is_empty() || cidr == "-" {
-            continue;
-        }
-        let ip = cidr.split('/').next().unwrap_or(cidr);
-        if ip.contains('.') && !ip.contains(':') {
-            return cidr.to_string();
-        }
+/// Join CIDR list for the dashboard; `-` if empty.
+fn display_cidrs(raw: &str) -> String {
+    let parts: Vec<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|c| !c.is_empty() && *c != "-")
+        .collect();
+    if parts.is_empty() {
+        "-".into()
+    } else {
+        parts.join(",")
     }
-    "-".into()
 }
 
 fn read_to_string(path: &str) -> Option<String> {
@@ -577,22 +575,45 @@ fn pick_primary_node_ip(host_ifaces: &[IfaceAddrs], configured: &[String]) -> (S
     for iface in &ordered {
         if let Some(v4) = first_ipv4(&iface.addresses) {
             let mut display = v4.to_string();
-            if let Some(v6) = first_global_ipv6(&iface.addresses) {
+            for v6 in all_global_ipv6(&iface.addresses) {
                 display.push(' ');
-                display.push_str(v6);
+                display.push_str(&v6);
             }
             return (iface.name.clone(), display);
         }
     }
     for iface in &ordered {
-        if let Some(v6) = first_global_ipv6(&iface.addresses) {
-            return (iface.name.clone(), format!("(no ipv4) {v6}"));
+        let v6s = all_global_ipv6(&iface.addresses);
+        if !v6s.is_empty() {
+            return (iface.name.clone(), format!("(no ipv4) {}", v6s.join(" ")));
         }
     }
     if let Some(iface) = host_ifaces.first() {
         return (iface.name.clone(), "-".into());
     }
     (String::new(), "-".into())
+}
+
+/// All non-link-local IPv6 addresses (GUA first, then others), address-only.
+fn all_global_ipv6(addresses: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(best) = first_global_ipv6(addresses) {
+        out.push(best.to_string());
+    }
+    for a in addresses {
+        let ip = a.split('/').next().unwrap_or(a);
+        if !ip.contains(':') {
+            continue;
+        }
+        if ip.starts_with("fe80:") || ip.starts_with("fe80::") {
+            continue;
+        }
+        if out.iter().any(|e| e == ip) {
+            continue;
+        }
+        out.push(ip.to_string());
+    }
+    out
 }
 
 fn push_disk_unique(disks: &mut Vec<DiskUsage>, next: Option<DiskUsage>) {
@@ -840,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn dual_stack_dashboard_shows_ipv4_subnets_only() {
+    fn dual_stack_dashboard_shows_both_family_cidrs() {
         let cfg = MachineConfig::from_yaml(
             r#"
 version: v1alpha1
@@ -869,18 +890,20 @@ cluster:
             cluster_network_display(cluster),
             (
                 "bridge".into(),
-                "10.244.0.0/16".into(),
-                "10.96.0.0/12".into()
+                "10.244.0.0/16,2001:db8:10:0::/56".into(),
+                "10.96.0.0/12,2001:db8:96:1::/112".into()
             )
         );
     }
 
     #[test]
-    fn ipv4_cidr_only_strips_combined_dual_stack() {
-        assert_eq!(ipv4_cidr_only("10.244.0.0/16,2001:db8:10:0::/56"), "10.244.0.0/16");
-        assert_eq!(ipv4_cidr_only("10.96.0.0/12"), "10.96.0.0/12");
-        assert_eq!(ipv4_cidr_only("2001:db8:10:0::/56"), "-");
-        assert_eq!(ipv4_cidr_only("-"), "-");
+    fn display_cidrs_keeps_dual_stack() {
+        assert_eq!(
+            display_cidrs("10.244.0.0/16,2001:db8:10:0::/56"),
+            "10.244.0.0/16,2001:db8:10:0::/56"
+        );
+        assert_eq!(display_cidrs("10.96.0.0/12"), "10.96.0.0/12");
+        assert_eq!(display_cidrs("-"), "-");
     }
 
     #[test]
@@ -1029,7 +1052,7 @@ Cached:          2048000 kB
         // IPv4 keeps subnet; IPv6 is address-only (no /64).
         assert_eq!(
             p.node_ip,
-            "10.1.1.173/24 2405:9800:b901:194c:be24:11ff:fe91:e066"
+            "10.1.1.173/24 2405:9800:b901:194c:be24:11ff:fe91:e066 fd00:a:1:1::ad"
         );
         assert!(!p.node_ip.contains("/64"), "ipv6 must not include subnet: {}", p.node_ip);
     }

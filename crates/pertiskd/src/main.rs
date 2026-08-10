@@ -2,6 +2,7 @@
 //!
 //! Milestone M4: management gRPC API + containerd/kubelet supervision.
 
+mod cmdline;
 mod dashboard;
 mod guest_agent;
 mod hostname;
@@ -136,6 +137,10 @@ struct Args {
     /// Disable the fullscreen serial/console status dashboard.
     #[arg(long, default_value_t = false)]
     no_dashboard: bool,
+
+    /// Print one Serial-style dashboard frame to stdout and exit (local preview).
+    #[arg(long, default_value_t = false)]
+    dashboard_preview: bool,
 }
 
 fn main() {
@@ -225,6 +230,9 @@ fn run() -> Result<()> {
     // error can panic inside clap (exit 101 → "Attempted to kill init").
     // Keep argv0 + dash-options only.
     let args = parse_args_safe();
+    if args.dashboard_preview {
+        return dashboard::preview_serial_frame().map_err(|e| anyhow::anyhow!(e));
+    }
     let is_pid1 = pid == 1 || args.force_init;
 
     info!(
@@ -243,7 +251,11 @@ fn run() -> Result<()> {
         st.set_message("booting");
         st.ready = false;
     }
-    let _dashboard = if should_enable_dashboard(args.no_dashboard, args.smoke) {
+    let _dashboard = if should_enable_dashboard(
+        args.no_dashboard,
+        args.smoke,
+        cmdline::dashboard_settings().disabled,
+    ) {
         dashboard::apply_config(None);
         match start_dashboard(
             None,
@@ -261,6 +273,12 @@ fn run() -> Result<()> {
             }
         }
     } else {
+        info!(
+            no_dashboard = args.no_dashboard,
+            smoke = args.smoke,
+            cmdline_disabled = cmdline::dashboard_settings().disabled,
+            "console dashboard disabled"
+        );
         None
     };
 

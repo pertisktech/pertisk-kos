@@ -142,11 +142,23 @@ The TUI paints with home + `\r\n` per row (banner-style), not per-row CUP — CU
 
 #### Overrides
 
-Priority (highest first):
+Priority:
 
-1. Kernel cmdline env (`PERTISK_DASHBOARD_*` — the kernel forwards unknown `KEY=value` tokens to PID 1)
-2. `machine.dashboard` in `config.yaml`
+1. Dotted cmdline `pertisk.dashboard.*` (parsed from `/proc/cmdline`) and undotted `PERTISK_DASHBOARD_*` / `MGMT_PUBLIC_URL` env (Linux promotes undotted `KEY=value` to init env)
+2. `machine.dashboard` in `config.yaml` — **overwrites** theme/border/size/utf8/mgmt_url when those fields are set
 3. Built-in defaults (`catppuccin` / `ascii`; size + UTF-8 from console probe)
+
+Full kernel cmdline reference (defaults, KSPP, deferred Talos params): [KERNEL.md](./KERNEL.md).
+
+**Disable / pick console (Talos-aligned):**
+
+```text
+pertisk.dashboard.disabled=1
+pertisk.dashboard.console=ttyS0
+# aliases: PERTISK_DASHBOARD_DISABLED=1  PERTISK_DASHBOARD_CONSOLE=ttyS0
+```
+
+Or CLI: `--no-dashboard` after `--` on the append.
 
 **config.yaml:**
 
@@ -168,6 +180,9 @@ Built-in defaults (no YAML needed): `catppuccin` / `ascii`. Size and UTF-8 follo
 
 | Variable | Values |
 | --- | --- |
+| `pertisk.dashboard.disabled` | `1` / `true` / `yes` — skip console TUI |
+| `pertisk.dashboard.console` | `ttyS0`, `ttyAMA0`, … (must start with `tty`) |
+| `PERTISK_DASHBOARD_DISABLED` / `_CONSOLE` | undotted aliases for the above |
 | `PERTISK_DASHBOARD_THEME` | `catppuccin` (default), `dracula`, `nord`, `gruvbox`, `wild-cherry`, `tokyo-night`, `solarized`, `cyberpunk`, `mono` |
 | `PERTISK_DASHBOARD_BORDER` | `ascii` (default), `rounded`, `auto`, `light`, `heavy`, `double` |
 | `PERTISK_DASHBOARD_COLS` / `_ROWS` | optional pin; else probe (fallback `80` / `24`) |
@@ -197,7 +212,7 @@ Deploy scripts set `serial0=socket` and **`vga=serial0`**, so Proxmox **Console*
 
 IPs appear in the **network** panel.
 
-Disable with `--no-dashboard` if you need raw scrolling serial logs only.
+Disable with `pertisk.dashboard.disabled=1` (or `--no-dashboard`) if you need raw scrolling serial logs only.
 
 Or look up the VM MAC on the Proxmox host / DHCP server:
 

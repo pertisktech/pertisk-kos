@@ -9,3 +9,8 @@ token: zbris9.g4izb3loczo3otmy
 5) Apply worker.yaml to each worker (unique hostname); install CNI
 Bootstrap also creates the join token Secret, node-join RBAC, and
 labels the CP node-role.kubernetes.io/control-plane= (kubeadm-shaped).
+
+
+run dashboard
+cargo run -p pertiskd --bin pertiskd -- --dashboard-preview
+

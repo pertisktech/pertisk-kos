@@ -401,7 +401,16 @@ mod linux_impl {
     }
 
     pub fn redirect_stdio_serial() -> Result<()> {
-        use std::os::unix::io::AsRawFd;
+        // Prefer explicit dashboard console (Talos-style pertisk.dashboard.console).
+        if let Some(path) = crate::cmdline::dashboard_console_path() {
+            if try_redirect_stdio(&path)? {
+                return Ok(());
+            }
+            eprintln!(
+                "pertiskd: dashboard console {} unavailable; falling back",
+                path.display()
+            );
+        }
 
         // Order matters: on aarch64 `virt`, the real console is PL011 (ttyAMA0).
         // The 8250 driver still creates /dev/ttyS0, so preferring ttyS0 sends all
@@ -417,22 +426,30 @@ mod linux_impl {
         const CANDIDATES: &[&str] = &["/dev/ttyS0", "/dev/console", "/dev/tty0"];
 
         for path in CANDIDATES {
-            let Ok(file) = fs::OpenOptions::new().read(true).write(true).open(path) else {
-                continue;
-            };
-            let fd = file.as_raw_fd();
-            // SAFETY: dup2 replaces stdio fds; kernel keeps references after close.
-            unsafe {
-                if libc::dup2(fd, 0) < 0 || libc::dup2(fd, 1) < 0 || libc::dup2(fd, 2) < 0 {
-                    return Err(anyhow::anyhow!("dup2 to {path} failed"));
-                }
+            if try_redirect_stdio(Path::new(path))? {
+                return Ok(());
             }
-            drop(file);
-            eprintln!("pertiskd: stdio -> {path}");
-            return Ok(());
         }
         eprintln!("pertiskd: no serial/console tty for stdio redirect");
         Ok(())
+    }
+
+    fn try_redirect_stdio(path: &Path) -> Result<bool> {
+        use std::os::unix::io::AsRawFd;
+
+        let Ok(file) = fs::OpenOptions::new().read(true).write(true).open(path) else {
+            return Ok(false);
+        };
+        let fd = file.as_raw_fd();
+        // SAFETY: dup2 replaces stdio fds; kernel keeps references after close.
+        unsafe {
+            if libc::dup2(fd, 0) < 0 || libc::dup2(fd, 1) < 0 || libc::dup2(fd, 2) < 0 {
+                return Err(anyhow::anyhow!("dup2 to {} failed", path.display()));
+            }
+        }
+        drop(file);
+        eprintln!("pertiskd: stdio -> {}", path.display());
+        Ok(true)
     }
 
     fn ensure_dir(path: &str) -> Result<()> {

@@ -5,11 +5,13 @@
 //! comes from:
 //! 1. `PERTISK_DASHBOARD_COLS` / `_ROWS` (or `COLUMNS` / `LINES`)
 //! 2. Optional live probe when `PERTISK_DASHBOARD_PROBE=1`
-//! 3. Best `TIOCGWINSZ` among `/dev/tty0` (VGA), `/dev/console`, `/dev/ttyS0`
-//! 4. 80×24 fallback
+//! 3. Winsize of the **paint target** (`pertisk.dashboard.console` / ttyS0 /
+//!    ttyAMA0 / console) — never VGA `tty0` (taller framebuffer scrolls Serial
+//!    so logs appear at the top on first paint)
+//! 4. Safe **80×24** fallback
 //!
-//! Prefer the **largest** sane winsize so ESXi Host Client VGA is not stuck at
-//! the serial 80×24 stub (dashboard looking like ~¼ of the window).
+//! Refresh follows the same paint-target path so a later VGA ioctl cannot grow
+//! the Serial frame past the xterm.js pane.
 
 use std::os::unix::io::RawFd;
 use std::time::{Duration, Instant};
@@ -75,6 +77,7 @@ pub fn detect() -> ConsoleCaps {
         let (cols, rows) = clamp_measured(caps.cols, caps.rows);
         caps.cols = cols;
         caps.rows = rows;
+        clamp_to_paint_target(&mut caps);
         return caps;
     }
 
@@ -107,11 +110,16 @@ pub fn detect() -> ConsoleCaps {
     }
 
     if caps.source == "default" {
-        if let Some((rows, cols, src)) = best_winsize() {
+        // Prefer the tty we actually paint to (Serial / dashboard.console).
+        // Never adopt VGA/`tty0` via best_winsize — its framebuffer is often
+        // much taller than Proxmox xterm.js, and the first oversized CUP scroll
+        // leaves the logs panel stuck at the top of the viewport until resize.
+        if let Some((rows, cols, src)) = paint_target_winsize() {
             caps.rows = rows;
             caps.cols = cols;
             caps.source = src;
         }
+        // else keep FALLBACK 80×24 — safer than guessing VGA geometry.
     }
 
     caps.utf8 = utf8_from_env(caps.utf8);
@@ -126,11 +134,14 @@ pub fn detect() -> ConsoleCaps {
     };
     caps.cols = cols;
     caps.rows = rows;
+    // Belt-and-suspenders: never exceed the live Serial pane.
+    clamp_to_paint_target(&mut caps);
     caps
 }
 
-/// Cheap re-read for the TUI loop: env pins, else refresh winsize (VGA may
-/// appear after `vmwgfx` loads — without this the frame stays 80×24 forever).
+/// Cheap re-read for the TUI loop: env pins, else refresh the paint-target
+/// winsize (Serial / dashboard.console). Do **not** grow to VGA/`tty0` — that
+/// reintroduces the first-paint scroll bug on Proxmox Serial.
 pub fn detect_refresh(previous: ConsoleCaps) -> ConsoleCaps {
     let env_cols = env_u16("PERTISK_DASHBOARD_COLS").or_else(|| env_u16("COLUMNS"));
     let env_rows = env_u16("PERTISK_DASHBOARD_ROWS").or_else(|| env_u16("LINES"));
@@ -144,18 +155,17 @@ pub fn detect_refresh(previous: ConsoleCaps) -> ConsoleCaps {
         }
         caps.source = "env";
         caps.utf8 = utf8_from_env(caps.utf8);
-        clamp_to_tty(&mut caps);
+        clamp_to_tty_paint_target(&mut caps);
         let (cols, rows) = clamp_measured(caps.cols, caps.rows);
         caps.cols = cols;
         caps.rows = rows;
+        clamp_to_paint_target(&mut caps);
         return caps;
     }
 
     let mut caps = previous;
     caps.utf8 = utf8_from_env(caps.utf8);
-    if let Some((rows, cols, src)) = best_winsize() {
-        // Grow (or shrink) to the live pane — never stay stuck on serial 80×24
-        // after Host Client VGA reports a real framebuffer size.
+    if let Some((rows, cols, src)) = paint_target_winsize() {
         if cols != caps.cols || rows != caps.rows {
             caps.cols = cols;
             caps.rows = rows;
@@ -165,6 +175,7 @@ pub fn detect_refresh(previous: ConsoleCaps) -> ConsoleCaps {
     let (cols, rows) = clamp_measured(caps.cols, caps.rows);
     caps.cols = cols;
     caps.rows = rows;
+    clamp_to_paint_target(&mut caps);
     caps
 }
 
@@ -176,7 +187,24 @@ fn utf8_from_env(fallback: bool) -> bool {
     }
 }
 
+fn clamp_to_tty_paint_target(caps: &mut ConsoleCaps) {
+    let Some((rows, cols, _)) = paint_target_winsize() else {
+        return;
+    };
+    if caps.cols > cols {
+        caps.cols = cols;
+    }
+    if caps.rows > rows {
+        caps.rows = rows;
+    }
+}
+
 fn clamp_to_tty(caps: &mut ConsoleCaps) {
+    // Env pins: shrink to paint target when known, else any sane tty (legacy).
+    if paint_target_winsize().is_some() {
+        clamp_to_tty_paint_target(caps);
+        return;
+    }
     let Some((rows, cols, _)) = best_winsize() else {
         return;
     };
@@ -185,6 +213,91 @@ fn clamp_to_tty(caps: &mut ConsoleCaps) {
     }
     if caps.rows > rows {
         caps.rows = rows;
+    }
+}
+
+/// Winsize of the tty we actually paint to (Serial / dashboard.console).
+///
+/// **Never** fall through to `/dev/console` or VGA `tty0`. On Proxmox those
+/// often report a tall framebuffer; when Serial winsize is still 0×0 we used
+/// to pick console, paint a 50-row frame, CUP past the xterm.js pane, and the
+/// **logs panel scrolled into the visible top** until a later resize.
+///
+/// If the serial device exists but has no sane winsize yet → 80×24 fallback.
+fn paint_target_winsize() -> Option<(u16, u16, &'static str)> {
+    let mut paths: Vec<(std::path::PathBuf, &'static str, bool)> = Vec::new();
+    if let Some(p) = crate::cmdline::dashboard_console_path() {
+        let is_vga = p.ends_with("tty0") || p.ends_with("tty1") || p.ends_with("tty2");
+        paths.push((p, "ioctl-dashboard", !is_vga));
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        paths.push((
+            std::path::PathBuf::from("/dev/ttyAMA0"),
+            "ioctl-ttyAMA0",
+            true,
+        ));
+    }
+    paths.push((
+        std::path::PathBuf::from("/dev/ttyS0"),
+        "ioctl-ttyS0",
+        true,
+    ));
+    // Deliberately omit /dev/console and /dev/tty0.
+
+    for (path, src, serial_like) in paths {
+        let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(&path) else {
+            continue;
+        };
+        use std::os::unix::io::AsRawFd;
+        let measured = winsize(file.as_raw_fd());
+        match measured {
+            Some((rows, cols))
+                if cols >= MIN_COLS
+                    && rows >= MIN_ROWS
+                    && cols <= SAFE_MAX_COLS
+                    && rows <= SAFE_MAX_ROWS =>
+            {
+                // Some hosts report a huge winsize on ttyS0 (copy of VGA). Cap
+                // serial-like devices to a pane that fits Proxmox Serial.
+                if serial_like && (rows > FALLBACK_ROWS * 2 || cols > FALLBACK_COLS * 2) {
+                    return Some((FALLBACK_ROWS, FALLBACK_COLS, "fallback-serial-cap"));
+                }
+                return Some((rows, cols, src));
+            }
+            _ if serial_like => {
+                // Device is there but winsize unset/junk — do not consult VGA.
+                return Some((FALLBACK_ROWS, FALLBACK_COLS, "fallback-serial"));
+            }
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// Shrink caps so the TUI never exceeds the Serial / dashboard console pane.
+fn clamp_to_paint_target(caps: &mut ConsoleCaps) {
+    apply_paint_target_clamp(caps, paint_target_winsize());
+}
+
+fn apply_paint_target_clamp(
+    caps: &mut ConsoleCaps,
+    target: Option<(u16, u16, &'static str)>,
+) {
+    let Some((rows, cols, src)) = target else {
+        return;
+    };
+    let mut clamped = false;
+    if caps.rows > rows {
+        caps.rows = rows;
+        clamped = true;
+    }
+    if caps.cols > cols {
+        caps.cols = cols;
+        clamped = true;
+    }
+    if clamped {
+        caps.source = src;
     }
 }
 
@@ -469,5 +582,47 @@ mod tests {
     fn measured_size_is_not_inflated() {
         assert_eq!(clamp_measured(50, 20), (50, 20));
         assert_eq!(clamp_measured(5, 5), (10, 8));
+    }
+
+    #[test]
+    fn paint_target_clamp_shrinks_oversized_vga_frame() {
+        let mut caps = ConsoleCaps {
+            cols: 200,
+            rows: 50,
+            utf8: true,
+            source: "ioctl-tty0",
+        };
+        apply_paint_target_clamp(&mut caps, Some((24, 80, "ioctl-ttyS0")));
+        assert_eq!(caps.rows, 24);
+        assert_eq!(caps.cols, 80);
+        assert_eq!(caps.source, "ioctl-ttyS0");
+    }
+
+    #[test]
+    fn paint_target_clamp_keeps_smaller_frame() {
+        let mut caps = ConsoleCaps {
+            cols: 40,
+            rows: 12,
+            utf8: true,
+            source: "env",
+        };
+        apply_paint_target_clamp(&mut caps, Some((24, 80, "ioctl-ttyS0")));
+        assert_eq!(caps.rows, 12);
+        assert_eq!(caps.cols, 40);
+        assert_eq!(caps.source, "env");
+    }
+
+    #[test]
+    fn serial_fallback_clamp_beats_vga_geometry() {
+        let mut caps = ConsoleCaps {
+            cols: 200,
+            rows: 50,
+            utf8: true,
+            source: "ioctl-tty0",
+        };
+        apply_paint_target_clamp(&mut caps, Some((24, 80, "fallback-serial")));
+        assert_eq!(caps.rows, 24);
+        assert_eq!(caps.cols, 80);
+        assert_eq!(caps.source, "fallback-serial");
     }
 }

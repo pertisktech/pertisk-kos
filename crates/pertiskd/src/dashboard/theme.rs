@@ -11,8 +11,10 @@
 //! Select with `PERTISK_DASHBOARD_THEME=…` (see `by_name`) and
 //! `PERTISK_DASHBOARD_BORDER=auto|line|ascii|light|rounded|heavy|double`.
 //!
-//! Default `line` is solid ASCII `=` (Serial-safe). Unicode box/block glyphs
-//! are ambiguous-width on Proxmox xterm.js and paint as spaced `-  -  -`.
+//! Default `line` is solid ASCII `-` (Serial-safe continuous rule). Unicode
+//! box/block glyphs are ambiguous-width on Proxmox xterm.js and paint as
+//! spaced dashes (`-  -  -`). Never use `=` for the default line chrome —
+//! equals look like a dotted `= = = =` rule, not a border.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
@@ -301,7 +303,7 @@ pub fn classify(status: &str) -> Health {
 ///
 /// Proxmox Serial / xterm.js treats many Unicode box and block glyphs as
 /// ambiguous-width, so a run of `─`/`█` paints as spaced short dashes
-/// (`-  -  -`). Default frames are **ASCII only** with `=` rules.
+/// (`-  -  -`). Default frames are **ASCII only** with `-` rules (not `=`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Chrome {
     pub name: &'static str,
@@ -312,22 +314,25 @@ pub struct Chrome {
     pub meter_track: &'static str,
 }
 
-/// Solid ASCII line frames — default for Serial (`=` rules, `|` sides).
+/// Solid ASCII line frames — default for Serial.
+///
+/// Corners use `-` (not `+`) so the top/bottom rules read as continuous lines:
+/// `----------` instead of `+--------+`.
 pub const ASCII: Chrome = Chrome {
     name: "ascii",
     set: border::Set {
-        top_left: "+",
-        top_right: "+",
-        bottom_left: "+",
-        bottom_right: "+",
+        top_left: "-",
+        top_right: "-",
+        bottom_left: "-",
+        bottom_right: "-",
         vertical_left: "|",
         vertical_right: "|",
-        horizontal_top: "=",
-        horizontal_bottom: "=",
+        horizontal_top: "-",
+        horizontal_bottom: "-",
     },
     ascii_only: true,
     meter_fill: "#",
-    meter_track: "=",
+    meter_track: "-",
 };
 
 /// `border: line` — same Serial-safe glyphs as [`ASCII`].
@@ -336,7 +341,7 @@ pub const LINE: Chrome = Chrome {
     set: ASCII.set,
     ascii_only: true,
     meter_fill: "#",
-    meter_track: "=",
+    meter_track: "-",
 };
 
 const UNICODE_METER_FILL: &str = "█";
@@ -385,8 +390,9 @@ pub const DOUBLE: Chrome = Chrome {
 
 /// Frame glyphs from `PERTISK_DASHBOARD_BORDER`.
 ///
-/// Default / `line` / `bordered` always use solid ASCII `=` — never hyphen and
-/// never ambiguous-width Unicode. Opt-in Unicode styles still available.
+/// Default / `line` / `bordered` always use solid ASCII `-` — continuous line
+/// chrome, never `=` (looks dotted) and never ambiguous-width Unicode.
+/// Opt-in Unicode styles still available.
 pub fn chrome(utf8: bool) -> Chrome {
     let requested = std::env::var("PERTISK_DASHBOARD_BORDER").unwrap_or_default();
     let force_utf8 = matches!(
@@ -404,7 +410,7 @@ pub fn chrome(utf8: bool) -> Chrome {
     };
     match requested.trim().to_ascii_lowercase().as_str() {
         "ascii" | "plain" => ASCII,
-        // Serial-safe continuous line — never `-`, never ambiguous Unicode.
+        // Serial-safe continuous line — never `=`, never ambiguous Unicode.
         "bordered" | "line" | "solid" => LINE,
         "proportional" | "wide" | "block" | "full" => {
             if use_unicode {
@@ -441,12 +447,13 @@ pub fn chrome(utf8: bool) -> Chrome {
                 ASCII_DOUBLE
             }
         }
-        // auto / empty / unknown → ASCII `=` line.
+        // auto / empty / unknown → ASCII `-` line.
         _ => LINE,
     }
 }
 
 /// Solid-looking ASCII stand-in for `border: double` when UTF-8 is unavailable.
+/// Uses `=` so double stays visually distinct from the default `-` line.
 pub const ASCII_DOUBLE: Chrome = Chrome {
     name: "double-ascii",
     set: border::Set {
@@ -530,12 +537,11 @@ pub fn parse_hex_color(raw: &str) -> Option<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_border_env(border: &str, utf8_env: Option<&str>, f: impl FnOnce()) {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::dashboard::DASH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::remove_var("PERTISK_DASHBOARD_BORDER");
             std::env::remove_var("PERTISK_DASHBOARD_UTF8");
@@ -611,34 +617,36 @@ mod tests {
 
     #[test]
     fn auto_chrome_follows_utf8_probe() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::dashboard::DASH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::remove_var("PERTISK_DASHBOARD_BORDER");
             std::env::remove_var("PERTISK_DASHBOARD_UTF8");
         }
-        // Default is Serial-safe ASCII `=` even when UTF-8 works.
+        // Default is Serial-safe ASCII `-` even when UTF-8 works.
         assert_eq!(chrome(true).name, "line");
         assert_eq!(chrome(false).name, "line");
-        assert_eq!(chrome(true).set.horizontal_top, "=");
+        assert_eq!(chrome(true).set.horizontal_top, "-");
         assert!(chrome(true).ascii_only);
     }
 
     #[test]
-    fn line_is_solid_ascii_equals() {
+    fn line_is_solid_ascii_hyphen() {
         with_border_env("line", Some("1"), || {
             let c = chrome(true);
             assert_eq!(c.name, "line");
             assert!(c.ascii_only);
-            assert_eq!(c.set.horizontal_top, "=");
-            assert_ne!(c.set.horizontal_top, "-");
+            assert_eq!(c.set.horizontal_top, "-");
+            assert_ne!(c.set.horizontal_top, "=");
         });
     }
 
     #[test]
-    fn bordered_is_solid_ascii_equals() {
+    fn bordered_is_solid_ascii_hyphen() {
         with_border_env("bordered", Some("1"), || {
             assert_eq!(chrome(true).name, "line");
-            assert_eq!(chrome(true).set.horizontal_top, "=");
+            assert_eq!(chrome(true).set.horizontal_top, "-");
         });
     }
 
