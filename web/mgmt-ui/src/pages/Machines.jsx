@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+import { NodeStatusBadges } from '../components/NodeStatusBadges'
+
+/** Refresh live online/offline while the page is open. */
+const AVAIL_POLL_MS = 15_000
 
 export default function Machines() {
   const nav = useNavigate()
@@ -19,6 +23,11 @@ export default function Machines() {
     load()
   }, [load])
 
+  useEffect(() => {
+    const t = setInterval(load, AVAIL_POLL_MS)
+    return () => clearInterval(t)
+  }, [load])
+
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
     if (!needle) return list
@@ -27,6 +36,7 @@ export default function Machines() {
         m.name,
         m.role,
         m.status,
+        m.availability,
         m.ip,
         m.ip6,
         m.cluster_name,
@@ -41,15 +51,26 @@ export default function Machines() {
     })
   }, [list, q])
 
+  const online = list.filter((m) => m.availability === 'online').length
+  const offline = list.filter((m) => m.availability === 'offline').length
+
   return (
     <div>
       <div className="page-head">
         <h1>
           <Icon name="machines" size={22} /> Machines
         </h1>
-        <button type="button" className="secondary btn-icon" onClick={load}>
-          <Icon name="check" size={16} /> Refresh
-        </button>
+        <div className="row-actions">
+          {list.length > 0 && (
+            <span className="status-badges" style={{ marginRight: 8 }}>
+              <span className="badge online">{online} online</span>
+              {offline > 0 && <span className="badge offline">{offline} offline</span>}
+            </span>
+          )}
+          <button type="button" className="secondary btn-icon" onClick={load}>
+            <Icon name="check" size={16} /> Refresh
+          </button>
+        </div>
       </div>
       {error && <div className="error">{error}</div>}
       <div className="card" style={{ marginBottom: '1rem' }}>
@@ -58,7 +79,7 @@ export default function Machines() {
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="name, cluster, IP, role…"
+            placeholder="name, cluster, IP, online/offline…"
           />
         </label>
       </div>
@@ -113,7 +134,7 @@ export default function Machines() {
                         : m.source || '—'}
                   </td>
                   <td>
-                    <span className={`badge ${m.status}`}>{m.status}</span>
+                    <NodeStatusBadges status={m.status} availability={m.availability} />
                   </td>
                   <td className="mono-inline">{m.ip || m.ip6 || '—'}</td>
                   <td className="mono-inline">{m.k8s_version || '—'}</td>

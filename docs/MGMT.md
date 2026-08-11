@@ -225,7 +225,7 @@ Or `./scripts/deploy-mgmt-lab.sh --mgmt … --with-ssh --pve 10.1.1.195`.
 
 | Page | API | Notes |
 |------|-----|--------|
-| **Machines** | `GET /api/machines` | Cross-cluster node inventory; opens node detail |
+| **Machines** | `GET /api/machines` | Cross-cluster node inventory with live **online** / **offline** (Machine API `:50000`); opens node detail |
 | **Templates** | `GET/POST /api/templates`, `GET/PUT/DELETE /api/templates/{id}` | Machine-config YAML blueprints; load into cluster Config tab |
 | **Audit** | `GET /api/audit?limit=&offset=&action=&resource=` | Management action log (`audit_log` table) |
 

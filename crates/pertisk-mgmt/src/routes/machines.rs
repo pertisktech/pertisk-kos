@@ -33,13 +33,21 @@ struct MachineOut {
     ak_enrolled: i64,
     ak_enrolled_at: Option<String>,
     updated_at: String,
+    /// Live Machine API reachability: `online` | `offline` | `unknown` (not stored).
+    #[sqlx(skip)]
+    #[serde(default = "default_availability")]
+    availability: String,
+}
+
+fn default_availability() -> String {
+    "unknown".into()
 }
 
 async fn list(
     State(state): State<AppState>,
     CurrentUser(_user): CurrentUser,
 ) -> ApiResult<Json<Vec<MachineOut>>> {
-    let rows = sqlx::query_as::<_, MachineOut>(
+    let mut rows = sqlx::query_as::<_, MachineOut>(
         r#"SELECT n.id, n.name, n.role, n.status, n.ip, n.ip6, n.k8s_version, n.vmid,
                   COALESCE(n.source, 'proxmox') AS source,
                   n.cluster_id, c.name AS cluster_name, c.status AS cluster_status,
@@ -54,5 +62,15 @@ async fn list(
     )
     .fetch_all(state.pool())
     .await?;
+
+    let futs: Vec<_> = rows
+        .iter()
+        .map(|m| crate::node_availability::probe(m.ip.as_deref(), &m.status))
+        .collect();
+    let avails = futures::future::join_all(futs).await;
+    for (m, a) in rows.iter_mut().zip(avails) {
+        m.availability = a;
+    }
+
     Ok(Json(rows))
 }

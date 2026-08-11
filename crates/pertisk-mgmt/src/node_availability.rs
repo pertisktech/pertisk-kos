@@ -24,19 +24,12 @@ fn cache() -> &'static Mutex<Cache> {
 /// `online` — TCP `:50000` accepts  
 /// `offline` — has IPv4 but API unreachable  
 /// `unknown` — no IP yet / still provisioning
-pub async fn probe_node(node: &NodeOut) -> String {
-    let ip = node
-        .ip
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+pub async fn probe(ip: Option<&str>, status: &str) -> String {
+    let ip = ip.map(str::trim).filter(|s| !s.is_empty());
     let Some(ip) = ip else {
         return "unknown".into();
     };
-    if matches!(
-        node.status.as_str(),
-        "pending" | "provisioning" | "deleting"
-    ) {
+    if matches!(status, "pending" | "provisioning" | "deleting") {
         return "unknown".into();
     }
 
@@ -64,6 +57,10 @@ pub async fn probe_node(node: &NodeOut) -> String {
     }
 
     result
+}
+
+pub async fn probe_node(node: &NodeOut) -> String {
+    probe(node.ip.as_deref(), &node.status).await
 }
 
 /// Fill `availability` on each node (parallel probes).
