@@ -711,6 +711,18 @@ machine:
       : `${safeName}.yaml`
   }
 
+  function configBundleFilename() {
+    const clusterName = data?.cluster?.name || 'cluster'
+    let safeName = String(clusterName)
+      .trim()
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .replace(/^[.-]+|[.-]+$/g, '') || 'cluster'
+    if (safeName.endsWith('.yaml') || safeName.endsWith('.yml')) {
+      safeName = safeName.replace(/\.ya?ml$/i, '').replace(/-+$/g, '') || 'cluster'
+    }
+    return `${safeName}-config.zip`
+  }
+
   async function fetchKubeconfig() {
     setError('')
     const res = await fetch(`/api/clusters/${id}/kubeconfig`, {
@@ -736,6 +748,18 @@ machine:
     URL.revokeObjectURL(url)
   }
 
+  function triggerBlobDownload(blob, filename) {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
   async function downloadKc() {
     const filename = kubeconfigFilename()
     try {
@@ -745,6 +769,24 @@ machine:
     } catch (err) {
       setError(err.message)
       return null
+    }
+  }
+
+  async function downloadConfigBundle() {
+    setError('')
+    const filename = configBundleFilename()
+    try {
+      const res = await fetch(`/api/clusters/${id}/config-bundle`, {
+        headers: { Authorization: `Bearer ${getToken()}` },
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: res.statusText }))
+        throw new Error(body.error || res.statusText)
+      }
+      const blob = await res.blob()
+      triggerBlobDownload(blob, filename)
+    } catch (err) {
+      setError(err.message)
     }
   }
 
@@ -865,6 +907,14 @@ machine:
           </Link>
           <button type="button" className="secondary btn-icon" onClick={downloadKc} title="Download kubeconfig YAML">
             <Icon name="download" size={16} /> Download kubeconfig
+          </button>
+          <button
+            type="button"
+            className="secondary btn-icon"
+            onClick={downloadConfigBundle}
+            title="Download cluster-out ZIP (kubeconfig + machine/join YAMLs)"
+          >
+            <Icon name="download" size={16} /> Download config
           </button>
           <button type="button" className="danger btn-icon" onClick={del}>
             <Icon name="trash" size={16} /> Delete
@@ -1146,7 +1196,9 @@ machine:
                 </div>
                 <p className="muted" style={{ margin: 0 }}>
                   Copy or download this cluster’s kubeconfig for kubectl or kube-web (
-                  <code className="mono-inline">KUBECONFIG</code>).
+                  <code className="mono-inline">KUBECONFIG</code>
+                  ). Use <strong>Download config</strong> in the header for a ZIP of the
+                  full cluster-out directory (kubeconfig + machine/join YAMLs).
                 </p>
               </section>
 

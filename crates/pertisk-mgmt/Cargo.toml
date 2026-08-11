@@ -40,6 +40,7 @@ tracing-subscriber = { workspace = true }
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 aes-gcm = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 pertisk-config = { workspace = true }
 pertisk-tpm = { workspace = true }
 

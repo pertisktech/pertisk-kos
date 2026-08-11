@@ -25,6 +25,7 @@ pub fn routes() -> Router<AppState> {
             get(get_one).delete(delete),
         )
         .route("/clusters/{id}/kubeconfig", get(kubeconfig))
+        .route("/clusters/{id}/config-bundle", get(config_bundle))
         .route("/clusters/{id}/jobs", get(list_jobs))
         .route("/clusters/{id}/delete-check", get(delete_check))
         .route("/clusters/{id}/upgrade", axum::routing::post(upgrade))
@@ -802,7 +803,34 @@ async fn kubeconfig(
 
 /// Safe download basename: `{cluster}.yaml` (kubectl / Lens / etc. accept YAML).
 fn kubeconfig_download_name(cluster_name: &str) -> String {
-    let mut s: String = cluster_name
+    let mut s = sanitize_download_stem(cluster_name);
+    if s.is_empty() {
+        s = "kubeconfig".into();
+    }
+    if !s.ends_with(".yaml") && !s.ends_with(".yml") {
+        s.push_str(".yaml");
+    }
+    s
+}
+
+/// Safe ZIP basename: `{cluster}-config.zip`.
+fn config_bundle_download_name(cluster_name: &str) -> String {
+    let mut s = sanitize_download_stem(cluster_name);
+    if s.is_empty() {
+        s = "cluster".into();
+    }
+    // Drop a trailing .yaml/.yml if the stem somehow includes it.
+    if let Some(stripped) = s.strip_suffix(".yaml").or_else(|| s.strip_suffix(".yml")) {
+        s = stripped.trim_end_matches('-').to_string();
+        if s.is_empty() {
+            s = "cluster".into();
+        }
+    }
+    format!("{s}-config.zip")
+}
+
+fn sanitize_download_stem(name: &str) -> String {
+    let mut s: String = name
         .trim()
         .chars()
         .map(|c| {
@@ -816,14 +844,99 @@ fn kubeconfig_download_name(cluster_name: &str) -> String {
     while s.contains("..") {
         s = s.replace("..", ".");
     }
-    s = s.trim_matches('.').trim_matches('-').to_string();
-    if s.is_empty() {
-        s = "kubeconfig".into();
+    s.trim_matches('.').trim_matches('-').to_string()
+}
+
+/// ZIP of `{kubeconfigs_dir}/{name}/` (admin.conf, worker.yaml, role YAMLs).
+async fn config_bundle(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<String>,
+) -> ApiResult<impl axum::response::IntoResponse> {
+    let name = sqlx::query_as::<_, (String,)>("SELECT name FROM clusters WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(state.pool())
+        .await?
+        .ok_or(AppError::NotFound)?
+        .0;
+
+    let dir = state.cfg().kubeconfigs_dir().join(&name);
+    if !dir.is_dir() {
+        return Err(AppError::bad(format!(
+            "cluster config directory not found for {name} ({})",
+            dir.display()
+        )));
     }
-    if !s.ends_with(".yaml") && !s.ends_with(".yml") {
-        s.push_str(".yaml");
+
+    let entries = std::fs::read_dir(&dir).map_err(|e| {
+        AppError::bad(format!("cannot read cluster config dir {}: {e}", dir.display()))
+    })?;
+
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| AppError::bad(format!("read_dir: {e}")))?;
+        let path = entry.path();
+        let meta = entry
+            .metadata()
+            .map_err(|e| AppError::bad(format!("{}: {e}", path.display())))?;
+        if !meta.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if file_name.starts_with('.') {
+            continue;
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|e| AppError::bad(format!("read {}: {e}", path.display())))?;
+        let bytes = if file_name == "admin.conf" {
+            let text = String::from_utf8_lossy(&bytes);
+            crate::kubeconfig::rename_kubeconfig_context(&text, &name).into_bytes()
+        } else {
+            bytes
+        };
+        files.push((file_name.to_string(), bytes));
     }
-    s
+
+    if files.is_empty() {
+        return Err(AppError::bad(format!(
+            "cluster config directory is empty for {name} ({})",
+            dir.display()
+        )));
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut cursor);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, data) in &files {
+            zip.start_file(name, opts)
+                .map_err(|e| AppError::bad(format!("zip start_file {name}: {e}")))?;
+            use std::io::Write;
+            zip.write_all(data)
+                .map_err(|e| AppError::bad(format!("zip write {name}: {e}")))?;
+        }
+        zip.finish()
+            .map_err(|e| AppError::bad(format!("zip finish: {e}")))?;
+    }
+    let body = cursor.into_inner();
+    let filename = config_bundle_download_name(&name);
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/zip"),
+    );
+    headers.insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        axum::http::HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
+            .unwrap_or_else(|_| {
+                axum::http::HeaderValue::from_static("attachment; filename=\"cluster-config.zip\"")
+            }),
+    );
+    Ok((headers, body))
 }
 
 #[derive(Serialize, sqlx::FromRow)]

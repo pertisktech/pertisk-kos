@@ -93,6 +93,8 @@ Requires `kubectl` and (optionally) `helm` on the mgmt host PATH. Operator/admin
 
 API (Bearer JWT; shell needs **operator/admin**):
 
+- `GET /api/clusters/{id}/kubeconfig` — admin kubeconfig YAML download
+- `GET /api/clusters/{id}/config-bundle` — ZIP of `{data_dir}/kubeconfigs/{name}/` (`admin.conf`, `worker.yaml`, role MachineConfigs)
 - `GET /api/clusters/{id}/k8s/namespaces`
 - `GET /api/clusters/{id}/k8s/workloads/{kind}?namespace=`
 - `POST /api/clusters/{id}/k8s/deployments/{ns}/{name}/scale`
