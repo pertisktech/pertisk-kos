@@ -78,8 +78,8 @@ These undotted tokens become init env (and/or are set from
 
 | Variable | Values |
 |----------|--------|
-| `PERTISK_DASHBOARD_THEME` | `catppuccin` (default), `dracula`, `nord`, … |
-| `PERTISK_DASHBOARD_BORDER` | `ascii` (default), `rounded`, `auto`, `light`, `heavy`, `double` |
+| `PERTISK_DASHBOARD_THEME` | `catppuccin` (default), `dracula`, `nord`, `gruvbox`, `tokyo-night`, `solarized`, `cyberpunk`, `wild-cherry`, `mono` |
+| `PERTISK_DASHBOARD_BORDER` | `line` (default, Serial-safe `-`), `ascii`, `auto`, `light`, `rounded`, `heavy`, `double` |
 | `PERTISK_DASHBOARD_BACKGROUND` | `#RRGGBB` |
 | `PERTISK_DASHBOARD_COLS` / `_ROWS` | pin geometry; else probe |
 | `PERTISK_DASHBOARD_UTF8` | force Unicode borders |

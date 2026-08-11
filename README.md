@@ -3,9 +3,10 @@
 Immutable, API-only Kubernetes node OS, plus an optional management plane for provisioning HA clusters.
 
 - **Node OS** — Rust `pertiskd` as PID 1, gRPC management (`pertiskctl`), containerd + kubelet; no SSH in production images
+- **Serial dashboard** — Talos-style fullscreen status TUI on Proxmox / ESXi Serial (xterm.js)
 - **Management plane** — `pertisk-mgmt` (API + React UI) creates and operates clusters on **Proxmox** and standalone **ESXi**
 
-Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md).
+Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md). Kernel cmdline (dashboard knobs): [docs/KERNEL.md](./docs/KERNEL.md).
 
 ![Pertisk KOS management dashboard](docs/resources/1786259533199.jpg)
 
@@ -16,6 +17,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 | Area | Progress |
 |------|----------|
 | Node OS + A/B + hardening CI | done |
+| Serial console dashboard (dual-stack, themes) | done |
 | HA bootstrap (stacked etcd + kube-vip) | done |
 | CNI lab (Cilium / Calico / Flannel) | done |
 | Mgmt UI (Proxmox + ESXi) | done |
@@ -45,9 +47,33 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 - util-linux `mount`/`umount` + iproute2 `ip` (no BusyBox applets)
 - UKI / Secure Boot lab path (`make uki`, `make enroll-ovmf`, `PERTISK_TPM=1`) — see [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 - Guest extensions: **nfs-client**, **qemu-guest-agent**
-- Machine config `v1alpha1`: network, install disk, cluster endpoint/token/CA, kubelet `maxPods`, `machine.dashboard.mgmt_url`
+- Machine config `v1alpha1`: network, install disk, cluster endpoint/token/CA, kubelet `maxPods`, `machine.dashboard`
 - Observability: gRPC mTLS **:50000**, Prometheus **:50001** (mTLS when TLS PEMs set; optional bearer), `pertiskctl logs` / `attest` / `quote` / `etcd` / `containers` / `interfaces` / `disks`
 - Hardening checklist + `make check-hardening` — [docs/HARDENING.md](./docs/HARDENING.md)
+
+### Serial console dashboard
+
+Fullscreen status TUI on the Serial / xterm.js console (Proxmox / ESXi). Enabled by default; disable with `pertisk.dashboard.disabled=1`, `PERTISK_DASHBOARD_DISABLED=1`, or `--no-dashboard`.
+
+| Piece | What you get |
+|-------|----------------|
+| **Layout** | Header (hostname / READY / CPU·RAM·load / uptime) → summary → scrolling logs → footer |
+| **Summary (≥80 cols)** | `PERTISK` \| `KUBERNETES` side-by-side, then full-width **NETWORK** (so dual-stack IPv6 is not clipped) |
+| **Summary (&lt;80 cols)** | Compact single `SYSTEM` panel |
+| **PERTISK** | Machine type, READY, containerd / kubelet status + PIDs |
+| **KUBERNETES** | Version, API endpoint, CNI, dual-stack POD / SVC CIDRs |
+| **NETWORK** | Primary iface IPv4 + global IPv6 (GUA + ULA; link-local `fe80::` hidden), one address per line |
+| **Logs** | Word-wrapped ring buffer; horizontal rules only (no vertical `\|` borders) |
+| **Borders** | Default `line`: continuous ASCII `-` (Serial-safe). Optional Unicode styles when UTF-8 works |
+| **Themes** | `catppuccin` (default), `dracula`, `nord`, `gruvbox`, `tokyo-night`, `solarized`, `cyberpunk`, `wild-cherry`, `mono` |
+| **Sizing** | Prefer Serial / `dashboard.console` winsize (never VGA `tty0`); pin with `PERTISK_DASHBOARD_COLS` / `_ROWS` |
+| **Config** | `machine.dashboard` YAML, kernel cmdline / env — see [docs/KERNEL.md](./docs/KERNEL.md) |
+
+Local preview (same glyphs as deploy):
+
+```bash
+cargo run -p pertiskd --bin pertiskd -- --dashboard-preview
+```
 
 ### Cluster lifecycle
 
@@ -64,7 +90,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 
 | Mode / CNI | Notes |
 |------------|--------|
-| IPv4 / IPv6 / **dual-stack** | Pod + service CIDRs; optional VIP6 |
+| IPv4 / IPv6 / **dual-stack** | Pod + service CIDRs; optional VIP6; dashboard shows both families |
 | Built-in `cluster.cni: bridge` | Unique `podCidr` — single-node / lab |
 | **Cilium** (default in lab-up) | `kubeProxyReplacement`; guest needs shared bpffs |
 | Calico / Flannel | Via lab-up or `examples/cni/` with `cni: none` |
@@ -111,7 +137,7 @@ pertisk-mgmt ──HTTPS──► Proxmox API / ESXi SOAP
 
 | Crate | Role |
 |-------|------|
-| `pertiskd` | PID 1 / node supervisor |
+| `pertiskd` | PID 1 / node supervisor + Serial dashboard |
 | `pertisk-api` / `pertisk-proto` | gRPC management API |
 | `pertisk-config` | Machine config schema |
 | `pertisk-disk` / `pertisk-net` | Volumes + host networking |
@@ -186,6 +212,12 @@ make mgmt / make mgmt-rpm               # UI+API binary / RPM
 
 Artifacts: `out/initramfs-<arch>.cpio.gz` (or `-debug`), versioned copies, `out/uki/`, `out/rpm/`.
 
+### 5. Preview Serial dashboard locally
+
+```bash
+cargo run -p pertiskd --bin pertiskd -- --dashboard-preview
+```
+
 ---
 
 ## Observability
@@ -210,7 +242,9 @@ curl -s --cacert out/mtls/ca.crt \
 ./out/bin/pertiskctl -e 127.0.0.1:50000 quote --verify  # TPM2 Quote + local verify
 # Optional EK manufacturer chain: --ek-cas /path/to/cas  (or PERTISK_TPM_EK_CAS on the node)
 ./out/bin/pertiskctl -e 127.0.0.1:50000 etcd snapshot
-```## mTLS + signed upgrade smoke
+```
+
+## mTLS + signed upgrade smoke
 
 ```bash
 ./scripts/gen-mtls-certs.sh

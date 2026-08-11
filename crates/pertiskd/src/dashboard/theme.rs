@@ -178,6 +178,7 @@ pub const ALL: &[Theme] = &[
 
 pub fn by_name(name: &str) -> Theme {
     match name.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        "dracula" => DRACULA,
         "nord" => NORD,
         "gruvbox" => GRUVBOX,
         "wild-cherry" | "wildcherry" | "cherry" => WILD_CHERRY,
