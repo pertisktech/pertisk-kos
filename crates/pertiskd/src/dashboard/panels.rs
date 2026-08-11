@@ -24,14 +24,14 @@ pub struct Skin {
 }
 
 const HEADER_HEIGHT: u16 = 1;
-/// Summary: PERTISK|KUBERNETES band + full-width NETWORK (IPv6 GUAs need ~39 cols).
-const SUMMARY_HEIGHT: u16 = 12;
+/// Summary: PERTISK|KUBERNETES band + NETWORK (2 body lines: IPv4 + IPv6).
+const SUMMARY_HEIGHT: u16 = 9;
 const FOOTER_HEIGHT: u16 = 1;
 /// Below this width, collapse the three info columns into one SYSTEM box.
 /// Talos keeps three columns at classic 80-col console sizes; we match that.
 const WIDE_SUMMARY_MIN_COLS: u16 = 80;
-/// Bordered logs need top + bottom + ≥1 body row.
-const MIN_LOG_HEIGHT: u16 = 3;
+/// Bordered logs need top rule + ≥1 body row (footer hostname is the bottom).
+const MIN_LOG_HEIGHT: u16 = 2;
 
 fn dashboard_heights(frame_h: u16) -> (u16, u16, u16, u16) {
     let header = HEADER_HEIGHT.min(frame_h);
@@ -49,10 +49,10 @@ fn dashboard_heights(frame_h: u16) -> (u16, u16, u16, u16) {
     (header, summary, logs, footer)
 }
 
-/// Log content rows inside the logs frame (excludes top/bottom border).
+/// Log content rows inside the logs frame (excludes top title rule).
 pub fn log_inner_height(frame_h: u16) -> u16 {
     let (_, _, logs, _) = dashboard_heights(frame_h);
-    logs.saturating_sub(2).max(1)
+    logs.saturating_sub(1).max(1)
 }
 
 pub fn log_inner_height_for(frame_h: u16, _extra_node_line: bool) -> u16 {
@@ -211,10 +211,10 @@ fn value(text: impl Into<String>, theme: &Theme) -> Span<'static> {
     Span::styled(text.into(), theme.value_style())
 }
 
-fn panel<'a>(title: &'a str, skin: &Skin) -> Block<'a> {
+fn panel<'a>(title: &'a str, skin: &Skin, borders: Borders) -> Block<'a> {
     // Horizontal rules only — vertical `|` sides crowd Serial and look noisy.
     Block::default()
-        .borders(Borders::TOP | Borders::BOTTOM)
+        .borders(borders)
         .border_set(skin.chrome.set)
         .border_style(skin.theme.border_style())
         .title(Span::styled(format!(" {title} "), skin.theme.title_style()))
@@ -245,11 +245,18 @@ fn render_block(frame: &mut Frame, area: Rect, block: Block<'_>, lines: Vec<Line
     frame.render_widget(Paragraph::new(clipped), inner);
 }
 
-fn render_into(frame: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>, skin: &Skin) {
+fn render_into(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    lines: Vec<Line<'static>>,
+    skin: &Skin,
+    borders: Borders,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    render_block(frame, area, panel(title, skin), lines);
+    render_block(frame, area, panel(title, skin, borders), lines);
 }
 
 fn draw_node(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
@@ -264,7 +271,8 @@ fn draw_node(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) 
         service_line("CONTAINERD ", &snap.containerd, snap.containerd_pid, theme),
         service_line("KUBELET    ", &snap.kubelet, snap.kubelet_pid, theme),
     ];
-    render_into(frame, area, "PERTISK", lines, skin);
+    // TOP only — NETWORK's title rule separates the bands (no orphan `---`).
+    render_into(frame, area, "PERTISK", lines, skin, Borders::TOP);
 }
 
 fn draw_kubernetes(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
@@ -277,13 +285,13 @@ fn draw_kubernetes(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &
         Line::from(vec![label("POD  ", theme), value(snap.pod_cidr.clone(), theme)]),
         Line::from(vec![label("SVC  ", theme), value(snap.service_subnet.clone(), theme)]),
     ];
-    render_into(frame, area, "KUBERNETES", lines, skin);
+    render_into(frame, area, "KUBERNETES", lines, skin, Borders::TOP);
 }
 
 fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
     let theme = &skin.theme;
-    // TOP|BOTTOM borders only — full width is available for addresses.
-    let max_h = area.height.saturating_sub(2) as usize;
+    // Default body: 2 lines (IPv4 + one IPv6). TOP border only (no bottom rule).
+    let max_h = area.height.saturating_sub(1).min(2) as usize;
     let max_w = area.width.max(1) as usize;
     let mut lines: Vec<Line> = Vec::new();
 
@@ -300,40 +308,59 @@ fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Ski
             Some(row) => expand_iface_row(row),
             None => expand_node_ip(&snap.node_iface, &snap.node_ip),
         };
-        for text in wrap_addr_block(expanded, max_w).into_iter().take(max_h) {
+        for text in wrap_addr_block(pick_dual_stack_lines(expanded), max_w)
+            .into_iter()
+            .take(max_h)
+        {
             lines.push(Line::from(value(text, theme)));
         }
     }
 
-    let extra: Vec<&String> = snap
-        .net_rows
-        .iter()
-        .filter(|r| row_iface_name(r) != snap.node_iface)
-        .collect();
-    let mut extra_i = 0usize;
-    while lines.len() < max_h && extra_i < extra.len() {
-        let wrapped = wrap_addr_block(expand_iface_row(extra[extra_i]), max_w);
-        let room = max_h - lines.len();
-        if wrapped.len() > room && room > 0 && extra_i + 1 < extra.len() {
-            lines.push(Line::from(Span::styled(
-                format!("… +{} more", extra.len() - extra_i),
-                theme.label_style(),
-            )));
-            break;
-        }
-        for text in wrapped.into_iter().take(max_h - lines.len()) {
-            lines.push(Line::from(value(text, theme)));
-        }
-        extra_i += 1;
-    }
-    if extra_i < extra.len() && lines.len() < max_h {
-        lines.push(Line::from(Span::styled(
-            format!("… +{} more", extra.len() - extra_i),
-            theme.label_style(),
-        )));
-    }
+    // TOP only — logs title rule separates the bands (no orphan `---`).
+    render_into(frame, area, "NETWORK", lines, skin, Borders::TOP);
+}
 
-    render_into(frame, area, "NETWORK", lines, skin);
+/// Keep one IPv4 line and one IPv6 line (GUA preferred over ULA).
+fn pick_dual_stack_lines(expanded: Vec<String>) -> Vec<String> {
+    let mut v4: Option<String> = None;
+    let mut v6_gua: Option<String> = None;
+    let mut v6_other: Option<String> = None;
+    for line in expanded {
+        let token = line.split_whitespace().last().unwrap_or("");
+        let ip = token.split('/').next().unwrap_or(token);
+        if looks_like_ipv6(ip) {
+            if is_ipv6_ula_or_ll(ip) {
+                v6_other.get_or_insert(line);
+            } else {
+                v6_gua.get_or_insert(line);
+            }
+        } else if looks_like_ipv4(ip) {
+            v4.get_or_insert(line);
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(line) = v4 {
+        out.push(line);
+    }
+    if let Some(line) = v6_gua.or(v6_other) {
+        out.push(line);
+    }
+    out
+}
+
+fn looks_like_ipv4(ip: &str) -> bool {
+    ip.contains('.') && !ip.contains(':')
+}
+
+fn looks_like_ipv6(ip: &str) -> bool {
+    ip.contains(':')
+}
+
+fn is_ipv6_ula_or_ll(ip: &str) -> bool {
+    let ip = ip.to_ascii_lowercase();
+    ip.starts_with("fe80:")
+        || ip.starts_with("fc")
+        || ip.starts_with("fd")
 }
 
 /// Hard-wrap address lines so a 39-char IPv6 GUA is not clipped with `~`.
@@ -476,7 +503,7 @@ fn draw_compact_summary(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, sk
             Span::styled(format!("[{}]", snap.kubelet), theme.status_style(&snap.kubelet)),
         ]),
     ];
-    render_into(frame, area, "SYSTEM", lines, skin);
+    render_into(frame, area, "SYSTEM", lines, skin, Borders::TOP | Borders::BOTTOM);
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
@@ -505,7 +532,8 @@ fn draw_footer(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin
         return;
     }
     let theme = &skin.theme;
-    let left = snap.hostname.clone();
+    // Match panel titles (` NETWORK `, ` logs `) — spaced name on the rule.
+    let left = format!(" {} ", snap.hostname);
     let right = match skin.mgmt_url.as_deref() {
         Some(url) => format!(" {url} "),
         None => String::new(),
@@ -521,7 +549,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin
     frame.render_widget(Paragraph::new(truncate_line(line, area.width as usize)), area);
 }
 
-/// Manual ASCII logs frame — top/bottom horizontal rules only (no vertical `|`).
+/// Manual ASCII logs frame — top rule only (footer hostname closes the pane).
 fn draw_logs(frame: &mut Frame, area: Rect, recent: &[String], skin: &Skin) {
     let theme = &skin.theme;
     let glyphs = skin.chrome.set;
@@ -529,9 +557,9 @@ fn draw_logs(frame: &mut Frame, area: Rect, recent: &[String], skin: &Skin) {
         x: area.x,
         y: area.y,
         width: area.width,
-        height: area.height.max(3),
+        height: area.height.max(2),
     };
-    if area.width < 4 || area.height < 3 {
+    if area.width < 4 || area.height < 2 {
         return;
     }
 
@@ -549,7 +577,6 @@ fn draw_logs(frame: &mut Frame, area: Rect, recent: &[String], skin: &Skin) {
     let x0 = area.left();
     let x1 = area.right().saturating_sub(1);
     let y0 = area.top();
-    let y1 = area.bottom().saturating_sub(1);
 
     let frame_cell = |buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, glyph: &str| {
         if let Some(c) = buf.cell_mut((x, y)) {
@@ -557,15 +584,15 @@ fn draw_logs(frame: &mut Frame, area: Rect, recent: &[String], skin: &Skin) {
             c.set_style(border_style);
         }
     };
-    // Continuous top/bottom rules — corners use the same horizontal glyph.
+    // Top rule only — hostname footer is the bottom edge (no orphan `---`).
     for x in x0..=x1 {
         frame_cell(buf, x, y0, glyphs.horizontal_top);
-        frame_cell(buf, x, y1, glyphs.horizontal_bottom);
     }
 
     let title = " logs ";
     let title_style = theme.title_style();
-    let title_x = x0.saturating_add(1);
+    // Start at the left edge so the title is ` logs ---` not `- logs ---`.
+    let title_x = x0;
     for (i, ch) in title.chars().enumerate() {
         let x = title_x + i as u16;
         if x > x1 {
@@ -580,7 +607,7 @@ fn draw_logs(frame: &mut Frame, area: Rect, recent: &[String], skin: &Skin) {
     let inner_x = x0;
     let inner_y = y0 + 1;
     let inner_w = area.width;
-    let inner_h = y1.saturating_sub(inner_y);
+    let inner_h = area.bottom().saturating_sub(inner_y);
     if inner_w == 0 || inner_h == 0 {
         return;
     }
@@ -627,11 +654,10 @@ pub fn render_themed(frame: &mut Frame, snap: &StatusSnapshot, recent: &[String]
     if area.width < WIDE_SUMMARY_MIN_COLS {
         draw_compact_summary(frame, rows[1], snap, skin);
     } else {
-        // PERTISK | KUBERNETES on top; NETWORK full-width underneath so a 39-char
-        // IPv6 GUA is never clipped by a narrow third column on 80-col Serial.
+        // PERTISK | KUBERNETES on top; NETWORK fixed at 2 address lines (v4+v6).
         let summary = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(7), Constraint::Min(4)])
+            .constraints([Constraint::Min(6), Constraint::Length(3)])
             .split(rows[1]);
         let columns = Layout::default()
             .direction(Direction::Horizontal)
@@ -649,12 +675,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pick_dual_stack_prefers_gua_over_ula() {
+        let lines = pick_dual_stack_lines(vec![
+            "eth0 192.168.1.50/24".into(),
+            "     fd00:a:1:1::32".into(),
+            "     2405:9800:b901:194c:be24:11ff:fe91:e066".into(),
+        ]);
+        assert_eq!(
+            lines,
+            vec![
+                "eth0 192.168.1.50/24".to_string(),
+                "     2405:9800:b901:194c:be24:11ff:fe91:e066".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn talos_layout_reserves_header_summary_and_footer() {
-        // 24: header1 + summary12 + logs10 + footer1
-        assert_eq!(dashboard_heights(24), (1, 12, 10, 1));
-        // 8: header1 + summary3 + logs3 + footer1 (min bordered panes)
-        assert_eq!(dashboard_heights(8), (1, 3, 3, 1));
-        assert_eq!(log_inner_height(24), 8);
+        // 24: header1 + summary9 + logs13 + footer1
+        assert_eq!(dashboard_heights(24), (1, 9, 13, 1));
+        // 8: header1 + summary4 + logs2 + footer1 (min panes with top-only logs)
+        assert_eq!(dashboard_heights(8), (1, 4, 2, 1));
+        assert_eq!(log_inner_height(24), 12);
         assert_eq!(log_inner_height(8), 1);
     }
 

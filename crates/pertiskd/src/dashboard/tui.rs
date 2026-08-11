@@ -350,9 +350,9 @@ impl FrameWriter {
                 out.push_str(CURSOR_OFF);
                 out.push_str(CURSOR_PARK);
             }
-            // Clear anything below our footer if the browser pane is taller.
-            // Stay on the last frame row — never CUP past area.height.
-            out.push_str(&format!("\x1b[{};1H\x1b[0J", area.height));
+            // Do NOT erase from the footer row (`CSI {h};1H` + `0J`): that wipes
+            // the hostname rule we just painted. The leading `2J` already cleared
+            // the whole pane, including any gutter below a shorter frame.
         } else {
             // Incremental: only rewrite dirty rows, park after each so a failed
             // hide never leaves the cursor mid-panel.
@@ -706,7 +706,7 @@ mod tests {
             "center heading missing: {summary_top:?}"
         );
         // NETWORK is a full-width band under PERTISK|KUBERNETES (not a 3rd column).
-        let network_top = strip_escapes(&rows[8]);
+        let network_top = strip_escapes(&rows[7]);
         assert!(
             network_top.contains("NETWORK"),
             "NETWORK heading missing: {network_top:?}"
@@ -819,8 +819,8 @@ mod tests {
             body.contains(gua),
             "full IPv6 GUA must be visible (not clipped): {body}"
         );
-        // Summary occupies rows 1..=12, logs start at row 13.
-        let log_top = strip_escapes(&rows[13]);
+        // Summary occupies rows 1..=9, logs start at row 10.
+        let log_top = strip_escapes(&rows[10]);
         assert!(
             log_top.contains(" logs "),
             "logs should start after summary: {log_top:?}"
@@ -969,12 +969,17 @@ mod tests {
             .expect("reconnect must get a full frame");
         assert!(out.contains("pertisk-node-01"));
         assert!(
-            out.contains("\x1b[24;1H\x1b[0J"),
-            "full repaint must clear stale text below the footer: {out:?}"
+            !out.contains("\x1b[0J"),
+            "must not 0J from the footer row (wipes hostname rule): {out:?}"
         );
         assert!(
             out.contains("\x1b[H\x1b[2J"),
             "full repaint must home-clear before paint: {out:?}"
+        );
+        // Footer content must still be present after the full-frame encode.
+        assert!(
+            out.contains("pertisk-node-01"),
+            "footer hostname missing from full frame: {out:?}"
         );
     }
 
