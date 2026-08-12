@@ -67,14 +67,56 @@ variable "cluster_name" {
 
 variable "controlplanes" {
   type        = number
-  description = "Initial control-plane count"
+  description = "Initial control-plane count (create-time only; >1 requires vip)"
   default     = 1
 }
 
 variable "workers" {
   type        = number
-  description = "Initial worker count"
+  description = "Initial worker count (create-time only; scale with pertisk_node)"
   default     = 1
+}
+
+variable "network_mode" {
+  type        = string
+  description = "ipv4 | ipv6 | dual-stack"
+  default     = "ipv4"
+}
+
+variable "vip" {
+  type        = string
+  description = "IPv4 kube-vip (required when controlplanes > 1 on ipv4/dual-stack). Free L2 address outside DHCP."
+  default     = null
+}
+
+variable "vip6" {
+  type        = string
+  description = "Optional IPv6 kube-vip (dual-stack / ipv6 HA)"
+  default     = null
+}
+
+variable "pod_subnet" {
+  type        = string
+  description = "IPv4 pod CIDR"
+  default     = "10.244.0.0/16"
+}
+
+variable "service_subnet" {
+  type        = string
+  description = "IPv4 service CIDR"
+  default     = "10.96.0.0/12"
+}
+
+variable "pod_subnet_ipv6" {
+  type        = string
+  description = "IPv6 pod CIDR (dual-stack); omit for mgmt defaults"
+  default     = null
+}
+
+variable "service_subnet_ipv6" {
+  type        = string
+  description = "IPv6 service CIDR (dual-stack); omit for mgmt defaults"
+  default     = null
 }
 
 variable "cp_vmid" {
@@ -91,7 +133,7 @@ variable "k8s_version" {
 
 variable "cni" {
   type        = string
-  description = "CNI plugin"
+  description = "CNI plugin (cilium recommended for dual-stack)"
   default     = "cilium"
 }
 

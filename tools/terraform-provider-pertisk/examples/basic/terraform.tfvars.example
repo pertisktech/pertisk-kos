@@ -16,9 +16,23 @@ pve_bridge       = "vmbr0"
 pve_insecure     = true
 
 cluster_name  = "tf-lab"
-controlplanes = 1
-workers       = 1
 cp_vmid       = 310
 k8s_version   = "v1.36.3"
 cni           = "cilium"
 extra_worker  = true
+
+# --- Single-node (IPv4) ---
+# controlplanes = 1
+# workers       = 1
+# network_mode  = "ipv4"
+
+# --- HA + dual-stack (kube-vip) ---
+# VIP must be free on L2 and outside the DHCP pool.
+controlplanes = 3
+workers       = 2
+network_mode  = "dual-stack"
+vip           = "10.1.1.210"
+vip6          = "fd00:1::210"
+# Optional overrides (omit → mgmt dual-stack defaults):
+# pod_subnet_ipv6     = "2001:db8:10:0::/56"
+# service_subnet_ipv6 = "2001:db8:96:1::/112"

@@ -237,15 +237,21 @@ func (r *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"pod_subnet_ipv6": schema.StringAttribute{
-				Optional: true,
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "IPv6 pod CIDR. When omitted on dual-stack, mgmt applies its default (e.g. 2001:db8:10:0::/56).",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"service_subnet_ipv6": schema.StringAttribute{
-				Optional: true,
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "IPv6 service CIDR. When omitted on dual-stack, mgmt applies its default (e.g. 2001:db8:96:1::/112).",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"status": schema.StringAttribute{
@@ -437,14 +443,31 @@ func (r *clusterResource) Read(ctx context.Context, req resource.ReadRequest, re
 }
 
 func (r *clusterResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	// Create / destroy: nothing to suppress.
-	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+	if req.Plan.Raw.IsNull() {
+		return // destroy
+	}
+
+	var plan clusterModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	var state, plan clusterModel
+	// Create: explicit null from HCL (var default) must become Unknown so API
+	// dual-stack defaults can be written without an inconsistent-result error.
+	if req.State.Raw.IsNull() {
+		if plan.PodSubnetIPv6.IsNull() {
+			plan.PodSubnetIPv6 = types.StringUnknown()
+		}
+		if plan.ServiceSubnetIPv6.IsNull() {
+			plan.ServiceSubnetIPv6 = types.StringUnknown()
+		}
+		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+		return
+	}
+
+	var state clusterModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -452,6 +475,13 @@ func (r *clusterResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	// Ignore HCL drift on sizing after create (scale via pertisk_node).
 	plan.Controlplanes = state.Controlplanes
 	plan.Workers = state.Workers
+	// Keep API-filled IPv6 CIDRs when config still omits them.
+	if plan.PodSubnetIPv6.IsNull() {
+		plan.PodSubnetIPv6 = state.PodSubnetIPv6
+	}
+	if plan.ServiceSubnetIPv6.IsNull() {
+		plan.ServiceSubnetIPv6 = state.ServiceSubnetIPv6
+	}
 
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
