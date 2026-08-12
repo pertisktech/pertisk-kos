@@ -28,7 +28,7 @@ pertisk-kubelet = { workspace = true }
 pertisk-net = { workspace = true }
 pertisk-runtime = { workspace = true }
 pertisk-update = { workspace = true }
-ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

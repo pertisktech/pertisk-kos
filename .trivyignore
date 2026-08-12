@@ -1,0 +1,12 @@
+# Repo-wide Trivy suppressions (picked up when scanning from the repo root).
+# Prefer fixing versions when a Fixed Version exists; only ignore false positives
+# or unfixable advisories with no upgrade path.
+
+# ---------------------------------------------------------------------------
+# GO-2026-5932 — golang.org/x/crypto/openpgp only (unmaintained, no fixed ver).
+# Trivy flags the entire x/crypto module even when openpgp is not imported.
+# Confirmed clean with: govulncheck ./... under tools/terraform-provider-pertisk
+# https://github.com/aquasecurity/trivy/discussions/10944
+# https://pkg.go.dev/vuln/GO-2026-5932
+# ---------------------------------------------------------------------------
+GO-2026-5932

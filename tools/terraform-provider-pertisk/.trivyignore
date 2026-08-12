@@ -1,5 +1,6 @@
-# GO-2026-5932 only affects golang.org/x/crypto/openpgp (unmaintained).
-# This provider does not import that package (govulncheck ./... is clean).
-# Trivy flags the whole x/crypto module — known scanner limitation:
-# https://github.com/aquasecurity/trivy/discussions/10944
+# Prefer the repo-root .trivyignore when scanning from the monorepo root.
+# This file is kept so `trivy fs .` / `make trivy` from this directory still works.
+
+# GO-2026-5932 — x/crypto/openpgp only; false positive at module level.
+# See ../../.trivyignore for full rationale.
 GO-2026-5932
