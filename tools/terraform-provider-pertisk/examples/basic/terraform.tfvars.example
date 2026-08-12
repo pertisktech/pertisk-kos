@@ -36,3 +36,11 @@ vip6          = "fd00:1::210"
 # Optional overrides (omit → mgmt dual-stack defaults):
 # pod_subnet_ipv6     = "2001:db8:10:0::/56"
 # service_subnet_ipv6 = "2001:db8:96:1::/112"
+
+# VM sizing (MB / vCPU / GiB)
+cp_memory      = 4096
+cp_cores       = 2
+cp_disk_gb     = 50
+worker_memory  = 8192
+worker_cores   = 4
+worker_disk_gb = 75

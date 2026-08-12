@@ -142,3 +142,39 @@ variable "extra_worker" {
   description = "Also create one extra worker via pertisk_node"
   default     = true
 }
+
+variable "cp_memory" {
+  type        = number
+  description = "Control-plane memory (MB)"
+  default     = 4096
+}
+
+variable "cp_cores" {
+  type        = number
+  description = "Control-plane vCPUs"
+  default     = 2
+}
+
+variable "cp_disk_gb" {
+  type        = number
+  description = "Control-plane disk (GiB)"
+  default     = 50
+}
+
+variable "worker_memory" {
+  type        = number
+  description = "Worker memory (MB)"
+  default     = 8192
+}
+
+variable "worker_cores" {
+  type        = number
+  description = "Worker vCPUs"
+  default     = 4
+}
+
+variable "worker_disk_gb" {
+  type        = number
+  description = "Worker disk (GiB)"
+  default     = 75
+}

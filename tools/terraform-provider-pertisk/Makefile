@@ -3,7 +3,7 @@ OS_ARCH := $(shell go env GOOS)_$(shell go env GOARCH)
 BIN := terraform-provider-pertisk
 PLUGIN_DIR := $(HOME)/.terraform.d/plugins/registry.terraform.io/pertisk-tech/pertisk/$(VERSION)/$(OS_ARCH)
 
-.PHONY: build install tidy test fmt snapshot check
+.PHONY: build install tidy test testacc fmt docs snapshot check
 
 tidy:
 	go mod tidy
@@ -19,13 +19,19 @@ install: build
 fmt:
 	gofmt -w .
 
+# Unit tests (always). Acceptance tests are skipped unless TF_ACC=1.
 test:
 	go test ./...
 
-# Requires goreleaser (https://goreleaser.com/install/)
+# Live Proxmox + pertisk-mgmt acceptance (3-node cluster). See README.
+testacc:
+	TF_ACC=1 go test ./internal/provider/ -run TestAcc -v -timeout 60m -count=1
+
+docs:
+	go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs generate -provider-name pertisk
+
 check:
 	goreleaser check
 
-# Local unsigned multi-arch build (no GitHub release / no GPG)
 snapshot:
 	goreleaser release --snapshot --clean --skip=sign,publish

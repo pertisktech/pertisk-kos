@@ -2,9 +2,16 @@ name: terraform-provider-pertisk
 
 on:
   push:
+    branches: [main]
     tags:
-      # Example: terraform-provider-pertisk/v0.1.0
       - "terraform-provider-pertisk/v*"
+    paths:
+      - "tools/terraform-provider-pertisk/**"
+      - ".github/workflows/terraform-provider-pertisk.yml"
+  pull_request:
+    paths:
+      - "tools/terraform-provider-pertisk/**"
+      - ".github/workflows/terraform-provider-pertisk.yml"
 
 defaults:
   run:
@@ -34,7 +41,7 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test
+      - name: Unit tests
         run: go test ./...
 
       - name: Build
@@ -43,6 +50,7 @@ jobs:
   goreleaser-check:
     name: GoReleaser check
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/terraform-provider-pertisk/v')
     steps:
       - uses: actions/checkout@v4
 
