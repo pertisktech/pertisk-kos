@@ -873,6 +873,30 @@ tr.row-click:focus-visible {
   color: #c8c9de;
 }
 
+/* color-logviewer-style severity coloring (whole line or keyword) */
+.color-log-viewer {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.color-log-viewer .log-line {
+  margin: 0;
+  min-height: 1.15em;
+}
+.color-log-viewer .log-sev-red,
+.color-log-viewer .log-kw.log-sev-red { color: var(--danger); }
+.color-log-viewer .log-sev-yellow,
+.color-log-viewer .log-kw.log-sev-yellow { color: var(--warning); }
+.color-log-viewer .log-sev-green,
+.color-log-viewer .log-kw.log-sev-green { color: var(--success); }
+.color-log-viewer .log-sev-blue,
+.color-log-viewer .log-kw.log-sev-blue { color: #6ea8fe; }
+.color-log-viewer .log-sev-cyan,
+.color-log-viewer .log-kw.log-sev-cyan { color: #4dd0e1; }
+.color-log-viewer .log-sev-magenta,
+.color-log-viewer .log-kw.log-sev-magenta { color: #e879f9; }
+.color-log-viewer .log-kw { font-weight: 600; }
+
 .form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1784,7 +1808,8 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   flex-shrink: 0;
   align-items: center;
 }
-.jobs-log .log-box {
+.jobs-log .log-box,
+.jobs-log .color-log-viewer {
   flex: 1;
   min-height: 0;
   max-height: none;

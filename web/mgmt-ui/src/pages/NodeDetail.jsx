@@ -15,6 +15,7 @@ import {
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { NodeStatusBadges } from '../components/NodeStatusBadges'
+import ColorLogViewer from '../components/ColorLogViewer'
 
 const POLL_MS = 4000
 const LOG_POLL_MS = 3000
@@ -80,7 +81,6 @@ export default function NodeDetail() {
   const [logSource, setLogSource] = useState('')
   const [logError, setLogError] = useState(null)
   const [followLog, setFollowLog] = useState(true)
-  const logRef = useRef(null)
 
   const [attest, setAttest] = useState(null)
   const [attestErr, setAttestErr] = useState(null)
@@ -174,11 +174,6 @@ export default function NodeDetail() {
     return () => clearInterval(t)
   }, [loadLogs])
 
-  useEffect(() => {
-    if (!followLog || !logRef.current) return
-    logRef.current.scrollTop = logRef.current.scrollHeight
-  }, [logText, followLog])
-
   const loadAttest = useCallback(async () => {
     try {
       const res = await api(`/clusters/${clusterId}/nodes/${nid}/attestation`)
@@ -208,14 +203,6 @@ export default function NodeDetail() {
     } finally {
       setAttestBusy(null)
     }
-  }
-
-  function onLogScroll() {
-    const el = logRef.current
-    if (!el) return
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-    if (atBottom && !followLog) setFollowLog(true)
-    if (!atBottom && followLog) setFollowLog(false)
   }
 
   const node = status?.node
@@ -487,14 +474,7 @@ export default function NodeDetail() {
             <button
               type="button"
               className={`secondary btn-icon ${followLog ? 'follow-on' : ''}`}
-              onClick={() => {
-                setFollowLog(true)
-                requestAnimationFrame(() => {
-                  if (logRef.current) {
-                    logRef.current.scrollTop = logRef.current.scrollHeight
-                  }
-                })
-              }}
+              onClick={() => setFollowLog(true)}
               title="Follow latest output"
             >
               {followLog ? 'Following' : 'Follow'}
@@ -507,13 +487,14 @@ export default function NodeDetail() {
         {logError ? (
           <p className="muted chart-error">{logError}</p>
         ) : (
-          <pre
-            ref={logRef}
-            className="log-box mono node-log-box"
-            onScroll={onLogScroll}
-          >
-            {logText || '—'}
-          </pre>
+          <ColorLogViewer
+            text={logText}
+            empty="—"
+            follow={followLog}
+            onFollowChange={setFollowLog}
+            className="node-log-box"
+            aria-label={`${logService} logs`}
+          />
         )}
       </div>
     </div>

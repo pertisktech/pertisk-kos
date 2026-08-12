@@ -7,6 +7,7 @@ import { ClusterMetaBadges, formatProviderKind, normalizeProviderKind } from '..
 import { NodeStatusBadges } from '../components/NodeStatusBadges'
 import { useConfirm } from '../components/Confirm'
 import Checkbox from '../components/Checkbox'
+import ColorLogViewer from '../components/ColorLogViewer'
 import Modal from '../components/Modal'
 import K8sVersionSelect from '../components/K8sVersionSelect'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
@@ -231,6 +232,7 @@ machine:
   const [templates, setTemplates] = useState([])
   const [templateId, setTemplateId] = useState('')
   const [followLog, setFollowLog] = useState(true)
+  const [logWordMode, setLogWordMode] = useState(false)
   const [selectedNodes, setSelectedNodes] = useState(() => new Set())
   const [addOpen, setAddOpen] = useState(false)
   const [addMode, setAddMode] = useState('create') // create | adopt | join
@@ -256,7 +258,6 @@ machine:
   const [kubeCopied, setKubeCopied] = useState(false)
   const [busy, setBusy] = useState(false)
   const [errorDismissedKey, setErrorDismissedKey] = useState('')
-  const logRef = useRef(null)
   const selectedJobRef = useRef(null)
 
   const tab = TABS.some((t) => t.id === search.get('tab'))
@@ -332,20 +333,6 @@ machine:
     const t = setInterval(load, busy ? 3000 : 20000)
     return () => clearInterval(t)
   }, [load, data?.cluster?.status])
-
-  useEffect(() => {
-    if (!followLog || !logRef.current) return
-    const el = logRef.current
-    el.scrollTop = el.scrollHeight
-  }, [log, followLog, tab])
-
-  function onLogScroll() {
-    const el = logRef.current
-    if (!el) return
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
-    if (atBottom && !followLog) setFollowLog(true)
-    if (!atBottom && followLog) setFollowLog(false)
-  }
 
   async function loadJobLog(jobId) {
     selectedJobRef.current = jobId
@@ -1443,29 +1430,33 @@ machine:
                 <div className="jobs-log">
                   <div className="section-head log-head">
                     <h3 className="section-label">Log</h3>
-                    <button
-                      type="button"
-                      className={`secondary btn-icon ${followLog ? 'follow-on' : ''}`}
-                      onClick={() => {
-                        setFollowLog(true)
-                        requestAnimationFrame(() => {
-                          if (logRef.current) {
-                            logRef.current.scrollTop = logRef.current.scrollHeight
-                          }
-                        })
-                      }}
-                      title="Follow latest output"
-                    >
-                      {followLog ? 'Following' : 'Follow'}
-                    </button>
+                    <div className="row-actions node-log-actions">
+                      <button
+                        type="button"
+                        className={`secondary btn-icon ${logWordMode ? 'follow-on' : ''}`}
+                        onClick={() => setLogWordMode((v) => !v)}
+                        title="Color keywords only (color-logviewer -s)"
+                      >
+                        {logWordMode ? 'Words' : 'Lines'}
+                      </button>
+                      <button
+                        type="button"
+                        className={`secondary btn-icon ${followLog ? 'follow-on' : ''}`}
+                        onClick={() => setFollowLog(true)}
+                        title="Follow latest output"
+                      >
+                        {followLog ? 'Following' : 'Follow'}
+                      </button>
+                    </div>
                   </div>
-                  <pre
-                    ref={logRef}
-                    className="log-box mono"
-                    onScroll={onLogScroll}
-                  >
-                    {log || '(select a job)'}
-                  </pre>
+                  <ColorLogViewer
+                    text={log}
+                    empty="(select a job)"
+                    follow={followLog}
+                    onFollowChange={setFollowLog}
+                    wordMode={logWordMode}
+                    aria-label="Job log"
+                  />
                 </div>
               </div>
             </div>
