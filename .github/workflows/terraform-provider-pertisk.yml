@@ -2,13 +2,9 @@ name: terraform-provider-pertisk
 
 on:
   push:
-    paths:
-      - "tools/terraform-provider-pertisk/**"
-      - ".github/workflows/terraform-provider-pertisk.yml"
-  pull_request:
-    paths:
-      - "tools/terraform-provider-pertisk/**"
-      - ".github/workflows/terraform-provider-pertisk.yml"
+    tags:
+      # Example: terraform-provider-pertisk/v0.1.0
+      - "terraform-provider-pertisk/v*"
 
 defaults:
   run:
