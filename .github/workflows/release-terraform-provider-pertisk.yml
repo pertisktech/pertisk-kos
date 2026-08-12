@@ -1,0 +1,49 @@
+name: release-terraform-provider-pertisk
+
+on:
+  push:
+    tags:
+      # Example: terraform-provider-pertisk/v0.1.0
+      - "terraform-provider-pertisk/v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: GoReleaser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/terraform-provider-pertisk/go.mod
+          cache-dependency-path: tools/terraform-provider-pertisk/go.sum
+
+      - name: Import GPG key
+        id: gpg
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Resolve semver from monorepo tag
+        id: ver
+        run: |
+          # terraform-provider-pertisk/v0.1.0 → v0.1.0
+          echo "tag=${GITHUB_REF_NAME#terraform-provider-pertisk/}" >> "$GITHUB_OUTPUT"
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          # skip=validate: git tag has a monorepo prefix; version is GORELEASER_CURRENT_TAG
+          args: release --clean --skip=validate
+          workdir: tools/terraform-provider-pertisk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.gpg.outputs.fingerprint }}
+          GORELEASER_CURRENT_TAG: ${{ steps.ver.outputs.tag }}
