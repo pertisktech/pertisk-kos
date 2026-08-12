@@ -308,7 +308,7 @@ pub fn classify(status: &str) -> Health {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Chrome {
     pub name: &'static str,
-    pub set: border::Set,
+    pub set: border::Set<'static>,
     /// Every glyph is single-byte ASCII.
     pub ascii_only: bool,
     pub meter_fill: &'static str,
