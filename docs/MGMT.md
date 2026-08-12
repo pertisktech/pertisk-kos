@@ -245,4 +245,4 @@ Or `./scripts/deploy-mgmt-lab.sh --mgmt … --with-ssh --pve 10.1.1.195`.
 
 UI: Cluster → Nodes → **Add node** modes — Create VM / Adopt / Join instructions.
 
-Cloud providers (AWS/GCP/Azure) are **paused**; Proxmox + ESXi remain the supported hypervisors.
+Cloud providers (AWS/GCP/Azure) are **paused**; Proxmox, ESXi, and Nutanix AHV are the supported hypervisors.

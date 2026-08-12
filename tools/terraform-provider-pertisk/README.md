@@ -1,6 +1,6 @@
 # terraform-provider-pertisk
 
-Terraform provider for [pertisk-mgmt](../../docs/MGMT.md): register Proxmox/vSphere hypervisors and create, scale, upgrade, and destroy Pertisk Kubernetes clusters.
+Terraform provider for [pertisk-mgmt](../../docs/MGMT.md): register Proxmox / vSphere / Nutanix hypervisors and create, scale, upgrade, and destroy Pertisk Kubernetes clusters.
 
 Address: `registry.terraform.io/pertisk-tech/pertisk`
 
@@ -9,7 +9,7 @@ Address: `registry.terraform.io/pertisk-tech/pertisk`
 | Feature | Resource / API | Notes |
 |---------|----------------|-------|
 | Auth | provider | Username/password login **or** Bearer `token`; `insecure` for lab TLS; env `PERTISK_*` |
-| Register hypervisor | `pertisk_provider` | Proxmox or vSphere; token + node/storage/bridge |
+| Register hypervisor | `pertisk_provider` | `kind` = `proxmox` \| `vsphere` \| `nutanix`; token + node/storage/bridge |
 | Lookup hypervisor | data `pertisk_provider` | By `name` or `id` |
 | Create / destroy cluster | `pertisk_cluster` | Waits for mgmt job; exports `status`, `endpoint`, `kubeconfig` |
 | HA control planes | `pertisk_cluster` | `controlplanes > 1` + `vip` (kube-vip); optional `vip6` |
@@ -18,7 +18,7 @@ Address: `registry.terraform.io/pertisk-tech/pertisk`
 | VM sizing | `pertisk_cluster` | `cp_memory` / `cp_cores` / `cp_disk_gb` / `worker_memory` / `worker_cores` / `worker_disk_gb` |
 | Base VMID | `pertisk_cluster` | `cp_vmid` — CP uses base, then +1… |
 | K8s version | `pertisk_cluster` | Set at create; **change triggers in-place upgrade** (no replace) |
-| Scale out / in | `pertisk_node` | `mode=create` (Proxmox VM) or `mode=adopt` (existing IP) |
+| Scale out / in | `pertisk_node` | `mode=create` (hypervisor VM) or `mode=adopt` (existing IP) |
 | Node hardware overrides | `pertisk_node` | Optional `memory` / `cores` / `disk_gb` on create |
 | Import | cluster / provider / node | Cluster & provider by UUID; node as `cluster_id/node_id` |
 
@@ -90,6 +90,22 @@ resource "pertisk_node" "extra_worker" {
   cluster_id = pertisk_cluster.lab.id
   role       = "worker"
   mode       = "create"
+}
+```
+
+Nutanix AHV (`kind = "nutanix"`; see [NUTANIX.md](../../docs/NUTANIX.md)):
+
+```hcl
+resource "pertisk_provider" "ahv" {
+  name         = "tf-ahv"
+  kind         = "nutanix"
+  url          = "https://10.1.1.111:9440"
+  token_id     = "admin"
+  token_secret = var.nutanix_password
+  node         = "NTNX-Cluster"
+  storage      = "SelfServiceContainer"
+  bridge       = "homelab-subnet"
+  insecure     = true
 }
 ```
 

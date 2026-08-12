@@ -3,8 +3,8 @@
 Immutable, API-only Kubernetes node OS, plus an optional management plane for provisioning HA clusters.
 
 - **Node OS** — Rust `pertiskd` as PID 1, gRPC management (`pertiskctl`), containerd + kubelet; no SSH in production images
-- **Serial dashboard** — Talos-style fullscreen status TUI on Proxmox / ESXi Serial (xterm.js)
-- **Management plane** — `pertisk-mgmt` (API + React UI) creates and operates clusters on **Proxmox** and standalone **ESXi**
+- **Serial dashboard** — Talos-style fullscreen status TUI on Proxmox / ESXi / AHV Serial
+- **Management plane** — `pertisk-mgmt` (API + React UI) creates and operates clusters on **Proxmox**, standalone **ESXi**, and **Nutanix AHV**
 
 Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md). Kernel cmdline (dashboard knobs): [docs/KERNEL.md](./docs/KERNEL.md).
 
@@ -20,7 +20,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 | Serial console dashboard (dual-stack, themes) | done |
 | HA bootstrap (stacked etcd + kube-vip) | done |
 | CNI lab (Cilium / Calico / Flannel) | done |
-| Mgmt UI (Proxmox + ESXi) | done |
+| Mgmt UI (Proxmox + ESXi + Nutanix AHV) | done |
 | Metrics mTLS (`:50001` with API PEMs) | done |
 | UKI / OVMF enroll (`make enroll-ovmf`) | done |
 | TPM PCR Attest (sysfs / `pertiskctl attest`) | done (lab) |
@@ -106,7 +106,7 @@ Single-port API + UI (`pertisk-mgmt`). Details: [docs/MGMT.md](./docs/MGMT.md).
 |------|----------------|
 | **Auth** | Local, Auth0, or both; roles `admin` \| `operator` \| `viewer` |
 | **Dashboard** | Cluster counts, online/offline reachability, CPU / memory / disk gauges |
-| **Providers** | Proxmox (API token) and **vSphere ESXi** (SOAP `/sdk`); test probe |
+| **Providers** | Proxmox (API token), **vSphere ESXi** (SOAP `/sdk`), **Nutanix AHV** (Prism Element REST); test probe |
 | **Create cluster** | Provider, CP/worker counts, arch, CNI, K8s version, max pods, VIP / dual-stack, VMID + live conflict checks, HW sizes |
 | **Cluster detail** | Overview, Nodes, **K8s** workloads, **Shell** (mgmt-host PTY + kubeconfig), Config, Upgrade, Jobs |
 | **Node detail** | Inventory, live health, metrics charts, log tail |
@@ -118,7 +118,7 @@ Single-port API + UI (`pertisk-mgmt`). Details: [docs/MGMT.md](./docs/MGMT.md).
 
 ### Terraform provider
 
-IaC for the same mgmt API: register Proxmox/vSphere, create HA/dual-stack clusters, size CP/worker VMs, scale with `pertisk_node`, upgrade via `k8s_version`.
+IaC for the same mgmt API: register Proxmox / vSphere / Nutanix, create HA/dual-stack clusters, size CP/worker VMs, scale with `pertisk_node`, upgrade via `k8s_version`.
 
 → [tools/terraform-provider-pertisk/README.md](./tools/terraform-provider-pertisk/README.md) (features, examples, docs, `TF_ACC` tests)
 
@@ -128,6 +128,7 @@ IaC for the same mgmt API: register Proxmox/vSphere, create HA/dual-stack cluste
 |----------|--------|------|
 | Proxmox VE | Supported (API token; optional SSH for arm64 create) | [docs/PROXMOX.md](./docs/PROXMOX.md) |
 | VMware ESXi (standalone) | Supported (qcow2→VMDK) — not vCenter | [docs/VSPHERE.md](./docs/VSPHERE.md) |
+| Nutanix AHV (Prism Element) | Supported (qcow2 URL import + UEFI VM) | [docs/NUTANIX.md](./docs/NUTANIX.md) |
 | QEMU / bare metal EFI | Supported | [image/README.md](./image/README.md) |
 | AWS / GCP / Azure | Outlined only (**paused**) | [image/cloud/README.md](./image/cloud/README.md) |
 
@@ -137,7 +138,7 @@ IaC for the same mgmt API: register Proxmox/vSphere, create HA/dual-stack cluste
 
 ```
 pertiskctl / mgmt UI ──gRPC mTLS──► pertiskd (PID 1) ──► containerd + kubelet
-pertisk-mgmt ──HTTPS──► Proxmox API / ESXi SOAP
+pertisk-mgmt ──HTTPS──► Proxmox API / ESXi SOAP / Prism Element
              └── runs lab-up jobs; stores kubeconfigs + inventory
 ```
 
@@ -200,9 +201,10 @@ export PROXMOX_SSH=root@<pve>
   --vip <free-ip> --cni cilium
 
 # ESXi: ./scripts/vsphere-lab-up.sh …
+# AHV:  ./scripts/nutanix-lab-up.sh …
 ```
 
-Manual cluster flow (`gen config` → apply → bootstrap → join): [docs/PROXMOX.md](./docs/PROXMOX.md).
+Manual cluster flow (`gen config` → apply → bootstrap → join): [docs/PROXMOX.md](./docs/PROXMOX.md). Nutanix: [docs/NUTANIX.md](./docs/NUTANIX.md).
 
 ### 4. Build node OS images
 
@@ -300,6 +302,7 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 | [docs/KERNEL.md](./docs/KERNEL.md) | Kernel cmdline (dashboard, defaults, deferred) |
 | [docs/PROXMOX.md](./docs/PROXMOX.md) | Proxmox token, upload, cluster bootstrap |
 | [docs/VSPHERE.md](./docs/VSPHERE.md) | ESXi provider |
+| [docs/NUTANIX.md](./docs/NUTANIX.md) | Nutanix AHV (Prism Element) provider |
 | [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md) | Platforms, runtime pins, CNI |
 | [docs/HARDENING.md](./docs/HARDENING.md) | CIS-ish worker checklist |
 | [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md) | UKI + OVMF enroll + TPM PCR Attest lab |
