@@ -51,7 +51,7 @@ func (d *providerDataSource) Schema(_ context.Context, _ datasource.SchemaReques
 				Computed:            true,
 			},
 			"kind": schema.StringAttribute{
-				MarkdownDescription: "proxmox | vsphere",
+				MarkdownDescription: "proxmox | vsphere | nutanix",
 				Computed:            true,
 			},
 			"url": schema.StringAttribute{

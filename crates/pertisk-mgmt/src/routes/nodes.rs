@@ -58,7 +58,7 @@ pub struct NodeOut {
     #[serde(skip_serializing)]
     pub ak_public_b64: Option<String>,
     pub ak_enrolled_at: Option<String>,
-    /// proxmox | vsphere | adopted | baremetal
+    /// proxmox | vsphere | nutanix | adopted | baremetal
     pub source: String,
     pub status: String,
     /// Live Machine API reachability: `online` | `offline` | `unknown` (not stored).

@@ -41,7 +41,7 @@ resource "pertisk_provider" "pve" {
 
 ### Optional
 
-* `kind` - (String) `proxmox` | `vsphere` (default `proxmox`).
+* `kind` - (String) `proxmox` | `vsphere` | `nutanix` (default `proxmox`).
 * `insecure` - (Boolean) Skip TLS verify (default `false`).
 
 ## Attribute Reference

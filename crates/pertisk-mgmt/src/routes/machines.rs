@@ -23,7 +23,7 @@ struct MachineOut {
     ip6: Option<String>,
     k8s_version: Option<String>,
     vmid: Option<i64>,
-    /// proxmox | vsphere | adopted | baremetal
+    /// proxmox | vsphere | nutanix | adopted | baremetal
     source: String,
     cluster_id: String,
     cluster_name: String,

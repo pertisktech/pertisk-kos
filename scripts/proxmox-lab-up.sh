@@ -20,11 +20,17 @@ set -euo pipefail
 ROOT="${PERTISK_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 UPLOAD="${ROOT}/scripts/proxmox-upload-vm.sh"
 PROVIDER_KIND="${PROVIDER_KIND:-proxmox}"
-if [[ "$PROVIDER_KIND" == "vsphere" ]]; then
-  CREATE_VMS="${CREATE_VMS:-${ROOT}/scripts/vsphere-create-cluster-vms.sh}"
-else
-  CREATE_VMS="${CREATE_VMS:-${ROOT}/scripts/proxmox-create-cluster-vms.sh}"
-fi
+case "$PROVIDER_KIND" in
+  vsphere)
+    CREATE_VMS="${CREATE_VMS:-${ROOT}/scripts/vsphere-create-cluster-vms.sh}"
+    ;;
+  nutanix)
+    CREATE_VMS="${CREATE_VMS:-${ROOT}/scripts/nutanix-create-cluster-vms.sh}"
+    ;;
+  *)
+    CREATE_VMS="${CREATE_VMS:-${ROOT}/scripts/proxmox-create-cluster-vms.sh}"
+    ;;
+esac
 # Prefer explicit binary from mgmt (RPM: /usr/bin/pertiskctl).
 if [[ -n "${PERTISKCTL:-}" && -x "${PERTISKCTL}" ]]; then
   CTL="${PERTISKCTL}"
@@ -309,6 +315,26 @@ if [[ "${PROVIDER_KIND}" == "vsphere" ]]; then
   PROXMOX_URL="${PROXMOX_URL:-${VSPHERE_URL}}"
   PROXMOX_NODE="${PROXMOX_NODE:-esxi}"
   unset PROXMOX_SSH || true
+elif [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
+  : "${NUTANIX_URL:?set NUTANIX_URL}"
+  : "${NUTANIX_USER:?set NUTANIX_USER}"
+  : "${NUTANIX_PASSWORD:?set NUTANIX_PASSWORD}"
+  : "${NUTANIX_STORAGE:?set NUTANIX_STORAGE}"
+  : "${NUTANIX_NETWORK:?set NUTANIX_NETWORK}"
+  export NUTANIX_INSECURE="${NUTANIX_INSECURE:-1}"
+  NX_HOST="$(echo "${NUTANIX_URL}" | sed -E 's|https?://([^/:]+).*|\1|')"
+  if [[ -z "${LAB_SUBNET}" && "${NX_HOST}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+    LAB_SUBNET="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.0/24"
+    echo "==> auto LAB_SUBNET=${LAB_SUBNET}"
+  fi
+  if [[ -n "${NUTANIX_DISK:-}" ]]; then
+    DISK="${NUTANIX_DISK}"
+  fi
+  echo "==> provider=nutanix url=${NUTANIX_URL} storage=${NUTANIX_STORAGE} network=${NUTANIX_NETWORK}"
+  echo "==> images dir=${IMAGES_DIR} disk=${DISK}"
+  PROXMOX_URL="${PROXMOX_URL:-${NUTANIX_URL}}"
+  PROXMOX_NODE="${PROXMOX_NODE:-${NUTANIX_CLUSTER:-ahv}}"
+  unset PROXMOX_SSH || true
 else
 if [[ -z "${PROXMOX_URL:-}" ]]; then
   echo "==> loading Proxmox env from ${ROOT}/proxmox.sh"
@@ -358,7 +384,7 @@ echo "==> images dir=${IMAGES_DIR} arch=${ARCH} disk=${DISK}"
 if [[ "${CP_DISK:-$DISK}" != "$DISK" || "${WORKER_DISK:-$DISK}" != "$DISK" ]]; then
   echo "==> sized disks cp=${CP_DISK:-$DISK} wk=${WORKER_DISK:-$DISK}"
 fi
-fi # PROVIDER_KIND != vsphere
+fi # PROVIDER_KIND != vsphere|nutanix
 
 command -v curl >/dev/null || { echo "curl required" >&2; exit 1; }
 if [[ "${PROVIDER_KIND}" != "vsphere" ]]; then
@@ -372,6 +398,11 @@ if [[ "${PROVIDER_KIND}" == "vsphere" ]]; then
   AUTH=""
   BASE=""
   NODE="esxi"
+elif [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
+  [[ "${NUTANIX_INSECURE:-0}" == "1" ]] && CURL+=(-k)
+  AUTH=""
+  BASE=""
+  NODE="${NUTANIX_CLUSTER:-ahv}"
 else
   [[ "${PROXMOX_INSECURE:-0}" == "1" ]] && CURL+=(-k)
   AUTH="Authorization: PVEAPIToken=${PROXMOX_TOKEN_ID}=${PROXMOX_TOKEN_SECRET}"
@@ -387,7 +418,7 @@ log() { printf '==> %s\n' "$*" >&2; }
 die() { echo "error: $*" >&2; exit 1; }
 
 # --- MAC / IP helpers ---
-# $1 = vmid, $2 = optional guest/VM name (e.g. lab-cp-1) for vsphere inventory lookup
+# $1 = vmid, $2 = optional guest/VM name (e.g. lab-cp-1) for vsphere/nutanix inventory lookup
 vm_mac() {
   local vmid="$1" name="${2:-}" mac=""
   if [[ "${PROVIDER_KIND}" == "vsphere" ]]; then
@@ -402,6 +433,17 @@ vm_mac() {
     echo "$mac" | tr 'A-F' 'a-f'
     return 0
   fi
+  if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
+    if [[ -n "$name" ]]; then
+      mac="$(nutanix_vm_mac "$name" 2>/dev/null || true)"
+    fi
+    if [[ -z "$mac" ]]; then
+      mac="$(nutanix_vm_mac "${NAME_PREFIX}-${vmid}" 2>/dev/null || true)"
+    fi
+    [[ -n "$mac" ]] || die "VM ${name:-$vmid}: no MAC yet; power on once so AHV assigns one"
+    echo "$mac" | tr 'A-F' 'a-f'
+    return 0
+  fi
   local net0
   net0="$(api_get "/nodes/${NODE}/qemu/${vmid}/config" | jq -r '.data.net0 // empty')"
   [[ -n "$net0" ]] || die "VM ${vmid}: no net0"
@@ -413,6 +455,36 @@ vm_mac() {
   fi
   # normalize lowercase
   echo "${mac}" | tr 'A-F' 'a-f'
+}
+
+nutanix_vm_mac() {
+  local name="$1" base api resp uuid detail mac
+  base="${NUTANIX_URL%/}"
+  api="${base}/api/nutanix/v2.0"
+  local curl_args=(curl -sS)
+  [[ "${NUTANIX_INSECURE:-0}" == "1" ]] && curl_args+=(-k)
+  curl_args+=(-u "${NUTANIX_USER}:${NUTANIX_PASSWORD}" -H 'Accept: application/json')
+  resp="$("${curl_args[@]}" "${api}/vms")"
+  # List payloads often omit vm_nics — resolve uuid then GET detail.
+  uuid="$(VMS_JSON="$resp" python3 -c '
+import json,os,sys
+want=sys.argv[1].lower()
+data=json.loads(os.environ["VMS_JSON"])
+ents=data.get("entities") or (data if isinstance(data,list) else [])
+for e in ents:
+    if (e.get("name") or "").lower()==want:
+        print(e.get("uuid") or "")
+        raise SystemExit
+' "$name" 2>/dev/null || true)"
+  [[ -n "$uuid" ]] || return 0
+  detail="$("${curl_args[@]}" "${api}/vms/${uuid}")"
+  mac="$(echo "$detail" | jq -r '
+    (.vm_nics // [])
+    | map(.mac_address // .mac_addr // empty)
+    | map(select(. != null and . != ""))
+    | .[0] // empty
+  ')"
+  [[ -n "$mac" ]] && echo "$mac"
 }
 
 vsphere_vm_mac() {
@@ -490,6 +562,11 @@ arp_ip_for_mac() {
   local mac="$1" out="" mac_cmp
   mac="$(echo "$mac" | tr 'A-F' 'a-f')"
   mac_cmp="$(echo "$mac" | tr -d ':.-')"
+  # Empty MAC matches everything in awk/grep — never allow that (returns Docker
+  # bridge IPs like 172.18.0.2 and looks like a false DHCP hit).
+  if [[ -z "$mac" || -z "$mac_cmp" || ${#mac_cmp} -lt 8 ]]; then
+    return 0
+  fi
   if [[ -n "${PROXMOX_SSH:-}" ]]; then
     out="$(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes "${PROXMOX_SSH}" \
       "ip -4 neigh show | awk 'BEGIN{IGNORECASE=1} \$0 ~ /${mac}/ {print \$1; exit}'" \
@@ -512,6 +589,14 @@ arp_ip_for_mac() {
     fi
   fi
   if [[ "$out" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    # Prefer LAB_SUBNET hits when set (ignore Docker 172.18/16 etc.).
+    if [[ -n "${LAB_SUBNET:-}" ]]; then
+      local base="${LAB_SUBNET%/*}"
+      base="${base%.*}."
+      if [[ "$out" != ${base}* ]]; then
+        return 0
+      fi
+    fi
     echo "$out"
   fi
 }
@@ -1167,6 +1252,8 @@ step_vms() {
   fi
   if [[ "${PROVIDER_KIND}" == "vsphere" ]]; then
     VSPHERE_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
+  elif [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
+    NUTANIX_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
   else
     PROXMOX_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
   fi
@@ -1174,8 +1261,8 @@ step_vms() {
 
 # Apply memory/cores/disk-gb to existing VMs (qm set + qm resize).
 step_apply_vm_sizing() {
-  if [[ "${PROVIDER_KIND}" == "vsphere" ]]; then
-    log "skip Proxmox qm sizing on vsphere (recreate VMs with --cp-memory/--disk-gb instead)"
+  if [[ "${PROVIDER_KIND}" == "vsphere" || "${PROVIDER_KIND}" == "nutanix" ]]; then
+    log "skip Proxmox qm sizing on ${PROVIDER_KIND} (recreate VMs with --cp-memory/--disk-gb instead)"
     return 0
   fi
   : "${PROXMOX_NODE:?PROXMOX_NODE required for VM sizing}"

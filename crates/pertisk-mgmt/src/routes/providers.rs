@@ -8,6 +8,7 @@ use crate::auth::audit;
 use crate::crypto;
 use crate::db;
 use crate::error::{ApiResult, AppError};
+use crate::nutanix::NutanixClient;
 use crate::proxmox::{ProbeResult, ProxmoxClient, ProxmoxStorage};
 use crate::rbac::{require_admin, require_mutate};
 use crate::routes::CurrentUser;
@@ -103,8 +104,9 @@ fn normalize_kind(kind: &str) -> ApiResult<String> {
     match kind.trim().to_ascii_lowercase().as_str() {
         "proxmox" | "" => Ok("proxmox".into()),
         "vsphere" | "esxi" | "vmware" => Ok("vsphere".into()),
+        "nutanix" | "ahv" | "prism" => Ok("nutanix".into()),
         other => Err(AppError::bad(format!(
-            "unsupported provider kind `{other}` (use proxmox|vsphere)"
+            "unsupported provider kind `{other}` (use proxmox|vsphere|nutanix)"
         ))),
     }
 }
@@ -167,6 +169,17 @@ async fn probe_provider(
     match kind {
         "vsphere" => {
             let client = VsphereClient::new(
+                url.to_string(),
+                token_id.to_string(),
+                token_secret.to_string(),
+                insecure,
+            );
+            client
+                .probe(Some(node), Some(storage), Some(bridge))
+                .await
+        }
+        "nutanix" => {
+            let client = NutanixClient::new(
                 url.to_string(),
                 token_id.to_string(),
                 token_secret.to_string(),
@@ -534,6 +547,10 @@ async fn storage(
     let p = load_provider(&state, &id).await?;
     if p.kind == "vsphere" {
         let client = VsphereClient::new(p.url, p.token_id, p.secret, p.insecure);
+        let list = client.list_storage(&p.node).await?;
+        Ok(Json(list))
+    } else if p.kind == "nutanix" {
+        let client = NutanixClient::new(p.url, p.token_id, p.secret, p.insecure);
         let list = client.list_storage(&p.node).await?;
         Ok(Json(list))
     } else {

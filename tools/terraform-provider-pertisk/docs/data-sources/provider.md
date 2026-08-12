@@ -32,4 +32,4 @@ resource "pertisk_cluster" "lab" {
 
 * `id` - (String) Provider UUID.
 * `name` - (String) Display name.
-* `kind` - (String) `proxmox` | `vsphere`.
+* `kind` - (String) `proxmox` | `vsphere` | `nutanix`.

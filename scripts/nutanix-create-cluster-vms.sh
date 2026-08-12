@@ -1,34 +1,34 @@
 #!/usr/bin/env bash
-# Create N control-plane + M worker VMs on ESXi from a Pertisk cloud qcow2,
-# then by default continue into vsphere-lab-up (DHCP IPs → bootstrap → join → CNI).
+# Create N control-plane + M worker VMs on Nutanix AHV from a Pertisk cloud qcow2,
+# then by default continue into nutanix-lab-up (DHCP IPs → bootstrap → join → CNI).
 #
-# Auth: VSPHERE_URL, VSPHERE_USER, VSPHERE_PASSWORD, VSPHERE_DATASTORE, VSPHERE_NETWORK.
+# Auth: NUTANIX_URL, NUTANIX_USER, NUTANIX_PASSWORD, NUTANIX_STORAGE, NUTANIX_NETWORK.
 #
 # Examples:
-#   ./scripts/vsphere-create-cluster-vms.sh --cp-vmid 210 --workers 2
-#   ./scripts/vsphere-create-cluster-vms.sh --cp-vmid 210 --controlplanes 1 --workers 0 --no-lab-up
+#   ./scripts/nutanix-create-cluster-vms.sh --cp-vmid 210 --workers 2
+#   ./scripts/nutanix-create-cluster-vms.sh --cp-vmid 210 --controlplanes 1 --workers 0 --no-lab-up
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-UPLOAD="${ROOT}/scripts/vsphere-upload-vm.sh"
-LAB_UP_SH="${ROOT}/scripts/vsphere-lab-up.sh"
+UPLOAD="${ROOT}/scripts/nutanix-upload-vm.sh"
+LAB_UP_SH="${ROOT}/scripts/nutanix-lab-up.sh"
 
-MEMORY="${VSPHERE_MEMORY:-4096}"
-CORES="${VSPHERE_CORES:-2}"
-CP_MEMORY="${VSPHERE_CP_MEMORY:-}"
-CP_CORES="${VSPHERE_CP_CORES:-}"
-WORKER_MEMORY="${VSPHERE_WORKER_MEMORY:-}"
-WORKER_CORES="${VSPHERE_WORKER_CORES:-}"
-DISK_GB="${VSPHERE_DISK_GB:-}"
-CP_DISK_GB="${VSPHERE_CP_DISK_GB:-}"
-WORKER_DISK_GB="${VSPHERE_WORKER_DISK_GB:-}"
+MEMORY="${NUTANIX_MEMORY:-4096}"
+CORES="${NUTANIX_CORES:-2}"
+CP_MEMORY="${NUTANIX_CP_MEMORY:-}"
+CP_CORES="${NUTANIX_CP_CORES:-}"
+WORKER_MEMORY="${NUTANIX_WORKER_MEMORY:-}"
+WORKER_CORES="${NUTANIX_WORKER_CORES:-}"
+DISK_GB="${NUTANIX_DISK_GB:-}"
+CP_DISK_GB="${NUTANIX_CP_DISK_GB:-}"
+WORKER_DISK_GB="${NUTANIX_WORKER_DISK_GB:-}"
 CP_VMID="${CP_VMID:-210}"
 CONTROLPLANES="${CONTROLPLANES:-1}"
 WORKERS="${WORKERS:-2}"
 NAME_PREFIX="${NAME_PREFIX:-pertisk}"
-DISK="${VSPHERE_DISK:-${PROXMOX_DISK:-${ROOT}/out/pertisk-cloud-amd64.qcow2}}"
-CP_DISK="${VSPHERE_CP_DISK:-}"
-WORKER_DISK="${VSPHERE_WORKER_DISK:-}"
+DISK="${NUTANIX_DISK:-${PROXMOX_DISK:-${ROOT}/out/pertisk-cloud-amd64.qcow2}}"
+CP_DISK="${NUTANIX_CP_DISK:-}"
+WORKER_DISK="${NUTANIX_WORKER_DISK:-}"
 DO_LAB_UP=1
 LAB_UP_EXTRA=()
 
@@ -80,8 +80,8 @@ WORKER_DISK_GB="${WORKER_DISK_GB:-$DISK_GB}"
 CP_DISK="${CP_DISK:-$DISK}"
 WORKER_DISK="${WORKER_DISK:-$DISK}"
 
-if [[ -z "${VSPHERE_URL:-}" ]]; then
-  echo "VSPHERE_URL unset. Export VSPHERE_URL / VSPHERE_USER / VSPHERE_PASSWORD." >&2
+if [[ -z "${NUTANIX_URL:-}" ]]; then
+  echo "NUTANIX_URL unset. Export NUTANIX_URL / NUTANIX_USER / NUTANIX_PASSWORD." >&2
   exit 1
 fi
 
@@ -100,7 +100,6 @@ if [[ "$CONTROLPLANES" -lt 1 ]]; then
   exit 1
 fi
 
-# Naming: {prefix}-cp-N / {prefix}-wk-N (same as Proxmox; matches mgmt seed stubs + k8s node names).
 for i in $(seq 1 "$CONTROLPLANES"); do
   cvid=$((CP_VMID + i - 1))
   echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${CP_DISK} mem=${CP_MEMORY} cores=${CP_CORES}"
@@ -119,25 +118,17 @@ done
 
 echo "==> VMs created (CP=${CP_VMID}..$((CP_VMID + CONTROLPLANES - 1)), workers=${WORKERS})"
 
-# Ensure Autostart list includes every VM for this prefix (MoRefs change on recreate).
-ENABLE_AS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/vsphere-enable-autostart.sh"
-if [[ -x "$ENABLE_AS" ]] || [[ -f "$ENABLE_AS" ]]; then
-  echo "==> sync host Autostart for prefix=${NAME_PREFIX}"
-  chmod +x "$ENABLE_AS" 2>/dev/null || true
-  "$ENABLE_AS" --prefix "$NAME_PREFIX" || echo "warn: autostart sync failed (VMs still created)" >&2
-fi
-
 if [[ "$DO_LAB_UP" != "1" ]]; then
   cat <<EOF
 
 Stopped after VM create (--no-lab-up). Continue with:
-  ./scripts/vsphere-lab-up.sh --skip-build --skip-vms --cp-vmid ${CP_VMID} \\
+  ./scripts/nutanix-lab-up.sh --skip-build --skip-vms --cp-vmid ${CP_VMID} \\
     --controlplanes ${CONTROLPLANES} --workers ${WORKERS} --prefix ${NAME_PREFIX}
 EOF
   exit 0
 fi
 
-echo "==> continuing → vsphere-lab-up (IPs → cluster → CNI)"
+echo "==> continuing → nutanix-lab-up (IPs → cluster → CNI)"
 chmod +x "$LAB_UP_SH" 2>/dev/null || true
 LAB_ARGS=(
   --skip-build --skip-vms

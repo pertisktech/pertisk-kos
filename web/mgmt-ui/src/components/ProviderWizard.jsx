@@ -29,19 +29,84 @@ const emptyVsphere = {
   arch: 'auto',
 }
 
+const emptyNutanix = {
+  kind: 'nutanix',
+  name: 'lab-ahv',
+  url: 'https://10.1.1.50:9440',
+  token_id: 'admin',
+  token_secret: '',
+  node: 'NTNX-Cluster',
+  storage: 'SelfServiceContainer',
+  bridge: 'vlan.0',
+  insecure: true,
+  arch: 'auto',
+}
+
 function emptyForKind(kind) {
-  return kind === 'vsphere' ? { ...emptyVsphere } : { ...emptyProxmox }
+  if (kind === 'vsphere') return { ...emptyVsphere }
+  if (kind === 'nutanix') return { ...emptyNutanix }
+  return { ...emptyProxmox }
+}
+
+function isUserPass(kind) {
+  return kind === 'vsphere' || kind === 'nutanix'
+}
+
+function labelsFor(kind) {
+  if (kind === 'vsphere') {
+    return {
+      product: 'ESXi',
+      hosts: 'hosts',
+      host: 'host',
+      storage: 'datastore',
+      network: 'Network',
+      nodeField: 'Host',
+      credUser: 'Username',
+      credPass: 'Password',
+      urlPh: 'https://10.1.1.20',
+      userPh: 'root',
+      netPh: 'VM Network',
+    }
+  }
+  if (kind === 'nutanix') {
+    return {
+      product: 'Nutanix',
+      hosts: 'hosts',
+      host: 'cluster/host',
+      storage: 'storage container',
+      network: 'Network',
+      nodeField: 'Cluster / host',
+      credUser: 'Username',
+      credPass: 'Password',
+      urlPh: 'https://10.1.1.50:9440',
+      userPh: 'admin',
+      netPh: 'vlan.0',
+    }
+  }
+  return {
+    product: 'Proxmox',
+    hosts: 'nodes',
+    host: 'node',
+    storage: 'storage',
+    network: 'Bridge',
+    nodeField: 'Node',
+    credUser: 'Token ID',
+    credPass: 'Token secret',
+    urlPh: 'https://10.1.1.197:8006',
+    userPh: 'root@pam!pertisk',
+    netPh: 'vmbr0',
+  }
 }
 
 function formatProbe(r, kind) {
-  const label = kind === 'vsphere' ? 'ESXi' : 'Proxmox'
+  const L = labelsFor(kind)
   const nodes = (r.nodes || []).map((n) => n.node).join(', ') || '(none)'
   const parts = [
-    `${label} ${r.version || '?'} @ ${r.url}`,
-    `${kind === 'vsphere' ? 'hosts' : 'nodes'}: ${nodes}`,
+    `${L.product} ${r.version || '?'} @ ${r.url}`,
+    `${L.hosts}: ${nodes}`,
     r.node_ok
-      ? `${kind === 'vsphere' ? 'host' : 'node'} OK (${r.node_message || 'ok'})`
-      : `${kind === 'vsphere' ? 'host' : 'node'} FAIL: ${r.node_message || 'unknown'}`,
+      ? `${L.host} OK (${r.node_message || 'ok'})`
+      : `${L.host} FAIL: ${r.node_message || 'unknown'}`,
   ]
   if (r.arch) {
     parts.push(`guest arch → ${r.arch}`)
@@ -49,8 +114,8 @@ function formatProbe(r, kind) {
   if (r.storage) {
     parts.push(
       r.storage.ok
-        ? `${kind === 'vsphere' ? 'datastore' : 'storage'} OK: ${r.storage.storage} (${r.storage.type_ || r.storage.type || '?'})`
-        : `${kind === 'vsphere' ? 'datastore' : 'storage'} FAIL: ${r.storage.message}`,
+        ? `${L.storage} OK: ${r.storage.storage} (${r.storage.type_ || r.storage.type || '?'})`
+        : `${L.storage} FAIL: ${r.storage.message}`,
     )
   }
   return parts.join(' — ')
@@ -81,15 +146,17 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
     setTesting(false)
     if (mode === 'edit' && provider) {
       setStorageOptions(provider.storage ? [provider.storage] : [])
+      const kind = provider.kind || 'proxmox'
+      const L = labelsFor(kind)
       setForm({
-        kind: provider.kind || 'proxmox',
+        kind,
         name: provider.name,
         url: provider.url,
         token_id: provider.token_id,
         token_secret: '',
         node: provider.node,
         storage: provider.storage,
-        bridge: provider.bridge || (provider.kind === 'vsphere' ? 'VM Network' : 'vmbr0'),
+        bridge: provider.bridge || L.netPh,
         insecure: !!provider.insecure,
         arch: provider.arch === 'arm64' || provider.arch === 'amd64' ? provider.arch : 'auto',
       })
@@ -143,22 +210,23 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
   }
 
   function validateStep(i) {
+    const L = labelsFor(form.kind)
     if (i === 0) {
       if (!form.name.trim()) return 'Name is required'
       if (!form.url.trim()) return 'URL is required'
       if (!form.token_id.trim()) {
-        return form.kind === 'vsphere' ? 'Username is required' : 'Token ID is required'
+        return `${L.credUser} is required`
       }
       if (editingId === 'new' && !form.token_secret) {
-        return form.kind === 'vsphere' ? 'Password is required' : 'Token secret is required'
+        return `${L.credPass} is required`
       }
     }
     if (i === 1) {
       if (!form.node.trim()) {
-        return form.kind === 'vsphere' ? 'Host is required' : 'Node is required'
+        return `${L.nodeField} is required`
       }
       if (!form.storage.trim()) {
-        return form.kind === 'vsphere' ? 'Datastore is required' : 'Storage is required'
+        return `${L.storage} is required`
       }
     }
     return ''
@@ -182,22 +250,20 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
   }
 
   async function testDraft() {
+    const L = labelsFor(form.kind)
     setError('')
     setMsg('Testing…')
     setTesting(true)
     try {
       if (editingId === 'new' || form.token_secret) {
         if (!form.token_secret) {
-          throw new Error(
-            form.kind === 'vsphere'
-              ? 'Password is required to test'
-              : 'Token secret is required to test',
-          )
+          throw new Error(`${L.credPass} is required to test`)
         }
         const r = await api('/providers/probe', {
           method: 'POST',
           body: {
             kind: form.kind,
+            name: form.name,
             url: form.url,
             token_id: form.token_id,
             token_secret: form.token_secret,
@@ -211,7 +277,11 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
       } else {
         const r = await api(`/providers/${editingId}/test`, {
           method: 'POST',
-          body: { node: form.node, storage: form.storage, bridge: form.bridge },
+          body: {
+            node: form.node,
+            storage: form.storage,
+            bridge: form.bridge,
+          },
         })
         applyProbeResult(r)
       }
@@ -227,16 +297,19 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
     const e0 = validateStep(0) || validateStep(1)
     if (e0) {
       setError(e0)
-      setStep(e0.includes('Host') || e0.includes('Node') || e0.includes('Storage') || e0.includes('Datastore') ? 1 : 0)
+      setStep(
+        /Host|Node|Cluster|Storage|Datastore|container/i.test(e0) ? 1 : 0,
+      )
       return
     }
+    const L = labelsFor(form.kind)
     setError('')
     setMsg('')
     setSaving(true)
     try {
       if (editingId === 'new') {
         if (!form.token_secret) {
-          throw new Error(form.kind === 'vsphere' ? 'Password is required' : 'Token secret is required')
+          throw new Error(`${L.credPass} is required`)
         }
         await api('/providers', { method: 'POST', body: form })
       } else {
@@ -262,20 +335,16 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
     }
   }
 
-  const isVsphere = form.kind === 'vsphere'
+  const L = labelsFor(form.kind)
   const busy = saving || testing
   const storageList = storageOptions.length
     ? storageOptions
     : form.storage
       ? [form.storage]
       : []
-  const title = mode === 'edit'
-    ? isVsphere
-      ? 'Edit vSphere provider'
-      : 'Edit Proxmox provider'
-    : isVsphere
-      ? 'Add vSphere provider'
-      : 'Add Proxmox provider'
+  const kindTitle =
+    form.kind === 'vsphere' ? 'vSphere' : form.kind === 'nutanix' ? 'Nutanix' : 'Proxmox'
+  const title = mode === 'edit' ? `Edit ${kindTitle} provider` : `Add ${kindTitle} provider`
 
   return (
     <WizardModal
@@ -321,8 +390,8 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
         <>
           <p className="wizard-section-title">Connection</p>
           <p className="muted" style={{ marginTop: 0, fontSize: '0.85rem' }}>
-            {isVsphere ? (
-              <>Lab ESXi often uses a self-signed cert — keep Insecure TLS on. Leave password blank when editing to keep the existing secret.</>
+            {isUserPass(form.kind) ? (
+              <>Lab {kindTitle} often uses a self-signed cert — keep Insecure TLS on. Leave password blank when editing to keep the existing secret.</>
             ) : (
               <>Lab Proxmox often uses a self-signed cert — keep Insecure TLS on. Leave token secret blank when editing to keep the existing secret.</>
             )}
@@ -334,6 +403,7 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
                 <select value={form.kind} onChange={(e) => setKind(e.target.value)}>
                   <option value="proxmox">Proxmox</option>
                   <option value="vsphere">vSphere (ESXi)</option>
+                  <option value="nutanix">Nutanix (AHV)</option>
                 </select>
               </div>
             )}
@@ -346,20 +416,20 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
               <input
                 value={form.url}
                 onChange={(e) => set('url', e.target.value)}
-                placeholder={isVsphere ? 'https://10.1.1.20' : 'https://10.1.1.197:8006'}
+                placeholder={L.urlPh}
               />
             </div>
             <div className="field">
-              <label>{isVsphere ? 'Username' : 'Token ID'}</label>
+              <label>{L.credUser}</label>
               <input
                 value={form.token_id}
                 onChange={(e) => set('token_id', e.target.value)}
-                placeholder={isVsphere ? 'root' : 'root@pam!pertisk'}
+                placeholder={L.userPh}
               />
             </div>
             <div className="field">
               <label>
-                {isVsphere ? 'Password' : 'Token secret'}
+                {L.credPass}
                 {editingId !== 'new' ? ' (leave blank to keep)' : ''}
               </label>
               <input
@@ -386,11 +456,11 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
           <p className="wizard-section-title">Placement</p>
           <div className="form-grid">
             <div className="field">
-              <label>{isVsphere ? 'Host' : 'Node'}</label>
+              <label>{L.nodeField}</label>
               <input value={form.node} onChange={(e) => set('node', e.target.value)} />
             </div>
             <div className="field">
-              <label>{isVsphere ? 'Datastore' : 'Storage'}</label>
+              <label>{form.kind === 'vsphere' ? 'Datastore' : form.kind === 'nutanix' ? 'Storage container' : 'Storage'}</label>
               {storageList.length > 1 ? (
                 <select value={form.storage} onChange={(e) => set('storage', e.target.value)}>
                   {storageList.map((s) => (
@@ -410,17 +480,19 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
                 ))}
               </datalist>
               <p className="hint muted">
-                {isVsphere
+                {form.kind === 'vsphere'
                   ? 'Run Test on the last step to discover datastores.'
-                  : 'Run Test on the last step to discover storages that support images.'}
+                  : form.kind === 'nutanix'
+                    ? 'Run Test on the last step to discover storage containers.'
+                    : 'Run Test on the last step to discover storages that support images.'}
               </p>
             </div>
             <div className="field">
-              <label>{isVsphere ? 'Network' : 'Bridge'}</label>
+              <label>{L.network}</label>
               <input
                 value={form.bridge}
                 onChange={(e) => set('bridge', e.target.value)}
-                placeholder={isVsphere ? 'VM Network' : 'vmbr0'}
+                placeholder={L.netPh}
               />
             </div>
             <div className="field">
@@ -455,15 +527,15 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
               <div className="mono">{form.url || '—'}</div>
             </div>
             <div className="field">
-              <label>{isVsphere ? 'Host' : 'Node'}</label>
+              <label>{L.nodeField}</label>
               <div>{form.node || '—'}</div>
             </div>
             <div className="field">
-              <label>{isVsphere ? 'Datastore' : 'Storage'}</label>
+              <label>{form.kind === 'vsphere' ? 'Datastore' : form.kind === 'nutanix' ? 'Storage container' : 'Storage'}</label>
               <div>{form.storage || '—'}</div>
             </div>
             <div className="field">
-              <label>{isVsphere ? 'Network' : 'Bridge'}</label>
+              <label>{L.network}</label>
               <div>{form.bridge || '—'}</div>
             </div>
             <div className="field">
@@ -471,13 +543,10 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
               <div>{form.arch || 'auto'}</div>
             </div>
             <div className="field">
-              <label>TLS</label>
-              <div>{form.insecure ? 'insecure' : 'verify'}</div>
+              <label>Insecure TLS</label>
+              <div>{form.insecure ? 'Yes' : 'No'}</div>
             </div>
           </div>
-          <p className="muted" style={{ marginTop: '0.75rem', fontSize: '0.85rem' }}>
-            Use Test to validate connection, {isVsphere ? 'host, datastore, and network' : 'node, and storage'} before saving.
-          </p>
         </>
       )}
     </WizardModal>

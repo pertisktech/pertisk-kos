@@ -5,14 +5,18 @@ import { useConfirm } from '../components/Confirm'
 import ProviderWizard from '../components/ProviderWizard'
 
 function formatProbe(r, kind) {
-  const label = kind === 'vsphere' ? 'ESXi' : 'Proxmox'
+  const label = kind === 'vsphere' ? 'ESXi' : kind === 'nutanix' ? 'Nutanix' : 'Proxmox'
+  const hostWord = kind === 'proxmox' || !kind ? 'node' : 'host'
+  const hostsWord = kind === 'proxmox' || !kind ? 'nodes' : 'hosts'
+  const storageWord =
+    kind === 'vsphere' ? 'datastore' : kind === 'nutanix' ? 'storage container' : 'storage'
   const nodes = (r.nodes || []).map((n) => n.node).join(', ') || '(none)'
   const parts = [
     `${label} ${r.version || '?'} @ ${r.url}`,
-    `${kind === 'vsphere' ? 'hosts' : 'nodes'}: ${nodes}`,
+    `${hostsWord}: ${nodes}`,
     r.node_ok
-      ? `${kind === 'vsphere' ? 'host' : 'node'} OK (${r.node_message || 'ok'})`
-      : `${kind === 'vsphere' ? 'host' : 'node'} FAIL: ${r.node_message || 'unknown'}`,
+      ? `${hostWord} OK (${r.node_message || 'ok'})`
+      : `${hostWord} FAIL: ${r.node_message || 'unknown'}`,
   ]
   if (r.arch) {
     parts.push(`guest arch → ${r.arch}`)
@@ -20,8 +24,8 @@ function formatProbe(r, kind) {
   if (r.storage) {
     parts.push(
       r.storage.ok
-        ? `${kind === 'vsphere' ? 'datastore' : 'storage'} OK: ${r.storage.storage} (${r.storage.type_ || r.storage.type || '?'})`
-        : `${kind === 'vsphere' ? 'datastore' : 'storage'} FAIL: ${r.storage.message}`,
+        ? `${storageWord} OK: ${r.storage.storage} (${r.storage.type_ || r.storage.type || '?'})`
+        : `${storageWord} FAIL: ${r.storage.message}`,
     )
   }
   return parts.join(' — ')

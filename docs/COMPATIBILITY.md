@@ -11,6 +11,7 @@ Pinned defaults come from [`image/fetch-runtime.sh`](../image/fetch-runtime.sh) 
 | Bare metal EFI | amd64 / arm64 | supported | `PERTISK_EMBED_BOOT=1` first-boot install |
 | Proxmox VE | amd64 | documented | [PROXMOX.md](./PROXMOX.md) + `scripts/proxmox-upload-vm.sh` |
 | VMware ESXi (standalone) | amd64 | documented | [VSPHERE.md](./VSPHERE.md) + `scripts/vsphere-upload-vm.sh` |
+| Nutanix AHV (Prism Element) | amd64 | documented | [NUTANIX.md](./NUTANIX.md) + `scripts/nutanix-upload-vm.sh` |
 | AWS (raw/qcow2 upload) | amd64 / arm64 | outlined | See [`image/cloud/README.md`](../image/cloud/README.md) |
 | GCP / Azure | amd64 / arm64 | outlined | Same cloud image pipeline |
 

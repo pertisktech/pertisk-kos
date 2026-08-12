@@ -358,6 +358,8 @@ async fn run_create_cluster(
 
     let lab_up = if provider.kind == "vsphere" {
         vsphere_lab_up_path(state)
+    } else if provider.kind == "nutanix" {
+        nutanix_lab_up_path(state)
     } else {
         state.cfg().lab_up.clone()
     };
@@ -411,6 +413,18 @@ async fn run_create_cluster(
             .env("VSPHERE_NETWORK", &provider.bridge);
         if provider.insecure != 0 {
             cmd.env("VSPHERE_INSECURE", "1");
+        }
+        apply_lab_env(&mut cmd, state, &provider.url);
+    } else if provider.kind == "nutanix" {
+        cmd.env("PROVIDER_KIND", "nutanix")
+            .env("NUTANIX_URL", &provider.url)
+            .env("NUTANIX_USER", &provider.token_id)
+            .env("NUTANIX_PASSWORD", &secret)
+            .env("NUTANIX_CLUSTER", &provider.node)
+            .env("NUTANIX_STORAGE", &provider.storage)
+            .env("NUTANIX_NETWORK", &provider.bridge);
+        if provider.insecure != 0 {
+            cmd.env("NUTANIX_INSECURE", "1");
         }
         apply_lab_env(&mut cmd, state, &provider.url);
     } else {
@@ -1280,6 +1294,39 @@ pub async fn purge_cluster(state: &AppState, cid: &str, log_path: &str) -> anyho
                                 append_log(log_path, &format!("warn: delete {legacy}: {e}\n"))?;
                             }
                         }
+                    } else if provider.kind == "nutanix" {
+                        let client = crate::nutanix::NutanixClient::new(
+                            provider.url.clone(),
+                            provider.token_id.clone(),
+                            secret,
+                            provider.insecure != 0,
+                        );
+                        let mut tried = std::collections::HashSet::new();
+                        for name in &node_names {
+                            if !tried.insert(name.clone()) {
+                                continue;
+                            }
+                            append_log(
+                                log_path,
+                                &format!("deleting VM {name} on Nutanix\n"),
+                            )?;
+                            if let Err(e) = client.delete_vm_by_name(name).await {
+                                append_log(log_path, &format!("warn: delete {name}: {e}\n"))?;
+                            }
+                        }
+                        for vmid in vmids {
+                            let legacy = crate::nutanix::NutanixClient::vm_name(prefix, vmid);
+                            if !tried.insert(legacy.clone()) {
+                                continue;
+                            }
+                            append_log(
+                                log_path,
+                                &format!("deleting VM {legacy} on Nutanix (by vmid)\n"),
+                            )?;
+                            if let Err(e) = client.delete_vm(prefix, vmid).await {
+                                append_log(log_path, &format!("warn: delete {legacy}: {e}\n"))?;
+                            }
+                        }
                     } else {
                         let client = crate::proxmox::ProxmoxClient {
                             url: provider.url,
@@ -1368,6 +1415,12 @@ async fn run_add_node(
     if provider.kind == "vsphere" {
         anyhow::bail!(
             "adding nodes to a vsphere (ESXi) cluster is not supported yet — \
+             recreate the cluster with the desired control-plane/worker counts"
+        );
+    }
+    if provider.kind == "nutanix" {
+        anyhow::bail!(
+            "adding nodes to a nutanix (AHV) cluster is not supported yet — \
              recreate the cluster with the desired control-plane/worker counts"
         );
     }
@@ -2237,6 +2290,22 @@ async fn remove_one_node(
                     if legacy != node.0 {
                         let _ = client.delete_vm(Some(&cluster_name), vmid).await;
                     }
+                } else if provider.kind == "nutanix" {
+                    append_log(log_path, &format!("deleting VM {}\n", node.0))?;
+                    let client = crate::nutanix::NutanixClient::new(
+                        provider.url,
+                        provider.token_id,
+                        secret,
+                        provider.insecure != 0,
+                    );
+                    if let Err(e) = client.delete_vm_by_name(&node.0).await {
+                        append_log(log_path, &format!("warn: delete {}: {e}\n", node.0))?;
+                    }
+                    let legacy =
+                        crate::nutanix::NutanixClient::vm_name(Some(&cluster_name), vmid);
+                    if legacy != node.0 {
+                        let _ = client.delete_vm(Some(&cluster_name), vmid).await;
+                    }
                 } else {
                     append_log(
                         log_path,
@@ -2368,6 +2437,47 @@ async fn run_resize_node(
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             append_log(log_path, "VM restarted\n")?;
         }
+    } else if provider.kind == "nutanix" {
+        let client = crate::nutanix::NutanixClient::new(
+            provider.url.clone(),
+            provider.token_id.clone(),
+            secret,
+            provider.insecure != 0,
+        );
+        if cpu_mem_changed {
+            client
+                .set_vm_hardware(&vm_name, set_cores, set_mem)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            append_log(log_path, "updated Nutanix CPU/memory config\n")?;
+        }
+        if let Some(want) = apply_disk {
+            let actual = cur_disk.unwrap_or(0);
+            if want > actual {
+                client
+                    .grow_vm_disk(&vm_name, want)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                append_log(
+                    log_path,
+                    &format!("grew Nutanix disk {actual} → {want} GiB\n"),
+                )?;
+                disk_grew_hypervisor = true;
+            } else if disk_requested {
+                append_log(
+                    log_path,
+                    &format!("Nutanix disk already >= {want} GiB — will grow guest EPHEMERAL\n"),
+                )?;
+            }
+        }
+        if cpu_mem_changed {
+            append_log(log_path, "restarting VM so CPU/memory take effect…\n")?;
+            client
+                .restart_vm_by_name(&vm_name)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            append_log(log_path, "VM restarted\n")?;
+        }
     } else {
         let client = crate::proxmox::ProxmoxClient {
             url: provider.url.clone(),
@@ -2465,6 +2575,17 @@ async fn run_resize_node(
             )?;
             if provider.kind == "vsphere" {
                 let client = crate::vsphere::VsphereClient::new(
+                    provider.url.clone(),
+                    provider.token_id.clone(),
+                    crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?,
+                    provider.insecure != 0,
+                );
+                client
+                    .restart_vm_by_name(&vm_name)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            } else if provider.kind == "nutanix" {
+                let client = crate::nutanix::NutanixClient::new(
                     provider.url.clone(),
                     provider.token_id.clone(),
                     crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?,
@@ -2753,6 +2874,17 @@ fn vsphere_lab_up_path(state: &AppState) -> std::path::PathBuf {
         }
     }
     // Fall back to shared proxmox-lab-up.sh with PROVIDER_KIND=vsphere (jobs set the env).
+    lab.clone()
+}
+
+fn nutanix_lab_up_path(state: &AppState) -> std::path::PathBuf {
+    let lab = &state.cfg().lab_up;
+    if let Some(dir) = lab.parent() {
+        let candidate = dir.join("nutanix-lab-up.sh");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
     lab.clone()
 }
 

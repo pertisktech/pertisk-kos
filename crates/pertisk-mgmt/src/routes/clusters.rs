@@ -40,7 +40,7 @@ pub struct ClusterOut {
     pub name: String,
     pub provider_id: String,
     pub provider_name: Option<String>,
-    /// `proxmox` | `vsphere` (from providers.kind).
+    /// `proxmox` | `vsphere` | `nutanix` (from providers.kind).
     pub provider_kind: Option<String>,
     pub provider_url: Option<String>,
     pub provider_node: Option<String>,
@@ -577,6 +577,14 @@ async fn delete_check(
                 Ok(secret) => {
                     let test = if kind == "vsphere" {
                         let client = crate::vsphere::VsphereClient::new(
+                            url.clone(),
+                            token_id.clone(),
+                            secret,
+                            insecure != 0,
+                        );
+                        client.test_connection().await
+                    } else if kind == "nutanix" {
+                        let client = crate::nutanix::NutanixClient::new(
                             url.clone(),
                             token_id.clone(),
                             secret,
@@ -1372,6 +1380,14 @@ async fn provider_check_vmids(
         // Prefix unknown at check time (cluster name not chosen yet). Match bare
         // `{vmid}`, legacy `{prefix}-{vmid}`, and any inventory name ending in `-{vmid}`.
         // Create uses `{cluster}-cp-N` / `{cluster}-wk-N` (same as Proxmox).
+        client.check_vmids(&row.4, cp_vmid, count, None).await
+    } else if row.0 == "nutanix" {
+        let client = crate::nutanix::NutanixClient::new(
+            row.1,
+            row.2,
+            secret,
+            row.5 != 0,
+        );
         client.check_vmids(&row.4, cp_vmid, count, None).await
     } else {
         let client = ProxmoxClient {

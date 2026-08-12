@@ -67,7 +67,7 @@ func (r *hypervisorProviderResource) Schema(_ context.Context, _ resource.Schema
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("proxmox"),
-				MarkdownDescription: "proxmox | vsphere",
+				MarkdownDescription: "proxmox | vsphere | nutanix",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},

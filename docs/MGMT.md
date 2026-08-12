@@ -116,6 +116,12 @@ UI → Providers → Kind **vSphere (ESXi)** → URL, username/password, host, d
 
 Uses SOAP `/sdk` (not REST). Cluster create runs `vsphere-lab-up.sh` / `vsphere-upload-vm.sh` (qcow2 → VMDK upload). Mgmt must share L2 with guests for MAC→IP (`LAB_SUBNET`).
 
+## Nutanix (AHV) provider
+
+UI → Providers → Kind **Nutanix (AHV)** → URL (`:9440`), username/password, cluster, storage container, network ([NUTANIX.md](./NUTANIX.md)).
+
+Uses Prism Element REST v2.0 (+ v0.8 image upload). Cluster create runs `nutanix-lab-up.sh` / `nutanix-upload-vm.sh` (qcow2 → DISK_IMAGE → UEFI VM). Mgmt must share L2 with guests for MAC→IP (`LAB_SUBNET`).
+
 ## Clusters (HA)
 
 When `M > 1`, **VIP** is required (kube-vip). Use a **free** L2 IPv4. Guest images need `af_packet` for kube-vip ARP.
