@@ -488,13 +488,34 @@ fi
 }
 
 echo "==> create UEFI VM ${NAME} (mem=${MEMORY} cores=${CORES} disk>=${WANT_BYTES})"
+# Deterministic MAC (like Proxmox) — PE GET /vms/{uuid} often omits NICs unless
+# include_vm_nic_config=true, and MAC may be empty until after power-on without this.
+mac_for_vmid() {
+  local id="$1"
+  local salt_src="${NUTANIX_MAC_SALT:-${NUTANIX_URL:-nutanix}}"
+  local h
+  h="$(printf '%s|%s' "$salt_src" "$id" | sha256sum | awk '{print $1}')"
+  # Locally administered unicast: x2/x6/xA/xE in first octet.
+  printf '52:54:%s:%s:%s:%s\n' "${h:0:2}" "${h:2:2}" "${h:4:2}" "${h:6:2}"
+}
+NET0_MAC="$(mac_for_vmid "${VMID}")"
+echo "==> nic mac=${NET0_MAC}"
+
+# AHV: SCSI (virtio-scsi) often hangs guest disk I/O after EFI stub; PCI virtio-blk
+# (/dev/vda) is the reliable bus for Linux cloud images. Override: NUTANIX_DISK_BUS=scsi
+DISK_BUS="${NUTANIX_DISK_BUS:-pci}"
+echo "==> disk bus=${DISK_BUS}"
+
 # Do not set nic "model" — PE rejects "VIRTIO" (InvalidArgument). Default AHV NIC is virtio.
+# vm_serial_ports on POST is silently ignored by PE — attach after create (see ensure_serial).
 VM_BODY="$(jq -n \
   --arg name "$NAME" \
   --argjson mem "$MEMORY" \
   --argjson cores "$CORES" \
   --arg net "$NETWORK_UUID" \
   --arg disk "$VMDISK_UUID" \
+  --arg mac "$NET0_MAC" \
+  --arg bus "$DISK_BUS" \
   --argjson size "$WANT_BYTES" \
   '{
     name: $name,
@@ -505,13 +526,16 @@ VM_BODY="$(jq -n \
     boot: {
       uefi_boot: true,
       secure_boot: false,
-      disk_address: { device_bus: "scsi", device_index: 0 }
+      disk_address: { device_bus: $bus, device_index: 0 }
     },
-    vm_serial_ports: [ { index: 0 } ],
-    vm_nics: [ { network_uuid: $net, is_connected: true } ],
+    vm_nics: [ {
+      network_uuid: $net,
+      is_connected: true,
+      mac_address: $mac
+    } ],
     vm_disks: [ {
       is_cdrom: false,
-      disk_address: { device_bus: "scsi", device_index: 0 },
+      disk_address: { device_bus: $bus, device_index: 0 },
       vm_disk_clone: {
         disk_address: { vmdisk_uuid: $disk },
         minimum_size: $size
@@ -520,7 +544,7 @@ VM_BODY="$(jq -n \
   }')"
 CREATE_VM="$(api_json POST vms "$VM_BODY")"
 VM_UUID="$(resolve_create_uuid "$CREATE_VM" vm "$NAME")" || {
-  echo "warn: VM create rejected; retrying without boot.disk_address" >&2
+  echo "warn: VM create with fixed MAC / bus=${DISK_BUS} rejected; retrying scsi + no mac" >&2
   echo "      response: $CREATE_VM" >&2
   VM_BODY="$(jq -n \
     --arg name "$NAME" \
@@ -534,8 +558,11 @@ VM_UUID="$(resolve_create_uuid "$CREATE_VM" vm "$NAME")" || {
       memory_mb: $mem,
       num_vcpus: $cores,
       num_cores_per_vcpu: 1,
-      boot: { uefi_boot: true, secure_boot: false },
-      vm_serial_ports: [ { index: 0 } ],
+      boot: {
+        uefi_boot: true,
+        secure_boot: false,
+        disk_address: { device_bus: "scsi", device_index: 0 }
+      },
       vm_nics: [ { network_uuid: $net, is_connected: true } ],
       vm_disks: [ {
         is_cdrom: false,
@@ -551,8 +578,102 @@ VM_UUID="$(resolve_create_uuid "$CREATE_VM" vm "$NAME")" || {
     echo "VM create failed: $CREATE_VM" >&2
     exit 1
   }
+  NET0_MAC=""
+  DISK_BUS="scsi"
 }
 echo "==> created VM uuid=${VM_UUID}"
+
+vm_has_serial() {
+  local uuid="$1" det
+  det="$(api_get "vms/${uuid}" 2>/dev/null || true)"
+  echo "${det:-}" | jq -e '
+    ((.vm_serial_ports // .serial_ports // []) | length) > 0
+  ' >/dev/null 2>&1
+}
+
+# PE ignores vm_serial_ports on POST. Attach while powered off (required for acli/REST).
+ensure_serial_port() {
+  local uuid="$1" name="$2"
+  if vm_has_serial "$uuid"; then
+    echo "==> serial port already present" >&2
+    return 0
+  fi
+  echo "==> attach serial port (kServer) for Prism Serial Console" >&2
+
+  # 1) PE v2 PUT — try type spellings PE accepts
+  local t body resp
+  for t in kServer SERVER server; do
+    body="$(jq -n --arg t "$t" '{vm_serial_ports:[{index:0, type:$t}]}')"
+    resp="$(api_json PUT "vms/${uuid}" "$body" 2>/dev/null || true)"
+    if echo "${resp:-}" | jq -e '.task_uuid' >/dev/null 2>&1; then
+      wait_task "$(echo "$resp" | jq -r '.task_uuid')" "serial" >/dev/null || true
+    fi
+    sleep 1
+    if vm_has_serial "$uuid"; then
+      echo "==> serial attached via v2 PUT type=${t}" >&2
+      return 0
+    fi
+  done
+
+  # 2) PE/PC v3 intent PUT (serial_port_list)
+  local api3="${BASE}/api/nutanix/v3"
+  local get3 put3
+  get3="$("${CURL[@]}" "${api3}/vms/${uuid}" 2>/dev/null || true)"
+  if echo "${get3:-}" | jq -e '.spec.resources' >/dev/null 2>&1; then
+    put3="$(echo "$get3" | jq '
+      del(.status)
+      | .spec.resources.serial_port_list = [{index:0, is_connected:true}]
+      | .spec.resources.power_state = "OFF"
+    ')"
+    resp="$("${CURL[@]}" -X PUT -H 'Content-Type: application/json' -d "$put3" \
+      "${api3}/vms/${uuid}" 2>/dev/null || true)"
+    # v3 returns 202 + status.execution_context.task_uuid sometimes nested
+    local tu
+    tu="$(echo "${resp:-}" | jq -r '
+      .status.execution_context.task_uuid
+      // .task_uuid // empty
+    ' 2>/dev/null || true)"
+    if [[ -n "$tu" ]]; then
+      # v3 tasks live under v3/tasks
+      for _ in $(seq 1 60); do
+        local st
+        st="$("${CURL[@]}" "${api3}/tasks/${tu}" 2>/dev/null | jq -r '.status // empty' || true)"
+        case "${st}" in
+          SUCCEEDED|Succeeded|COMPLETE|Complete) break ;;
+          FAILED|Failed|ABORTED|Aborted) break ;;
+        esac
+        sleep 2
+      done
+    else
+      sleep 3
+    fi
+    if vm_has_serial "$uuid"; then
+      echo "==> serial attached via v3 PUT serial_port_list" >&2
+      return 0
+    fi
+  fi
+
+  # 3) Optional CVM acli (most reliable)
+  local ssh_target="${NUTANIX_CVM_SSH:-${NUTANIX_SSH:-}}"
+  if [[ -n "$ssh_target" ]]; then
+    echo "==> serial via acli on ${ssh_target}" >&2
+    if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o BatchMode=yes \
+      "$ssh_target" "acli vm.serial_port_create '${name}' type=kServer index=0"; then
+      sleep 1
+      if vm_has_serial "$uuid"; then
+        echo "==> serial attached via acli" >&2
+        return 0
+      fi
+    fi
+  fi
+
+  echo "warn: could not attach serial port — Prism Serial Console will be empty" >&2
+  echo "      set NUTANIX_CVM_SSH=nutanix@<cvm-ip> (BatchMode key) and recreate, or run:" >&2
+  echo "      acli vm.serial_port_create '${name}' type=kServer index=0" >&2
+  return 1
+}
+
+ensure_serial_port "$VM_UUID" "$NAME" || true
 
 if [[ "$START" == "1" ]]; then
   echo "==> power on"
@@ -570,27 +691,66 @@ if [[ "$START" == "1" ]]; then
   fi
 fi
 
-# MAC is assigned when the NIC is live — need power on first.
-MAC=""
-for _ in $(seq 1 60); do
-  DET="$(api_get "vms/${VM_UUID}" || true)"
-  MAC="$(echo "${DET:-}" | jq -r '
-    (.vm_nics // [])
+# Resolve MAC: prefer the one we set; else query with include_vm_nic_config / nics API.
+fetch_vm_mac() {
+  local uuid="$1" det nics mac
+  det="$(api_get "vms/${uuid}?include_vm_nic_config=true" || true)"
+  mac="$(echo "${det:-}" | jq -r '
+    (.vm_nics // .nic_list // [])
     | map(.mac_address // .mac_addr // empty)
     | map(select(. != null and . != ""))
     | .[0] // empty
   ')"
-  PWR="$(echo "${DET:-}" | jq -r '.power_state // .state // empty' | tr 'a-z' 'A-Z')"
-  [[ -n "$MAC" ]] && break
-  if [[ "$PWR" == *"OFF"* ]]; then
-    echo "VM is powered off — cannot read MAC" >&2
-    exit 1
+  if [[ -z "$mac" ]]; then
+    nics="$(api_get "vms/${uuid}/nics" 2>/dev/null || api_get "vms/${uuid}/virtual_nics" 2>/dev/null || true)"
+    mac="$(echo "${nics:-}" | jq -r '
+      (.entities // . // [])
+      | if type=="array" then . else [.] end
+      | map(.mac_address // .mac_addr // empty)
+      | map(select(. != null and . != ""))
+      | .[0] // empty
+    ' 2>/dev/null || true)"
   fi
-  sleep 1
-done
+  echo "$mac"
+}
+
+MAC="${NET0_MAC}"
+if [[ -z "$MAC" ]]; then
+  for _ in $(seq 1 60); do
+    MAC="$(fetch_vm_mac "$VM_UUID")"
+    [[ -n "$MAC" ]] && break
+    sleep 1
+  done
+fi
+# Confirm API agrees when we set MAC at create (best-effort).
+if [[ -n "$NET0_MAC" ]]; then
+  GOT="$(fetch_vm_mac "$VM_UUID" || true)"
+  if [[ -n "$GOT" && "${GOT,,}" != "${NET0_MAC,,}" ]]; then
+    echo "warn: requested mac=${NET0_MAC} but API reports ${GOT} — using API value" >&2
+    MAC="$GOT"
+  fi
+fi
 if [[ -z "$MAC" ]]; then
   echo "VM ${NAME} has no MAC after power on (uuid=${VM_UUID})" >&2
+  echo "hint: GET vms/${VM_UUID}?include_vm_nic_config=true" >&2
+  api_get "vms/${VM_UUID}?include_vm_nic_config=true" 2>/dev/null | head -c 800 >&2 || true
+  echo >&2
   exit 1
 fi
 echo "OK ${NAME} uuid=${VM_UUID} image=${IMAGE_UUID} mac=${MAC}"
 echo "    note: AHV VGA often stays on 'EFI stub: Loaded initrd…' — open Prism → Serial Console"
+# IPAM can reserve an address at NIC create; that is not proof the guest booted.
+DET="$(api_get "vms/${VM_UUID}?include_vm_nic_config=true" 2>/dev/null || true)"
+if [[ -n "${DET:-}" ]]; then
+  IPAM_IPS="$(echo "$DET" | jq -r '
+    [(.vm_nics // .nic_list // [])[]
+      | (.ip_addresses // [])[]?, .ip_address?, .requested_ip_address?, .endpoint_address?
+    ] | map(select(. != null and . != "" and (contains(".") ))) | unique | join(" ")
+  ' 2>/dev/null || true)"
+  SERIAL="$(echo "$DET" | jq -c '.vm_serial_ports // .serial_ports // []' 2>/dev/null || true)"
+  [[ -n "${IPAM_IPS:-}" ]] && echo "    prism NIC IP(s): ${IPAM_IPS} (IPAM reserved — ping/:50000 still required)"
+  [[ -n "${SERIAL:-}" && "$SERIAL" != "[]" ]] && echo "    serial_ports: ${SERIAL}"
+  if [[ -z "${SERIAL:-}" || "$SERIAL" == "[]" || "$SERIAL" == "null" ]]; then
+    echo "    warn: no serial_ports on VM — Prism Serial Console will be empty; recreate with kServer" >&2
+  fi
+fi

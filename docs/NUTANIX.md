@@ -88,21 +88,19 @@ resource "pertisk_provider" "ahv" {
 }
 ```
 
-## Guest console (EFI stub)
+## Guest console + networking
 
-AHV **VGA** freezes on:
+AHV **VGA** freezes on `EFI stub: Loaded initrd…` — that is **expected**. Pertisk uses **serial** (`ttyS0`); VGA will not advance.
 
-```text
-EFI stub: Loaded initrd from LINUX EFI...
-```
+1. Prism → VM → **Serial Console**. PE **ignores** `vm_serial_ports` on create — the upload script attaches serial afterward (v2 PUT / v3 / optional `NUTANIX_CVM_SSH` + `acli vm.serial_port_create … type=kServer index=0`). Power-cycle after attaching.
+2. Default disk bus is **`pci`** (virtio-blk → `/dev/vda`). SCSI often hangs after EFI stub on AHV; override with `NUTANIX_DISK_BUS=scsi` if needed.
+3. If Serial shows the dashboard but lab-up finds no **ICMP**/`:50000` → wrong L2 or firewall. AHV **IPAM** can put a MAC→IP in ARP before the guest OS is up — lab-up now requires ping (or `:50000`) before treating the IP as live.
+4. Quick check from mgmt: `ping -c2 <ip>; nc -zv <ip> 50000`.
 
-That is **expected**: Pertisk redirects the console to **serial** (`ttyS0`), same as Proxmox. VGA will not advance.
+Recreate VMs after updating scripts. Guest image rebuild is needed for DHCP-before-STATE / partprobe timeout fixes inside `pertiskd`.
 
-1. Prism → VM → **Launch Console** → switch to **Serial Console** (you should see the Pertisk dashboard).
-2. Or check lab-up / DHCP / `Machine API :50000`.
-
-Recreate VMs after pulling a script that sets `vm_serial_ports` + `secure_boot: false` — older VMs may have no serial port, so stdio goes to a dead UART and it looks hung.
 ## Limits
 
 - Adding nodes to an existing nutanix cluster from the UI is not wired yet — recreate with the desired CP/worker counts.
-- Mgmt must share L2 with guests for MAC→IP discovery (`LAB_SUBNET`), same as ESXi lab-up.
+- Mgmt must share L2 with guests for MAC→IP discovery (`LAB_SUBNET`), same as ESXi lab-up (Prism IP fallback helps when AHV has learned the address).
+- For Serial Console without working REST attach: `export NUTANIX_CVM_SSH=nutanix@<cvm-ip>` (SSH key, BatchMode).

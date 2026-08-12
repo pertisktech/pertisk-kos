@@ -52,8 +52,12 @@ pub fn settle_block_devices() {
         if !Path::new(&path).exists() {
             continue;
         }
-        // Best-effort; BusyBox/sgdisk images ship `partprobe`.
-        let status = Command::new("partprobe").arg(&path).status();
+        // Cap partprobe — AHV virtio-scsi can hang indefinitely on bad/slow disks
+        // and previously blocked DHCP / Machine API forever.
+        let status = Command::new("timeout")
+            .args(["5", "partprobe", &path])
+            .status()
+            .or_else(|_| Command::new("partprobe").arg(&path).status());
         match status {
             Ok(s) if s.success() => info!(disk = %path, "partprobe ok"),
             Ok(s) => warn!(disk = %path, code = ?s.code(), "partprobe exited non-zero"),

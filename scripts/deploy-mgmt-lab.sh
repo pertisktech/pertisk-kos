@@ -41,6 +41,10 @@ Flags:
   --worker-gb N        (default ${WORKER_GB})
   --arch ARCH          amd64|arm64 (default ${ARCH}; env ARCH/PERTISK_ARCH)
   -h, --help
+
+Env:
+  MGMT_PUBLIC_URL      force Public URL on deploy; otherwise keep existing
+                       /etc/pertisk-mgmt/pertisk-mgmt.env (or default http://<mgmt-ip>:8080)
 EOF
   exit 0
 }
@@ -149,9 +153,17 @@ fi
 # --- env: API-only by default (like Omni infra provider) ---
 echo "==> configure API disk import (PROXMOX_NO_SSH=1, upload→local)"
 # Derive a guest-reachable Public URL from --mgmt host (avoid http://0.0.0.0:8080).
+# Do not overwrite a customized MGMT_PUBLIC_URL on every RPM deploy — only set when
+# the caller exports MGMT_PUBLIC_URL, or the env file has no value yet.
 MGMT_IP="${MGMT_HOST##*@}"
 MGMT_IP="${MGMT_IP%%:*}"
-MGMT_PUBLIC_URL="${MGMT_PUBLIC_URL:-http://${MGMT_IP}:8080}"
+DEFAULT_PUBLIC_URL="http://${MGMT_IP}:8080"
+if [[ -n "${MGMT_PUBLIC_URL:-}" ]]; then
+  PUBLIC_URL_MODE=explicit
+else
+  PUBLIC_URL_MODE=preserve
+  MGMT_PUBLIC_URL="$DEFAULT_PUBLIC_URL"
+fi
 ssh "$MGMT_HOST" "sudo bash -c '
   ENV=/etc/pertisk-mgmt/pertisk-mgmt.env
   touch \"\$ENV\"
@@ -169,24 +181,44 @@ ssh "$MGMT_HOST" "sudo bash -c '
   set_kv PROXMOX_NO_SSH 1
   set_kv PROXMOX_UPLOAD_STORAGE local
   set_kv LAB_SUBNET ${LAB_SUBNET}
-  set_kv MGMT_PUBLIC_URL ${MGMT_PUBLIC_URL}
-  # Clear forced SSH unless --with-ssh
-  if [[ \"${WITH_SSH}\" != \"1\" ]]; then
-    sed -i \"s|^PROXMOX_SSH=|# PROXMOX_SSH=|\" \"\$ENV\" 2>/dev/null || true
+  existing_public=\"\$(grep -E \"^MGMT_PUBLIC_URL=\" \"\$ENV\" 2>/dev/null | head -1 | cut -d= -f2- || true)\"
+  if [[ \"${PUBLIC_URL_MODE}\" == \"explicit\" ]]; then
+    set_kv MGMT_PUBLIC_URL ${MGMT_PUBLIC_URL}
+    echo \"MGMT_PUBLIC_URL=${MGMT_PUBLIC_URL} (from deploy env)\"
+  elif [[ -n \"\$existing_public\" ]]; then
+    echo \"MGMT_PUBLIC_URL=\${existing_public} (preserved)\"
+  else
+    set_kv MGMT_PUBLIC_URL ${MGMT_PUBLIC_URL}
+    echo \"MGMT_PUBLIC_URL=${MGMT_PUBLIC_URL} (default; was unset)\"
+  fi
+  # Drop duplicate / stale PROXMOX_SSH lines (deploy used to comment+append forever).
+  sed -i '/^[[:space:]]*#*[[:space:]]*PROXMOX_SSH=/d' \"\$ENV\" 2>/dev/null || true
+  if [[ \"${WITH_SSH}\" == \"1\" ]]; then
+    : # set below after PROXMOX_NO_SSH flip
+  else
+    echo \"# PROXMOX_SSH=root@pve\" >> \"\$ENV\"
   fi
 '"
+# Reflect what landed on the host for the summary line below.
+MGMT_PUBLIC_URL="$(ssh "$MGMT_HOST" "sudo grep -E '^MGMT_PUBLIC_URL=' /etc/pertisk-mgmt/pertisk-mgmt.env 2>/dev/null | head -1 | cut -d= -f2-" || true)"
+MGMT_PUBLIC_URL="${MGMT_PUBLIC_URL:-$DEFAULT_PUBLIC_URL}"
 echo "==> MGMT_PUBLIC_URL=${MGMT_PUBLIC_URL}"
 
 if [[ "$WITH_SSH" == "1" && -n "$PVE_SSH" ]]; then
   echo "==> optional SSH mode PROXMOX_SSH=${PVE_SSH}"
   ssh "$MGMT_HOST" "sudo bash -c '
     ENV=/etc/pertisk-mgmt/pertisk-mgmt.env
-    sed -i \"s|^PROXMOX_NO_SSH=.*|PROXMOX_NO_SSH=0|\" \"\$ENV\"
-    if grep -q \"^PROXMOX_SSH=\" \"\$ENV\"; then
-      sed -i \"s|^PROXMOX_SSH=.*|PROXMOX_SSH=${PVE_SSH}|\" \"\$ENV\"
-    else
-      echo \"PROXMOX_SSH=${PVE_SSH}\" >> \"\$ENV\"
-    fi
+    set_kv() {
+      local k=\"\$1\" v=\"\$2\"
+      if grep -q \"^\${k}=\" \"\$ENV\" 2>/dev/null; then
+        sed -i \"s|^\${k}=.*|\${k}=\${v}|\" \"\$ENV\"
+      else
+        echo \"\${k}=\${v}\" >> \"\$ENV\"
+      fi
+    }
+    set_kv PROXMOX_NO_SSH 0
+    sed -i \"/^[[:space:]]*#*[[:space:]]*PROXMOX_SSH=/d\" \"\$ENV\" 2>/dev/null || true
+    echo \"PROXMOX_SSH=${PVE_SSH}\" >> \"\$ENV\"
   '"
   ssh "$MGMT_HOST" 'sudo -u pertisk-mgmt -H bash -c "
     mkdir -p ~/.ssh && chmod 700 ~/.ssh

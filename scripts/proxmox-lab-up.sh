@@ -458,33 +458,92 @@ vm_mac() {
 }
 
 nutanix_vm_mac() {
-  local name="$1" base api resp uuid detail mac
+  local name="$1" base api resp uuid detail mac nics
   base="${NUTANIX_URL%/}"
   api="${base}/api/nutanix/v2.0"
   local curl_args=(curl -sS)
   [[ "${NUTANIX_INSECURE:-0}" == "1" ]] && curl_args+=(-k)
   curl_args+=(-u "${NUTANIX_USER}:${NUTANIX_PASSWORD}" -H 'Accept: application/json')
-  resp="$("${curl_args[@]}" "${api}/vms")"
-  # List payloads often omit vm_nics — resolve uuid then GET detail.
-  uuid="$(VMS_JSON="$resp" python3 -c '
+  resp="$("${curl_args[@]}" "${api}/vms?include_vm_nic_config=true")"
+  # Prefer MAC from list (with nic config); else uuid → detail / nics endpoint.
+  mac="$(VMS_JSON="$resp" python3 -c '
 import json,os,sys
 want=sys.argv[1].lower()
 data=json.loads(os.environ["VMS_JSON"])
 ents=data.get("entities") or (data if isinstance(data,list) else [])
 for e in ents:
-    if (e.get("name") or "").lower()==want:
-        print(e.get("uuid") or "")
-        raise SystemExit
+    if (e.get("name") or "").lower()!=want:
+        continue
+    for nic in (e.get("vm_nics") or e.get("nic_list") or []):
+        m=nic.get("mac_address") or nic.get("mac_addr")
+        if m:
+            print(m)
+            raise SystemExit
+    print("UUID:"+ (e.get("uuid") or ""))
+    raise SystemExit
 ' "$name" 2>/dev/null || true)"
+  if [[ "$mac" == UUID:* ]]; then
+    uuid="${mac#UUID:}"
+    mac=""
+  elif [[ -n "$mac" ]]; then
+    echo "$mac"
+    return 0
+  else
+    return 0
+  fi
   [[ -n "$uuid" ]] || return 0
-  detail="$("${curl_args[@]}" "${api}/vms/${uuid}")"
+  detail="$("${curl_args[@]}" "${api}/vms/${uuid}?include_vm_nic_config=true")"
   mac="$(echo "$detail" | jq -r '
-    (.vm_nics // [])
+    (.vm_nics // .nic_list // [])
     | map(.mac_address // .mac_addr // empty)
     | map(select(. != null and . != ""))
     | .[0] // empty
   ')"
+  if [[ -z "$mac" ]]; then
+    nics="$("${curl_args[@]}" "${api}/vms/${uuid}/nics" 2>/dev/null || true)"
+    mac="$(echo "${nics:-}" | jq -r '
+      (.entities // . // [])
+      | if type=="array" then . else [.] end
+      | map(.mac_address // .mac_addr // empty)
+      | map(select(. != null and . != ""))
+      | .[0] // empty
+    ' 2>/dev/null || true)"
+  fi
   [[ -n "$mac" ]] && echo "$mac"
+}
+
+# IPs AHV learned on the guest NIC (works even when mgmt is not on the same L2).
+nutanix_vm_ips() {
+  local name="$1" base api resp
+  base="${NUTANIX_URL%/}"
+  api="${base}/api/nutanix/v2.0"
+  local curl_args=(curl -sS)
+  [[ "${NUTANIX_INSECURE:-0}" == "1" ]] && curl_args+=(-k)
+  curl_args+=(-u "${NUTANIX_USER}:${NUTANIX_PASSWORD}" -H 'Accept: application/json')
+  resp="$("${curl_args[@]}" "${api}/vms?include_vm_nic_config=true")"
+  VMS_JSON="$resp" python3 -c '
+import json,os,sys
+want=sys.argv[1].lower()
+data=json.loads(os.environ["VMS_JSON"])
+ents=data.get("entities") or (data if isinstance(data,list) else [])
+for e in ents:
+    if (e.get("name") or "").lower()!=want:
+        continue
+    ips=[]
+    for nic in (e.get("vm_nics") or e.get("nic_list") or []):
+        for key in ("ip_addresses","ip_address","assigned_ips"):
+            v=nic.get(key)
+            if isinstance(v,list):
+                ips.extend([x for x in v if isinstance(x,str) and "." in x])
+            elif isinstance(v,str) and "." in v:
+                ips.append(v)
+        ea=nic.get("endpoint_address") or nic.get("requested_ip_address")
+        if isinstance(ea,str) and "." in ea:
+            ips.append(ea)
+    for ip in ips:
+        print(ip)
+    raise SystemExit
+' "$name" 2>/dev/null || true
 }
 
 vsphere_vm_mac() {
@@ -670,11 +729,18 @@ api_reachable() {
   fi
 }
 
+# ICMP proves the guest stack is up. Nutanix IPAM reserves an IP at NIC create and
+# ARP/neigh can show that MAC→IP before the OS has DHCP'd or bound :50000.
+guest_icmp_alive() {
+  local ip="$1"
+  ping -c1 -W2 "$ip" >/dev/null 2>&1
+}
+
 wait_ip() {
-  local vmid="$1" label="$2" mac ip="" nudged=0 saw_ip=0 last_log=0
+  local vmid="$1" label="$2" mac ip="" nudged=0 saw_ip=0 last_log=0 live=0
   local ip_deadline api_deadline=0 deadline
   mac="$(vm_mac "$vmid" "$label")"
-  log "VM ${vmid} (${label}) MAC=${mac} — waiting for DHCP IP (timeout ${IP_TIMEOUT}s; +${API_AFTER_IP_TIMEOUT}s after ARP for :50000)"
+  log "VM ${vmid} (${label}) MAC=${mac} — waiting for DHCP IP (timeout ${IP_TIMEOUT}s; +${API_AFTER_IP_TIMEOUT}s after live IP for :50000)"
   ip_deadline=$((SECONDS + IP_TIMEOUT))
   while true; do
     if (( saw_ip )); then
@@ -685,6 +751,13 @@ wait_ip() {
     (( SECONDS < deadline )) || break
 
     ip="$(arp_ip_for_mac "$mac" || true)"
+    # Nutanix: AHV may learn the guest IP even when mgmt is not on guest L2.
+    if [[ -z "$ip" && "${PROVIDER_KIND}" == "nutanix" && -n "$label" ]]; then
+      ip="$(nutanix_vm_ips "$label" 2>/dev/null | head -1 || true)"
+      if [[ -z "$ip" ]]; then
+        ip="$(nutanix_vm_ips "${NAME_PREFIX}-${vmid}" 2>/dev/null | head -1 || true)"
+      fi
+    fi
     # Only sweep when we still have no IP — never re-sweep while waiting on :50000.
     if [[ -z "$ip" && -n "$LAB_SUBNET" ]]; then
       if [[ "$nudged" == "0" ]] || (( SECONDS % 60 < 3 )); then
@@ -698,31 +771,54 @@ wait_ip() {
       return 0
     fi
     if [[ -n "$ip" ]]; then
-      if (( !saw_ip )); then
-        saw_ip=1
-        api_deadline=$((SECONDS + API_AFTER_IP_TIMEOUT))
-        last_log=$SECONDS
-        log "VM ${vmid} ARP=${ip} — waiting for Machine API :50000 (timeout ${API_AFTER_IP_TIMEOUT}s)"
-      elif (( SECONDS - last_log >= 20 )); then
-        last_log=$SECONDS
-        local left=$((api_deadline - SECONDS))
-        (( left < 0 )) && left=0
-        log "VM ${vmid} ARP=${ip} but :50000 not ready yet... (${left}s left)"
+      live=0
+      if guest_icmp_alive "$ip"; then
+        live=1
+      fi
+      if (( live )); then
+        if (( !saw_ip )); then
+          saw_ip=1
+          api_deadline=$((SECONDS + API_AFTER_IP_TIMEOUT))
+          last_log=$SECONDS
+          log "VM ${vmid} live=${ip} (ICMP ok) — waiting for Machine API :50000 (timeout ${API_AFTER_IP_TIMEOUT}s)"
+        elif (( SECONDS - last_log >= 20 )); then
+          last_log=$SECONDS
+          local left=$((api_deadline - SECONDS))
+          (( left < 0 )) && left=0
+          log "VM ${vmid} live=${ip} but :50000 not ready yet... (${left}s left)"
+        fi
+      else
+        # Candidate from ARP/IPAM only — do not start the long API timer.
+        saw_ip=0
+        if (( SECONDS - last_log >= 15 )); then
+          last_log=$SECONDS
+          log "VM ${vmid} candidate IP=${ip} for ${mac} but no ICMP (AHV IPAM ARP?) — still waiting for live guest…"
+          if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
+            log "hint: Prism Serial Console on ${label}. VGA EFI stub is normal; Serial should show pertiskd."
+            log "hint: from mgmt: ping -c2 ${ip}; nc -zv ${ip} 50000"
+          fi
+        fi
       fi
     else
       if (( SECONDS - last_log >= 15 )); then
         last_log=$SECONDS
         log "VM ${vmid} no ARP yet for ${mac}…"
+        if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
+          log "hint: open Prism → ${label} → Serial Console (kServer). If still on EFI stub only, guest never reached userspace."
+          log "hint: confirm AHV network '${NUTANIX_NETWORK:-?}' is same L2/DHCP as LAB_SUBNET=${LAB_SUBNET:-?} (mgmt ${NUTANIX_HTTP_ADDR:-auto})."
+        fi
       fi
     fi
     sleep 3
   done
   if (( saw_ip )); then
-    die "timed out waiting for Machine API :50000 on ${ip:-?} (VM ${vmid} MAC=${mac}; ARP was up but guest services slow — try IP_TIMEOUT/API_AFTER_IP_TIMEOUT)"
+    die "timed out waiting for Machine API :50000 on ${ip:-?} (VM ${vmid} MAC=${mac}; ICMP was up but guest services slow — try IP_TIMEOUT/API_AFTER_IP_TIMEOUT)
+hint: Prism → ${label} → Serial Console for pertiskd logs"
   fi
   die "timed out waiting for IP/API for VM ${vmid} MAC=${mac} (PROXMOX_SSH=${PROXMOX_SSH:-unset} subnet=${LAB_SUBNET:-unset})
 hint: without PROXMOX_SSH, mgmt must share L2 with guests (LAB_SUBNET ping-sweep).
-      check: ip -4 neigh | grep -i ${mac}
+      Nutanix IPAM can show ARP before the guest boots — require ping / :50000.
+      check: ip -4 neigh | grep -i ${mac}; ping -c2 <ip>; nc -zv <ip> 50000
       resume: lab-up --skip-build --skip-vms --cp-vmid ${CP_VMID} --controlplanes ${CONTROLPLANES} --workers ${WORKERS}"
 }
 

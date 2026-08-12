@@ -303,8 +303,57 @@ fn run() -> Result<()> {
         }
     };
 
-    // Mount STATE before DHCP so INIT-REBOOT can reclaim the previous lease
-    // across Proxmox stop/start (lease file under machine/dhcp/).
+    // DHCP + API *before* STATE mount. On AHV, virtio-scsi I/O can hang while
+    // mounting STATE; lab-up still needs a live address / :50000. After STATE is
+    // up we re-apply network so INIT-REBOOT can reclaim the lease file.
+    let early_dual = early_cfg
+        .as_ref()
+        .and_then(|c| c.cluster.as_ref())
+        .map(|c| c.is_dual_stack())
+        .unwrap_or(false);
+    sysctl::apply_ipv6_policy(early_dual);
+    if let Ok(mut st) = api_state.lock() {
+        st.set_message("network");
+    }
+    if let Some(ref cfg) = early_cfg {
+        if let Some(name) = cfg.machine.network.hostname.as_deref() {
+            if let Err(err) = hostname::set_hostname(name) {
+                warn!(error = %err, "hostname apply failed");
+            }
+        }
+        if !args.skip_network {
+            if let Err(err) = pertisk_net::apply_network(&cfg.machine.network) {
+                warn!(error = %err, "early network apply failed");
+            }
+        }
+    } else if !args.skip_network {
+        let early_net = pertisk_config::Network {
+            hostname: None,
+            interfaces: vec![pertisk_config::Interface {
+                interface: "eth0".into(),
+                dhcp: true,
+                addresses: vec![],
+                gateway: None,
+            }],
+            nameservers: vec![],
+        };
+        if let Err(err) = pertisk_net::apply_network(&early_net) {
+            warn!(error = %err, "early default DHCP failed");
+        }
+    }
+
+    let tls = resolve_tls(&args);
+    let mut api_started = false;
+    if !args.skip_api {
+        if let Ok(mut st) = api_state.lock() {
+            st.set_message("API listening (boot continuing)");
+        }
+        match start_api_thread(api_state.clone(), &args.api_listen, tls.clone()) {
+            Ok(()) => api_started = true,
+            Err(err) => warn!(error = %err, "management API failed to start"),
+        }
+    }
+
     if let Ok(mut st) = api_state.lock() {
         st.set_message("mounting STATE");
     }
@@ -338,46 +387,9 @@ fn run() -> Result<()> {
         "STATE volume ready"
     );
 
-    // DHCP after STATE so a persisted lease can INIT-REBOOT before DISCOVER.
-    // Install still runs after addressing so lab wait_ip can see :50000 early.
-    let early_dual = early_cfg
-        .as_ref()
-        .and_then(|c| c.cluster.as_ref())
-        .map(|c| c.is_dual_stack())
-        .unwrap_or(false);
-    sysctl::apply_ipv6_policy(early_dual);
-    if let Ok(mut st) = api_state.lock() {
-        st.set_message("network");
-    }
     if let Some(ref cfg) = early_cfg {
-        if let Some(name) = cfg.machine.network.hostname.as_deref() {
-            if let Err(err) = hostname::set_hostname(name) {
-                warn!(error = %err, "hostname apply failed");
-            }
-        }
-        if !args.skip_network {
-            if let Err(err) = pertisk_net::apply_network(&cfg.machine.network) {
-                warn!(error = %err, "early network apply failed");
-            }
-        }
         if let Err(err) = maybe_install(cfg, &args) {
             warn!(error = %err, "install step failed");
-        }
-    } else if !args.skip_network {
-        // Cloud images: no /config.yaml early path. Still DHCP eth0 so Serial/API
-        // are reachable; seed is re-applied after boot config load.
-        let early_net = pertisk_config::Network {
-            hostname: None,
-            interfaces: vec![pertisk_config::Interface {
-                interface: "eth0".into(),
-                dhcp: true,
-                addresses: vec![],
-                gateway: None,
-            }],
-            nameservers: vec![],
-        };
-        if let Err(err) = pertisk_net::apply_network(&early_net) {
-            warn!(error = %err, "early default DHCP failed");
         }
     }
 
@@ -446,10 +458,7 @@ fn run() -> Result<()> {
         warn!("no machine config found; continuing without");
     }
 
-    // Bring Machine API up before EPHEMERAL mkfs — first-boot format of a 50–75G
-    // disk can take many minutes. DHCP is already up; add-node wait_ip needs :50000.
-    let tls = resolve_tls(&args);
-    if !args.skip_api {
+    if !api_started && !args.skip_api {
         if let Ok(mut st) = api_state.lock() {
             st.set_message("API listening (EPHEMERAL pending)");
         }

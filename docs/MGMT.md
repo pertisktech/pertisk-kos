@@ -32,7 +32,7 @@ cd web/mgmt-ui && npm run dev   # http://127.0.0.1:5173 proxies /api → :8080
 | `MGMT_ADMIN_USER` / `MGMT_ADMIN_PASSWORD` | Seeded local admin |
 | `MGMT_SECRET_KEY` | JWT + AES key (hex 64 chars or any string) |
 | `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET` | SSO |
-| `MGMT_PUBLIC_URL` | Public base URL for OIDC callback |
+| `MGMT_PUBLIC_URL` | Public base URL for OIDC callback + guest serial (`machine.dashboard.mgmt_url`). Set in `/etc/pertisk-mgmt/pertisk-mgmt.env`. `deploy-mgmt-lab.sh` preserves an existing value unless you export `MGMT_PUBLIC_URL=…` for that run. |
 | `MGMT_METRICS_TOKEN` | Optional Bearer when scraping guest `:50001/metrics` |
 | `MGMT_METRICS_TLS_CA` / `MGMT_METRICS_TLS_CERT` / `MGMT_METRICS_TLS_KEY` | Optional client mTLS for `https://{ip}:50001/metrics` (all three required together) |
 | `MGMT_PERTISKCTL` | Path to `pertiskctl` (default `./out/bin/pertiskctl`) |

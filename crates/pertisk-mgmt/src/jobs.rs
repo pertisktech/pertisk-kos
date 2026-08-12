@@ -422,7 +422,11 @@ async fn run_create_cluster(
             .env("NUTANIX_PASSWORD", &secret)
             .env("NUTANIX_CLUSTER", &provider.node)
             .env("NUTANIX_STORAGE", &provider.storage)
-            .env("NUTANIX_NETWORK", &provider.bridge);
+            .env("NUTANIX_NETWORK", &provider.bridge)
+            .env(
+                "NUTANIX_MAC_SALT",
+                format!("{}|{}", provider.url.trim_end_matches('/'), provider.node),
+            );
         if provider.insecure != 0 {
             cmd.env("NUTANIX_INSECURE", "1");
         }
