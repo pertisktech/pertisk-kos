@@ -347,9 +347,7 @@ func (r *clusterResource) Create(ctx context.Context, req resource.CreateRequest
 
 	if created.JobID != "" {
 		if _, err := r.client.WaitJob(waitCtx, created.JobID, 5*time.Second); err != nil {
-			// Still set id so destroy can clean up a partial cluster.
-			plan.ID = types.StringValue(created.ID)
-			_ = resp.State.Set(ctx, &plan)
+			r.savePartialCreate(ctx, &plan, created.ID, resp)
 			resp.Diagnostics.AddError("Create cluster job failed", err.Error())
 			return
 		}
@@ -357,6 +355,7 @@ func (r *clusterResource) Create(ctx context.Context, req resource.CreateRequest
 
 	cl, err := r.client.GetCluster(waitCtx, created.ID)
 	if err != nil {
+		r.savePartialCreate(ctx, &plan, created.ID, resp)
 		resp.Diagnostics.AddError("Read cluster after create failed", err.Error())
 		return
 	}
@@ -365,15 +364,37 @@ func (r *clusterResource) Create(ctx context.Context, req resource.CreateRequest
 		if cl.Error != nil {
 			msg = *cl.Error
 		}
-		plan.ID = types.StringValue(created.ID)
-		_ = resp.State.Set(ctx, &plan)
+		r.flatten(cl, &plan)
+		r.fetchKubeconfig(ctx, &plan)
+		r.ensureComputedKnown(&plan)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		resp.Diagnostics.AddError("Cluster ended in error", msg)
 		return
 	}
 
 	r.flatten(cl, &plan)
 	r.fetchKubeconfig(ctx, &plan)
+	r.ensureComputedKnown(&plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// savePartialCreate persists a known object after a failed create so terraform
+// destroy can clean up, without leaving Unknown computed attributes.
+func (r *clusterResource) savePartialCreate(ctx context.Context, plan *clusterModel, id string, resp *resource.CreateResponse) {
+	plan.ID = types.StringValue(id)
+	if cl, err := r.client.GetCluster(ctx, id); err == nil {
+		r.flatten(cl, plan)
+		r.fetchKubeconfig(ctx, plan)
+	} else {
+		plan.Status = types.StringValue("error")
+		plan.Endpoint = types.StringNull()
+		plan.Kubeconfig = types.StringNull()
+		if plan.Arch.IsNull() || plan.Arch.IsUnknown() {
+			plan.Arch = types.StringNull()
+		}
+	}
+	r.ensureComputedKnown(plan)
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
 func (r *clusterResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -398,6 +419,7 @@ func (r *clusterResource) Read(ctx context.Context, req resource.ReadRequest, re
 	}
 	r.flatten(cl, &state)
 	r.fetchKubeconfig(ctx, &state)
+	r.ensureComputedKnown(&state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -471,6 +493,7 @@ func (r *clusterResource) Update(ctx context.Context, req resource.UpdateRequest
 	r.flatten(cl, &plan)
 	plan.TimeoutMinutes = types.Int64Value(timeout)
 	r.fetchKubeconfig(ctx, &plan)
+	r.ensureComputedKnown(&plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -536,20 +559,47 @@ func (r *clusterResource) flatten(cl *client.Cluster, m *clusterModel) {
 	m.PodSubnet = types.StringValue(cl.PodSubnet)
 	m.ServiceSubnet = types.StringValue(cl.ServiceSubnet)
 	m.Status = types.StringValue(cl.Status)
+	m.Arch = types.StringValue(cl.Arch)
 
 	if cl.CPVMID != nil {
 		m.CPVMID = types.Int64Value(*cl.CPVMID)
+	} else if m.CPVMID.IsUnknown() {
+		m.CPVMID = types.Int64Null()
 	}
 	m.VIP = optionalString(cl.VIP)
 	m.VIP6 = optionalString(cl.VIP6)
 	m.Endpoint = optionalString(cl.Endpoint)
 	m.PodSubnetIPv6 = optionalString(cl.PodSubnetIPv6)
 	m.ServiceSubnetIPv6 = optionalString(cl.ServiceSubnetIPv6)
-	if cl.Arch != "" {
-		m.Arch = types.StringValue(cl.Arch)
-	}
 	if m.TimeoutMinutes.IsNull() || m.TimeoutMinutes.IsUnknown() {
 		m.TimeoutMinutes = types.Int64Value(45)
+	}
+}
+
+func (r *clusterResource) ensureComputedKnown(m *clusterModel) {
+	if m.Status.IsNull() || m.Status.IsUnknown() {
+		m.Status = types.StringNull()
+	}
+	if m.Endpoint.IsNull() || m.Endpoint.IsUnknown() {
+		m.Endpoint = types.StringNull()
+	}
+	if m.Kubeconfig.IsNull() || m.Kubeconfig.IsUnknown() {
+		m.Kubeconfig = types.StringNull()
+	}
+	if m.Arch.IsNull() || m.Arch.IsUnknown() {
+		m.Arch = types.StringNull()
+	}
+	if m.VIP.IsUnknown() {
+		m.VIP = types.StringNull()
+	}
+	if m.VIP6.IsUnknown() {
+		m.VIP6 = types.StringNull()
+	}
+	if m.PodSubnetIPv6.IsUnknown() {
+		m.PodSubnetIPv6 = types.StringNull()
+	}
+	if m.ServiceSubnetIPv6.IsUnknown() {
+		m.ServiceSubnetIPv6 = types.StringNull()
 	}
 }
 

@@ -24,52 +24,43 @@ make install
 
 ## Example
 
-```hcl
-terraform {
-  required_providers {
-    pertisk = {
-      source  = "pertisk-tech/pertisk"
-      version = "0.1.0"
-    }
-  }
-}
+Split layout under [`examples/basic`](./examples/basic/):
 
+| File | Contents |
+|------|----------|
+| `versions.tf` | `required_providers` |
+| `providers.tf` | `provider "pertisk"` |
+| `variables.tf` | inputs |
+| `main.tf` | `pertisk_provider` + `pertisk_cluster` |
+| `nodes.tf` | optional `pertisk_node` |
+| `outputs.tf` | cluster id / kubeconfig / … |
+| `terraform.tfvars.example` | copy → `terraform.tfvars` |
+
+```bash
+cd tools/terraform-provider-pertisk
+make install
+cd examples/basic
+cp terraform.tfvars.example terraform.tfvars   # edit secrets
+terraform init
+terraform apply
+```
+
+```hcl
+# providers.tf / main.tf (sketch)
 provider "pertisk" {
-  url      = "https://ptkos.example"
+  url      = var.mgmt_url
   username = var.mgmt_user
   password = var.mgmt_password
-  insecure = true
+  insecure = var.mgmt_insecure
 }
 
-resource "pertisk_provider" "pve" {
-  name         = "lab-proxmox"
-  kind         = "proxmox"
-  url          = "https://pve:8006"
-  token_id     = "root@pam!pertisk"
-  token_secret = var.pve_token_secret
-  node         = "pve"
-  storage      = "local-lvm"
-  insecure     = true
-}
-
-resource "pertisk_cluster" "lab" {
-  name          = "tf-lab"
-  provider_id   = pertisk_provider.pve.id
-  controlplanes = 1
-  workers       = 1
-  k8s_version   = "v1.36.3"
-  cp_vmid       = 310
-}
-
-resource "pertisk_node" "w2" {
+resource "pertisk_provider" "pve" { /* … */ }
+resource "pertisk_cluster" "lab" { /* … */ }
+resource "pertisk_node" "extra_worker" {
+  count      = var.extra_worker ? 1 : 0
   cluster_id = pertisk_cluster.lab.id
   role       = "worker"
   mode       = "create"
-}
-
-output "kubeconfig" {
-  value     = pertisk_cluster.lab.kubeconfig
-  sensitive = true
 }
 ```
 

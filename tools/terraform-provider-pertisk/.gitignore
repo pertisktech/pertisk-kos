@@ -4,3 +4,4 @@ bin/
 *.tfstate*
 .terraform.lock.hcl
 dist/
+examples/**/terraform.tfvars
