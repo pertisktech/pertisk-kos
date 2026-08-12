@@ -116,6 +116,12 @@ Single-port API + UI (`pertisk-mgmt`). Details: [docs/MGMT.md](./docs/MGMT.md).
 | **Adopt / join** | Register existing/bare-metal nodes; join-token snapshots (Phase D2) |
 | **Settings** | Session, listen/public URL, JWT TTL, paths, auth mode |
 
+### Terraform provider
+
+IaC for the same mgmt API: register Proxmox/vSphere, create HA/dual-stack clusters, size CP/worker VMs, scale with `pertisk_node`, upgrade via `k8s_version`.
+
+→ [tools/terraform-provider-pertisk/README.md](./tools/terraform-provider-pertisk/README.md) (features, examples, docs, `TF_ACC` tests)
+
 ### Providers
 
 | Provider | Status | Docs |
@@ -300,6 +306,7 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 | [image/README.md](./image/README.md) | Initramfs / QEMU |
 | [image/cloud/README.md](./image/cloud/README.md) | Cloud upload outlines |
 | [image/extensions/README.md](./image/extensions/README.md) | nfs-client, qemu-ga |
+| [tools/terraform-provider-pertisk/README.md](./tools/terraform-provider-pertisk/README.md) | Terraform: cluster create / HA / dual-stack / sizing / scale |
 | [examples/cni/README.md](./examples/cni/README.md) | Cilium / Calico / Flannel |
 | [examples/addons/README.md](./examples/addons/README.md) | CoreDNS, metrics-server, reflector, NFS |
 

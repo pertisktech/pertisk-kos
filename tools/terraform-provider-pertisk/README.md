@@ -1,68 +1,160 @@
 # terraform-provider-pertisk
 
-Terraform provider for [pertisk-mgmt](../../docs/MGMT.md): register hypervisors and create/destroy Pertisk clusters.
+Terraform provider for [pertisk-mgmt](../../docs/MGMT.md): register Proxmox/vSphere hypervisors and create, scale, upgrade, and destroy Pertisk Kubernetes clusters.
 
-## Status
+Address: `registry.terraform.io/pertisk-tech/pertisk`
 
-| Item | Status |
-|------|--------|
-| Provider auth (login / token) | Done |
-| Resource `pertisk_provider` | Done |
-| Resource `pertisk_cluster` | Done (create/delete + upgrade via `k8s_version`) |
-| Resource `pertisk_node` | Done (create VM / adopt / remove) |
-| Data source `pertisk_provider` | Done |
-| HashiCorp docs (`docs/`) | Done |
-| Acceptance tests (`TF_ACC=1`) | Done |
-| CI + GoReleaser | Done |
+## Features
+
+| Feature | Resource / API | Notes |
+|---------|----------------|-------|
+| Auth | provider | Username/password login **or** Bearer `token`; `insecure` for lab TLS; env `PERTISK_*` |
+| Register hypervisor | `pertisk_provider` | Proxmox or vSphere; token + node/storage/bridge |
+| Lookup hypervisor | data `pertisk_provider` | By `name` or `id` |
+| Create / destroy cluster | `pertisk_cluster` | Waits for mgmt job; exports `status`, `endpoint`, `kubeconfig` |
+| HA control planes | `pertisk_cluster` | `controlplanes > 1` + `vip` (kube-vip); optional `vip6` |
+| Dual-stack | `pertisk_cluster` | `network_mode = "dual-stack"`; optional IPv6 pod/service CIDRs |
+| CNI | `pertisk_cluster` | `cilium` (default), `flannel`, `calico`, `none` |
+| VM sizing | `pertisk_cluster` | `cp_memory` / `cp_cores` / `cp_disk_gb` / `worker_memory` / `worker_cores` / `worker_disk_gb` |
+| Base VMID | `pertisk_cluster` | `cp_vmid` — CP uses base, then +1… |
+| K8s version | `pertisk_cluster` | Set at create; **change triggers in-place upgrade** (no replace) |
+| Scale out / in | `pertisk_node` | `mode=create` (Proxmox VM) or `mode=adopt` (existing IP) |
+| Node hardware overrides | `pertisk_node` | Optional `memory` / `cores` / `disk_gb` on create |
+| Import | cluster / provider / node | Cluster & provider by UUID; node as `cluster_id/node_id` |
+
+### Create-time vs scale
+
+- `controlplanes` and `workers` on `pertisk_cluster` are **initial size only**. Later HCL changes are ignored; live inventory from add/remove node is not synced back into those fields.
+- Scale with `pertisk_node` (create or adopt).
+- Changing sizing, network, CNI, VIP, or `cp_vmid` forces **replace**.
+
+### Outputs (cluster)
+
+- `id` — cluster UUID  
+- `status` — e.g. `ready`  
+- `endpoint` — API host (node IP or VIP)  
+- `kubeconfig` — admin kubeconfig (sensitive)
+
+## Quick start
+
+```bash
+cd tools/terraform-provider-pertisk
+make install
+cd examples/basic
+cp terraform.tfvars.example terraform.tfvars   # edit secrets, VIP, sizing
+terraform init
+terraform apply
+```
+
+Minimal sketch:
+
+```hcl
+provider "pertisk" {
+  url      = var.mgmt_url
+  username = var.mgmt_user
+  password = var.mgmt_password
+  insecure = true
+}
+
+resource "pertisk_provider" "pve" {
+  name         = "tf-proxmox"
+  kind         = "proxmox"
+  url          = var.pve_url
+  token_id     = var.pve_token_id
+  token_secret = var.pve_token_secret
+  node         = var.pve_node
+  storage      = var.pve_storage
+  bridge       = var.pve_bridge
+  insecure     = true
+}
+
+resource "pertisk_cluster" "lab" {
+  name          = "tf-lab"
+  provider_id   = pertisk_provider.pve.id
+  controlplanes = 1
+  workers       = 2
+  cni           = "cilium"
+  cp_vmid       = 310
+  k8s_version   = "v1.36.3"
+
+  cp_memory      = 4096
+  cp_cores       = 2
+  cp_disk_gb     = 50
+  worker_memory  = 8192
+  worker_cores   = 4
+  worker_disk_gb = 75
+}
+
+# Optional scale-out
+resource "pertisk_node" "extra_worker" {
+  cluster_id = pertisk_cluster.lab.id
+  role       = "worker"
+  mode       = "create"
+}
+```
+
+HA + dual-stack (see `examples/basic/terraform.tfvars.example`):
+
+```hcl
+resource "pertisk_cluster" "ha" {
+  name          = "tf-lab-ha"
+  provider_id   = pertisk_provider.pve.id
+  controlplanes = 3
+  workers       = 2
+  network_mode  = "dual-stack"
+  vip           = "10.1.1.210" # free L2, outside DHCP
+  vip6          = "fd00:1::210"
+  cni           = "cilium"
+  cp_vmid       = 310
+  # … sizing as above
+}
+```
+
+Env: `PERTISK_URL`, `PERTISK_USERNAME`, `PERTISK_PASSWORD`, `PERTISK_TOKEN`, `PERTISK_INSECURE=1`.
+
+**Notes**
+- Deleting `pertisk_provider` needs an **admin** mgmt user.
+- After `make install`, delete `.terraform.lock.hcl` if the local binary checksum changes.
+- VIP must be free on L2 before HA create.
 
 ## Documentation
 
 Registry-style docs (Example Usage, Argument Reference, Attribute Reference):
 
-- [`docs/index.md`](./docs/index.md) — provider
-- [`docs/resources/cluster.md`](./docs/resources/cluster.md) — **`pertisk_cluster`**
-- [`docs/resources/provider.md`](./docs/resources/provider.md)
-- [`docs/resources/node.md`](./docs/resources/node.md)
-- [`docs/data-sources/provider.md`](./docs/data-sources/provider.md)
+| Doc | Contents |
+|-----|----------|
+| [`docs/index.md`](./docs/index.md) | Provider |
+| [`docs/resources/cluster.md`](./docs/resources/cluster.md) | `pertisk_cluster` |
+| [`docs/resources/provider.md`](./docs/resources/provider.md) | `pertisk_provider` |
+| [`docs/resources/node.md`](./docs/resources/node.md) | `pertisk_node` |
+| [`docs/data-sources/provider.md`](./docs/data-sources/provider.md) | Data source |
 
-## Local install
+Example layouts:
 
-```bash
-cd tools/terraform-provider-pertisk
-make install
-```
+- [`examples/basic/`](./examples/basic/) — full lab (HA / dual-stack / sizing / optional node)
+- [`examples/resources/pertisk_cluster/`](./examples/resources/pertisk_cluster/) — 3-node docs sample
 
-## Example (3-node / HA)
+## Status
 
-Split layout under [`examples/basic`](./examples/basic/):
-
-```bash
-make install
-cd examples/basic
-cp terraform.tfvars.example terraform.tfvars   # edit secrets + VIP
-terraform init
-terraform apply
-```
-
-Hardware sizing (`cp_memory` / `cp_cores` / `cp_disk_gb` / `worker_*`) and HA dual-stack (`network_mode`, `vip`, `vip6`) are in `terraform.tfvars.example`.
-
-Env overrides: `PERTISK_URL`, `PERTISK_USERNAME`, `PERTISK_PASSWORD`, `PERTISK_TOKEN`, `PERTISK_INSECURE=1`.
-
-**Notes**
-- Deleting `pertisk_provider` needs an **admin** mgmt user.
-- Cluster `controlplanes` / `workers` are create-time only; scale with `pertisk_node`.
-- Sizing and network attrs force **replace**.
-- Import node: `terraform import pertisk_node.w2 <cluster_id>/<node_id>`
+| Item | Status |
+|------|--------|
+| Provider auth | Done |
+| `pertisk_provider` + data source | Done |
+| `pertisk_cluster` (HA, dual-stack, sizing, upgrade) | Done |
+| `pertisk_node` (create / adopt) | Done |
+| HashiCorp docs | Done |
+| Unit + acceptance tests | Done |
+| CI + GoReleaser | Done |
+| Terraform Registry listing | After first signed release |
 
 ## Tests
 
-Unit (always):
-
 ```bash
-make test
+make test      # unit (always)
+make testacc   # live mgmt + Proxmox; needs TF_ACC=1 + env (see below)
 ```
 
-Acceptance (live mgmt + Proxmox — creates a 1 CP + 2 worker cluster, then destroys):
+Acceptance creates **1 CP + 2 workers**, checks sizing/`status=ready`/`kubeconfig`, then destroys:
 
 ```bash
 export TF_ACC=1
@@ -79,8 +171,8 @@ export PERTISK_ACC_PVE_STORAGE=local-lvm
 make testacc
 ```
 
-## Release (GitHub + Terraform Registry)
+## Release
 
-1. Repo secrets: `GPG_PRIVATE_KEY`, `GPG_PASSPHRASE`
-2. Tag: `git tag terraform-provider-pertisk/v0.1.0 && git push origin terraform-provider-pertisk/v0.1.0`
-3. Publish the draft GitHub Release, then register on the [Terraform Registry](https://developer.hashicorp.com/terraform/registry/providers/publishing) (`pertisk-tech` / `pertisk`).
+1. Secrets: `GPG_PRIVATE_KEY`, `GPG_PASSPHRASE`
+2. `git tag terraform-provider-pertisk/v0.1.0 && git push origin terraform-provider-pertisk/v0.1.0`
+3. Publish the draft GitHub Release, then [Terraform Registry](https://developer.hashicorp.com/terraform/registry/providers/publishing) for `pertisk-tech` / `pertisk`
