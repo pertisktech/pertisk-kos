@@ -104,12 +104,14 @@ func (r *nodeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"source": schema.StringAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString("adopted"),
-				MarkdownDescription: "For mode=adopt: adopted | baremetal.",
+				Optional: true,
+				Computed: true,
+				// No StaticString default: mode=create gets proxmox|vsphere from the API.
+				// Defaulting to "adopted" caused inconsistent apply results for create VMs.
+				MarkdownDescription: "Provenance from API after apply (proxmox|vsphere|adopted|baremetal). Optional input for mode=adopt (adopted|baremetal); defaults to adopted.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"memory": schema.Int64Attribute{
@@ -223,10 +225,14 @@ func (r *nodeResource) Create(ctx context.Context, req resource.CreateRequest, r
 			resp.Diagnostics.AddError("Missing ip", "mode=adopt requires ip")
 			return
 		}
+		src := plan.Source.ValueString()
+		if src == "" || plan.Source.IsNull() || plan.Source.IsUnknown() {
+			src = "adopted"
+		}
 		adoptReq := client.AdoptNodeRequest{
 			Role:   role,
 			IP:     ip,
-			Source: plan.Source.ValueString(),
+			Source: src,
 		}
 		if !plan.Name.IsNull() && !plan.Name.IsUnknown() && plan.Name.ValueString() != "" {
 			n := plan.Name.ValueString()

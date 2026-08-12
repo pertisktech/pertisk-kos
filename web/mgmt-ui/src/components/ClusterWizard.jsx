@@ -480,10 +480,11 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
             <div className="field">
               <label>CNI</label>
               <select value={form.cni} onChange={(e) => set('cni', e.target.value)}>
-                <option value="cilium">cilium</option>
-                <option value="calico">calico</option>
+                <option value="cilium">cilium (default)</option>
                 <option value="flannel">flannel</option>
+                <option value="calico">calico</option>
               </select>
+              <p className="hint muted">Cilium installs first after the apiserver is up (needs helm on mgmt).</p>
             </div>
             <div className="field">
               <label>K8s version</label>

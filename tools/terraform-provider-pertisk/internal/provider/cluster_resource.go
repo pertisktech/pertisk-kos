@@ -97,7 +97,7 @@ func (r *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Optional:            true,
 				Computed:            true,
 				Default:             int64default.StaticInt64(1),
-				MarkdownDescription: "Initial control-plane count at create. Scale out later with pertisk_node (not by changing this).",
+				MarkdownDescription: "Initial control-plane count at create only. Live inventory is not synced; scale with pertisk_node.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -106,7 +106,7 @@ func (r *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Optional:            true,
 				Computed:            true,
 				Default:             int64default.StaticInt64(1),
-				MarkdownDescription: "Initial worker count at create. Scale out later with pertisk_node.",
+				MarkdownDescription: "Initial worker count at create only. Live inventory is not synced; scale with pertisk_node.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -251,15 +251,24 @@ func (r *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"status": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Cluster status from mgmt (ready, pending, error, …).",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"endpoint": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "API server endpoint when available.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"kubeconfig": schema.StringAttribute{
 				Computed:            true,
 				Sensitive:           true,
 				MarkdownDescription: "Admin kubeconfig YAML from mgmt (empty until cluster is ready).",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"timeout_minutes": schema.Int64Attribute{
 				Optional:            true,
@@ -417,7 +426,11 @@ func (r *clusterResource) Read(ctx context.Context, req resource.ReadRequest, re
 		resp.Diagnostics.AddError("Read cluster failed", err.Error())
 		return
 	}
+	cps, workers := state.Controlplanes, state.Workers
 	r.flatten(cl, &state)
+	// Keep create-time sizing — mgmt mutates clusters.workers on add/remove node.
+	state.Controlplanes = cps
+	state.Workers = workers
 	r.fetchKubeconfig(ctx, &state)
 	r.ensureComputedKnown(&state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -459,6 +472,9 @@ func (r *clusterResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
+	// Freeze create-time counts from the plan (ModifyPlan already pinned them to state).
+	cps, workers := plan.Controlplanes, plan.Workers
+
 	timeout := plan.TimeoutMinutes.ValueInt64()
 	if timeout <= 0 {
 		timeout = 45
@@ -491,6 +507,8 @@ func (r *clusterResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 	r.flatten(cl, &plan)
+	plan.Controlplanes = cps
+	plan.Workers = workers
 	plan.TimeoutMinutes = types.Int64Value(timeout)
 	r.fetchKubeconfig(ctx, &plan)
 	r.ensureComputedKnown(&plan)

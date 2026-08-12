@@ -16,8 +16,9 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) {
     cmd.env("PERTISK_IMAGES_DIR", cfg.images_dir.display().to_string());
     cmd.env("PERTISKCTL", cfg.pertiskctl.display().to_string());
     // Settings → Public URL → machine.dashboard.mgmt_url on gen/apply.
+    // Never push http://0.0.0.0:… onto guests (listen wildcard).
     let public_url = cfg.public_url.trim();
-    if !public_url.is_empty() {
+    if !public_url.is_empty() && !crate::config::public_url_host_unusable(public_url) {
         cmd.env("MGMT_PUBLIC_URL", public_url);
     }
     if let Some(root) = cfg.lab_up.parent().and_then(|p| p.parent()) {
@@ -34,6 +35,7 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) {
         "ARCH",
         "PERTISK_ARCH",
         "PROXMOX_ARM64_TEMPLATE",
+        "BOOTSTRAP_TIMEOUT",
     ] {
         if let Ok(v) = std::env::var(key) {
             if !v.is_empty() {

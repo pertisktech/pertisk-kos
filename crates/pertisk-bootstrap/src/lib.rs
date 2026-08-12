@@ -244,29 +244,29 @@ lab expects {want}. Soft-reset this node and recreate: pertiskctl -e {want}:5000
         format!("bootstrapped at {}\n", chrono_like_now()),
     )?;
 
-    // Block until token Secret + join RBAC + CP role are in place. Fire-and-forget
-    // races HA joins (etcd/apiserver flaps) and leaves workers Unauthorized.
+    // Block until token Secret + join RBAC + CP role are in place. Returning ok
+    // while finalize failed left lab-up waiting on :6443 forever (silent miss).
     let admin_path = paths.admin_kubeconfig();
     let token = cluster.token.clone();
     let node_name = hostname.clone();
     let defer_addons = matches!(cluster.cni, pertisk_config::CniMode::None);
-    if let Err(err) = finalize_bootstrap_when_ready(
+    finalize_bootstrap_when_ready(
         &admin_path,
         token.as_deref(),
         &node_name,
         defer_addons,
-    ) {
-        tracing::warn!(
-            error = %err,
-            "post-bootstrap API finalize incomplete; apply token Secret / node-rbac / CP label manually if needed"
-        );
-    }
+    )
+    .with_context(|| {
+        format!(
+            "post-bootstrap finalize failed (advertise={advertise}). \
+Check containerd can pull registry.k8s.io/kube-apiserver + etcd images \
+(pertiskctl -e {advertise}:50000 logs containerd -n 80)"
+        )
+    })?;
 
     Ok(BootstrapResult {
         already_bootstrapped: false,
-        message: format!(
-            "control-plane bootstrapped advertise={advertise}; ensure containerd can pull registry.k8s.io images"
-        ),
+        message: format!("control-plane bootstrapped advertise={advertise}"),
         admin_kubeconfig: admin,
         ca_pem: pki.ca_crt,
     })
@@ -455,13 +455,23 @@ fn apiserver_tcp_ready(timeout: Duration) -> bool {
 /// When `defer_addons` is true (`cluster.cni: none`), skip CoreDNS/metrics-server —
 /// they need a cluster CNI and otherwise spam kubelet with
 /// "failed to find network info for sandbox".
+fn finalize_timeout() -> Duration {
+    // Soft-reset used to wipe /var/lib/containerd; first bootstrap then waits on
+    // registry.k8s.io pulls. Match lab-up BOOTSTRAP_TIMEOUT default (600s).
+    let secs = std::env::var("PERTISK_BOOTSTRAP_FINALIZE_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(600);
+    Duration::from_secs(secs.max(60))
+}
+
 pub(crate) fn finalize_bootstrap_when_ready(
     admin_kubeconfig: &Path,
     token: Option<&str>,
     node_name: &str,
     defer_addons: bool,
 ) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(300);
+    let deadline = Instant::now() + finalize_timeout();
     while Instant::now() < deadline {
         if apiserver_tcp_ready(Duration::from_secs(2)) {
             break;
@@ -469,7 +479,11 @@ pub(crate) fn finalize_bootstrap_when_ready(
         thread::sleep(Duration::from_secs(3));
     }
     if !apiserver_tcp_ready(Duration::from_secs(2)) {
-        bail!("apiserver not reachable on 127.0.0.1:6443 within timeout");
+        bail!(
+            "apiserver not reachable on 127.0.0.1:6443 within {}s \
+(static pods not up — usually slow/failed registry.k8s.io image pulls)",
+            finalize_timeout().as_secs()
+        );
     }
 
     let kc = fs::read_to_string(admin_kubeconfig).context("read admin kubeconfig")?;

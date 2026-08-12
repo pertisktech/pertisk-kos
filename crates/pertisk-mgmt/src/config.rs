@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 
 use anyhow::{bail, Context};
@@ -23,6 +23,8 @@ pub struct Config {
     pub auth0_client_secret: Option<String>,
     #[allow(dead_code)]
     pub auth0_audience: Option<String>,
+    /// Reachable base URL for OIDC + guest serial dashboard (`machine.dashboard.mgmt_url`).
+    /// Never `http://0.0.0.0:…` — that is not a client-reachable address.
     pub public_url: String,
     /// Optional Bearer for scraping guest `:50001/metrics`.
     pub metrics_token: Option<String>,
@@ -89,8 +91,7 @@ impl Config {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(86400);
-        let public_url = std::env::var("MGMT_PUBLIC_URL")
-            .unwrap_or_else(|_| format!("http://{}", listen));
+        let public_url = resolve_public_url(listen);
         let metrics_token = std::env::var("MGMT_METRICS_TOKEN")
             .ok()
             .filter(|s| !s.is_empty());
@@ -187,6 +188,87 @@ fn resolve_metrics_tls() -> anyhow::Result<Option<MetricsTls>> {
         _ => bail!(
             "incomplete metrics TLS env; set all of MGMT_METRICS_TLS_CA, MGMT_METRICS_TLS_CERT, MGMT_METRICS_TLS_KEY"
         ),
+    }
+}
+
+/// Prefer explicit `MGMT_PUBLIC_URL`. Never default to `http://0.0.0.0:…`
+/// (listen wildcard is not reachable from guests / browsers).
+fn resolve_public_url(listen: SocketAddr) -> String {
+    if let Ok(raw) = std::env::var("MGMT_PUBLIC_URL") {
+        let trimmed = raw.trim().trim_end_matches('/').to_string();
+        if !trimmed.is_empty() {
+            if public_url_host_unusable(&trimmed) {
+                tracing::warn!(
+                    url = %trimmed,
+                    "MGMT_PUBLIC_URL host is not client-reachable; detecting LAN IP instead"
+                );
+            } else {
+                return trimmed;
+            }
+        }
+    }
+
+    let port = listen.port();
+    match listen.ip() {
+        IpAddr::V4(ip) if !ip.is_unspecified() && !ip.is_loopback() => {
+            return format!("http://{ip}:{port}");
+        }
+        IpAddr::V6(ip) if !ip.is_unspecified() && !ip.is_loopback() => {
+            return format!("http://[{ip}]:{port}");
+        }
+        _ => {}
+    }
+
+    if let Some(ip) = detect_primary_ipv4() {
+        let url = format!("http://{ip}:{port}");
+        tracing::info!(
+            %url,
+            "MGMT_PUBLIC_URL unset; using detected LAN address for guest dashboard / OIDC"
+        );
+        return url;
+    }
+
+    tracing::warn!(
+        "MGMT_PUBLIC_URL unset and no LAN IP detected — guest serial will not show a mgmt link. \
+         Set MGMT_PUBLIC_URL=http://<mgmt-lan-ip>:{port} in /etc/pertisk-mgmt/pertisk-mgmt.env"
+    );
+    String::new()
+}
+
+/// True when the URL host cannot be used by guests (wildcard / empty).
+pub fn public_url_host_unusable(url: &str) -> bool {
+    let Some(host) = url_host(url) else {
+        return true;
+    };
+    matches!(
+        host.as_str(),
+        "" | "0.0.0.0" | "::" | "[::]"
+    )
+}
+
+fn url_host(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let hostport = rest.split('/').next().unwrap_or("");
+    if hostport.is_empty() {
+        return None;
+    }
+    if let Some(h) = hostport.strip_prefix('[') {
+        // [v6]:port
+        return h.split(']').next().map(|s| s.to_string());
+    }
+    Some(hostport.split(':').next().unwrap_or(hostport).to_string())
+}
+
+/// Best-effort primary IPv4 via UDP "connect" (no packets sent).
+fn detect_primary_ipv4() -> Option<Ipv4Addr> {
+    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    match sock.local_addr().ok()?.ip() {
+        IpAddr::V4(ip) if !ip.is_unspecified() && !ip.is_loopback() => Some(ip),
+        _ => None,
     }
 }
 

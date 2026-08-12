@@ -27,7 +27,10 @@ pub struct SoftResetResult {
 /// Removes:
 /// - STATE config / machine / secrets / kubernetes bootstrap marker
 /// - live `/etc/kubernetes` (Linux only)
-/// - EPHEMERAL runtime trees under `/var` (Linux only)
+/// - EPHEMERAL kubelet/etcd/CNI trees under `/var` (Linux only)
+///
+/// Keeps `/var/lib/containerd` so soft-reset does not force a full
+/// `registry.k8s.io` re-pull on every lab recreate.
 ///
 /// Does **not** touch EFI / BOOT_A / BOOT_B / META or run `sgdisk --zap-all`.
 pub fn soft_reset(state_root: &Path) -> Result<SoftResetResult, ResetError> {
@@ -78,9 +81,11 @@ pub fn soft_reset(state_root: &Path) -> Result<SoftResetResult, ResetError> {
             Err(err) => warnings.push(format!("live:/etc/kubernetes: {err}")),
         }
 
+        // Keep /var/lib/containerd image blobs across soft-reset. Wiping it forced
+        // every recreate to re-pull registry.k8s.io (common cause of apiserver never
+        // reaching :6443). Etcd/kubelet/CNI state is still cleared.
         for rel in [
             "lib/kubelet",
-            "lib/containerd",
             "lib/etcd",
             "lib/cni",
             "lib/pertisk",

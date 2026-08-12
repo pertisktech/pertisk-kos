@@ -108,8 +108,10 @@ export default function Settings() {
               <dt>Public URL</dt>
               <dd><code className="mono-inline">{cfg.public_url}</code></dd>
               <p className="hint muted" style={{ marginTop: 6 }}>
-                From <code>MGMT_PUBLIC_URL</code>. Applied on cluster create as{' '}
+                From <code>MGMT_PUBLIC_URL</code> (required when listen is{' '}
+                <code>0.0.0.0</code>). Applied on cluster create as{' '}
                 <code>machine.dashboard.mgmt_url</code> (serial console).
+                Example: <code>http://10.1.1.15:8080</code>.
               </p>
             </div>
             <div>

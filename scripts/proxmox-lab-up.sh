@@ -107,7 +107,7 @@ IP_TIMEOUT="${IP_TIMEOUT:-300}"
 # Extra budget after DHCP/ARP for first-boot Machine API (disk expand can be slow).
 API_AFTER_IP_TIMEOUT="${API_AFTER_IP_TIMEOUT:-900}"
 API_TIMEOUT="${API_TIMEOUT:-300}"
-BOOTSTRAP_TIMEOUT="${BOOTSTRAP_TIMEOUT:-300}"
+BOOTSTRAP_TIMEOUT="${BOOTSTRAP_TIMEOUT:-600}"
 LAB_SUBNET="${LAB_SUBNET:-}"  # optional CIDR for ping-sweep fallback, e.g. 10.1.1.0/24
 REFLECTOR_YAML="${REFLECTOR_YAML:-https://github.com/emberstack/kubernetes-reflector/releases/latest/download/reflector.yaml}"
 METRICS_SERVER_YAML="${METRICS_SERVER_YAML:-${ROOT}/examples/addons/metrics-server.yaml}"
@@ -698,19 +698,54 @@ open(path, "w").write("".join(out))
 PY
 }
 
+# Dump why :6443/readyz never answered (CNI is unrelated — it installs later).
+diagnose_apiserver_wait() {
+  local cp_ip="$1" kc="${2:-}"
+  local host="$cp_ip"
+  [[ "$cp_ip" == *:* ]] && host="[${cp_ip}]"
+  log "diagnose apiserver ${cp_ip}:6443 (CNI is not installed yet — expected)"
+  echo "--- curl https://${host}:6443/readyz ---" >&2
+  curl -sk --connect-timeout 3 -o /tmp/pertisk-readyz.out -w "http=%{http_code}\n" \
+    "https://${host}:6443/readyz" 2>&1 || true
+  [[ -s /tmp/pertisk-readyz.out ]] && cat /tmp/pertisk-readyz.out >&2
+  rm -f /tmp/pertisk-readyz.out
+  if [[ -n "$kc" && -f "$kc" ]]; then
+    echo "--- kubectl get --raw=/readyz ---" >&2
+    kubectl --kubeconfig "$kc" get --raw=/readyz 2>&1 | tail -n 20 >&2 || true
+  fi
+  if [[ -n "${CTL:-}" ]]; then
+    echo "--- pertiskctl health ---" >&2
+    "$CTL" -e "${cp_ip}:50000" health 2>&1 || true
+    echo "--- containerd log (tail) ---" >&2
+    "$CTL" -e "${cp_ip}:50000" logs containerd -n 40 2>&1 || true
+    echo "--- kubelet log (tail) ---" >&2
+    "$CTL" -e "${cp_ip}:50000" logs kubelet -n 40 2>&1 || true
+  fi
+}
+
 # Wait for apiserver: always via a CP node IP first; then VIP when HA.
 wait_apiserver_ready() {
   local kc="$1" cp_ip="$2" endpoint="$3"
-  local deadline tmpkc
+  local deadline tmpkc last_err="" tick=0
 
   # 1) Direct CP (kube-vip may still be pulling / electing).
   tmpkc="${kc}.direct"
   cp "$kc" "$tmpkc"
   rewrite_kubeconfig_server "$tmpkc" "https://${cp_ip}:6443"
-  log "waiting for apiserver on CP ${cp_ip}:6443"
+  log "waiting for apiserver on CP ${cp_ip}:6443 (timeout ${BOOTSTRAP_TIMEOUT}s; CNI comes after this)"
   deadline=$((SECONDS + BOOTSTRAP_TIMEOUT))
-  until kubectl --kubeconfig "$tmpkc" get --raw=/readyz >/dev/null 2>&1; do
-    (( SECONDS < deadline )) || { rm -f "$tmpkc"; die "apiserver not ready on ${cp_ip}:6443"; }
+  until last_err="$(kubectl --kubeconfig "$tmpkc" get --raw=/readyz 2>&1)"; do
+    if (( SECONDS >= deadline )); then
+      diagnose_apiserver_wait "$cp_ip" "$tmpkc"
+      rm -f "$tmpkc"
+      die "apiserver not ready on ${cp_ip}:6443 after ${BOOTSTRAP_TIMEOUT}s
+Last kubectl: ${last_err}
+This is before CNI install — fix image pulls / static pods on the CP guest first."
+    fi
+    tick=$((tick + 1))
+    if (( tick % 10 == 0 )); then
+      log "still waiting for ${cp_ip}:6443/readyz (${SECONDS}s elapsed)…"
+    fi
     sleep 3
   done
   log "apiserver ready on ${cp_ip}"
@@ -1248,8 +1283,28 @@ ensure_pertiskctl() {
   [[ -x "$CTL" ]] || die "pertiskctl missing (set PERTISKCTL=/usr/bin/pertiskctl or install the RPM)"
 }
 
+# Fail before soft-reset/bootstrap when CNI tooling is missing (RHEL sudo PATH
+# often hides /usr/local/bin — install into /usr/bin or fix PATH).
+require_cni_tools() {
+  case "$CNI" in
+    cilium)
+      command -v kubectl >/dev/null 2>&1 || die "kubectl required for CNI=cilium (install on mgmt before create)"
+      if ! command -v helm >/dev/null 2>&1; then
+        die "helm required for CNI=cilium (default). Install on mgmt before create:
+  curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  # RHEL: sudo ln -sf /usr/local/bin/helm /usr/bin/helm
+Or recreate with cni=flannel."
+      fi
+      ;;
+    flannel|calico)
+      command -v kubectl >/dev/null 2>&1 || die "kubectl required for CNI=${CNI}"
+      ;;
+  esac
+}
+
 step_cluster() {
   ensure_pertiskctl
+  require_cni_tools
   log "using pertiskctl=${CTL}"
 
   mkdir -p "$CLUSTER_OUT"
@@ -1386,6 +1441,11 @@ Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate th
   wait_apiserver_ready "$CLUSTER_OUT/admin.conf" "$CP_IP" "$API_ENDPOINT"
   ensure_bootstrap_token_secret "$CLUSTER_OUT/admin.conf" "$CLUSTER_OUT/worker.yaml"
 
+  # Install cluster CNI (cilium default) BEFORE waiting for Node Ready or joining
+  # workers — machine config uses cni:none, so kubelet stays NotReady until CNI
+  # writes /etc/cni/net.d.
+  step_cni
+
   # Wait for all CP nodes Ready before role ensure (CP3 registers late).
   local cp_hosts=()
   for ((i = 1; i <= CONTROLPLANES; i++)); do
@@ -1479,44 +1539,16 @@ warn_if_vip_busy() {
 
 step_cni() {
   local kc="$CLUSTER_OUT/admin.conf"
+  local cni_dir=""
   ensure_api_endpoint_reachable
   case "$CNI" in
-    none)
-      log "CNI=none — skip"
-      ;;
-    flannel)
-      command -v kubectl >/dev/null || die "kubectl required"
-      install_kube_proxy "$kc"
-      log "install Flannel"
-      kubectl --kubeconfig "$kc" apply -f "${ROOT}/examples/cni/kube-flannel.yaml"
-      # Reach apiserver before ClusterIP works (kube-proxy may still be syncing).
-      kubectl --kubeconfig "$kc" -n kube-flannel set env ds/kube-flannel-ds \
-        KUBERNETES_SERVICE_HOST="${API_ENDPOINT}" \
-        KUBERNETES_SERVICE_PORT=6443
-      kubectl --kubeconfig "$kc" -n kube-flannel rollout status ds/kube-flannel-ds --timeout=5m 2>/dev/null \
-        || echo "WARNING: flannel DS not Ready yet; check: kubectl --kubeconfig $kc -n kube-flannel get pods" >&2
-      ;;
-    calico)
-      command -v kubectl >/dev/null || die "kubectl required"
-      command -v curl >/dev/null || die "curl required for CNI=calico"
-      install_kube_proxy "$kc"
-      log "install Calico ${CALICO_VERSION} (VXLAN, pod CIDR 10.244.0.0/16)"
-      curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/calico.yaml" \
-        | kubectl --kubeconfig "$kc" apply -f -
-      # Prefer VXLAN (linux-virt module path) over default IPIP; pin Pertisk pod CIDR.
-      kubectl --kubeconfig "$kc" -n kube-system set env ds/calico-node \
-        CALICO_IPV4POOL_CIDR=10.244.0.0/16 \
-        CALICO_IPV4POOL_IPIP=Never \
-        CALICO_IPV4POOL_VXLAN=Always \
-        KUBERNETES_SERVICE_HOST="${API_ENDPOINT}" \
-        KUBERNETES_SERVICE_PORT=6443
-      kubectl --kubeconfig "$kc" -n kube-system rollout status ds/calico-node --timeout=5m 2>/dev/null \
-        || echo "WARNING: calico-node not Ready yet; check: kubectl --kubeconfig $kc -n kube-system get pods -l k8s-app=calico-node" >&2
-      ;;
     cilium)
-      command -v helm >/dev/null || die "helm required for CNI=cilium"
-      command -v kubectl >/dev/null || die "kubectl required"
-      log "install Cilium (kubernetes IPAM + kubeProxyReplacement + Hubble; dual-stack=${DUAL_STACK})"
+      command -v kubectl >/dev/null || die "kubectl required for CNI=cilium"
+      if ! command -v helm >/dev/null 2>&1; then
+        die "helm required for CNI=cilium (default). Install on mgmt, or use cni=flannel.
+  curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
+      fi
+      log "install Cilium first (kubernetes IPAM + kubeProxyReplacement + Hubble; dual-stack=${DUAL_STACK})"
       helm repo add cilium https://helm.cilium.io/ >/dev/null 2>&1 || true
       helm repo update cilium >/dev/null 2>&1 || true
       export KUBECONFIG="$kc"
@@ -1569,10 +1601,68 @@ step_cni() {
       kubectl --kubeconfig "$kc" -n cilium rollout status ds/cilium --timeout=5m 2>/dev/null \
         || echo "WARNING: cilium DS not Ready yet; check: kubectl --kubeconfig $kc -n cilium get pods" >&2
       ;;
+    flannel)
+      command -v kubectl >/dev/null || die "kubectl required for CNI=flannel"
+      cni_dir="$(resolve_cni_examples_dir)" || die_missing_cni_examples
+      [[ -f "${cni_dir}/kube-flannel.yaml" ]] || die "missing ${cni_dir}/kube-flannel.yaml"
+      [[ -f "${cni_dir}/kube-proxy.yaml" ]] || die "missing CNI config template: ${cni_dir}/kube-proxy.yaml"
+      install_kube_proxy "$kc" "$cni_dir"
+      log "install Flannel from ${cni_dir}/kube-flannel.yaml"
+      kubectl --kubeconfig "$kc" apply -f "${cni_dir}/kube-flannel.yaml"
+      # Reach apiserver before ClusterIP works (kube-proxy may still be syncing).
+      kubectl --kubeconfig "$kc" -n kube-flannel set env ds/kube-flannel-ds \
+        KUBERNETES_SERVICE_HOST="${API_ENDPOINT}" \
+        KUBERNETES_SERVICE_PORT=6443
+      kubectl --kubeconfig "$kc" -n kube-flannel rollout status ds/kube-flannel-ds --timeout=5m 2>/dev/null \
+        || echo "WARNING: flannel DS not Ready yet; check: kubectl --kubeconfig $kc -n kube-flannel get pods" >&2
+      ;;
+    calico)
+      command -v kubectl >/dev/null || die "kubectl required for CNI=calico"
+      command -v curl >/dev/null || die "curl required for CNI=calico"
+      cni_dir="$(resolve_cni_examples_dir)" || die_missing_cni_examples
+      [[ -f "${cni_dir}/kube-proxy.yaml" ]] || die "missing CNI config template: ${cni_dir}/kube-proxy.yaml"
+      install_kube_proxy "$kc" "$cni_dir"
+      log "install Calico ${CALICO_VERSION} (VXLAN, pod CIDR 10.244.0.0/16)"
+      curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/calico.yaml" \
+        | kubectl --kubeconfig "$kc" apply -f -
+      # Prefer VXLAN (linux-virt module path) over default IPIP; pin Pertisk pod CIDR.
+      kubectl --kubeconfig "$kc" -n kube-system set env ds/calico-node \
+        CALICO_IPV4POOL_CIDR=10.244.0.0/16 \
+        CALICO_IPV4POOL_IPIP=Never \
+        CALICO_IPV4POOL_VXLAN=Always \
+        KUBERNETES_SERVICE_HOST="${API_ENDPOINT}" \
+        KUBERNETES_SERVICE_PORT=6443
+      kubectl --kubeconfig "$kc" -n kube-system rollout status ds/calico-node --timeout=5m 2>/dev/null \
+        || echo "WARNING: calico-node not Ready yet; check: kubectl --kubeconfig $kc -n kube-system get pods -l k8s-app=calico-node" >&2
+      ;;
+    none)
+      log "CNI=none — skip (nodes stay NotReady until you install a cluster CNI)"
+      ;;
     *)
       die "unknown CNI=$CNI (use cilium|calico|flannel|none)"
       ;;
   esac
+}
+
+resolve_cni_examples_dir() {
+  local d
+  for d in \
+    "${ROOT}/examples/cni" \
+    "/usr/share/pertisk-mgmt/examples/cni" \
+    "${PERTISK_EXAMPLES_DIR:-}/cni"; do
+    [[ -n "$d" && -d "$d" ]] || continue
+    if [[ -f "${d}/kube-proxy.yaml" || -f "${d}/kube-flannel.yaml" ]]; then
+      echo "$d"
+      return 0
+    fi
+  done
+  return 1
+}
+
+die_missing_cni_examples() {
+  die "no CNI config templates under ${ROOT}/examples/cni (PERTISK_ROOT=${ROOT}).
+  Expected /usr/share/pertisk-mgmt/examples/cni — redeploy mgmt RPM, or:
+    scp -r examples/cni root@mgmt:/usr/share/pertisk-mgmt/examples/"
 }
 
 # After cluster CNI is installed, workers (cni:none) can become Ready.
@@ -1588,9 +1678,11 @@ step_workers_ready() {
 # kube-proxy for Flannel/Calico (Cilium uses kubeProxyReplacement instead).
 install_kube_proxy() {
   local kc="$1"
-  local src="${ROOT}/examples/cni/kube-proxy.yaml"
-  [[ -f "$src" ]] || die "missing $src"
-  log "install kube-proxy (apiserver ${API_ENDPOINT}:6443)"
+  local cni_dir="${2:-}"
+  [[ -n "$cni_dir" ]] || cni_dir="$(resolve_cni_examples_dir)" || die_missing_cni_examples
+  local src="${cni_dir}/kube-proxy.yaml"
+  [[ -f "$src" ]] || die "missing CNI config template: $src"
+  log "install kube-proxy (apiserver ${API_ENDPOINT}:6443) from $src"
   # Drop any leftover Cilium agent-not-ready taints if switching CNIs.
   kubectl --kubeconfig "$kc" taint nodes --all node.cilium.io/agent-not-ready- 2>/dev/null || true
   sed "s/__KUBERNETES_SERVICE_HOST__/${API_ENDPOINT}/g" "$src" \
@@ -1795,7 +1887,7 @@ step_build
 step_vms
 step_resolve_ips
 step_cluster
-step_cni
+# CNI (cilium first) runs inside step_cluster right after apiserver is ready.
 step_workers_ready
 step_dns
 step_addons

@@ -148,6 +148,10 @@ fi
 
 # --- env: API-only by default (like Omni infra provider) ---
 echo "==> configure API disk import (PROXMOX_NO_SSH=1, upload→local)"
+# Derive a guest-reachable Public URL from --mgmt host (avoid http://0.0.0.0:8080).
+MGMT_IP="${MGMT_HOST##*@}"
+MGMT_IP="${MGMT_IP%%:*}"
+MGMT_PUBLIC_URL="${MGMT_PUBLIC_URL:-http://${MGMT_IP}:8080}"
 ssh "$MGMT_HOST" "sudo bash -c '
   ENV=/etc/pertisk-mgmt/pertisk-mgmt.env
   touch \"\$ENV\"
@@ -165,11 +169,13 @@ ssh "$MGMT_HOST" "sudo bash -c '
   set_kv PROXMOX_NO_SSH 1
   set_kv PROXMOX_UPLOAD_STORAGE local
   set_kv LAB_SUBNET ${LAB_SUBNET}
+  set_kv MGMT_PUBLIC_URL ${MGMT_PUBLIC_URL}
   # Clear forced SSH unless --with-ssh
   if [[ \"${WITH_SSH}\" != \"1\" ]]; then
     sed -i \"s|^PROXMOX_SSH=|# PROXMOX_SSH=|\" \"\$ENV\" 2>/dev/null || true
   fi
 '"
+echo "==> MGMT_PUBLIC_URL=${MGMT_PUBLIC_URL}"
 
 if [[ "$WITH_SSH" == "1" && -n "$PVE_SSH" ]]; then
   echo "==> optional SSH mode PROXMOX_SSH=${PVE_SSH}"
@@ -198,10 +204,47 @@ fi
 
 ssh "$MGMT_HOST" 'sudo systemctl restart pertisk-mgmt && sudo systemctl --no-pager -l status pertisk-mgmt | head -20' || true
 
+# kubectl + helm are required for lab-up CNI (cilium default uses helm).
+# Install under /usr/bin — RHEL sudo secure_path omits /usr/local/bin.
+echo "==> ensure kubectl + helm on mgmt"
+ssh "$MGMT_HOST" 'sudo bash -c "
+  set -euo pipefail
+  export PATH=\"/usr/bin:/usr/local/bin:\$PATH\"
+  arch=\$(uname -m)
+  case \"\$arch\" in
+    x86_64|amd64) karch=amd64 ;;
+    aarch64|arm64) karch=arm64 ;;
+    *) echo \"unsupported arch: \$arch\" >&2; exit 1 ;;
+  esac
+  if ! command -v kubectl >/dev/null 2>&1; then
+    echo \"installing kubectl…\"
+    ver=\$(curl -fsSL https://dl.k8s.io/release/stable.txt)
+    curl -fsSLo /usr/bin/kubectl \"https://dl.k8s.io/release/\${ver}/bin/linux/\${karch}/kubectl\"
+    chmod 755 /usr/bin/kubectl
+  fi
+  kubectl version --client 2>/dev/null | head -n 2
+  if ! command -v helm >/dev/null 2>&1; then
+    echo \"installing helm…\"
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    # get-helm-3 defaults to /usr/local/bin; link into sudo PATH on RHEL.
+    if [[ -x /usr/local/bin/helm && ! -e /usr/bin/helm ]]; then
+      ln -sf /usr/local/bin/helm /usr/bin/helm
+    fi
+  fi
+  helm version
+  # CNI templates (flannel/calico kube-proxy) — present after RPM; repair if missing.
+  if [[ ! -f /usr/share/pertisk-mgmt/examples/cni/kube-proxy.yaml ]]; then
+    echo \"WARNING: /usr/share/pertisk-mgmt/examples/cni missing — redeploy mgmt RPM\" >&2
+  else
+    ls /usr/share/pertisk-mgmt/examples/cni/
+  fi
+"'
+
 cat <<EOF
 
 ======== deploy done ========
 mgmt:     ${MGMT_HOST}
+public:   ${MGMT_PUBLIC_URL}
 images:   /var/lib/pertisk-mgmt/images/pertisk-cloud-${ARCH}*.qcow2
 disk:     Proxmox API upload → local → import-from → provider storage
           (no scp to PVE; like Omni infra provider)
@@ -211,7 +254,7 @@ Next:
   1. UI → Providers → add Proxmox (URL / API token / node / storage / guest arch)
      Ensure storage "local" allows content type Import (Datacenter → Storage).
   2. For arm64: verify  sudo -u pertisk-mgmt -H ssh -o BatchMode=yes root@<pve> true
-  3. Clusters → Create
+  3. Clusters → Create (CNI=cilium needs helm on mgmt — installed above)
   4. Job log: arch=arm64 + qm create via SSH (or API upload for amd64)
 
 EOF
