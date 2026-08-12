@@ -39,6 +39,33 @@ cd web/mgmt-ui && npm run dev   # http://127.0.0.1:5173 proxies /api → :8080
 
 Auth0 role claim: `https://pertisk.io/role` or `role` → `admin` \| `operator` \| `viewer`.
 
+### Auth0 Application Settings
+
+`pertisk-mgmt` builds the OIDC `redirect_uri` from `MGMT_PUBLIC_URL`:
+
+```text
+{MGMT_PUBLIC_URL}/api/auth/oidc/callback
+```
+
+In the Auth0 dashboard → **Applications** → your Regular Web Application → **Settings**, add exact matches (no trailing slash on the callback path unless `MGMT_PUBLIC_URL` itself ends with one — it should not):
+
+| Field | Value (example) |
+|-------|-----------------|
+| **Allowed Callback URLs** | `https://ptkos.apps.pertisk.com/api/auth/oidc/callback` |
+| **Allowed Logout URLs** | `https://ptkos.apps.pertisk.com/` |
+| **Allowed Web Origins** | `https://ptkos.apps.pertisk.com` |
+
+Sign out for Auth0 users hits `GET /api/auth/logout`, which redirects to Auth0 `/v2/logout?…&federated` and then back to **Allowed Logout URLs**. Without that allowlist entry, Auth0 logout fails and the next SSO login reuses the previous account. OIDC start also sends `prompt=login` so Auth0 shows the login / account UI.
+
+If you also use a local or IP URL, list every callback on separate lines (or comma-separated), e.g.:
+
+```text
+https://ptkos.apps.pertisk.com/api/auth/oidc/callback
+http://127.0.0.1:8080/api/auth/oidc/callback
+```
+
+Mismatch (`Callback URL mismatch`) means Auth0 received a `redirect_uri` that is not in **Allowed Callback URLs** — usually `MGMT_PUBLIC_URL` was updated but Auth0 was not, or a typo (`http` vs `https`, host, or path).
+
 ## Dashboard
 
 Home (`/`) shows cluster counts plus a **Cluster resources** section: one card per cluster with CPU, memory, and disk donut charts.

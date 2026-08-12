@@ -20,6 +20,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/mode", get(auth_mode))
         .route("/auth/login", post(login))
         .route("/auth/me", get(me))
+        .route("/auth/logout", get(logout))
         .route("/auth/oidc/start", get(oidc_start))
         .route("/auth/oidc/callback", get(oidc_callback))
 }
@@ -60,6 +61,7 @@ struct TokenResp {
     token: String,
     username: String,
     role: Role,
+    provider: String,
 }
 
 async fn login(State(state): State<AppState>, Json(body): Json<LoginReq>) -> ApiResult<Json<TokenResp>> {
@@ -79,6 +81,7 @@ async fn login(State(state): State<AppState>, Json(body): Json<LoginReq>) -> Api
         id: id.clone(),
         username: body.username.clone(),
         role,
+        provider: "local".into(),
     };
     let token = issue_token(state.cfg(), &user)?;
     audit(
@@ -93,6 +96,7 @@ async fn login(State(state): State<AppState>, Json(body): Json<LoginReq>) -> Api
         token,
         username: user.username,
         role: user.role,
+        provider: "local".into(),
     }))
 }
 
@@ -101,7 +105,31 @@ async fn me(CurrentUser(user): CurrentUser) -> Json<Value> {
         "id": user.id,
         "username": user.username,
         "role": user.role,
+        "provider": user.provider,
     }))
+}
+
+/// End the browser Auth0 SSO session, then return to the login page.
+/// Without this, "Continue with Auth0" silently reuses the previous account.
+async fn logout(State(state): State<AppState>) -> impl IntoResponse {
+    let cfg = state.cfg();
+    let return_to = format!("{}/", cfg.public_url.trim_end_matches('/'));
+    if !cfg.auth_mode.allows_auth0() {
+        return Redirect::temporary("/#/login");
+    }
+    let Some(domain) = cfg.auth0_domain.as_ref() else {
+        return Redirect::temporary("/#/login");
+    };
+    let Some(client_id) = cfg.auth0_client_id.as_ref() else {
+        return Redirect::temporary("/#/login");
+    };
+    // `federated` also clears the upstream IdP session (e.g. Google) so the
+    // next login can show an account picker instead of the previous user.
+    let url = format!(
+        "https://{domain}/v2/logout?client_id={client_id}&returnTo={}&federated",
+        urlencoding(&return_to)
+    );
+    Redirect::temporary(&url)
 }
 
 async fn oidc_start(State(state): State<AppState>) -> ApiResult<impl IntoResponse> {
@@ -112,8 +140,10 @@ async fn oidc_start(State(state): State<AppState>) -> ApiResult<impl IntoRespons
     let client_id = state.cfg().auth0_client_id.as_ref().unwrap();
     let redirect = format!("{}/api/auth/oidc/callback", state.cfg().public_url.trim_end_matches('/'));
     let state_nonce = Uuid::new_v4().to_string();
+    // prompt=login forces Auth0 to show the login / account UI instead of
+    // silently reusing an existing SSO cookie.
     let url = format!(
-        "https://{domain}/authorize?response_type=code&client_id={client_id}&redirect_uri={}&scope=openid%20profile%20email&state={state_nonce}",
+        "https://{domain}/authorize?response_type=code&client_id={client_id}&redirect_uri={}&scope=openid%20profile%20email&state={state_nonce}&prompt=login",
         urlencoding(&redirect)
     );
     Ok(Redirect::temporary(&url))

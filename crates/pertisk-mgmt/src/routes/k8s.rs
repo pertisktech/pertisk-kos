@@ -192,6 +192,7 @@ async fn host_shell_ws(
         id: claims.sub,
         username: claims.username,
         role: claims.role,
+        provider: claims.provider,
     };
     require_mutate(&user)?;
     let (kc, cluster_name) = resolve_ready_kubeconfig(&state, &id).await?;

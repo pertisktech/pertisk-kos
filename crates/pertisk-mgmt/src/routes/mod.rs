@@ -57,6 +57,7 @@ async fn auth_middleware(
     let public = path == "/health"
         || path == "/auth/login"
         || path == "/auth/mode"
+        || path == "/auth/logout"
         || path.starts_with("/auth/oidc/");
     if public {
         return Ok(next.run(req).await);
@@ -81,6 +82,7 @@ async fn auth_middleware(
         id: claims.sub,
         username: claims.username,
         role: claims.role,
+        provider: claims.provider,
     };
     req.extensions_mut().insert(user);
     Ok(next.run(req).await)

@@ -51,8 +51,15 @@ pub struct Claims {
     pub sub: String,
     pub username: String,
     pub role: Role,
+    /// `local` or `auth0` — used so Sign out can end the Auth0 SSO session.
+    #[serde(default = "default_auth_provider")]
+    pub provider: String,
     pub exp: i64,
     pub iat: i64,
+}
+
+fn default_auth_provider() -> String {
+    "local".into()
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +67,7 @@ pub struct AuthUser {
     pub id: String,
     pub username: String,
     pub role: Role,
+    pub provider: String,
 }
 
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
@@ -86,6 +94,11 @@ pub fn issue_token(cfg: &Config, user: &AuthUser) -> ApiResult<String> {
         sub: user.id.clone(),
         username: user.username.clone(),
         role: user.role,
+        provider: if user.provider.is_empty() {
+            "local".into()
+        } else {
+            user.provider.clone()
+        },
         iat: now.timestamp(),
         exp: (now + Duration::seconds(cfg.jwt_ttl_secs)).timestamp(),
     };
@@ -177,6 +190,7 @@ pub async fn find_or_create_auth0_user(
             id: row.0,
             username: row.1,
             role: Role::parse(&row.2).unwrap_or(Role::Viewer),
+            provider: "auth0".into(),
         });
     }
     let id = Uuid::new_v4().to_string();
@@ -195,6 +209,7 @@ pub async fn find_or_create_auth0_user(
         id,
         username: username.to_string(),
         role,
+        provider: "auth0".into(),
     })
 }
 

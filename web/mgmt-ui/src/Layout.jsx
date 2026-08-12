@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { clearToken, getToken } from './api'
+import { getToken, logoutAndRedirect, setAuthProvider } from './api'
 import { useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import { Icon } from './components/Icons'
@@ -51,7 +51,12 @@ export default function Layout() {
       nav('/login')
       return
     }
-    api('/auth/me').then(setUser).catch(() => nav('/login'))
+    api('/auth/me')
+      .then((u) => {
+        if (u?.provider) setAuthProvider(u.provider)
+        setUser(u)
+      })
+      .catch(() => nav('/login'))
   }, [nav])
 
   useEffect(() => {
@@ -87,13 +92,15 @@ export default function Layout() {
     setShowUserMenu(false)
     const ok = await confirm({
       title: 'Sign out',
-      message: 'End your session on this device?',
+      message:
+        user?.provider === 'auth0'
+          ? 'End your session and clear Auth0 SSO on this device?'
+          : 'End your session on this device?',
       confirmLabel: 'Sign out',
       tone: 'primary',
     })
     if (!ok) return
-    clearToken()
-    nav('/login')
+    logoutAndRedirect(user?.provider || 'local')
   }
 
   const initial = user?.username ? user.username.charAt(0).toUpperCase() : 'U'
