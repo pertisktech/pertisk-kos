@@ -154,6 +154,14 @@ make test      # unit (always)
 make testacc   # live mgmt + Proxmox; needs TF_ACC=1 + env (see below)
 ```
 
+Security scan (from this directory so [`.trivyignore`](./.trivyignore) applies):
+
+```bash
+trivy fs . --scanners vuln
+# GO-2026-5932 is ignored: Trivy flags all of x/crypto; only openpgp is affected
+# and this provider does not use it (govulncheck ./... is clean).
+```
+
 Acceptance creates **1 CP + 2 workers**, checks sizing/`status=ready`/`kubeconfig`, then destroys:
 
 ```bash

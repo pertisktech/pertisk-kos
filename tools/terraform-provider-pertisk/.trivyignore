@@ -1,0 +1,5 @@
+# GO-2026-5932 only affects golang.org/x/crypto/openpgp (unmaintained).
+# This provider does not import that package (govulncheck ./... is clean).
+# Trivy flags the whole x/crypto module — known scanner limitation:
+# https://github.com/aquasecurity/trivy/discussions/10944
+GO-2026-5932
