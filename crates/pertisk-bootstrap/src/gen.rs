@@ -186,6 +186,7 @@ pub fn gen_config_with_network(
             install: None,
             dashboard: dashboard_for_gen(net),
             kubelet: kubelet_opts(net.max_pods),
+            observability: None,
         },
         cluster: Some(base_cluster(
             cluster_name,
@@ -216,6 +217,7 @@ pub fn gen_config_with_network(
             install: None,
             dashboard: dashboard_for_gen(net),
             kubelet: kubelet_opts(net.max_pods),
+            observability: None,
         },
         cluster: Some(base_cluster(
             cluster_name,
@@ -297,6 +299,7 @@ pub fn gen_config_ha_with_network(
                 install: None,
                 dashboard: dashboard_for_gen(net),
                 kubelet: kubelet_opts(net.max_pods),
+                observability: None,
             },
             cluster: Some(base_cluster(
                 cluster_name,
@@ -334,6 +337,7 @@ pub fn gen_config_ha_with_network(
             install: None,
             dashboard: dashboard_for_gen(net),
             kubelet: kubelet_opts(net.max_pods),
+            observability: None,
         },
         cluster: Some(base_cluster(
             cluster_name,

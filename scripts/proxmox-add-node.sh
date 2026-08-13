@@ -139,6 +139,25 @@ elif [[ -z "${PROXMOX_SSH:-}" && "${PROXMOX_SSH_AUTO:-0}" == "1" && "$PVE_HOST" 
   export PROXMOX_SSH="root@${PVE_HOST}"
   log "auto PROXMOX_SSH=${PROXMOX_SSH} (PROXMOX_SSH_AUTO=1)"
 fi
+# Global PROXMOX_SSH is user + mode; the host is always this provider's API host.
+if [[ -n "${PROXMOX_SSH:-}" && -n "${PVE_HOST}" ]]; then
+  _ssh_user="${PROXMOX_SSH%%@*}"
+  [[ -z "${_ssh_user}" || "${_ssh_user}" == "${PROXMOX_SSH}" ]] && _ssh_user=root
+  _ssh_h="${PROXMOX_SSH#*@}"
+  _ssh_h="${_ssh_h%%:*}"
+  if [[ "${_ssh_h}" != "${PVE_HOST}" ]]; then
+    log "PROXMOX_SSH=${PROXMOX_SSH} → ${_ssh_user}@${PVE_HOST} (this provider)"
+    export PROXMOX_SSH="${_ssh_user}@${PVE_HOST}"
+  fi
+  unset _ssh_user _ssh_h
+fi
+if [[ -n "${PROXMOX_SSH:-}" ]]; then
+  if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
+      "${PROXMOX_SSH}" true >/dev/null 2>&1; then
+    log "SSH ${PROXMOX_SSH} not usable (no key auth) — Proxmox API for this provider"
+    unset PROXMOX_SSH || true
+  fi
+fi
 if [[ -z "${LAB_SUBNET:-}" && "${PVE_HOST}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
   LAB_SUBNET="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.0/24"
   log "auto LAB_SUBNET=${LAB_SUBNET}"

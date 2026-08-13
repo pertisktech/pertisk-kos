@@ -1,0 +1,101 @@
+# Lab stack: Grafana + Loki (+ Prometheus scrape, Alloy Loki ingest).
+# Not for production HA. Do not run this on Pertisk guests.
+#
+#   cd examples/observability
+#   docker compose up -d
+#   open http://127.0.0.1:3000   # admin / admin
+#
+# Point nodes at the compose *host* LAN IP (not localhost, not the container name):
+#   PERTISK_LOKI_URL=http://10.1.1.150:3500/loki/api/v1/push
+# Metrics: nodes with that Loki URL also push to :9091 (Pushgateway).
+# Optional pull scrape: edit compose/file_sd/nodes.yml
+
+name: pertisk-obs
+
+services:
+  loki:
+    image: grafana/loki:3.4.3
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./compose/loki.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  alloy:
+    image: grafana/alloy:v1.7.5
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy
+      - --server.http.listen-addr=0.0.0.0:12345
+    volumes:
+      - ./compose/alloy.alloy:/etc/alloy/config.alloy:ro
+    ports:
+      - "3500:3500"
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  pushgateway:
+    image: prom/pushgateway:v1.11.1
+    command:
+      - --persistence.file=/data/pushgateway.data
+      - --persistence.interval=1m
+    volumes:
+      - pushgateway-data:/data
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    volumes:
+      - ./compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./compose/file_sd:/etc/prometheus/file_sd:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9990:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - pushgateway
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/grafana-node.json
+    volumes:
+      - ./compose/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana-node.json:/var/lib/grafana/dashboards/grafana-node.json:ro
+      - ./grafana-logs.json:/var/lib/grafana/dashboards/grafana-logs.json:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - loki
+      - prometheus
+      - pushgateway
+    restart: unless-stopped
+
+volumes:
+  loki-data:
+  prometheus-data:
+  grafana-data:
+  pushgateway-data:

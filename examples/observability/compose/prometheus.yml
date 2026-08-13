@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Nodes PUT /metrics/job/pertisk/instance/<hostname> (same idea as Loki push).
+  - job_name: pertisk
+    honor_labels: true
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - pushgateway:9091
+
+  # Optional pull of guest :50001 — edit file_sd/nodes.yml (empty by default).
+  - job_name: pertisk-nodes
+    metrics_path: /metrics
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/file_sd/*.yml
+        refresh_interval: 30s

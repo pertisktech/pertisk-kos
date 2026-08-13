@@ -303,6 +303,19 @@ ssh_ok() {
     "${PROXMOX_SSH}" true 2>/dev/null
 }
 
+# Multi-PVE: keys often exist on only one host. Don't scp/qm-resize then die.
+if [[ -n "${PROXMOX_SSH:-}" ]] && ! ssh_ok; then
+  if [[ "${ARCH}" == "arm64" && -z "${ARM64_TEMPLATE:-}" ]]; then
+    echo "==> SSH ${PROXMOX_SSH} not usable (arm64 still needs SSH or PROXMOX_ARM64_TEMPLATE)"
+  else
+    echo "==> SSH ${PROXMOX_SSH} not usable — Proxmox API for disk import/resize"
+    unset PROXMOX_SSH || true
+    if [[ -z "${PROXMOX_UPLOAD_STORAGE:-}" ]]; then
+      export PROXMOX_UPLOAD_STORAGE=local
+    fi
+  fi
+fi
+
 require_arm64_create_path() {
   if [[ -n "$ARM64_TEMPLATE" ]]; then
     echo "==> arm64 via API clone of template VMID=${ARM64_TEMPLATE} (no SSH)"
@@ -617,9 +630,9 @@ if [[ -n "${PROXMOX_SSH:-}" ]]; then
     detach_scsi0
     echo "==> SCP + qm importdisk via ${PROXMOX_SSH}"
     REMOTE="/var/tmp/pertisk-${VMID}.qcow2"
-    if scp -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
+    if scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
          "${DISK}" "${PROXMOX_SSH}:${REMOTE}" \
-      && ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" bash -s <<EOF
+      && ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" bash -s <<EOF
 set -euo pipefail
 VMID=${VMID}
 STORAGE=${STORAGE}
@@ -798,13 +811,19 @@ fi
 if [[ -n "${DISK_GB}" ]]; then
   echo "==> resizing scsi0 → ${DISK_GB}G"
   vm_stop 2>/dev/null || true
-  if [[ -n "${PROXMOX_SSH:-}" ]]; then
-    ssh -o StrictHostKeyChecking=accept-new "${PROXMOX_SSH}" \
-      "qm resize ${VMID} scsi0 ${DISK_GB}G && qm config ${VMID} | grep '^scsi0:'" || {
-      echo "qm resize failed" >&2
-      exit 1
-    }
-  else
+  resized=0
+  if ssh_ok; then
+    if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
+      "${PROXMOX_SSH}" \
+      "qm resize ${VMID} scsi0 ${DISK_GB}G && qm config ${VMID} | grep '^scsi0:'"; then
+      resized=1
+    else
+      echo "WARNING: qm resize via SSH failed — trying Proxmox API" >&2
+    fi
+  elif [[ -n "${PROXMOX_SSH:-}" ]]; then
+    echo "WARNING: SSH ${PROXMOX_SSH} unreachable — trying Proxmox API resize" >&2
+  fi
+  if [[ "${resized}" != "1" ]]; then
     RESZ="$(
       api_put_form "/nodes/${NODE}/qemu/${VMID}/resize" \
         --data-urlencode "disk=scsi0" \
@@ -816,7 +835,7 @@ if [[ -n "${DISK_GB}" ]]; then
         wait_task "${UPID}" "resize" || exit 1
       else
         echo "resize failed: ${RESZ}" >&2
-        echo "  Hint: set PROXMOX_SSH=root@node for qm resize" >&2
+        echo "  Hint: set PROXMOX_SSH=root@<this-pve> for qm resize" >&2
         exit 1
       fi
     else

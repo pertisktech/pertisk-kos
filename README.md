@@ -96,7 +96,7 @@ cargo run -p pertiskd --bin pertiskd -- --dashboard-preview
 | Calico / Flannel | Via lab-up or `examples/cni/` with `cni: none` |
 | kube-vip | Static pod on CPs (needs guest `af_packet`) |
 
-Optional addons: CoreDNS, metrics-server, kubernetes-reflector, NFS provisioner — see [examples/addons/](./examples/addons/).
+Optional addons: CoreDNS, metrics-server, kubernetes-reflector, NFS provisioner — see [examples/addons/](./examples/addons/). Host Prometheus metrics + Grafana: [examples/observability/](./examples/observability/).
 
 ### Management UI
 
@@ -233,12 +233,16 @@ cargo run -p pertiskd --bin pertiskd -- --dashboard-preview
 ```bash
 # Plaintext (lab default when TLS unset)
 curl -s http://127.0.0.1:50001/metrics
+curl -s http://127.0.0.1:50001/metrics | grep '^pertisk_cpu\|^pertisk_memory\|^pertisk_network\|^pertisk_disk'
 
 # mTLS (same PEMs as the management API; enabled whenever --tls-* is set)
 curl -s --cacert out/mtls/ca.crt \
   --cert out/mtls/client.crt --key out/mtls/client.key \
   https://127.0.0.1:50001/metrics
 # Optional bearer still applies: --metrics-token / PERTISK_METRICS_TOKEN / STATE secrets/metrics.token
+
+# Optional Loki push (same log sources as pertiskctl logs)
+# PERTISK_LOKI_URL=http://<alloy>:3500/loki/api/v1/push
 
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs dmesg -n 50
 ./out/bin/pertiskctl -e 127.0.0.1:50000 logs pertiskd
@@ -312,6 +316,7 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 | [tools/terraform-provider-pertisk/README.md](./tools/terraform-provider-pertisk/README.md) | Terraform: cluster create / HA / dual-stack / sizing / scale |
 | [examples/cni/README.md](./examples/cni/README.md) | Cilium / Calico / Flannel |
 | [examples/addons/README.md](./examples/addons/README.md) | CoreDNS, metrics-server, reflector, NFS |
+| [examples/observability/README.md](./examples/observability/README.md) | Host metrics scrape, Grafana/Loki compose, Alloy → Mimir |
 
 ## Next
 

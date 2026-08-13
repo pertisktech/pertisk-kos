@@ -36,3 +36,7 @@ Dynamic RWX volumes via external NFS + nfs-subdir-external-provisioner:
 Requires guest **nfs-client** image extension
 ([image/extensions/nfs-client](../../image/extensions/nfs-client/)).
 Without it, mounts fail with `No such device`.
+
+## Observability (host metrics)
+
+Node OS metrics (CPU, RAM, network, disk I/O) are on `pertiskd` `:50001/metrics` — not this addon. See [../observability/README.md](../observability/README.md). metrics-server stays for `kubectl top` / HPA.

@@ -49,6 +49,9 @@ pub struct Machine {
     /// Kubelet settings (Talos-shaped). Applied into `/var/lib/kubelet/config.yaml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kubelet: Option<MachineKubelet>,
+    /// Optional log ship to Loki / Grafana Alloy (`loki.source.api`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observability: Option<Observability>,
 }
 
 /// `machine.kubelet` — mirrors Talos-shaped kubelet knobs we honor.
@@ -90,6 +93,33 @@ impl Machine {
             .as_ref()?
             .max_pods
     }
+}
+
+/// Fleet logs → Loki (or Alloy push API). Omit / empty `lokiUrl` disables the pusher.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Observability {
+    /// Loki push URL, e.g. `http://10.1.1.10:3500/loki/api/v1/push`.
+    #[serde(default, rename = "lokiUrl", skip_serializing_if = "Option::is_none")]
+    pub loki_url: Option<String>,
+    /// Optional `Authorization: Bearer` for the push endpoint.
+    #[serde(default, rename = "lokiToken", skip_serializing_if = "Option::is_none")]
+    pub loki_token: Option<String>,
+    /// Prometheus Pushgateway base URL, e.g. `http://10.1.1.10:9091`.
+    /// When omitted, derived from `lokiUrl` if that uses compose Alloy port 3500
+    /// (`http://host:3500/…` → `http://host:9091`).
+    #[serde(
+        default,
+        rename = "prometheusPushUrl",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub prometheus_push_url: Option<String>,
+    /// Extra stream labels (merged after `job` / `service` / `hostname` / `cluster`).
+    #[serde(
+        default,
+        rename = "extraLabels",
+        skip_serializing_if = "std::collections::BTreeMap::is_empty"
+    )]
+    pub extra_labels: std::collections::BTreeMap<String, String>,
 }
 
 /// Serial console TUI appearance and geometry.
@@ -553,6 +583,7 @@ impl MachineConfig {
                 install: None,
                 dashboard: None,
                 kubelet: None,
+                observability: None,
             },
             cluster: None,
         }
@@ -986,6 +1017,48 @@ machine:
         assert_eq!(cfg.machine.max_pods(), Some(250));
         let out = serde_yaml::to_string(&cfg).unwrap();
         assert!(out.contains("maxPods: 250"));
+    }
+
+    #[test]
+    fn parses_observability_loki() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: worker
+  observability:
+    lokiUrl: http://10.1.1.10:3500/loki/api/v1/push
+    lokiToken: s3cret
+    extraLabels:
+      env: lab
+"#;
+        let cfg = MachineConfig::from_yaml(yaml).unwrap();
+        let obs = cfg.machine.observability.as_ref().unwrap();
+        assert_eq!(
+            obs.loki_url.as_deref(),
+            Some("http://10.1.1.10:3500/loki/api/v1/push")
+        );
+        assert_eq!(obs.loki_token.as_deref(), Some("s3cret"));
+        assert_eq!(obs.extra_labels.get("env").map(String::as_str), Some("lab"));
+        let out = serde_yaml::to_string(&cfg).unwrap();
+        assert!(out.contains("lokiUrl:"));
+    }
+
+    #[test]
+    fn parses_observability_prometheus_push() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: worker
+  observability:
+    lokiUrl: http://10.1.1.10:3500/loki/api/v1/push
+    prometheusPushUrl: http://10.1.1.10:9091
+"#;
+        let cfg = MachineConfig::from_yaml(yaml).unwrap();
+        let obs = cfg.machine.observability.as_ref().unwrap();
+        assert_eq!(
+            obs.prometheus_push_url.as_deref(),
+            Some("http://10.1.1.10:9091")
+        );
     }
 
     #[test]

@@ -41,6 +41,16 @@ pub enum FollowSource {
     None,
 }
 
+/// File path for a named service, if it is file-backed (not dmesg).
+pub fn log_file_path(state_root: &Path, service: &str) -> Option<PathBuf> {
+    match service {
+        "pertiskd" => Some(state_root.join("log/pertiskd.log")),
+        "containerd" => Some(PathBuf::from("/var/log/containerd.log")),
+        "kubelet" => Some(PathBuf::from("/var/log/kubelet.log")),
+        _ => None,
+    }
+}
+
 /// Tail logs for a named service.
 pub fn tail_logs(state_root: &Path, service: &str, tail_lines: u32) -> Result<LogTail, LogsError> {
     let n = normalize_tail(tail_lines);
@@ -49,17 +59,9 @@ pub fn tail_logs(state_root: &Path, service: &str, tail_lines: u32) -> Result<Lo
     }
     match service {
         "dmesg" => tail_dmesg(n),
-        "pertiskd" => {
-            let path = state_root.join("log/pertiskd.log");
-            tail_file_or_empty("pertiskd", &path, n)
-        }
-        "containerd" => {
-            let path = PathBuf::from("/var/log/containerd.log");
-            tail_file_or_empty("containerd", &path, n)
-        }
-        "kubelet" => {
-            let path = PathBuf::from("/var/log/kubelet.log");
-            tail_file_or_empty("kubelet", &path, n)
+        "pertiskd" | "containerd" | "kubelet" => {
+            let path = log_file_path(state_root, service).expect("file-backed service");
+            tail_file_or_empty(service, &path, n)
         }
         other => Err(LogsError::UnknownService(other.into())),
     }
@@ -78,24 +80,8 @@ pub fn follow_source(state_root: &Path, service: &str) -> Result<FollowSource, L
     }
     match service {
         "dmesg" => Ok(FollowSource::Dmesg),
-        "pertiskd" => {
-            let path = state_root.join("log/pertiskd.log");
-            Ok(if path.exists() {
-                FollowSource::File { path }
-            } else {
-                FollowSource::None
-            })
-        }
-        "containerd" => {
-            let path = PathBuf::from("/var/log/containerd.log");
-            Ok(if path.exists() {
-                FollowSource::File { path }
-            } else {
-                FollowSource::None
-            })
-        }
-        "kubelet" => {
-            let path = PathBuf::from("/var/log/kubelet.log");
+        "pertiskd" | "containerd" | "kubelet" => {
+            let path = log_file_path(state_root, service).expect("file-backed service");
             Ok(if path.exists() {
                 FollowSource::File { path }
             } else {
@@ -349,6 +335,13 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
     use tempfile::tempdir;
+
+    #[test]
+    fn file_backed_paths() {
+        let p = log_file_path(Path::new("/system/state"), "pertiskd").unwrap();
+        assert!(p.ends_with("log/pertiskd.log"));
+        assert!(log_file_path(Path::new("/system/state"), "dmesg").is_none());
+    }
 
     #[test]
     fn tails_file() {

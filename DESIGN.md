@@ -191,7 +191,7 @@ Shipped:
 - Bridge CNI (`bridge` / `host-local` / `portmap`) + `cluster.podCidr`
 - Cluster CNI mode `none` + Flannel / Calico / Cilium (`examples/cni/`)
 - CI (fmt/clippy/test + initramfs) and CycloneDX SBOM (`scripts/generate-sbom.sh`)
-- Observability: `Logs` RPC + Prometheus `/metrics` (`:50001`) with optional **mTLS** (same `PERTISK_TLS_*` as gRPC) + bearer
+- Observability: `Logs` RPC + Prometheus `/metrics` (`:50001`) with host CPU/RAM/net/disk I/O, optional **mTLS** (same `PERTISK_TLS_*` as gRPC) + bearer; Grafana / Alloy examples in `examples/observability/`
 - Cloud disk images (`image/build-cloud-image.sh` → raw/qcow2; AWS/GCP/Azure notes)
 - Compatibility matrix — [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md)
 - CIS-ish hardening checklist + `make check-hardening` — [docs/HARDENING.md](./docs/HARDENING.md)
@@ -230,6 +230,8 @@ machine:
   install:
     disk: /dev/sda
     wipe: true
+  observability:            # optional — omit disables Loki push
+    lokiUrl: http://alloy:3500/loki/api/v1/push
 cluster:
   endpoint: https://192.168.1.10:6443
   token: <bootstrap-or-join>
@@ -253,9 +255,9 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 - `EtcdSnapshot` / `EtcdRestore` (live snapshot; offline restore with `--force`)
 - `Reset` (soft: clear STATE identity + EPHEMERAL runtime; keep GPT; requires `force`)
 - `Containers` (containerd `ctr` list in `k8s.io` + CRI kind/pod labels)
-- `Logs` (pertiskd, containerd, kubelet, dmesg, `container:<id>`; stream + `follow`)
+- `Logs` (pertiskd, containerd, kubelet, dmesg, `container:<id>`; stream + `follow`; optional Loki push)
 - `Upgrade` / `MarkBootGood` / `UpgradeStatus`
-- Metrics HTTP(S) `/metrics` (Prometheus text; mTLS when TLS PEMs set)
+- Metrics HTTP(S) `/metrics` (Prometheus text; host CPU/RAM/net/disk I/O + health/boot; mTLS when TLS PEMs set)
 
 **Control plane (Phase A — lab-proven on Proxmox)**
 
@@ -276,6 +278,7 @@ _(none — P5 stretch complete for lab / HA)_
 
 **Later (mgmt / ops parity)**
 
+- Lightweight fleet observability: Loki push from `pertiskd` (`machine.observability.lokiUrl` / `PERTISK_LOKI_URL`); Grafana / Alloy examples in `examples/observability/`
 - AWS / GCP / Azure cloud providers — **paused** (outlines only; see [image/cloud/README.md](./image/cloud/README.md))
 
 **Phase D — Omni-like web fleet manager**

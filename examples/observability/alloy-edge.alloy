@@ -1,0 +1,52 @@
+// Grafana Alloy at the edge (mgmt host or small proxy VM) — not on the Pertisk guest.
+//
+// Metrics: scrape pertiskd :50001 → remote_write Mimir.
+// Logs:    nodes POST Loki push API here → Loki (slice 3).
+//
+//   MIMIR_URL=https://mimir.example/api/v1/push
+//   LOKI_URL=https://loki.example/loki/api/v1/push
+//   alloy run examples/observability/alloy-edge.alloy
+//
+// On each node:
+//   machine.observability.lokiUrl: http://<alloy-host>:3500/loki/api/v1/push
+//   or PERTISK_LOKI_URL=http://<alloy-host>:3500/loki/api/v1/push
+
+prometheus.scrape "pertisk" {
+  targets = [
+    {"__address__" = "10.1.1.50:50001", "cluster" = "lab", "role" = "controlplane"},
+    {"__address__" = "10.1.1.51:50001", "cluster" = "lab", "role" = "worker"},
+  ]
+  metrics_path    = "/metrics"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.relabel.instance.receiver]
+}
+
+prometheus.relabel "instance" {
+  forward_to = [prometheus.remote_write.mimir.receiver]
+  rule {
+    source_labels = ["__address__"]
+    regex         = "(.+):50001"
+    target_label  = "instance"
+    replacement   = "$1"
+  }
+}
+
+prometheus.remote_write "mimir" {
+  endpoint {
+    url = sys.env("MIMIR_URL")
+  }
+}
+
+loki.source.api "pertisk" {
+  http {
+    listen_address = "0.0.0.0"
+    listen_port    = 3500
+  }
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = sys.env("LOKI_URL")
+  }
+}

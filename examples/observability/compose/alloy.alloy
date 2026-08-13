@@ -1,0 +1,16 @@
+// Alloy in docker compose — log ingest only (Prometheus scrapes :50001 itself).
+// Nodes: PERTISK_LOKI_URL=http://<compose-host>:3500/loki/api/v1/push
+
+loki.source.api "pertisk" {
+  http {
+    listen_address = "0.0.0.0"
+    listen_port    = 3500
+  }
+  forward_to = [loki.write.loki.receiver]
+}
+
+loki.write "loki" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

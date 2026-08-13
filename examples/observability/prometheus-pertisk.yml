@@ -1,0 +1,23 @@
+# Scrape Pertisk node OS metrics (pertiskd :50001).
+# Copy into prometheus.yml or include via scrape_config_files.
+#
+# Production: scheme https + tls_config (same PEMs as Machine API) and/or
+#   authorization: { type: Bearer, credentials_file: /etc/prometheus/pertisk-metrics.token }
+
+scrape_configs:
+  - job_name: pertisk
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    scheme: http
+    static_configs:
+      - targets:
+          - 10.1.1.50:50001
+        labels:
+          cluster: lab
+          role: controlplane
+      - targets:
+          - 10.1.1.51:50001
+        labels:
+          cluster: lab
+          role: worker

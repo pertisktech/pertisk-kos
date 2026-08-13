@@ -2677,6 +2677,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-pemfile",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.19",
@@ -2686,6 +2687,7 @@ dependencies = [
  "tonic",
  "tower 0.5.3",
  "tracing",
+ "ureq",
 ]
 
 [[package]]
@@ -4764,6 +4766,8 @@ dependencies = [
  "once_cell",
  "rustls",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "url",
  "webpki-roots 0.26.11",
 ]

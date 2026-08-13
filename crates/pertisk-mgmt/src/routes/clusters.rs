@@ -170,6 +170,23 @@ fn default_service_subnet_ipv6() -> String {
     "2001:db8:96:1::/112".into()
 }
 
+fn map_cluster_insert_err(e: sqlx::Error, name: &str) -> AppError {
+    let msg = e.to_string();
+    if msg.contains("UNIQUE") {
+        return AppError::Conflict(format!("cluster name already exists: {name}"));
+    }
+    if msg.contains("FOREIGN KEY") {
+        return AppError::bad("provider not found");
+    }
+    if msg.contains("no such column") {
+        tracing::error!(error = %e, "cluster insert schema mismatch");
+        return AppError::Anyhow(anyhow::anyhow!(
+            "database schema is out of date; restart pertisk-mgmt to migrate"
+        ));
+    }
+    AppError::from(e)
+}
+
 const CLUSTER_SELECT: &str = r#"
 SELECT c.id, c.name, c.provider_id,
        p.name as provider_name,
@@ -332,6 +349,20 @@ async fn create(
     Json(body): Json<CreateCluster>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_mutate(&user)?;
+    let name = body.name.trim();
+    if name.is_empty() {
+        return Err(AppError::bad("name is required"));
+    }
+    let existing: Option<(String, String)> =
+        sqlx::query_as("SELECT id, status FROM clusters WHERE name = ?")
+            .bind(name)
+            .fetch_optional(state.pool())
+            .await?;
+    if let Some((eid, status)) = existing {
+        return Err(AppError::Conflict(format!(
+            "cluster name already exists: {name} (id={eid} status={status})"
+        )));
+    }
     let mode = body.network_mode.to_ascii_lowercase();
     if !matches!(mode.as_str(), "ipv4" | "ipv6" | "dual-stack") {
         return Err(AppError::bad("network_mode must be ipv4|ipv6|dual-stack"));
@@ -476,7 +507,7 @@ async fn create(
            VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&id)
-    .bind(&body.name)
+    .bind(&name)
     .bind(&body.provider_id)
     .bind(body.controlplanes)
     .bind(body.workers)
@@ -501,7 +532,8 @@ async fn create(
     .bind(&now)
     .bind(&now)
     .execute(state.pool())
-    .await?;
+    .await
+    .map_err(|e| map_cluster_insert_err(e, name))?;
 
     let job_id = jobs::enqueue(
         &state,
@@ -517,7 +549,7 @@ async fn create(
         Some(&user.id),
         "cluster.create",
         Some(&id),
-        Some(&body.name),
+        Some(&name),
     )
     .await;
 

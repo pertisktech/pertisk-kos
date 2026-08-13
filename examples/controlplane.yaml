@@ -16,6 +16,8 @@ machine:
   #   cols: 93            # only if probe is wrong — wrong size blanks Serial
   #   rows: 25
   #   mgmt_url: https://ptkos.apps.thaidevops.co
+  # observability:          # optional — omit disables Loki push
+  #   lokiUrl: http://10.1.1.10:3500/loki/api/v1/push
 cluster:
   endpoint: https://10.1.1.210:6443
   # From: pertiskctl gen config …

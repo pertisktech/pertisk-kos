@@ -1,4 +1,4 @@
-//! Prometheus text exposition for node health / boot metrics.
+//! Prometheus text exposition for node health / boot / host resource metrics.
 
 use std::io::Cursor;
 use std::net::SocketAddr;
@@ -186,7 +186,7 @@ where
     Ok(())
 }
 
-fn render_metrics(state: &SharedState) -> String {
+pub(crate) fn render_metrics(state: &SharedState) -> String {
     let st = match state.lock() {
         Ok(g) => g.clone(),
         Err(_) => {
@@ -249,6 +249,7 @@ pertisk_info{{version="{version}",api="{api}",platform="{platform}"}} 1
         platform = st.platform,
     );
     crate::api_metrics::snapshot().render_prometheus(&mut body);
+    crate::host_metrics::HostSnapshot::collect().render_prometheus(&mut body);
     body
 }
 
@@ -268,6 +269,14 @@ mod tests {
         assert!(body.contains("pertisk_info{"));
         assert!(body.contains("pertisk_api_requests_total"));
         assert!(body.contains("pertisk_api_request_duration_seconds_sum"));
+        #[cfg(target_os = "linux")]
+        {
+            assert!(
+                body.contains("pertisk_cpu_seconds_total")
+                    || body.contains("pertisk_memory_total_bytes"),
+                "linux host metrics should appear in /metrics"
+            );
+        }
     }
 
     #[test]

@@ -204,6 +204,7 @@ mod tests {
                     mgmt_url: Some("https://ptkos.apps.thaidevops.co".into()),
                 }),
                 kubelet: None,
+                observability: None,
             },
             cluster: None,
         };

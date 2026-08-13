@@ -65,8 +65,8 @@ Image needs shared kernel modules + host `iptables-legacy` — see [examples/cni
 | Surface | Port | Auth | Notes |
 |---------|------|------|-------|
 | gRPC Machine API | `:50000` | mTLS (`PERTISK_TLS_*`) | Required for production |
-| Prometheus metrics | `:50001` | mTLS when `PERTISK_TLS_*` set; optional bearer (`PERTISK_METRICS_TOKEN`) | Plain HTTP if TLS unset; prefer mTLS or loopback on untrusted nets |
-| Logs RPC | via gRPC | mTLS | `pertiskctl logs` |
+| Prometheus metrics | `:50001` | mTLS when `PERTISK_TLS_*` set; optional bearer (`PERTISK_METRICS_TOKEN`) | Health/boot/API + host CPU/RAM/net/disk I/O; plain HTTP if TLS unset; prefer mTLS or loopback on untrusted nets |
+| Logs RPC | via gRPC | mTLS | `pertiskctl logs`; optional Loki push (`PERTISK_LOKI_URL` / `machine.observability.lokiUrl`) |
 
 ## Image / build matrix
 

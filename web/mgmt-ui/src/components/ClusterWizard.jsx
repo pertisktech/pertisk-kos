@@ -72,6 +72,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
 
   useEffect(() => {
     if (!open) return
+    let cancelled = false
     setStep(0)
     setError('')
     setSaving(false)
@@ -80,27 +81,39 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
     setForm({ ...defaultForm })
     api('/providers')
       .then(async (p) => {
+        if (cancelled) return
         setProviders(p)
         if (!p[0]) return
-        const arch = p[0].arch === 'arm64' ? 'arm64' : 'amd64'
-        let cp_vmid = defaultForm.cp_vmid
+        const first = p[0]
+        const arch = first.arch === 'arm64' ? 'arm64' : 'amd64'
+        // Apply first provider immediately so a slow suggest-vmid cannot later
+        // stomp a provider the user already chose.
+        setForm((f) => {
+          if (f.provider_id && f.provider_id !== first.id) return f
+          return { ...f, provider_id: first.id, arch }
+        })
         try {
           const sug = await api('/clusters/suggest-vmid', {
             method: 'POST',
             body: {
-              provider_id: p[0].id,
+              provider_id: first.id,
               cp_vmid: defaultForm.cp_vmid,
               controlplanes: defaultForm.controlplanes,
               workers: defaultForm.workers,
             },
           })
-          if (sug?.cp_vmid) cp_vmid = sug.cp_vmid
+          if (cancelled || !sug?.cp_vmid) return
+          setForm((f) => (f.provider_id === first.id ? { ...f, cp_vmid: sug.cp_vmid } : f))
         } catch {
           /* keep default 210; check-vmids will still validate */
         }
-        setForm((f) => ({ ...f, provider_id: p[0].id, arch, cp_vmid }))
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        if (!cancelled) setError(e.message)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [open])
 
   useEffect(() => {
@@ -207,22 +220,24 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
       }
       if (k === 'provider_id') {
         const p = providers.find((x) => x.id === v)
-        if (p) next.arch = p.arch === 'arm64' ? 'arm64' : 'amd64'
+        if (p?.arch === 'arm64' || p?.arch === 'amd64') next.arch = p.arch
       }
       return next
     })
     if (k === 'provider_id' && v) {
+      const selected = v
       api('/clusters/suggest-vmid', {
         method: 'POST',
         body: {
-          provider_id: v,
+          provider_id: selected,
           cp_vmid: defaultForm.cp_vmid,
           controlplanes: Number(form.controlplanes) || 1,
           workers: Number(form.workers) || 1,
         },
       })
         .then((sug) => {
-          if (sug?.cp_vmid) setForm((f) => ({ ...f, cp_vmid: sug.cp_vmid }))
+          if (!sug?.cp_vmid) return
+          setForm((f) => (f.provider_id === selected ? { ...f, cp_vmid: sug.cp_vmid } : f))
         })
         .catch(() => {})
     }

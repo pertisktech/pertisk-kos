@@ -346,7 +346,8 @@ fi
 : "${PROXMOX_NODE:?set PROXMOX_NODE}"
 
 # Derive lab subnet from PROXMOX_URL. Disk import defaults to Proxmox API
-# (Omni-style — provider token only). Set PROXMOX_SSH=root@host to use scp+qm.
+# (Omni-style — provider token only). Set PROXMOX_SSH=root@anything to use scp+qm;
+# the host is rewritten to this provider's API host (multi-Proxmox).
 # PROXMOX_NO_SSH=1 clears SSH; PROXMOX_SSH_AUTO=1 restores old auto root@<ip>.
 PVE_HOST="$(echo "${PROXMOX_URL}" | sed -E 's|https?://([^/:]+).*|\1|')"
 if [[ "${PROXMOX_NO_SSH:-0}" == "1" ]]; then
@@ -359,6 +360,28 @@ elif [[ -z "${PROXMOX_SSH:-}" && "${PROXMOX_SSH_AUTO:-0}" == "1" && -n "${PVE_HO
     "root@${PVE_HOST}" true >/dev/null 2>&1; then
     export PROXMOX_SSH="root@${PVE_HOST}"
     echo "==> auto PROXMOX_SSH=${PROXMOX_SSH} (PROXMOX_SSH_AUTO=1)"
+  fi
+fi
+# Global PROXMOX_SSH is user + mode; the host is always this provider's API host
+# (one env cannot pin a single IP when mgmt has several Proxmox providers).
+if [[ -n "${PROXMOX_SSH:-}" && -n "${PVE_HOST}" ]]; then
+  _ssh_user="${PROXMOX_SSH%%@*}"
+  [[ -z "${_ssh_user}" || "${_ssh_user}" == "${PROXMOX_SSH}" ]] && _ssh_user=root
+  _ssh_h="${PROXMOX_SSH#*@}"
+  _ssh_h="${_ssh_h%%:*}"
+  if [[ "${_ssh_h}" != "${PVE_HOST}" ]]; then
+    echo "==> PROXMOX_SSH=${PROXMOX_SSH} → ${_ssh_user}@${PVE_HOST} (this provider)"
+    export PROXMOX_SSH="${_ssh_user}@${PVE_HOST}"
+  fi
+  unset _ssh_user _ssh_h
+fi
+# Keys are per-PVE. If this provider rejects SSH, use the API for the whole lab
+# (import already fell back; resize must not still call qm over a dead session).
+if [[ -n "${PROXMOX_SSH:-}" ]]; then
+  if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
+      "${PROXMOX_SSH}" true >/dev/null 2>&1; then
+    echo "==> SSH ${PROXMOX_SSH} not usable (no key auth) — Proxmox API for this provider"
+    unset PROXMOX_SSH || true
   fi
 fi
 if [[ -z "${LAB_SUBNET}" && "${PVE_HOST}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then

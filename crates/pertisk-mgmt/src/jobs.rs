@@ -10,7 +10,8 @@ use crate::db;
 use crate::state::AppState;
 
 /// Shared env for packaged lab-up / add-node (images dir, optional host overrides).
-fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) {
+/// Returns a job-log note when global `PROXMOX_SSH` is retargeted to this provider.
+fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) -> Option<String> {
     let cfg = state.cfg();
     let _ = std::fs::create_dir_all(&cfg.images_dir);
     cmd.env("PERTISK_IMAGES_DIR", cfg.images_dir.display().to_string());
@@ -57,9 +58,19 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) {
         .filter(|s| !s.is_empty())
         .is_some();
     let mut using_ssh = false;
+    let mut note = None;
     if no_ssh {
         cmd.env_remove("PROXMOX_SSH");
     } else if ssh_from_host {
+        let ssh = std::env::var("PROXMOX_SSH").unwrap_or_default();
+        // One global env for many Proxmox providers: keep the user, SSH to
+        // this job's provider host (10.1.1.196 leftover must not hit 10.1.1.195).
+        if let Some(rewritten) = rewrite_proxmox_ssh_for_provider(&ssh, provider_url) {
+            cmd.env("PROXMOX_SSH", &rewritten);
+            note = Some(format!(
+                "PROXMOX_SSH={ssh} → {rewritten} (this provider)\n"
+            ));
+        }
         using_ssh = true;
     } else if ssh_auto {
         if let Some(host) = pve_host_from_url(provider_url) {
@@ -83,6 +94,7 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) {
             cmd.env("PROXMOX_UPLOAD_STORAGE", "local");
         }
     }
+    note
 }
 
 fn pve_host_from_url(url: &str) -> Option<String> {
@@ -94,6 +106,37 @@ fn pve_host_from_url(url: &str) -> Option<String> {
         None
     } else {
         Some(host.to_string())
+    }
+}
+
+fn proxmox_ssh_host(ssh: &str) -> Option<String> {
+    let rest = ssh.split_once('@').map(|(_, h)| h).unwrap_or(ssh.trim());
+    let host = rest.split(['/', ':']).next()?.trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+fn proxmox_ssh_user(ssh: &str) -> &str {
+    match ssh.split_once('@') {
+        Some((u, h)) if !u.is_empty() && !h.is_empty() => u,
+        _ => "root",
+    }
+}
+
+/// `PROXMOX_SSH` is a user + “prefer SSH” flag. The host is always this provider.
+fn rewrite_proxmox_ssh_for_provider(ssh: &str, provider_url: &str) -> Option<String> {
+    let api_h = pve_host_from_url(provider_url)?;
+    if api_h.is_empty() {
+        return None;
+    }
+    let user = proxmox_ssh_user(ssh);
+    let rewritten = format!("{user}@{api_h}");
+    match proxmox_ssh_host(ssh) {
+        Some(h) if h == api_h => None,
+        _ => Some(rewritten),
     }
 }
 
@@ -414,7 +457,6 @@ async fn run_create_cluster(
         if provider.insecure != 0 {
             cmd.env("VSPHERE_INSECURE", "1");
         }
-        apply_lab_env(&mut cmd, state, &provider.url);
     } else if provider.kind == "nutanix" {
         cmd.env("PROVIDER_KIND", "nutanix")
             .env("NUTANIX_URL", &provider.url)
@@ -430,7 +472,6 @@ async fn run_create_cluster(
         if provider.insecure != 0 {
             cmd.env("NUTANIX_INSECURE", "1");
         }
-        apply_lab_env(&mut cmd, state, &provider.url);
     } else {
         cmd.env("PROXMOX_URL", &provider.url)
             .env("PROXMOX_TOKEN_ID", &provider.token_id)
@@ -444,10 +485,12 @@ async fn run_create_cluster(
             )
             .env("PROXMOX_STORAGE", &provider.storage)
             .env("PROXMOX_BRIDGE", &provider.bridge);
-        apply_lab_env(&mut cmd, state, &provider.url);
         if provider.insecure != 0 {
             cmd.env("PROXMOX_INSECURE", "1");
         }
+    }
+    if let Some(note) = apply_lab_env(&mut cmd, state, &provider.url) {
+        append_log(log_path, &note)?;
     }
 
     let mode = cluster.network_mode.to_ascii_lowercase();
@@ -1571,7 +1614,9 @@ async fn run_add_node(
             .arg(&provider.bridge)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        apply_lab_env(&mut cmd, state, &provider.url);
+        if let Some(note) = apply_lab_env(&mut cmd, state, &provider.url) {
+            append_log(log_path, &note)?;
+        }
 
         if provider.kind == "nutanix" || provider.kind == "ahv" || provider.kind == "prism" {
             cmd.env("PROVIDER_KIND", "nutanix")
@@ -3862,4 +3907,53 @@ pub async fn enqueue(
     state.emit_job(cluster_id, &id, Some(kind), "queued");
     state.notify_jobs();
     Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pve_host_from_url_strips_scheme_and_port() {
+        assert_eq!(
+            pve_host_from_url("https://10.1.1.195:8006"),
+            Some("10.1.1.195".into())
+        );
+        assert_eq!(
+            pve_host_from_url("https://pve.example/"),
+            Some("pve.example".into())
+        );
+    }
+
+    #[test]
+    fn proxmox_ssh_host_parses_user_at_host() {
+        assert_eq!(
+            proxmox_ssh_host("root@10.1.1.196"),
+            Some("10.1.1.196".into())
+        );
+        assert_eq!(
+            proxmox_ssh_host("root@10.1.1.196:22"),
+            Some("10.1.1.196".into())
+        );
+    }
+
+    #[test]
+    fn rewrite_proxmox_ssh_uses_provider_host() {
+        assert_eq!(
+            rewrite_proxmox_ssh_for_provider("root@10.1.1.196", "https://10.1.1.195:8006"),
+            Some("root@10.1.1.195".into())
+        );
+        assert_eq!(
+            rewrite_proxmox_ssh_for_provider("admin@10.1.1.196:22", "https://10.1.1.195:8006"),
+            Some("admin@10.1.1.195".into())
+        );
+        assert_eq!(
+            rewrite_proxmox_ssh_for_provider("root@10.1.1.195", "https://10.1.1.195:8006"),
+            None
+        );
+        assert_eq!(
+            rewrite_proxmox_ssh_for_provider("root@pve-a", "https://pve-b:8006"),
+            Some("root@pve-b".into())
+        );
+    }
 }

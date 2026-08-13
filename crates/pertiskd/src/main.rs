@@ -21,7 +21,11 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use pertisk_api::{shared, SharedState, TlsPaths, DEFAULT_LISTEN, DEFAULT_METRICS_LISTEN};
+use pertisk_api::{
+    apply_loki_push, apply_prom_push, init_loki_cli, init_prom_push_cli, shared, SharedState,
+    TlsPaths, DEFAULT_LISTEN,
+    DEFAULT_METRICS_LISTEN,
+};
 use pertisk_config::MachineConfig;
 use pertisk_disk::{
     layout_present, prepare_state, settle_block_devices, try_prepare_ephemeral, try_prepare_esp,
@@ -113,6 +117,21 @@ struct Args {
     /// When `--tls-*` is set, metrics are served over mTLS (same PEMs as the API).
     #[arg(long, env = "PERTISK_METRICS_TOKEN")]
     metrics_token: Option<String>,
+
+    /// Loki / Alloy push URL (`/loki/api/v1/push`). Empty disables log ship.
+    /// Overrides `machine.observability.lokiUrl`.
+    #[arg(long, env = "PERTISK_LOKI_URL")]
+    loki_url: Option<String>,
+
+    /// Optional bearer for Loki push (`Authorization: Bearer`).
+    #[arg(long, env = "PERTISK_LOKI_TOKEN")]
+    loki_token: Option<String>,
+
+    /// Prometheus Pushgateway base URL (`http://host:9091`). Empty disables.
+    /// Overrides `machine.observability.prometheusPushUrl`. When unset, derived
+    /// from Loki URL if that uses compose Alloy `:3500` → `:9091`.
+    #[arg(long, env = "PERTISK_PROM_PUSH_URL")]
+    prometheus_push_url: Option<String>,
 
     /// CA certificate for mTLS (enables TLS when set with server cert/key).
     #[arg(long, env = "PERTISK_TLS_CA")]
@@ -556,6 +575,11 @@ fn run() -> Result<()> {
             warn!(error = %err, "metrics endpoint failed to start");
         }
     }
+
+    init_loki_cli(args.loki_url.clone(), args.loki_token.clone());
+    apply_loki_push(cfg.as_ref(), &volume.root);
+    init_prom_push_cli(args.prometheus_push_url.clone(), args.loki_url.clone());
+    apply_prom_push(cfg.as_ref(), api_state.clone());
 
     if args.smoke || !is_pid1 {
         info!(

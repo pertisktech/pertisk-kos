@@ -411,6 +411,7 @@ pub fn get_join_config(
                 .clone()
                 .or_else(|| Some(Dashboard::builtin())),
             kubelet: applied.machine.kubelet.clone(),
+            observability: applied.machine.observability.clone(),
         },
         cluster: Some(Cluster {
             name: Some(cluster_name.into()),
@@ -454,6 +455,7 @@ pub fn get_join_config(
                 .clone()
                 .or_else(|| Some(Dashboard::builtin())),
             kubelet: applied.machine.kubelet.clone(),
+            observability: applied.machine.observability.clone(),
         },
         cluster: Some(Cluster {
             name: Some(cluster_name.into()),

@@ -1,7 +1,7 @@
 //! PID 1 supervise loop: reap zombies, babysit services, honor API power actions.
 
 use anyhow::Result;
-use pertisk_api::{PowerAction, SharedState};
+use pertisk_api::{apply_loki_push, apply_prom_push, PowerAction, SharedState};
 use pertisk_config::MachineConfig;
 use tracing::{info, warn};
 
@@ -67,9 +67,9 @@ mod unix_impl {
                 })
                 .unwrap_or(false);
             if reload {
-                let path = state
+                let (path, state_root) = state
                     .lock()
-                    .map(|s| s.config_path.clone())
+                    .map(|s| (s.config_path.clone(), s.state_root.clone()))
                     .unwrap_or_default();
                 match std::fs::read_to_string(&path)
                     .ok()
@@ -97,6 +97,8 @@ mod unix_impl {
                             warn!(error = %err, "network apply on config reload failed");
                         }
                         services.on_config_reload(&new_cfg, crate::log_ring());
+                        apply_loki_push(Some(&new_cfg), &state_root);
+                        apply_prom_push(Some(&new_cfg), state.clone());
                         // Dual-stack needs kubelet --node-ip=v4,v6 after ULA/SLAAC lands.
                         if dual && new_cfg.cluster.is_some() {
                             info!("restarting kubelet after dual-stack network apply");

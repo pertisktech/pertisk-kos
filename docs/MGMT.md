@@ -93,9 +93,9 @@ The page shows inventory (VMID, IPs, K8s, hardware), live Machine Health, and ch
 | Gauges + API metrics | HTTP(S) scrape `{http\|https}://{ip}:50001/metrics` (HTTPS + client cert when `MGMT_METRICS_TLS_*` set) |
 | CPU / memory % | `kubectl top node` via cluster kubeconfig (needs metrics-server) |
 
-Charts poll every ~4s and keep ~60 samples **in the browser** only. Soft errors show under each section.
+Charts poll every ~4s and keep ~60 samples **in the browser** only. Soft errors show under each section. For durable CPU / RAM / net / disk series, scrape `:50001` into Prometheus (or Alloy → Mimir) and import [examples/observability/grafana-node.json](../examples/observability/grafana-node.json).
 
-A **Logs** panel tails `pertiskd` / `containerd` / `kubelet` / `dmesg` via `pertiskctl logs` (unary poll). For live follow on the node CLI: `pertiskctl logs -f` / `pertiskctl logs -f container:<id>`.
+A **Logs** panel tails `pertiskd` / `containerd` / `kubelet` / `dmesg` via `pertiskctl logs` (unary poll). For live follow on the node CLI: `pertiskctl logs -f` / `pertiskctl logs -f container:<id>`. For cluster-wide durable logs, set `machine.observability.lokiUrl` (or `PERTISK_LOKI_URL`) so `pertiskd` pushes to Loki / Alloy — see [examples/observability](../examples/observability/README.md).
 
 ## Cluster K8s tab
 
@@ -237,10 +237,10 @@ On Proxmox: **Datacenter → Storage → local → Content** must include **Impo
 
 ### Optional SSH mode
 
-Only if you want `scp` + `qm importdisk`:
+`PROXMOX_SSH` is a **user + “prefer SSH” flag**, not a single hypervisor. Lab-up rewrites the host to the **current provider URL** (`root@10.1.1.196` on a cluster whose API is `https://10.1.1.195:8006` becomes `root@10.1.1.195`). Install the mgmt host key on **each** Proxmox; if SSH fails, import/resize fall back to the API.
 
 ```bash
-PROXMOX_SSH=root@10.1.1.195
+PROXMOX_SSH=root@any-pve   # host is ignored; rewritten per provider
 # unset PROXMOX_NO_SSH
 ```
 
