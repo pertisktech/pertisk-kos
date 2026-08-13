@@ -14,7 +14,11 @@ Prometheus uses **host networking** so it can scrape guest `:50001`. A Docker br
 
 ```bash
 # from the pertisk-kos repo
-rsync -a --exclude 'compose/file_sd/nodes.yml' examples/observability/ root@10.1.1.15:/opt/observability/
+# Prefer root. On AlmaLinux lab hosts use sudo on the receiver:
+rsync -a --exclude 'compose/file_sd/nodes.yml' \
+  --rsync-path='sudo rsync' \
+  examples/observability/ almalinux@10.1.1.12:/opt/observability/
+# or:  … root@10.1.1.15:/opt/observability/
 ```
 
 ### 2. Start the stack
@@ -59,7 +63,16 @@ machine:
     lokiUrl: http://10.1.1.15:3500/loki/api/v1/push
 ```
 
-Apply with `pertiskctl apply` (or cluster apply). Grafana → **Pertisk logs** (`{job="pertisk"}`).
+Apply with `pertiskctl apply` (or cluster apply). Grafana → **Pertisk logs** (Loki `{job="pertisk"}`).
+
+That dashboard follows [Logging Dashboard via Loki v3](https://grafana.com/grafana/dashboards/24574-logging-dashboard-via-loki-v3/): fleet stats at the top, then a repeating row per `service` (`pertiskd` / `containerd` / `kubelet` / `dmesg`). Variables:
+
+| Variable | Loki label | Notes |
+|----------|------------|--------|
+| Cluster / Node / Service | `cluster`, `hostname`, `service` | multi-select, All = `.*` |
+| Search regex | — | filters **stats** (pies / counts); case-insensitive. Live logs show the selected streams unfiltered so lines stay readable |
+
+If auto-refresh is too fast on a large fleet, raise it (top-right) or widen the time range.
 
 On a current image, `lokiUrl` on `:3500` also implies metrics push to `:9091`. Pull scrape (step 3) is enough for **Pertisk node** without that.
 
@@ -130,7 +143,7 @@ Kubernetes ServiceMonitor is optional; Pertisk nodes are often VMs without a met
 
 ## Grafana
 
-Import [grafana-node.json](./grafana-node.json) (metrics) and [grafana-logs.json](./grafana-logs.json) (Loki). Datasource UIDs `prometheus` and `loki` — change if yours differ.
+Import [grafana-node.json](./grafana-node.json) (metrics) and [grafana-logs.json](./grafana-logs.json) (Loki, 24574-style). Datasource UIDs `prometheus` and `loki` — change if yours differ.
 
 In-product charts on **Node detail** still poll `:50001` in the browser (~60 samples). Grafana is the durable view.
 
@@ -158,7 +171,7 @@ LogQL:
 ```logql
 {job="pertisk"}
 {job="pertisk", service="kubelet"}
-{job="pertisk"} |= "ERROR"
+{job="pertisk"} |~ "(?i)error"
 ```
 
 ## Edge proxy (Alloy → Mimir / Loki)

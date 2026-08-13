@@ -169,3 +169,13 @@ version: v1alpha1
 machine:
   dashboard:
     mgmt_url: https://ptkos.apps.pertisk.com
+
+
+
+
+rsync -a --exclude 'compose/file_sd/nodes.yml' \
+  --rsync-path='sudo rsync' \
+  examples/observability/ almalinux@10.1.1.12:/opt/observability/
+
+
+ssh almalinux@10.1.1.12 'cd /opt/observability && sudo docker compose restart grafana'
