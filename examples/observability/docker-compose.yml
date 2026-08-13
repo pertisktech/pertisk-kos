@@ -6,9 +6,8 @@
 #   open http://127.0.0.1:3000   # admin / admin
 #
 # Point nodes at the compose *host* LAN IP (not localhost, not the container name):
-#   PERTISK_LOKI_URL=http://10.1.1.150:3500/loki/api/v1/push
-# Metrics: nodes with that Loki URL also push to :9091 (Pushgateway).
-# Optional pull scrape: edit compose/file_sd/nodes.yml
+#   machine.observability.lokiUrl: http://10.1.1.15:3500/loki/api/v1/push
+# After compose up: ./sync-file-sd.sh  (guest :50001 scrape list from mgmt.db)
 
 name: pertisk-obs
 
@@ -56,19 +55,20 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.2.1
+    # Host network: Docker bridge cannot reach guest :50001 on the LAN
+    # (Loki still works because nodes *push*). Listen on 9990 to keep the
+    # published UI port. Grafana uses host.docker.internal:9990.
+    network_mode: host
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=7d
       - --web.enable-lifecycle
+      - --web.listen-address=0.0.0.0:9990
     volumes:
       - ./compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./compose/file_sd:/etc/prometheus/file_sd:ro
       - prometheus-data:/prometheus
-    ports:
-      - "9990:9090"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       - pushgateway
     restart: unless-stopped
@@ -88,6 +88,8 @@ services:
       - grafana-data:/var/lib/grafana
     ports:
       - "3000:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - loki
       - prometheus

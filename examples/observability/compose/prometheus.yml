@@ -5,14 +5,15 @@ global:
 
 scrape_configs:
   # Nodes PUT /metrics/job/pertisk/instance/<hostname> (same idea as Loki push).
+  # Prometheus uses host network, so Pushgateway is localhost:9091.
   - job_name: pertisk
     honor_labels: true
     scrape_interval: 15s
     static_configs:
       - targets:
-          - pushgateway:9091
+          - 127.0.0.1:9091
 
-  # Optional pull of guest :50001 — edit file_sd/nodes.yml (empty by default).
+  # Pull guest :50001 (host network required — Docker bridge cannot reach VMs).
   - job_name: pertisk-nodes
     metrics_path: /metrics
     file_sd_configs:

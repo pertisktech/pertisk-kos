@@ -5,7 +5,7 @@ datasources:
     type: prometheus
     uid: prometheus
     access: proxy
-    url: http://prometheus:9090
+    url: http://host.docker.internal:9990
     isDefault: true
     editable: false
   - name: Loki

@@ -4,34 +4,71 @@ Pertisk is a minimal OS (no SSH, immutable root). Host metrics are exported from
 
 Logs stay on the Machine API (`pertiskctl logs`) and can also be **pushed** from `pertiskd` to Loki (or Alloy `loki.source.api`) when `lokiUrl` / `PERTISK_LOKI_URL` is set.
 
-## Docker Compose (Grafana + Loki)
+## Deploy (mgmt / edge host)
 
-Lab install on the **mgmt / edge host** (not on Pertisk guests):
+Do **not** run this on Pertisk guests. Copy the stack to the host that already runs `pertisk-mgmt` (lab: `root@10.1.1.15`, `/opt/observability`).
+
+Prometheus uses **host networking** so it can scrape guest `:50001`. A Docker bridge cannot reach those VMs — Loki still works (nodes **push**), **Pertisk node** stays empty until Prometheus scrapes on the host network.
+
+### 1. Copy files
 
 ```bash
-cd examples/observability
-docker compose up -d
-# Grafana     http://127.0.0.1:3000  (admin / admin)
-# Loki        http://127.0.0.1:3100
-# Alloy       :3500  (Loki push API)
-# Pushgateway :9091  (Prometheus text PUT — node dashboard)
-# Prometheus  http://127.0.0.1:9990
+# from the pertisk-kos repo
+rsync -a examples/observability/ root@10.1.1.15:/opt/observability/
 ```
 
-Dashboards **Pertisk node** and **Pertisk logs** are provisioned. Point nodes at the compose host LAN IP:
+### 2. Start the stack
+
+```bash
+ssh root@10.1.1.15
+cd /opt/observability
+chmod +x sync-file-sd.sh
+docker compose up -d
+docker compose ps
+```
+
+| Service     | URL (on the compose host)     | Notes |
+|-------------|-------------------------------|--------|
+| Grafana     | http://10.1.1.15:3000         | `admin` / `admin` |
+| Prometheus  | http://10.1.1.15:9990         | host network, listen `:9990` |
+| Loki        | http://10.1.1.15:3100         | |
+| Alloy       | http://10.1.1.15:3500         | Loki push ingest |
+| Pushgateway | http://10.1.1.15:9091         | optional metrics push |
+
+### 3. Scrape targets (Pertisk node dashboard)
+
+```bash
+cd /opt/observability
+./sync-file-sd.sh          # writes compose/file_sd/nodes.yml from mgmt.db
+# file_sd reloads within ~30s; or: docker compose restart prometheus
+```
+
+Check: **Prometheus → Status → Targets** — `pertisk-nodes` should be **up** for each ready guest. Query `pertisk_load1`. Then open Grafana → **Pertisk node**.
+
+Re-run `sync-file-sd.sh` after cluster create / scale (new IPs).
+
+### 4. Point nodes at Loki (logs dashboard)
+
+Use the compose host **LAN** IP (not `localhost`, not a container name):
 
 ```yaml
 machine:
   observability:
-    lokiUrl: http://10.1.1.150:3500/loki/api/v1/push
-    # prometheusPushUrl is optional — :3500 Loki implies :9091 Pushgateway
+    lokiUrl: http://10.1.1.15:3500/loki/api/v1/push
 ```
 
-`pertiskd` pushes logs to `:3500` and (on a current image) host metrics to `:9091`. The **Pertisk node** dashboard reads Prometheus, not Loki — without the metrics push (or a `file_sd` pull of `:50001`) that dashboard stays empty while logs still work.
+Apply with `pertiskctl apply` (or cluster apply). Grafana → **Pertisk logs** (`{job="pertisk"}`).
 
-Direct Loki push also works: `http://10.1.1.150:3100/loki/api/v1/push` (no auto metrics push; set `prometheusPushUrl` or `PERTISK_PROM_PUSH_URL`).
+On a current image, `lokiUrl` on `:3500` also implies metrics push to `:9091`. Pull scrape (step 3) is enough for **Pertisk node** without that.
 
-Stack files: [docker-compose.yml](./docker-compose.yml), configs under [compose/](./compose/).
+### 5. If Pertisk node is empty
+
+1. Prometheus in Docker bridge cannot reach VMs — keep `network_mode: host` and `--web.listen-address=0.0.0.0:9990`.
+2. Grafana datasource must be `http://host.docker.internal:9990` (not `prometheus:9090`).
+3. `file_sd/nodes.yml` must list real guest IPs (`./sync-file-sd.sh`).
+4. From the **host**: `curl -sS http://<guest>:50001/metrics | grep pertisk_load1`
+
+Direct Loki (no Alloy): `http://10.1.1.15:3100/loki/api/v1/push` — no auto metrics push; set `prometheusPushUrl` or rely on step 3.
 
 ## Architecture
 
