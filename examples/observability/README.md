@@ -14,7 +14,7 @@ Prometheus uses **host networking** so it can scrape guest `:50001`. A Docker br
 
 ```bash
 # from the pertisk-kos repo
-rsync -a examples/observability/ root@10.1.1.15:/opt/observability/
+rsync -a --exclude 'compose/file_sd/nodes.yml' examples/observability/ root@10.1.1.15:/opt/observability/
 ```
 
 ### 2. Start the stack

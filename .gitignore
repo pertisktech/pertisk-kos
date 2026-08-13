@@ -30,3 +30,6 @@
 /web/mgmt-ui/node_modules/
 /web/mgmt-ui/dist/
 /crates/pertisk-mgmt/static/assets/
+
+# Generated on the compose host (./sync-file-sd.sh). Do not rsync an empty example over it.
+/examples/observability/compose/file_sd/nodes.yml

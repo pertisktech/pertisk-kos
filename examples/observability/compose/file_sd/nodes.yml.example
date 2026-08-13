@@ -1,0 +1,9 @@
+# Copy to nodes.yml or run ../../sync-file-sd.sh on the mgmt host.
+# Prometheus reads *.yml — this example file is not scraped.
+#
+# - targets:
+#     - 10.1.1.23:50001
+#   labels:
+#     cluster: lab
+#     role: controlplane
+#     hostname: lab-cp-1
