@@ -34,7 +34,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "count(pertisk_host_info{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"})",
+          "expr": "count(pertisk_host_info{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"})",
           "instant": true,
           "legendFormat": "nodes",
           "refId": "A"
@@ -74,7 +74,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "avg(1 - (sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m]))))",
+          "expr": "avg(1 - (sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m]))))",
           "legendFormat": "cpu",
           "refId": "A"
         }
@@ -113,7 +113,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "avg(1 - pertisk_memory_available_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"} / pertisk_memory_total_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"})",
+          "expr": "avg(1 - pertisk_memory_available_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"} / pertisk_memory_total_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"})",
           "legendFormat": "mem",
           "refId": "A"
         }
@@ -139,7 +139,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "min(pertisk_uptime_seconds{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"})",
+          "expr": "min(pertisk_uptime_seconds{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"})",
           "instant": true,
           "legendFormat": "uptime",
           "refId": "A"
@@ -262,42 +262,42 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "(1 - (sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])))) * on(instance) group_left(hostname, cluster, role) pertisk_load1{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "(1 - (sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])))) * on(instance) group_left(hostname, cluster, role) pertisk_load1{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_load1{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_load1{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "1 - pertisk_memory_available_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"} / pertisk_memory_total_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "1 - pertisk_memory_available_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"} / pertisk_memory_total_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "C"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_memory_total_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"} - pertisk_memory_available_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_memory_total_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"} - pertisk_memory_available_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "D"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_memory_total_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_memory_total_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "E"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_uptime_seconds{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_uptime_seconds{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "F"
@@ -324,7 +324,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "1 - (sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])))",
+          "expr": "1 - (sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])))",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
@@ -373,49 +373,49 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "(1 - (sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])))) * on(instance) group_left(hostname, cluster, role) pertisk_load1{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "(1 - (sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])))) * on(instance) group_left(hostname, cluster, role) pertisk_load1{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "(sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"user\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m]))) * on(instance) group_left(hostname, cluster, role) pertisk_load1{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "(sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"user\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m]))) * on(instance) group_left(hostname, cluster, role) pertisk_load1{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "(sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"system\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m]))) * on(instance) group_left(hostname, cluster, role) pertisk_load1{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "(sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"system\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m]))) * on(instance) group_left(hostname, cluster, role) pertisk_load1{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "C"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "(sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"iowait\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m]))) * on(instance) group_left(hostname, cluster, role) pertisk_load1{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "(sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"iowait\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m]))) * on(instance) group_left(hostname, cluster, role) pertisk_load1{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "D"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_load1{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_load1{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "E"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_load5{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_load5{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "F"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_load15{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_load15{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "G"
@@ -442,19 +442,19 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_memory_total_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_memory_total_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "legendFormat": "total {{instance}}",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_memory_total_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"} - pertisk_memory_available_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_memory_total_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"} - pertisk_memory_available_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "legendFormat": "used {{instance}}",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_memory_available_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_memory_available_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "legendFormat": "avail {{instance}}",
           "refId": "C"
         }
@@ -519,35 +519,35 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "1 - pertisk_memory_available_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"} / pertisk_memory_total_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "1 - pertisk_memory_available_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"} / pertisk_memory_total_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_memory_total_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"} - pertisk_memory_available_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_memory_total_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"} - pertisk_memory_available_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_memory_available_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_memory_available_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "C"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_memory_free_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_memory_free_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "D"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_memory_total_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_memory_total_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "E"
@@ -574,13 +574,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (instance) (rate(pertisk_disk_read_bytes_total{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m]))",
+          "expr": "sum by (instance) (rate(pertisk_disk_read_bytes_total{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m]))",
           "legendFormat": "read {{instance}}",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (instance) (rate(pertisk_disk_written_bytes_total{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m]))",
+          "expr": "sum by (instance) (rate(pertisk_disk_written_bytes_total{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m]))",
           "legendFormat": "write {{instance}}",
           "refId": "B"
         }
@@ -621,28 +621,28 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pertisk_disk_read_bytes_total{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])",
+          "expr": "rate(pertisk_disk_read_bytes_total{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])",
           "format": "table",
           "instant": true,
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pertisk_disk_written_bytes_total{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])",
+          "expr": "rate(pertisk_disk_written_bytes_total{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])",
           "format": "table",
           "instant": true,
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pertisk_disk_reads_completed_total{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])",
+          "expr": "rate(pertisk_disk_reads_completed_total{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])",
           "format": "table",
           "instant": true,
           "refId": "C"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pertisk_disk_writes_completed_total{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])",
+          "expr": "rate(pertisk_disk_writes_completed_total{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])",
           "format": "table",
           "instant": true,
           "refId": "D"
@@ -705,28 +705,28 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_filesystem_size_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_filesystem_size_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_filesystem_avail_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_filesystem_avail_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_filesystem_size_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"} - pertisk_filesystem_avail_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "pertisk_filesystem_size_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"} - pertisk_filesystem_avail_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "C"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "1 - pertisk_filesystem_avail_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"} / pertisk_filesystem_size_bytes{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}",
+          "expr": "1 - pertisk_filesystem_avail_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"} / pertisk_filesystem_size_bytes{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}",
           "format": "table",
           "instant": true,
           "refId": "D"
@@ -753,13 +753,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (instance) (rate(pertisk_network_receive_bytes_total{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m]))",
+          "expr": "sum by (instance) (rate(pertisk_network_receive_bytes_total{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m]))",
           "legendFormat": "rx {{instance}}",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (instance) (rate(pertisk_network_transmit_bytes_total{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m]))",
+          "expr": "sum by (instance) (rate(pertisk_network_transmit_bytes_total{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m]))",
           "legendFormat": "tx {{instance}}",
           "refId": "B"
         }
@@ -800,28 +800,28 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pertisk_network_receive_bytes_total{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])",
+          "expr": "rate(pertisk_network_receive_bytes_total{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])",
           "format": "table",
           "instant": true,
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pertisk_network_transmit_bytes_total{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])",
+          "expr": "rate(pertisk_network_transmit_bytes_total{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])",
           "format": "table",
           "instant": true,
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pertisk_network_receive_packets_total{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])",
+          "expr": "rate(pertisk_network_receive_packets_total{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])",
           "format": "table",
           "instant": true,
           "refId": "C"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pertisk_network_transmit_packets_total{job=\"pertisk-nodes\",instance=~\"${instance:regex}\"}[5m])",
+          "expr": "rate(pertisk_network_transmit_packets_total{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\",instance=~\"${instance:regex}\"}[5m])",
           "format": "table",
           "instant": true,
           "refId": "D"
@@ -838,13 +838,28 @@
         "allValue": ".*",
         "current": { "selected": true, "text": "All", "value": "$__all" },
         "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "definition": "label_values(up{job=\"pertisk-nodes\"}, instance)",
+        "definition": "label_values(up{job=\"pertisk-nodes\"}, cluster)",
+        "includeAll": true,
+        "label": "Cluster",
+        "multi": true,
+        "name": "cluster",
+        "query": "label_values(up{job=\"pertisk-nodes\"}, cluster)",
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(up{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\"}, instance)",
         "includeAll": true,
         "label": "Instance",
         "multi": true,
         "name": "instance",
-        "query": "label_values(up{job=\"pertisk-nodes\"}, instance)",
-        "refresh": 2,
+        "query": "label_values(up{job=\"pertisk-nodes\",cluster=~\"${cluster:regex}\"}, instance)",
+        "refresh": 1,
         "regex": "",
         "sort": 1,
         "type": "query"
@@ -856,5 +871,5 @@
   "timezone": "browser",
   "title": "Pertisk node",
   "uid": "pertisk-node",
-  "version": 4
+  "version": 5
 }

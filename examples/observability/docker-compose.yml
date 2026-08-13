@@ -53,6 +53,21 @@ services:
       - "9091:9091"
     restart: unless-stopped
 
+  # Keep file_sd in sync when clusters are created / scaled (mgmt.db).
+  file-sd-sync:
+    image: python:3.12-alpine
+    network_mode: none
+    environment:
+      MGMT_DB: /mgmt.db
+      FILE_SD_OUT: /out/nodes.yml
+      SYNC_INTERVAL: "30"
+    volumes:
+      - ./sync-file-sd.sh:/sync-file-sd.sh:ro
+      - ./compose/file_sd:/out
+      - /var/lib/pertisk-mgmt/mgmt.db:/mgmt.db:ro
+    entrypoint: ["/bin/sh", "/sync-file-sd.sh"]
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v3.2.1
     # Host network: Docker bridge cannot reach guest :50001 on the LAN
@@ -71,6 +86,7 @@ services:
       - prometheus-data:/prometheus
     depends_on:
       - pushgateway
+      - file-sd-sync
     restart: unless-stopped
 
   grafana:

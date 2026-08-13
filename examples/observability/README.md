@@ -37,15 +37,17 @@ docker compose ps
 
 ### 3. Scrape targets (Pertisk node dashboard)
 
+`file-sd-sync` rewrites `compose/file_sd/nodes.yml` from `mgmt.db` every 30s (new clusters / scale). Manual:
+
 ```bash
 cd /opt/observability
 ./sync-file-sd.sh          # writes compose/file_sd/nodes.yml from mgmt.db
 # file_sd reloads within ~30s; or: docker compose restart prometheus
 ```
 
-Check: **Prometheus → Status → Targets** — `pertisk-nodes` should be **up** for each ready guest. Query `pertisk_load1`. Then open Grafana → **Pertisk node**.
+Check: **Prometheus → Status → Targets** — `pertisk-nodes` should be **up** for each ready guest. Grafana → **Pertisk node** has **Cluster** and **Instance** dropdowns (All = every cluster).
 
-Re-run `sync-file-sd.sh` after cluster create / scale (new IPs).
+New clusters show up after the next sync (~30s) plus one scrape. If a cluster is missing, run `./sync-file-sd.sh` once.
 
 ### 4. Point nodes at Loki (logs dashboard)
 

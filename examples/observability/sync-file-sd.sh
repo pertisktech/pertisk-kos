@@ -1,19 +1,25 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Write compose/file_sd/nodes.yml from pertisk-mgmt SQLite (ready nodes with IPv4).
-# Run on the mgmt / compose host. Prometheus file_sd reloads ~30s (or restart prometheus).
+# Run on the mgmt / compose host. Prometheus file_sd reloads ~30s.
 #
 #   ./sync-file-sd.sh
 #   MGMT_DB=/var/lib/pertisk-mgmt/mgmt.db ./sync-file-sd.sh
-set -euo pipefail
+#   SYNC_INTERVAL=30 ./sync-file-sd.sh   # loop (compose sidecar)
+set -eu
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-OUT="${ROOT}/compose/file_sd/nodes.yml"
+ROOT="$(CDPATH= cd "$(dirname "$0")" && pwd)"
+OUT="${FILE_SD_OUT:-$ROOT/compose/file_sd/nodes.yml}"
 DB="${MGMT_DB:-/var/lib/pertisk-mgmt/mgmt.db}"
+INTERVAL="${SYNC_INTERVAL:-0}"
 
-[[ -f "$DB" ]] || { echo "mgmt db not found: $DB" >&2; exit 1; }
+sync_once() {
+  if [ ! -f "$DB" ]; then
+    echo "mgmt db not found: $DB" >&2
+    return 1
+  fi
+  python3 - "$DB" "$OUT" <<'PY'
+import json, os, sqlite3, sys
 
-python3 - "$DB" "$OUT" <<'PY'
-import sqlite3, sys
 db, out = sys.argv[1], sys.argv[2]
 c = sqlite3.connect(db)
 rows = list(
@@ -26,18 +32,40 @@ rows = list(
         """
     )
 )
+
+def ystr(s):
+    s = "" if s is None else str(s)
+    if not s or any(ch in s for ch in " #:{}[]&*?|>!%@`'\",") or s.lower() in (
+        "true", "false", "null", "yes", "no",
+    ):
+        return json.dumps(s)
+    return s
+
+os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
 lines = ["# generated from pertisk-mgmt nodes — re-run sync-file-sd.sh after scale"]
 for cluster, name, role, ip in rows:
     lines += [
         "- targets:",
         f"    - {ip}:50001",
         "  labels:",
-        f"    cluster: {cluster}",
-        f"    role: {role}",
-        f"    hostname: {name}",
+        f"    cluster: {ystr(cluster)}",
+        f"    role: {ystr(role)}",
+        f"    hostname: {ystr(name)}",
     ]
 if not rows:
     lines.append("[]")
-open(out, "w").write("\n".join(lines) + "\n")
+tmp = out + ".tmp"
+open(tmp, "w").write("\n".join(lines) + "\n")
+os.replace(tmp, out)
 print(f"wrote {out} ({len(rows)} targets)")
 PY
+}
+
+if [ "$INTERVAL" -gt 0 ] 2>/dev/null; then
+  while true; do
+    sync_once || true
+    sleep "$INTERVAL"
+  done
+fi
+
+sync_once
