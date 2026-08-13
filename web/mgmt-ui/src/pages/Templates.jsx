@@ -3,22 +3,13 @@ import { api } from '../api'
 import { Icon } from '../components/Icons'
 import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
-
-const EMPTY = `version: v1alpha1
-machine:
-  type: worker
-  network:
-    hostname: node-1
-    interfaces:
-      - interface: eth0
-        dhcp: true
-`
+import { defaultTemplateYaml } from '../utils/machineConfig'
 
 const DEFAULT_FORM = {
   name: '',
   description: '',
   role: 'any',
-  yaml: EMPTY,
+  yaml: defaultTemplateYaml(''),
 }
 
 export default function Templates() {
@@ -27,6 +18,7 @@ export default function Templates() {
   const [error, setError] = useState('')
   const [open, setOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)
+  const [publicUrl, setPublicUrl] = useState('')
   const [form, setForm] = useState(DEFAULT_FORM)
   const [busy, setBusy] = useState(false)
 
@@ -38,11 +30,17 @@ export default function Templates() {
 
   useEffect(() => {
     load()
+    api('/settings')
+      .then((s) => setPublicUrl(String(s?.public_url || '').trim()))
+      .catch(() => {})
   }, [load])
 
   function openCreate() {
     setEditingId(null)
-    setForm(DEFAULT_FORM)
+    setForm({
+      ...DEFAULT_FORM,
+      yaml: defaultTemplateYaml(publicUrl),
+    })
     setOpen(true)
   }
 

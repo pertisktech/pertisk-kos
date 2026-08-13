@@ -3762,6 +3762,17 @@ async fn run_update_config(
         anyhow::bail!("config_yaml missing version (expected v1alpha1); partial dashboard-only YAML is OK");
     }
 
+    let public_url = state.cfg().public_url.trim();
+    let config_yaml = if !public_url.is_empty()
+        && !crate::config::public_url_host_unusable(public_url)
+    {
+        pertisk_config::ensure_dashboard_mgmt_url(config_yaml, public_url)
+            .map_err(|e| anyhow::anyhow!("inject dashboard.mgmt_url: {e}"))?
+    } else {
+        config_yaml.to_string()
+    };
+    let config_yaml = config_yaml.as_str();
+
     let nodes = if let Some(nid) = node_id {
         sqlx::query_as::<_, (String, String, Option<String>, String)>(
             "SELECT id, name, ip, role FROM nodes WHERE id = ? AND cluster_id = ?",

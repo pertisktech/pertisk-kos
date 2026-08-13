@@ -817,6 +817,58 @@ pub fn set_machine_type_yaml(yaml: &str, machine_type: MachineType) -> Result<St
     Ok(serde_yaml::to_string(&doc)?)
 }
 
+/// Fill `machine.dashboard.mgmt_url` from the mgmt Public URL when the YAML
+/// omits it or leaves it empty. An explicit URL in the document is kept.
+pub fn ensure_dashboard_mgmt_url(yaml: &str, public_url: &str) -> Result<String, ConfigError> {
+    let url = public_url.trim().trim_end_matches('/');
+    if url.is_empty() {
+        return Ok(yaml.to_string());
+    }
+    let mut doc = parse_yaml_value(yaml)?;
+    let root = doc
+        .as_mapping_mut()
+        .ok_or_else(|| ConfigError::Msg("root must be a mapping".into()))?;
+    if !root.contains_key(serde_yaml::Value::from("machine")) {
+        root.insert(
+            serde_yaml::Value::from("machine"),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+    }
+    let machine = root
+        .get_mut(serde_yaml::Value::from("machine"))
+        .and_then(|m| m.as_mapping_mut())
+        .ok_or_else(|| ConfigError::Msg("machine must be a mapping".into()))?;
+    if !machine.contains_key(serde_yaml::Value::from("dashboard"))
+        || machine
+            .get(&serde_yaml::Value::from("dashboard"))
+            .and_then(|v| v.as_mapping())
+            .is_none()
+    {
+        machine.insert(
+            serde_yaml::Value::from("dashboard"),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+    }
+    let dashboard = machine
+        .get_mut(serde_yaml::Value::from("dashboard"))
+        .and_then(|m| m.as_mapping_mut())
+        .ok_or_else(|| ConfigError::Msg("dashboard must be a mapping".into()))?;
+    let existing = dashboard
+        .get(&serde_yaml::Value::from("mgmt_url"))
+        .or_else(|| dashboard.get(&serde_yaml::Value::from("mgmtUrl")))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if existing.is_some() {
+        return Ok(yaml.to_string());
+    }
+    dashboard.insert(
+        serde_yaml::Value::from("mgmt_url"),
+        serde_yaml::Value::from(url),
+    );
+    Ok(serde_yaml::to_string(&doc)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1237,6 +1289,60 @@ machine:
         let dash = cfg.machine.dashboard.unwrap();
         assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
         assert_eq!(dash.border.as_deref(), Some("bordered"));
+    }
+
+    #[test]
+    fn ensure_dashboard_mgmt_url_fills_dashboard_only_yaml() {
+        let yaml = r#"version: v1alpha1
+machine:
+  dashboard:
+    theme: catppuccin
+    border: bordered
+"#;
+        let out = ensure_dashboard_mgmt_url(yaml, "http://10.1.1.15:8080").unwrap();
+        assert!(
+            out.contains("mgmt_url: http://10.1.1.15:8080"),
+            "{out}"
+        );
+        assert!(out.contains("theme: catppuccin"));
+    }
+
+    #[test]
+    fn ensure_dashboard_mgmt_url_fills_when_missing() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: worker
+  dashboard:
+    theme: catppuccin
+    border: bordered
+"#;
+        let out = ensure_dashboard_mgmt_url(yaml, "https://ptkos.example:8080/").unwrap();
+        let cfg = MachineConfig::from_yaml(&out).unwrap();
+        let dash = cfg.machine.dashboard.unwrap();
+        assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
+        assert_eq!(
+            dash.mgmt_url.as_deref(),
+            Some("https://ptkos.example:8080")
+        );
+    }
+
+    #[test]
+    fn ensure_dashboard_mgmt_url_keeps_explicit() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  type: worker
+  dashboard:
+    mgmt_url: https://keep.example
+"#;
+        let out =
+            ensure_dashboard_mgmt_url(yaml, "https://settings.example").unwrap();
+        let cfg = MachineConfig::from_yaml(&out).unwrap();
+        assert_eq!(
+            cfg.machine.dashboard.unwrap().mgmt_url.as_deref(),
+            Some("https://keep.example")
+        );
     }
 
     #[test]

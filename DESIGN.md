@@ -278,6 +278,7 @@ _(none — P5 stretch complete for lab / HA)_
 
 **Later (mgmt / ops parity)**
 
+- Cluster API provider for Pertisk (**CAPx**, planned): Go + Kubebuilder controllers for `Cluster` / `Machine` / `MachineDeployment`; infrastructure via Proxmox / ESXi / Nutanix (or `pertisk-mgmt`); bootstrap Pertisk OS + Kubernetes join
 - Lightweight fleet observability: Loki push from `pertiskd` (`machine.observability.lokiUrl` / `PERTISK_LOKI_URL`); Grafana / Alloy examples in `examples/observability/`
 - AWS / GCP / Azure cloud providers — **paused** (outlines only; see [image/cloud/README.md](./image/cloud/README.md))
 

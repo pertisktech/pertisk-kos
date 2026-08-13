@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, getToken } from '../api'
+import { defaultMachineConfigYaml } from '../utils/machineConfig'
 import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 import { ClusterMetaBadges, formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
@@ -222,13 +223,8 @@ export default function ClusterDetail() {
   const [selectedJob, setSelectedJob] = useState(null)
   const [error, setError] = useState('')
   const [upgradeVer, setUpgradeVer] = useState('')
-  const [configYaml, setConfigYaml] = useState(`version: v1alpha1
-machine:
-  dashboard:
-    theme: catppuccin
-    border: bordered
-    mgmt_url: https://ptkos.apps.thaidevops.co
-`)
+  const [configYaml, setConfigYaml] = useState(() => defaultMachineConfigYaml(''))
+  const configTouched = useRef(false)
   const [templates, setTemplates] = useState([])
   const [templateId, setTemplateId] = useState('')
   const [followLog, setFollowLog] = useState(true)
@@ -304,6 +300,22 @@ machine:
   }, [id])
 
   useMgmtRefresh(load, { clusterId: id })
+
+  useEffect(() => {
+    let cancelled = false
+    api('/settings')
+      .then((s) => {
+        if (cancelled || configTouched.current) return
+        const url = String(s?.public_url || '').trim()
+        setConfigYaml(defaultMachineConfigYaml(url))
+      })
+      .catch(() => {
+        /* keep theme/border default without mgmt_url */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (tab !== 'config') return undefined
@@ -1334,7 +1346,10 @@ machine:
                       const idSel = e.target.value
                       setTemplateId(idSel)
                       const t = templates.find((x) => x.id === idSel)
-                      if (t?.yaml) setConfigYaml(t.yaml)
+                      if (t?.yaml) {
+                        configTouched.current = true
+                        setConfigYaml(t.yaml)
+                      }
                     }}
                   >
                     <option value="">— choose template —</option>
@@ -1349,7 +1364,10 @@ machine:
               <textarea
                 className="config-editor"
                 value={configYaml}
-                onChange={(e) => setConfigYaml(e.target.value)}
+                onChange={(e) => {
+                  configTouched.current = true
+                  setConfigYaml(e.target.value)
+                }}
                 spellCheck={false}
               />
               <div className="form-footer" style={{ marginBottom: 0 }}>

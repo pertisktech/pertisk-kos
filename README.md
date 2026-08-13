@@ -5,6 +5,8 @@ Immutable, API-only Kubernetes node OS, plus an optional management plane for pr
 - **Node OS** — Rust `pertiskd` as PID 1, gRPC management (`pertiskctl`), containerd + kubelet; no SSH in production images
 - **Serial dashboard** — Talos-style fullscreen status TUI on Proxmox / ESXi / AHV Serial
 - **Management plane** — `pertisk-mgmt` (API + React UI) creates and operates clusters on **Proxmox**, standalone **ESXi**, and **Nutanix AHV**
+- **Terraform** — `terraform-provider-pertisk` for the same mgmt API (register hypervisors, create / scale / upgrade / destroy)
+- **Cluster API** — CAPx (planned): Kubebuilder controllers for `Cluster` / `Machine` / `MachineDeployment`
 
 Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md). Kernel cmdline (dashboard knobs): [docs/KERNEL.md](./docs/KERNEL.md).
 
@@ -32,6 +34,9 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 | EK cert + manufacturer CA chain | done (lab) — `PERTISK_TPM_EK_CAS` / `--ek-cas` |
 | Mgmt Quote trust store (AK enroll / verify) | done (lab) |
 | etcd snapshot / restore (`pertiskctl etcd …`) | done (lab) |
+| Terraform provider (`pertisk_cluster` / `pertisk_node`) | done |
+| Observability compose (Prometheus / Grafana / Loki) | done |
+| Cluster API provider (CAPx) | planned |
 
 ---
 
@@ -48,7 +53,8 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/
 - UKI / Secure Boot lab path (`make uki`, `make enroll-ovmf`, `PERTISK_TPM=1`) — see [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md)
 - Guest extensions: **nfs-client**, **qemu-guest-agent**
 - Machine config `v1alpha1`: network, install disk, cluster endpoint/token/CA, kubelet `maxPods`, `machine.dashboard`
-- Observability: gRPC mTLS **:50000**, Prometheus **:50001** (mTLS when TLS PEMs set; optional bearer), `pertiskctl logs` / `attest` / `quote` / `etcd` / `containers` / `interfaces` / `disks`
+- Observability: gRPC mTLS **:50000**, Prometheus **:50001** (mTLS when TLS PEMs set; optional bearer), optional Loki push, `pertiskctl logs` / `attest` / `quote` / `etcd` / `containers` / `interfaces` / `disks` / `reset`
+- Soft reset: `pertiskctl reset --force` (clears STATE + runtime, keeps GPT)
 - Hardening checklist + `make check-hardening` — [docs/HARDENING.md](./docs/HARDENING.md)
 
 ### Serial console dashboard
@@ -85,6 +91,7 @@ cargo run -p pertiskd --bin pertiskd -- --dashboard-preview
 - Mgmt UI / lab scripts: create, add nodes, bulk reboot/delete, hardware resize (grow EPHEMERAL), delete cluster
 - Rolling Kubernetes upgrade (drain → bump version → Ready → uncordon; CPs then workers)
 - Download / show / copy cluster kubeconfig
+- Soft reset / reboot / shutdown via Machine API
 
 ### Networking
 
@@ -96,7 +103,21 @@ cargo run -p pertiskd --bin pertiskd -- --dashboard-preview
 | Calico / Flannel | Via lab-up or `examples/cni/` with `cni: none` |
 | kube-vip | Static pod on CPs (needs guest `af_packet`) |
 
-Optional addons: CoreDNS, metrics-server, kubernetes-reflector, NFS provisioner — see [examples/addons/](./examples/addons/). Host Prometheus metrics + Grafana: [examples/observability/](./examples/observability/).
+Optional addons: CoreDNS, metrics-server, kubernetes-reflector, NFS provisioner — see [examples/addons/](./examples/addons/).
+
+### Observability
+
+Host metrics come from **`pertiskd` itself** (`:50001/metrics`) — no node_exporter on the guest. Logs stay on the Machine API and can be pushed to Loki.
+
+| Piece | What you get |
+|-------|----------------|
+| **Metrics** | CPU, load, memory, disk I/O, filesystem, network, uptime, boot/health |
+| **Scrape** | Prometheus file_sd from mgmt inventory (`sync-file-sd.sh`) |
+| **Logs** | `pertiskctl logs` (incl. `-f`) + optional Loki / Alloy push (`lokiUrl`) |
+| **Grafana** | Pertisk node + logs dashboards (provisioned JSON) |
+| **Edge** | Alloy example: scrape / receive → remote_write Mimir + Loki |
+
+Compose stack (Prometheus, Grafana, Loki, Alloy, Pushgateway): [examples/observability/](./examples/observability/).
 
 ### Management UI
 
@@ -115,12 +136,27 @@ Single-port API + UI (`pertisk-mgmt`). Details: [docs/MGMT.md](./docs/MGMT.md).
 | **Audit** | Management action log (Phase D) |
 | **Adopt / join** | Register existing/bare-metal nodes; join-token snapshots (Phase D2) |
 | **Settings** | Session, listen/public URL, JWT TTL, paths, auth mode |
+| **Events** | SSE (`GET /api/events`) for job / cluster status |
 
 ### Terraform provider
 
 IaC for the same mgmt API: register Proxmox / vSphere / Nutanix, create HA/dual-stack clusters, size CP/worker VMs, scale with `pertisk_node`, upgrade via `k8s_version`.
 
 → [tools/terraform-provider-pertisk/README.md](./tools/terraform-provider-pertisk/README.md) (features, examples, docs, `TF_ACC` tests)
+
+### Cluster API provider (CAPx) — planned
+
+[Cluster API](https://cluster-api.sigs.k8s.io/) is the Kubernetes standard for declarative cluster lifecycle. A Pertisk provider (CAPx) would put Pertisk in that ecosystem next to CAPA / CAPV / CAPM3: GitOps `Cluster` objects, `clusterctl`, multi-cluster managers.
+
+| Controller | Role |
+|------------|------|
+| **Cluster** | Desired cluster: endpoint, Kubernetes version, CNI, HA control plane |
+| **Machine** | One node: create/delete the VM, wait until `pertiskd` is Ready |
+| **MachineDeployment** | Scale workers and rolling upgrades |
+| **Infrastructure** | Proxmox / ESXi / Nutanix APIs (or reuse `pertisk-mgmt`) |
+| **Bootstrap** | Pertisk OS install + machine config + Kubernetes join |
+
+**Language:** Go (Kubebuilder, controller-runtime) — the CAPI contract. Does not replace the node OS or `pertisk-mgmt`; v1 can call mgmt so hypervisor logic stays in one place.
 
 ### Providers
 
@@ -137,9 +173,10 @@ IaC for the same mgmt API: register Proxmox / vSphere / Nutanix, create HA/dual-
 ## Architecture
 
 ```
-pertiskctl / mgmt UI ──gRPC mTLS──► pertiskd (PID 1) ──► containerd + kubelet
+pertiskctl / mgmt UI / Terraform ──gRPC mTLS / HTTPS──► pertiskd (PID 1) ──► containerd + kubelet
 pertisk-mgmt ──HTTPS──► Proxmox API / ESXi SOAP / Prism Element
              └── runs lab-up jobs; stores kubeconfigs + inventory
+CAPx (planned) ──CAPI Cluster/Machine──► pertisk-mgmt / hypervisor APIs
 ```
 
 | Crate | Role |
@@ -320,4 +357,6 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 
 ## Next
 
-**Phase D** — D0–D2 done (Audit, Machines, Templates, adopt/join tokens). Next: D3 multi-tenant (later). AWS/GCP/Azure providers paused.
+- **CAPx** — Cluster API provider (Go / Kubebuilder): `Cluster` / `Machine` / `MachineDeployment` → Pertisk bootstrap on Proxmox / ESXi / Nutanix
+- **Phase D3** — multi-tenant orgs / SaaS packaging (later)
+- AWS / GCP / Azure providers — paused (outlines only)
