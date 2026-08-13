@@ -1459,13 +1459,6 @@ async fn run_add_node(
     .await?;
     let secret = crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?;
 
-    if provider.kind == "vsphere" {
-        anyhow::bail!(
-            "adding nodes to a vsphere (ESXi) cluster is not supported yet — \
-             recreate the cluster with the desired control-plane/worker counts"
-        );
-    }
-
     let (def_mem, def_cores, def_disk) = if role == "controlplane" {
         (cluster.cp_memory, cluster.cp_cores, cluster.cp_disk_gb)
     } else {
@@ -1633,6 +1626,17 @@ async fn run_add_node(
             if provider.insecure != 0 {
                 cmd.env("NUTANIX_INSECURE", "1");
             }
+        } else if provider.kind == "vsphere" || provider.kind == "esxi" {
+            cmd.env("PROVIDER_KIND", "vsphere")
+                .env("VSPHERE_URL", &provider.url)
+                .env("VSPHERE_USER", &provider.token_id)
+                .env("VSPHERE_PASSWORD", &secret)
+                .env("VSPHERE_HOST", &provider.node)
+                .env("VSPHERE_DATASTORE", &provider.storage)
+                .env("VSPHERE_NETWORK", &provider.bridge);
+            if provider.insecure != 0 {
+                cmd.env("VSPHERE_INSECURE", "1");
+            }
         } else {
             cmd.env("PROXMOX_URL", &provider.url)
                 .env("PROXMOX_TOKEN_ID", &provider.token_id)
@@ -1658,6 +1662,8 @@ async fn run_add_node(
             && provider.kind != "nutanix"
             && provider.kind != "ahv"
             && provider.kind != "prism"
+            && provider.kind != "vsphere"
+            && provider.kind != "esxi"
         {
             cmd.env_remove("PROXMOX_NO_SSH");
             if std::env::var("PROXMOX_SSH")
@@ -1803,6 +1809,8 @@ async fn run_add_node(
 fn add_node_script_path(state: &AppState, kind: &str) -> PathBuf {
     let name = if matches!(kind, "nutanix" | "ahv" | "prism") {
         "nutanix-add-node.sh"
+    } else if matches!(kind, "vsphere" | "esxi") {
+        "vsphere-add-node.sh"
     } else {
         "proxmox-add-node.sh"
     };
@@ -2474,7 +2482,7 @@ async fn run_resize_node(
 
     let mut disk_grew_hypervisor = false;
 
-    if provider.kind == "vsphere" {
+    if provider.kind == "vsphere" || provider.kind == "esxi" {
         let client = crate::vsphere::VsphereClient::new(
             provider.url.clone(),
             provider.token_id.clone(),
@@ -2482,6 +2490,10 @@ async fn run_resize_node(
             provider.insecure != 0,
         );
         if cpu_mem_changed {
+            append_log(
+                log_path,
+                "powering off VM so ESXi can apply CPU/memory (hot-plug not supported for this guest)\n",
+            )?;
             client
                 .set_vm_hardware(&vm_name, set_cores, set_mem)
                 .await
@@ -2651,7 +2663,7 @@ async fn run_resize_node(
                 log_path,
                 "offline grow unavailable; restarting VM so boot may grow EPHEMERAL…\n",
             )?;
-            if provider.kind == "vsphere" {
+            if provider.kind == "vsphere" || provider.kind == "esxi" {
                 let client = crate::vsphere::VsphereClient::new(
                     provider.url.clone(),
                     provider.token_id.clone(),

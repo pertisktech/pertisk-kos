@@ -106,5 +106,6 @@ Same as Proxmox without SSH: mgmt must share **L2** with guests (`LAB_SUBNET=10.
 ## Limits
 
 - Standalone ESXi only (no vCenter folders / DRS).
-- Adding nodes to an existing vsphere cluster from the UI is not wired yet — recreate with the desired CP/worker counts.
+- Scale-out via UI / Terraform `pertisk_node` (`mode=create`) uses `vsphere-add-node.sh` (upload + join, same as Proxmox / Nutanix).
+- Hardware resize (CPU/memory) **powers the VM off**, applies `ReconfigVM`, then powers on. ESXi rejects live `numCPUs` changes unless CPU hot-plug is enabled for the guest OS; Pertisk VMs use `otherLinux64Guest`, which typically does not. Disk grow is online when the VM stays powered on.
 - Do not commit live passwords; use the Providers UI or env vars.

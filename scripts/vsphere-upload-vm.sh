@@ -102,13 +102,14 @@ convert_qcow_to_vmdk() {
     mkdir -p "$(dirname "$dst")"
     dst_dir="$(cd "$(dirname "$dst")" && pwd)"
     dst_base="$(basename "$dst")"
+    # Docker volume options are comma-separated (`:ro,Z`). `:ro:Z` is "too many colons".
     if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]]; then
-      vol_opts=":Z"
+      vol_opts=",Z"
     fi
     echo "==> qemu-img via docker (alpine) → ${dst}"
     docker run --rm \
       -v "${src_dir}:/src:ro${vol_opts}" \
-      -v "${dst_dir}:/dst${vol_opts}" \
+      -v "${dst_dir}:/dst:rw${vol_opts}" \
       alpine sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img convert -p -f qcow2 -O vmdk -o subformat=streamOptimized,adapter_type=lsilogic /src/${src_base} /dst/${dst_base} && sync"
   else
     echo "qemu-img required (or docker) to convert qcow2 → vmdk" >&2
@@ -137,7 +138,7 @@ qcow_virtual_bytes() {
     src_dir="$(cd "$(dirname "$src")" && pwd)"
     src_base="$(basename "$src")"
     if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]]; then
-      vol_opts=":Z"
+      vol_opts=",Z"
     fi
     out="$(docker run --rm -v "${src_dir}:/src:ro${vol_opts}" alpine \
       sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img info --output=json /src/${src_base}" \

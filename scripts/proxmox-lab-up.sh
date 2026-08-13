@@ -857,6 +857,28 @@ wait_api() {
   die "pertiskctl API not ready at ${ip}:50000"
 }
 
+# Apply after :50000 is up. The API listens *before* the STATE partition is
+# mounted; an early write lands on initramfs `/system/state` and disappears
+# when prepare_state mounts the disk over that path (bootstrap then sees
+# "config.yaml: No such file"). Re-apply after a short wait so the second
+# write hits the real volume. New images also block apply until STATE is bound.
+apply_machine_yaml() {
+  local ip="$1" yaml="$2" i
+  [[ -f "$yaml" ]] || die "apply: missing ${yaml}"
+  log "apply ${yaml##*/} → ${ip} (wait for STATE mount)"
+  for i in $(seq 1 24); do
+    if "$CTL" -e "${ip}:50000" apply -f "$yaml"; then
+      sleep 8
+      if "$CTL" -e "${ip}:50000" apply -f "$yaml"; then
+        return 0
+      fi
+    fi
+    log "apply not ready yet (try ${i}/24) — STATE may still be mounting"
+    sleep 5
+  done
+  die "apply failed for ${ip} (${yaml})"
+}
+
 # Refuse soft-reset/apply only when :50000 already belongs to a *different*
 # Pertisk cluster node (hostname like other-*-cp-N / *-wk-N). Leftover short
 # names on reused disks (e.g. 51fad4-wk) must still be soft-resettable.
@@ -1561,18 +1583,27 @@ step_cluster() {
     log "WARNING: reset CP1 failed — continuing (fresh guests are fine)"
   fi
   log "apply controlplane → ${CP_IP}"
-  "$CTL" -e "${CP_IP}:50000" apply -f "$CLUSTER_OUT/controlplane.yaml"
+  apply_machine_yaml "$CP_IP" "$CLUSTER_OUT/controlplane.yaml"
   # Apply only writes STATE + flags reload; give pertiskd a moment to start
   # containerd/kubelet as controlplane before the long bootstrap RPC.
   sleep 8
   wait_api "$CP_IP"
 
   log "bootstrap CP1 (advertise=${CP_IP}; waits for registry.k8s.io pulls + :6443, up to ~10m)"
-  local boot_out
-  boot_out="$("$CTL" -e "${CP_IP}:50000" bootstrap --advertise-address "$CP_IP" 2>&1)" || {
+  local boot_out boot_try=0
+  while true; do
+    boot_out="$("$CTL" -e "${CP_IP}:50000" bootstrap --advertise-address "$CP_IP" 2>&1)" && break
     echo "$boot_out" >&2
+    if echo "$boot_out" | grep -q 'No such file or directory'; then
+      boot_try=$((boot_try + 1))
+      (( boot_try < 6 )) || die "bootstrap CP1 failed"
+      log "config.yaml missing after apply (STATE race); re-apply and retry ${boot_try}/5"
+      apply_machine_yaml "$CP_IP" "$CLUSTER_OUT/controlplane.yaml"
+      wait_api "$CP_IP"
+      continue
+    fi
     die "bootstrap CP1 failed"
-  }
+  done
   echo "$boot_out"
   if echo "$boot_out" | grep -q 'already=true'; then
     log "CP1 already bootstrapped — verifying apiserver on ${CP_IP}"
@@ -1618,7 +1649,7 @@ Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate th
       log "WARNING: reset ${host} failed — continuing (fresh guests are fine)"
     fi
     log "apply + join-controlplane ${host} @ ${ip}"
-    "$CTL" -e "${ip}:50000" apply -f "$cpyaml"
+    apply_machine_yaml "$ip" "$cpyaml"
     # apply reloads runtime; give Machine API a moment before the long join RPC
     sleep 5
     wait_api "$ip"
@@ -1681,7 +1712,7 @@ Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate th
       log "WARNING: reset ${host} failed — continuing (fresh guests are fine)"
     fi
     log "join worker ${host} @ ${ip}"
-    "$CTL" -e "${ip}:50000" apply -f "$wyaml"
+    apply_machine_yaml "$ip" "$wyaml"
     # apply reloads kubelet; give TLS bootstrap a moment before the wait loop
     sleep 5
     wait_api "$ip"

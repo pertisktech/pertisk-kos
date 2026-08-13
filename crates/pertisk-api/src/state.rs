@@ -30,6 +30,10 @@ pub struct NodeState {
     pub config_reload: bool,
     /// Set after Bootstrap — supervise loop restarts kubelet with cert kubeconfig.
     pub kubelet_reload: bool,
+    /// True after the STATE partition (or `--state-dir`) is bound. Apply before
+    /// this writes `/system/state/config.yaml` on initramfs, which `prepare_state`
+    /// then mounts over.
+    pub state_mounted: bool,
     pub ready: bool,
     pub message: String,
 }
@@ -51,6 +55,7 @@ impl NodeState {
             power: PowerAction::None,
             config_reload: false,
             kubelet_reload: false,
+            state_mounted: false,
             ready: true,
             message: "booting".into(),
         }
@@ -76,6 +81,7 @@ impl NodeState {
         self.config_path = state_root.join(DEFAULT_CONFIG_NAME);
         self.state_root = state_root;
         self.trust_public_key = trust_public_key;
+        self.state_mounted = true;
     }
 
     pub fn set_message(&mut self, message: impl Into<String>) {

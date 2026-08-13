@@ -636,16 +636,23 @@ impl VsphereClient {
         Ok(())
     }
 
-    pub async fn restart_vm_by_name(&self, name: &str) -> ApiResult<()> {
-        let _ = self.power_off(name).await;
+    async fn wait_power_state(&self, name: &str, want: &str) -> ApiResult<()> {
         for _ in 0..30 {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if let Some(vm) = self.find_vm(name).await? {
-                if vm.power_state.as_deref() == Some("poweredOff") {
-                    break;
+                if vm.power_state.as_deref() == Some(want) {
+                    return Ok(());
                 }
             }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
+        Err(AppError::bad(format!(
+            "VM `{name}` did not reach {want} in time"
+        )))
+    }
+
+    pub async fn restart_vm_by_name(&self, name: &str) -> ApiResult<()> {
+        let _ = self.power_off(name).await;
+        let _ = self.wait_power_state(name, "poweredOff").await;
         self.power_on(name).await
     }
 
@@ -688,6 +695,9 @@ impl VsphereClient {
         self.delete_vm_by_name(&vm.name).await
     }
 
+    /// Set CPU/memory. ESXi rejects live `numCPUs`/`memoryMB` unless CPU/memory
+    /// hot-plug is enabled for the guest OS — Pertisk VMs use `otherLinux64Guest`,
+    /// which typically does not. Power off first; the resize job powers back on.
     pub async fn set_vm_hardware(
         &self,
         name: &str,
@@ -701,6 +711,11 @@ impl VsphereClient {
         let Some(vm) = self.find_vm(name).await? else {
             return Err(AppError::bad(format!("VM `{name}` not found")));
         };
+        let was_on = vm.power_state.as_deref() == Some("poweredOn");
+        if was_on {
+            self.power_off(name).await?;
+            self.wait_power_state(name, "poweredOff").await?;
+        }
         let mut spec = String::from("<spec>");
         if let Some(c) = cores {
             spec.push_str(&format!("<numCPUs>{c}</numCPUs>"));
@@ -716,9 +731,24 @@ impl VsphereClient {
 </ReconfigVM_Task>"#,
             xml_escape(&vm.moref)
         );
-        let resp = self.soap("urn:vim25/8.0.3.0", &body).await?;
-        if let Some(task) = xml_attr_moref(&resp, "returnval").or_else(|| xml_text(&resp, "returnval")) {
-            self.wait_task(&task).await?;
+        let resp = match self.soap("urn:vim25/8.0.3.0", &body).await {
+            Ok(r) => r,
+            Err(e) => {
+                if was_on {
+                    let _ = self.power_on(name).await;
+                }
+                return Err(e);
+            }
+        };
+        if let Some(task) =
+            xml_attr_moref(&resp, "returnval").or_else(|| xml_text(&resp, "returnval"))
+        {
+            if let Err(e) = self.wait_task(&task).await {
+                if was_on {
+                    let _ = self.power_on(name).await;
+                }
+                return Err(e);
+            }
         }
         Ok(())
     }

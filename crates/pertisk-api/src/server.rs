@@ -61,6 +61,26 @@ fn lock(state: &SharedState) -> Result<MutexGuard<'_, crate::state::NodeState>, 
         .map_err(|_| Status::internal("node state lock poisoned"))
 }
 
+/// API listens before STATE is mounted (AHV virtio-scsi can hang). Wait so
+/// apply/bootstrap never write `/system/state/config.yaml` on initramfs.
+async fn config_path_when_state_mounted(state: &SharedState) -> Result<PathBuf, Status> {
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(90);
+    loop {
+        {
+            let st = lock(state)?;
+            if st.state_mounted {
+                return Ok(st.config_path.clone());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Status::failed_precondition(
+                "STATE partition is not mounted yet; retry apply in a few seconds",
+            ));
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    }
+}
+
 #[tonic::async_trait]
 impl MachineService for MachineSvc {
     async fn version(
@@ -124,10 +144,7 @@ impl MachineService for MachineSvc {
     ) -> Result<Response<ApplyConfigurationResponse>, Status> {
         let yaml = request.into_inner().yaml;
 
-        let path = {
-            let st = lock(&self.state)?;
-            st.config_path.clone()
-        };
+        let path = config_path_when_state_mounted(&self.state).await?;
 
         // Merge onto on-disk config so partial YAML (dashboard-only, etc.)
         // does not wipe machine.type / network / cluster and break kubelet.
@@ -391,8 +408,9 @@ impl MachineService for MachineSvc {
     ) -> Result<Response<BootstrapResponse>, Status> {
         let advertise = request.into_inner().advertise_address;
         let (state_root, config_path) = {
+            let path = config_path_when_state_mounted(&self.state).await?;
             let st = lock(&self.state)?;
-            (st.state_root.clone(), st.config_path.clone())
+            (st.state_root.clone(), path)
         };
         let yaml = fs::read_to_string(&config_path).map_err(|e| {
             Status::failed_precondition(format!(
@@ -442,8 +460,9 @@ impl MachineService for MachineSvc {
     ) -> Result<Response<JoinControlPlaneResponse>, Status> {
         let req = request.into_inner();
         let (state_root, config_path) = {
+            let path = config_path_when_state_mounted(&self.state).await?;
             let st = lock(&self.state)?;
-            (st.state_root.clone(), st.config_path.clone())
+            (st.state_root.clone(), path)
         };
         let yaml = fs::read_to_string(&config_path).map_err(|e| {
             Status::failed_precondition(format!(
