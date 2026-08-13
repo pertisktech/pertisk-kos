@@ -232,7 +232,6 @@ machine:
   const [templates, setTemplates] = useState([])
   const [templateId, setTemplateId] = useState('')
   const [followLog, setFollowLog] = useState(true)
-  const [logWordMode, setLogWordMode] = useState(false)
   const [selectedNodes, setSelectedNodes] = useState(() => new Set())
   const [addOpen, setAddOpen] = useState(false)
   const [addMode, setAddMode] = useState('create') // create | adopt | join
@@ -334,12 +333,12 @@ machine:
     return () => clearInterval(t)
   }, [load, data?.cluster?.status])
 
-  async function loadJobLog(jobId) {
+  async function loadJobLog(jobId, { follow = true } = {}) {
     selectedJobRef.current = jobId
     setSelectedJob(jobId)
     const text = await api(`/jobs/${jobId}/log`).catch(() => '')
     setLog(text)
-    setFollowLog(true)
+    if (follow) setFollowLog(true)
   }
 
   function selectJob(jobId) {
@@ -826,6 +825,7 @@ machine:
   const cps = nodes.filter((n) => n.role === 'controlplane')
   const wks = nodes.filter((n) => n.role !== 'controlplane')
   const latestJob = jobs[0]
+  const selectedJobRow = jobs.find((j) => j.id === selectedJob)
   const createJob = jobs.find((j) => j.kind === 'create_cluster')
   const createRunning = createJob?.status === 'running' || createJob?.status === 'queued'
   const createFailed = createJob?.status === 'failed'
@@ -1429,15 +1429,18 @@ machine:
                 </div>
                 <div className="jobs-log">
                   <div className="section-head log-head">
-                    <h3 className="section-label">Log</h3>
+                    <h3 className="section-label">
+                      <Icon name="providers" size={16} /> Log
+                    </h3>
                     <div className="row-actions node-log-actions">
                       <button
                         type="button"
-                        className={`secondary btn-icon ${logWordMode ? 'follow-on' : ''}`}
-                        onClick={() => setLogWordMode((v) => !v)}
-                        title="Color keywords only (color-logviewer -s)"
+                        className="secondary btn-icon"
+                        onClick={() => selectedJob && loadJobLog(selectedJob, { follow: false })}
+                        disabled={!selectedJob}
+                        title="Refresh now"
                       >
-                        {logWordMode ? 'Words' : 'Lines'}
+                        Refresh
                       </button>
                       <button
                         type="button"
@@ -1449,12 +1452,17 @@ machine:
                       </button>
                     </div>
                   </div>
+                  {selectedJobRow && (
+                    <p className="muted chart-footnote">
+                      {selectedJobRow.kind} · {selectedJobRow.status}
+                    </p>
+                  )}
                   <ColorLogViewer
                     text={log}
                     empty="(select a job)"
                     follow={followLog}
                     onFollowChange={setFollowLog}
-                    wordMode={logWordMode}
+                    className="jobs-log-box"
                     aria-label="Job log"
                   />
                 </div>

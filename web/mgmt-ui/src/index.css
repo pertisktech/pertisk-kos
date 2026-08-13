@@ -972,29 +972,50 @@ tr.row-click:focus-visible {
   color: #c8c9de;
 }
 
-/* color-logviewer-style severity coloring (whole line or keyword) */
+/* Node-style log coloring (timestamp / level / kv / strings / ANSI) */
 .color-log-viewer {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
+  line-height: 1.45;
 }
 .color-log-viewer .log-line {
   margin: 0;
   min-height: 1.15em;
 }
+.color-log-viewer .log-line-err {
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+}
+.color-log-viewer .log-line-warn {
+  background: color-mix(in srgb, var(--warning) 6%, transparent);
+}
 .color-log-viewer .log-sev-red,
-.color-log-viewer .log-kw.log-sev-red { color: var(--danger); }
+.color-log-viewer .log-kw.log-sev-red,
+.color-log-viewer .log-ansi-red { color: var(--danger); }
 .color-log-viewer .log-sev-yellow,
-.color-log-viewer .log-kw.log-sev-yellow { color: var(--warning); }
+.color-log-viewer .log-kw.log-sev-yellow,
+.color-log-viewer .log-ansi-yellow { color: var(--warning); }
 .color-log-viewer .log-sev-green,
-.color-log-viewer .log-kw.log-sev-green { color: var(--success); }
+.color-log-viewer .log-kw.log-sev-green,
+.color-log-viewer .log-ansi-green { color: var(--success); }
 .color-log-viewer .log-sev-blue,
-.color-log-viewer .log-kw.log-sev-blue { color: #6ea8fe; }
+.color-log-viewer .log-kw.log-sev-blue,
+.color-log-viewer .log-ansi-blue { color: #6ea8fe; }
 .color-log-viewer .log-sev-cyan,
-.color-log-viewer .log-kw.log-sev-cyan { color: #4dd0e1; }
+.color-log-viewer .log-kw.log-sev-cyan,
+.color-log-viewer .log-ansi-cyan { color: #4dd0e1; }
 .color-log-viewer .log-sev-magenta,
-.color-log-viewer .log-kw.log-sev-magenta { color: #e879f9; }
+.color-log-viewer .log-kw.log-sev-magenta,
+.color-log-viewer .log-ansi-magenta { color: #e879f9; }
+.color-log-viewer .log-ansi-white { color: var(--text); }
+.color-log-viewer .log-ansi-black { color: var(--text-muted); }
 .color-log-viewer .log-kw { font-weight: 600; }
+.color-log-viewer .log-ts { color: var(--text-muted); }
+.color-log-viewer .log-cmd { color: #6ea8fe; font-weight: 600; }
+.color-log-viewer .log-str { color: var(--success); }
+.color-log-viewer .log-key { color: #c4b5fd; }
+.color-log-viewer .log-eq { color: var(--text-muted); }
+.color-log-viewer .log-val { color: #4dd0e1; }
 
 .form-grid {
   display: grid;
@@ -1907,8 +1928,19 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   flex-shrink: 0;
   align-items: center;
 }
+.jobs-log .section-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+.jobs-log .chart-footnote {
+  margin: 0 0 0.35rem;
+  flex-shrink: 0;
+}
 .jobs-log .log-box,
-.jobs-log .color-log-viewer {
+.jobs-log .color-log-viewer,
+.jobs-log .jobs-log-box {
   flex: 1;
   min-height: 0;
   max-height: none;
