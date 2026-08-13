@@ -1422,12 +1422,6 @@ async fn run_add_node(
              recreate the cluster with the desired control-plane/worker counts"
         );
     }
-    if provider.kind == "nutanix" {
-        anyhow::bail!(
-            "adding nodes to a nutanix (AHV) cluster is not supported yet — \
-             recreate the cluster with the desired control-plane/worker counts"
-        );
-    }
 
     let (def_mem, def_cores, def_disk) = if role == "controlplane" {
         (cluster.cp_memory, cluster.cp_cores, cluster.cp_disk_gb)
@@ -1451,7 +1445,7 @@ async fn run_add_node(
     let cp_ip = resolve_cp_ip(state, cid, &cluster).await?;
     let cluster_out = state.cfg().kubeconfigs_dir().join(&cluster.name);
     std::fs::create_dir_all(&cluster_out)?;
-    let add_script = add_node_script_path(state);
+    let add_script = add_node_script_path(state, &provider.kind);
 
     let now = db::now_rfc3339();
     sqlx::query("UPDATE clusters SET status = 'provisioning', updated_at = ? WHERE id = ?")
@@ -1522,10 +1516,15 @@ async fn run_add_node(
             (name, vmid, None)
         };
 
+        let node_source = match provider.kind.as_str() {
+            "nutanix" | "ahv" | "prism" => "nutanix",
+            "vsphere" | "esxi" => "vsphere",
+            _ => "proxmox",
+        };
         let node_id = Uuid::new_v4().to_string();
         sqlx::query(
             r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, memory, cores, disk_gb, k8s_version, source, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'proxmox', 'provisioning', ?, ?)"#,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?)"#,
         )
         .bind(&node_id)
         .bind(cid)
@@ -1536,6 +1535,7 @@ async fn run_add_node(
         .bind(cores)
         .bind(disk_gb)
         .bind(&cluster.k8s_version)
+        .bind(node_source)
         .bind(&now)
         .bind(&now)
         .execute(state.pool())
@@ -1569,21 +1569,39 @@ async fn run_add_node(
             .arg(&cp_ip)
             .arg("--bridge")
             .arg(&provider.bridge)
-            .env("PROXMOX_URL", &provider.url)
-            .env("PROXMOX_TOKEN_ID", &provider.token_id)
-            .env("PROXMOX_TOKEN_SECRET", &secret)
-            .env("PROXMOX_NODE", &provider.node)
-            .env(
-                "PROXMOX_MAC_SALT",
-                format!("{}|{}", provider.url.trim_end_matches('/'), provider.node),
-            )
-            .env("PROXMOX_STORAGE", &provider.storage)
-            .env("PROXMOX_BRIDGE", &provider.bridge)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         apply_lab_env(&mut cmd, state, &provider.url);
-        if provider.insecure != 0 {
-            cmd.env("PROXMOX_INSECURE", "1");
+
+        if provider.kind == "nutanix" || provider.kind == "ahv" || provider.kind == "prism" {
+            cmd.env("PROVIDER_KIND", "nutanix")
+                .env("NUTANIX_URL", &provider.url)
+                .env("NUTANIX_USER", &provider.token_id)
+                .env("NUTANIX_PASSWORD", &secret)
+                .env("NUTANIX_CLUSTER", &provider.node)
+                .env("NUTANIX_STORAGE", &provider.storage)
+                .env("NUTANIX_NETWORK", &provider.bridge)
+                .env(
+                    "NUTANIX_MAC_SALT",
+                    format!("{}|{}", provider.url.trim_end_matches('/'), provider.node),
+                );
+            if provider.insecure != 0 {
+                cmd.env("NUTANIX_INSECURE", "1");
+            }
+        } else {
+            cmd.env("PROXMOX_URL", &provider.url)
+                .env("PROXMOX_TOKEN_ID", &provider.token_id)
+                .env("PROXMOX_TOKEN_SECRET", &secret)
+                .env("PROXMOX_NODE", &provider.node)
+                .env(
+                    "PROXMOX_MAC_SALT",
+                    format!("{}|{}", provider.url.trim_end_matches('/'), provider.node),
+                )
+                .env("PROXMOX_STORAGE", &provider.storage)
+                .env("PROXMOX_BRIDGE", &provider.bridge);
+            if provider.insecure != 0 {
+                cmd.env("PROXMOX_INSECURE", "1");
+            }
         }
         let node_arch = match cluster.arch.to_ascii_lowercase().as_str() {
             "arm64" | "aarch64" => "arm64",
@@ -1591,7 +1609,11 @@ async fn run_add_node(
         };
         cmd.arg("--arch").arg(node_arch);
         cmd.env("PERTISK_ARCH", node_arch).env("ARCH", node_arch);
-        if node_arch == "arm64" {
+        if node_arch == "arm64"
+            && provider.kind != "nutanix"
+            && provider.kind != "ahv"
+            && provider.kind != "prism"
+        {
             cmd.env_remove("PROXMOX_NO_SSH");
             if std::env::var("PROXMOX_SSH")
                 .ok()
@@ -1733,18 +1755,25 @@ async fn run_add_node(
     Ok(())
 }
 
-fn add_node_script_path(state: &AppState) -> PathBuf {
-    let beside = state
-        .cfg()
-        .lab_up
-        .parent()
-        .map(|p| p.join("proxmox-add-node.sh"));
+fn add_node_script_path(state: &AppState, kind: &str) -> PathBuf {
+    let name = if matches!(kind, "nutanix" | "ahv" | "prism") {
+        "nutanix-add-node.sh"
+    } else {
+        "proxmox-add-node.sh"
+    };
+    let beside = state.cfg().lab_up.parent().map(|p| p.join(name));
     if let Some(p) = beside {
         if p.exists() {
             return p;
         }
     }
-    PathBuf::from("./scripts/proxmox-add-node.sh")
+    // Prefer sibling of configured lab-up even if missing (clearer error path).
+    if let Some(p) = state.cfg().lab_up.parent().map(|d| d.join(name)) {
+        if p.exists() {
+            return p;
+        }
+    }
+    PathBuf::from(format!("./scripts/{name}"))
 }
 
 fn adopt_node_script_path(state: &AppState) -> PathBuf {

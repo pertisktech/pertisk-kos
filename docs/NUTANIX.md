@@ -101,6 +101,6 @@ Recreate VMs after updating scripts. Guest image rebuild is needed for DHCP-befo
 
 ## Limits
 
-- Adding nodes to an existing nutanix cluster from the UI is not wired yet — recreate with the desired CP/worker counts.
+- Scale-out via UI / Terraform `pertisk_node` (`mode=create`) uses `nutanix-add-node.sh` (same join path as Proxmox).
 - Mgmt must share L2 with guests for MAC→IP discovery (`LAB_SUBNET`), same as ESXi lab-up (Prism IP fallback helps when AHV has learned the address).
 - For Serial Console without working REST attach: `export NUTANIX_CVM_SSH=nutanix@<cvm-ip>` (SSH key, BatchMode).
