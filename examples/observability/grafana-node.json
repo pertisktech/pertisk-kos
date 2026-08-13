@@ -8,27 +8,34 @@
   "liveNow": false,
   "panels": [
     {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Overview",
+      "type": "row"
+    },
+    {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
-        "defaults": { "unit": "short" },
+        "defaults": { "unit": "short", "decimals": 0 },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
-      "id": 7,
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "id": 10,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "horizontal",
+        "orientation": "auto",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "textMode": "auto"
       },
-      "title": "Nodes reporting",
+      "title": "Nodes",
       "type": "stat",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "count(pertisk_host_info)",
+          "expr": "count(pertisk_host_info{instance=~\"$instance\"})",
+          "instant": true,
           "legendFormat": "nodes",
           "refId": "A"
         }
@@ -40,18 +47,271 @@
         "defaults": {
           "unit": "percentunit",
           "min": 0,
-          "max": 1
+          "max": 1,
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
-      "id": 1,
-      "title": "CPU busy (total)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "id": 11,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "title": "CPU busy (avg)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "avg(1 - (sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\",instance=~\"$instance\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",instance=~\"$instance\"}[5m]))))",
+          "legendFormat": "cpu",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.75 },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "id": 12,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "title": "Memory used (avg)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "avg(1 - pertisk_memory_available_bytes{instance=~\"$instance\"} / pertisk_memory_total_bytes{instance=~\"$instance\"})",
+          "legendFormat": "mem",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "decimals": 0 },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "id": 13,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "title": "Uptime (min)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "min(pertisk_uptime_seconds{instance=~\"$instance\"})",
+          "instant": true,
+          "legendFormat": "uptime",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Current values per node (instant).",
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "CPU" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "decimals", "value": 1 },
+              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 1 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Mem %" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "decimals", "value": 1 },
+              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 1 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Mem used" },
+            "properties": [{ "id": "unit", "value": "bytes" }, { "id": "decimals", "value": 1 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Mem total" },
+            "properties": [{ "id": "unit", "value": "bytes" }, { "id": "decimals", "value": 1 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Uptime" },
+            "properties": [{ "id": "unit", "value": "s" }, { "id": "decimals", "value": 0 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Load 1m" },
+            "properties": [{ "id": "decimals", "value": 2 }]
+          }
+        ]
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 5 },
+      "id": 14,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "CPU" }]
+      },
+      "title": "Nodes — CPU / memory / load",
+      "transformations": [
+        { "id": "merge", "options": {} },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "cpu": true,
+              "mode": true
+            },
+            "indexByName": {
+              "hostname": 0,
+              "instance": 1,
+              "cluster": 2,
+              "role": 3,
+              "Value #A": 4,
+              "Value #B": 5,
+              "Value #C": 6,
+              "Value #D": 7,
+              "Value #E": 8,
+              "Value #F": 9
+            },
+            "renameByName": {
+              "Value #A": "CPU",
+              "Value #B": "Load 1m",
+              "Value #C": "Mem %",
+              "Value #D": "Mem used",
+              "Value #E": "Mem total",
+              "Value #F": "Uptime"
+            }
+          }
+        }
+      ],
+      "type": "table",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "1 - (sum by (instance, hostname, cluster, role) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\",instance=~\"$instance\"}[5m])) / sum by (instance, hostname, cluster, role) (rate(pertisk_cpu_seconds_total{cpu=\"total\",instance=~\"$instance\"}[5m])))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pertisk_load1{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "1 - pertisk_memory_available_bytes{instance=~\"$instance\"} / pertisk_memory_total_bytes{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pertisk_memory_total_bytes{instance=~\"$instance\"} - pertisk_memory_available_bytes{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "D"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pertisk_memory_total_bytes{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "E"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pertisk_uptime_seconds{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "F"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "id": 101,
+      "title": "CPU",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1, "custom": { "fillOpacity": 15, "lineWidth": 1 } },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 20,
+      "title": "CPU busy",
       "type": "timeseries",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "1 - (sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\"}[5m])))",
+          "expr": "1 - (sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\",instance=~\"$instance\"}[5m])) / sum by (instance) (rate(pertisk_cpu_seconds_total{cpu=\"total\",instance=~\"$instance\"}[5m])))",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
@@ -60,30 +320,126 @@
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
-        "defaults": { "unit": "bytes" },
+        "defaults": {
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" } },
+          "decimals": 2
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Busy" }, "properties": [{ "id": "unit", "value": "percentunit" }, { "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "User" }, "properties": [{ "id": "unit", "value": "percentunit" }] },
+          { "matcher": { "id": "byName", "options": "System" }, "properties": [{ "id": "unit", "value": "percentunit" }] },
+          { "matcher": { "id": "byName", "options": "IOwait" }, "properties": [{ "id": "unit", "value": "percentunit" }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 21,
+      "options": { "cellHeight": "sm", "showHeader": true, "footer": { "show": false, "countRows": false, "reducer": ["sum"] } },
+      "title": "CPU table",
+      "transformations": [
+        { "id": "merge", "options": {} },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "job": true, "cpu": true, "mode": true },
+            "renameByName": {
+              "Value #A": "Busy",
+              "Value #B": "User",
+              "Value #C": "System",
+              "Value #D": "IOwait",
+              "Value #E": "Load 1m",
+              "Value #F": "Load 5m",
+              "Value #G": "Load 15m"
+            }
+          }
+        }
+      ],
+      "type": "table",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "1 - (sum by (instance, hostname, cluster, role) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"idle\",instance=~\"$instance\"}[5m])) / sum by (instance, hostname, cluster, role) (rate(pertisk_cpu_seconds_total{cpu=\"total\",instance=~\"$instance\"}[5m])))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (instance, hostname, cluster, role) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"user\",instance=~\"$instance\"}[5m])) / sum by (instance, hostname, cluster, role) (rate(pertisk_cpu_seconds_total{cpu=\"total\",instance=~\"$instance\"}[5m]))",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (instance, hostname, cluster, role) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"system\",instance=~\"$instance\"}[5m])) / sum by (instance, hostname, cluster, role) (rate(pertisk_cpu_seconds_total{cpu=\"total\",instance=~\"$instance\"}[5m]))",
+          "format": "table",
+          "instant": true,
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (instance, hostname, cluster, role) (rate(pertisk_cpu_seconds_total{cpu=\"total\",mode=\"iowait\",instance=~\"$instance\"}[5m])) / sum by (instance, hostname, cluster, role) (rate(pertisk_cpu_seconds_total{cpu=\"total\",instance=~\"$instance\"}[5m]))",
+          "format": "table",
+          "instant": true,
+          "refId": "D"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pertisk_load1{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "E"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pertisk_load5{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "F"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pertisk_load15{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "G"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
+      "id": 102,
+      "title": "Memory",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "fillOpacity": 15, "lineWidth": 1 } },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
-      "id": 2,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "id": 30,
       "title": "Memory",
       "type": "timeseries",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_memory_total_bytes",
+          "expr": "pertisk_memory_total_bytes{instance=~\"$instance\"}",
           "legendFormat": "total {{instance}}",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_memory_total_bytes - pertisk_memory_available_bytes",
+          "expr": "pertisk_memory_total_bytes{instance=~\"$instance\"} - pertisk_memory_available_bytes{instance=~\"$instance\"}",
           "legendFormat": "used {{instance}}",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_memory_available_bytes",
-          "legendFormat": "available {{instance}}",
+          "expr": "pertisk_memory_available_bytes{instance=~\"$instance\"}",
+          "legendFormat": "avail {{instance}}",
           "refId": "C"
         }
       ]
@@ -91,80 +447,122 @@
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
-        "defaults": { "unit": "short" },
-        "overrides": []
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Used" }, "properties": [{ "id": "unit", "value": "bytes" }, { "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "Available" }, "properties": [{ "id": "unit", "value": "bytes" }, { "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "Free" }, "properties": [{ "id": "unit", "value": "bytes" }, { "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "Total" }, "properties": [{ "id": "unit", "value": "bytes" }, { "id": "decimals", "value": 1 }] },
+          {
+            "matcher": { "id": "byName", "options": "Used %" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "decimals", "value": 1 },
+              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 1 },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "yellow", "value": 0.75 },
+                    { "color": "red", "value": 0.9 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
-      "id": 3,
-      "title": "Load average",
-      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "id": 31,
+      "options": { "cellHeight": "sm", "showHeader": true, "footer": { "show": false, "countRows": false, "reducer": ["sum"] } },
+      "title": "Memory table",
+      "transformations": [
+        { "id": "merge", "options": {} },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "job": true },
+            "renameByName": {
+              "Value #A": "Used %",
+              "Value #B": "Used",
+              "Value #C": "Available",
+              "Value #D": "Free",
+              "Value #E": "Total"
+            }
+          }
+        }
+      ],
+      "type": "table",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_load1",
-          "legendFormat": "1m {{instance}}",
+          "expr": "1 - pertisk_memory_available_bytes{instance=~\"$instance\"} / pertisk_memory_total_bytes{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_load5",
-          "legendFormat": "5m {{instance}}",
+          "expr": "pertisk_memory_total_bytes{instance=~\"$instance\"} - pertisk_memory_available_bytes{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_load15",
-          "legendFormat": "15m {{instance}}",
+          "expr": "pertisk_memory_available_bytes{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
           "refId": "C"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": {
-        "defaults": { "unit": "Bps" },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
-      "id": 4,
-      "title": "Network throughput",
-      "type": "timeseries",
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pertisk_network_receive_bytes_total[5m])",
-          "legendFormat": "rx {{instance}} {{device}}",
-          "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pertisk_network_transmit_bytes_total[5m])",
-          "legendFormat": "tx {{instance}} {{device}}",
-          "refId": "B"
+          "expr": "pertisk_memory_free_bytes{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "D"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pertisk_memory_total_bytes{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "E"
         }
       ]
     },
     {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 },
+      "id": 103,
+      "title": "Disk",
+      "type": "row"
+    },
+    {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
-        "defaults": { "unit": "Bps" },
+        "defaults": { "unit": "Bps", "custom": { "fillOpacity": 15, "lineWidth": 1 } },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
-      "id": 5,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 34 },
+      "id": 40,
       "title": "Disk I/O",
       "type": "timeseries",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pertisk_disk_read_bytes_total[5m])",
-          "legendFormat": "read {{instance}} {{device}}",
+          "expr": "sum by (instance) (rate(pertisk_disk_read_bytes_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "read {{instance}}",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pertisk_disk_written_bytes_total[5m])",
-          "legendFormat": "write {{instance}} {{device}}",
+          "expr": "sum by (instance) (rate(pertisk_disk_written_bytes_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "write {{instance}}",
           "refId": "B"
         }
       ]
@@ -172,25 +570,239 @@
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
-        "defaults": { "unit": "bytes" },
-        "overrides": []
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Read" }, "properties": [{ "id": "unit", "value": "Bps" }, { "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "Write" }, "properties": [{ "id": "unit", "value": "Bps" }, { "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "Reads/s" }, "properties": [{ "id": "unit", "value": "ops" }, { "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "Writes/s" }, "properties": [{ "id": "unit", "value": "ops" }, { "id": "decimals", "value": 1 }] }
+        ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
-      "id": 6,
-      "title": "Filesystem (STATE / EPHEMERAL)",
-      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 34 },
+      "id": 41,
+      "options": { "cellHeight": "sm", "showHeader": true, "footer": { "show": false, "countRows": false, "reducer": ["sum"] } },
+      "title": "Disk I/O table",
+      "transformations": [
+        { "id": "merge", "options": {} },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "job": true },
+            "renameByName": {
+              "Value #A": "Read",
+              "Value #B": "Write",
+              "Value #C": "Reads/s",
+              "Value #D": "Writes/s"
+            }
+          }
+        }
+      ],
+      "type": "table",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_filesystem_size_bytes",
-          "legendFormat": "size {{instance}} {{label}}",
+          "expr": "rate(pertisk_disk_read_bytes_total{instance=~\"$instance\"}[5m])",
+          "format": "table",
+          "instant": true,
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pertisk_filesystem_avail_bytes",
-          "legendFormat": "avail {{instance}} {{label}}",
+          "expr": "rate(pertisk_disk_written_bytes_total{instance=~\"$instance\"}[5m])",
+          "format": "table",
+          "instant": true,
           "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(pertisk_disk_reads_completed_total{instance=~\"$instance\"}[5m])",
+          "format": "table",
+          "instant": true,
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(pertisk_disk_writes_completed_total{instance=~\"$instance\"}[5m])",
+          "format": "table",
+          "instant": true,
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Size" }, "properties": [{ "id": "unit", "value": "bytes" }, { "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "Avail" }, "properties": [{ "id": "unit", "value": "bytes" }, { "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "Used" }, "properties": [{ "id": "unit", "value": "bytes" }, { "id": "decimals", "value": 1 }] },
+          {
+            "matcher": { "id": "byName", "options": "Used %" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "decimals", "value": 1 },
+              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 1 },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "yellow", "value": 0.8 },
+                    { "color": "red", "value": 0.95 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 42 },
+      "id": 42,
+      "options": { "cellHeight": "sm", "showHeader": true, "footer": { "show": false, "countRows": false, "reducer": ["sum"] } },
+      "title": "Filesystem table (STATE / EPHEMERAL)",
+      "transformations": [
+        { "id": "merge", "options": {} },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "job": true },
+            "renameByName": {
+              "Value #A": "Size",
+              "Value #B": "Avail",
+              "Value #C": "Used",
+              "Value #D": "Used %",
+              "label": "FS"
+            }
+          }
+        }
+      ],
+      "type": "table",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pertisk_filesystem_size_bytes{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pertisk_filesystem_avail_bytes{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pertisk_filesystem_size_bytes{instance=~\"$instance\"} - pertisk_filesystem_avail_bytes{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "1 - pertisk_filesystem_avail_bytes{instance=~\"$instance\"} / pertisk_filesystem_size_bytes{instance=~\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 50 },
+      "id": 104,
+      "title": "Network",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "Bps", "custom": { "fillOpacity": 15, "lineWidth": 1 } },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 51 },
+      "id": 50,
+      "title": "Network throughput",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (instance) (rate(pertisk_network_receive_bytes_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "rx {{instance}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (instance) (rate(pertisk_network_transmit_bytes_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "tx {{instance}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "RX" }, "properties": [{ "id": "unit", "value": "Bps" }, { "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "TX" }, "properties": [{ "id": "unit", "value": "Bps" }, { "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "RX pkt/s" }, "properties": [{ "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "TX pkt/s" }, "properties": [{ "id": "decimals", "value": 1 }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 51 },
+      "id": 51,
+      "options": { "cellHeight": "sm", "showHeader": true, "footer": { "show": false, "countRows": false, "reducer": ["sum"] } },
+      "title": "Network table",
+      "transformations": [
+        { "id": "merge", "options": {} },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "job": true },
+            "renameByName": {
+              "Value #A": "RX",
+              "Value #B": "TX",
+              "Value #C": "RX pkt/s",
+              "Value #D": "TX pkt/s"
+            }
+          }
+        }
+      ],
+      "type": "table",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(pertisk_network_receive_bytes_total{instance=~\"$instance\"}[5m])",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(pertisk_network_transmit_bytes_total{instance=~\"$instance\"}[5m])",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(pertisk_network_receive_packets_total{instance=~\"$instance\"}[5m])",
+          "format": "table",
+          "instant": true,
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(pertisk_network_transmit_packets_total{instance=~\"$instance\"}[5m])",
+          "format": "table",
+          "instant": true,
+          "refId": "D"
         }
       ]
     }
@@ -198,11 +810,29 @@
   "refresh": "15s",
   "schemaVersion": 39,
   "tags": ["pertisk"],
-  "templating": { "list": [] },
+  "templating": {
+    "list": [
+      {
+        "allValue": ".*",
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(pertisk_host_info, instance)",
+        "includeAll": true,
+        "label": "Instance",
+        "multi": true,
+        "name": "instance",
+        "query": "label_values(pertisk_host_info, instance)",
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
   "title": "Pertisk node",
   "uid": "pertisk-node",
-  "version": 2
+  "version": 3
 }
