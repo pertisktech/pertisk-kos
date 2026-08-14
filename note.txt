@@ -179,3 +179,11 @@ rsync -a --exclude 'compose/file_sd/nodes.yml' \
 
 
 ssh almalinux@10.1.1.12 'cd /opt/observability && sudo docker compose restart grafana'
+
+
+rsync -a --exclude 'compose/file_sd/nodes.yml' \
+  --rsync-path='sudo rsync' \
+  examples/observability/ root@10.1.1.15:/opt/observability/
+
+
+ssh root@10.1.1.15 'cd /opt/observability && sudo docker compose restart grafana'
