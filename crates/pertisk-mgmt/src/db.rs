@@ -99,6 +99,8 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             ip6 TEXT,
             k8s_version TEXT,
             os_version TEXT,
+            kernel_version TEXT,
+            container_runtime TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -226,6 +228,12 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await;
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN os_version TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN kernel_version TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN container_runtime TEXT")
         .execute(pool)
         .await;
     let _ = sqlx::query(

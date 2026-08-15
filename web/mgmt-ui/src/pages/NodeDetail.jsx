@@ -278,6 +278,14 @@ export default function NodeDetail() {
             <div className="value mono-inline">{node.os_version || '—'}</div>
           </div>
           <div className="stat">
+            <div className="label">Kernel</div>
+            <div className="value mono-inline">{node.kernel_version || '—'}</div>
+          </div>
+          <div className="stat">
+            <div className="label">containerd</div>
+            <div className="value mono-inline">{node.container_runtime || '—'}</div>
+          </div>
+          <div className="stat">
             <div className="label">Hardware</div>
             <div className="value" style={{ fontSize: '0.95rem' }}>{formatHw(node)}</div>
           </div>

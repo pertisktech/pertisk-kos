@@ -14,6 +14,9 @@ pub struct NodeSnapshot {
     pub ip: Option<String>,
     pub ip6: Option<String>,
     pub k8s_version: Option<String>,
+    pub os_version: Option<String>,
+    pub kernel_version: Option<String>,
+    pub container_runtime: Option<String>,
     pub kubelet_status: Option<String>,
 }
 
@@ -40,30 +43,76 @@ pub async fn sync_cluster_nodes(
         return Ok(0);
     }
 
-    let now = db::now_rfc3339();
     let mut updated = 0usize;
     for (name, snap) in snapshots {
-        let r = sqlx::query(
-            r#"UPDATE nodes SET
-                 ip = COALESCE(?, ip),
-                 ip6 = COALESCE(?, ip6),
-                 k8s_version = COALESCE(?, k8s_version),
-                 updated_at = ?
-               WHERE cluster_id = ? AND name = ?"#,
-        )
-        .bind(&snap.ip)
-        .bind(&snap.ip6)
-        .bind(&snap.k8s_version)
-        .bind(&now)
-        .bind(cluster_id)
-        .bind(&name)
-        .execute(pool)
-        .await?;
-        if r.rows_affected() > 0 {
+        let n = persist_snapshot_by_name(pool, cluster_id, &name, &snap).await?;
+        if n > 0 {
             updated += 1;
         }
     }
     Ok(updated)
+}
+
+pub async fn persist_snapshot_by_name(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    name: &str,
+    snap: &NodeSnapshot,
+) -> anyhow::Result<u64> {
+    let now = db::now_rfc3339();
+    let r = sqlx::query(
+        r#"UPDATE nodes SET
+             ip = COALESCE(?, ip),
+             ip6 = COALESCE(?, ip6),
+             k8s_version = COALESCE(?, k8s_version),
+             os_version = COALESCE(?, os_version),
+             kernel_version = COALESCE(?, kernel_version),
+             container_runtime = COALESCE(?, container_runtime),
+             updated_at = ?
+           WHERE cluster_id = ? AND name = ?"#,
+    )
+    .bind(&snap.ip)
+    .bind(&snap.ip6)
+    .bind(&snap.k8s_version)
+    .bind(&snap.os_version)
+    .bind(&snap.kernel_version)
+    .bind(&snap.container_runtime)
+    .bind(&now)
+    .bind(cluster_id)
+    .bind(name)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+pub async fn persist_snapshot_by_id(
+    pool: &SqlitePool,
+    node_id: &str,
+    snap: &NodeSnapshot,
+) -> anyhow::Result<u64> {
+    let now = db::now_rfc3339();
+    let r = sqlx::query(
+        r#"UPDATE nodes SET
+             ip = COALESCE(?, ip),
+             ip6 = COALESCE(?, ip6),
+             k8s_version = COALESCE(?, k8s_version),
+             os_version = COALESCE(?, os_version),
+             kernel_version = COALESCE(?, kernel_version),
+             container_runtime = COALESCE(?, container_runtime),
+             updated_at = ?
+           WHERE id = ?"#,
+    )
+    .bind(&snap.ip)
+    .bind(&snap.ip6)
+    .bind(&snap.k8s_version)
+    .bind(&snap.os_version)
+    .bind(&snap.kernel_version)
+    .bind(&snap.container_runtime)
+    .bind(&now)
+    .bind(node_id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
 }
 
 async fn fetch_from_kubectl(kubeconfig: &Path) -> anyhow::Result<Vec<(String, NodeSnapshot)>> {
@@ -125,8 +174,20 @@ async fn fetch_from_kubectl(kubeconfig: &Path) -> anyhow::Result<Vec<(String, No
             .pointer("/status/nodeInfo/kubeletVersion")
             .and_then(|v| v.as_str())
         {
-            snap.k8s_version = Some(ver.to_string());
+            snap.k8s_version = nonempty(ver);
         }
+        snap.os_version = item
+            .pointer("/status/nodeInfo/osImage")
+            .and_then(|v| v.as_str())
+            .and_then(parse_os_image);
+        snap.kernel_version = item
+            .pointer("/status/nodeInfo/kernelVersion")
+            .and_then(|v| v.as_str())
+            .and_then(nonempty);
+        snap.container_runtime = item
+            .pointer("/status/nodeInfo/containerRuntimeVersion")
+            .and_then(|v| v.as_str())
+            .and_then(parse_container_runtime);
 
         if let Some(cond) = item.pointer("/status/conditions").and_then(|v| v.as_array()) {
             for c in cond {
@@ -144,6 +205,43 @@ async fn fetch_from_kubectl(kubeconfig: &Path) -> anyhow::Result<Vec<(String, No
         rows.push((name, snap));
     }
     Ok(rows)
+}
+
+/// `pertisk-kos 0.2.87` → `0.2.87`. Bare `pertisk-kos` is ignored.
+pub fn parse_os_image(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(rest) = s.strip_prefix("pertisk-kos") {
+        let v = rest.trim().trim_start_matches('/').trim();
+        if v.is_empty() {
+            return None;
+        }
+        return Some(v.to_string());
+    }
+    Some(s.to_string())
+}
+
+/// `containerd://2.3.4` → `2.3.4`.
+pub fn parse_container_runtime(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(v) = s.strip_prefix("containerd://") {
+        return nonempty(v);
+    }
+    Some(s.to_string())
+}
+
+fn nonempty(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
 }
 
 /// Parse `kubectl get nodes -o wide` table lines from a job log.
@@ -205,6 +303,7 @@ fn parse_wide_line(line: &str) -> Option<(String, NodeSnapshot)> {
             ip6,
             k8s_version: version,
             kubelet_status: status,
+            ..Default::default()
         },
     ))
 }
@@ -256,5 +355,20 @@ lab-ha-wk-1   Ready    <none>          42s   v1.36.2   10.1.1.134    <none>
         assert_eq!(rows[0].0, "lab-ha-cp-1");
         assert_eq!(rows[0].1.ip.as_deref(), Some("10.1.1.31"));
         assert_eq!(rows[0].1.k8s_version.as_deref(), Some("v1.36.3"));
+    }
+
+    #[test]
+    fn parses_os_image() {
+        assert_eq!(parse_os_image("pertisk-kos 0.2.87").as_deref(), Some("0.2.87"));
+        assert_eq!(parse_os_image("pertisk-kos").as_deref(), None);
+        assert_eq!(parse_os_image("  ").as_deref(), None);
+        assert_eq!(parse_os_image("Alpine Linux v3.20").as_deref(), Some("Alpine Linux v3.20"));
+    }
+
+    #[test]
+    fn parses_containerd_runtime() {
+        assert_eq!(parse_container_runtime("containerd://2.3.4").as_deref(), Some("2.3.4"));
+        assert_eq!(parse_container_runtime("cri-o://1.32.0").as_deref(), Some("cri-o://1.32.0"));
+        assert_eq!(parse_container_runtime("").as_deref(), None);
     }
 }

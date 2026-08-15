@@ -25,6 +25,7 @@ pub fn routes() -> Router<AppState> {
             get(get_one).delete(delete),
         )
         .route("/clusters/{id}/kubeconfig", get(kubeconfig))
+        .route("/clusters/{id}/versions", get(versions))
         .route("/clusters/{id}/config-bundle", get(config_bundle))
         .route("/clusters/{id}/jobs", get(list_jobs))
         .route("/clusters/{id}/delete-check", get(delete_check))
@@ -308,7 +309,17 @@ async fn get_one(
         } else {
             0
         };
-        if upgrading > 0 || missing_ip > 0 || missing_ip6 > 0 {
+        let missing_versions: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM nodes WHERE cluster_id = ? AND (
+                 kernel_version IS NULL OR kernel_version = ''
+                 OR container_runtime IS NULL OR container_runtime = ''
+               )"#,
+        )
+        .bind(&id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap_or(0);
+        if upgrading > 0 || missing_ip > 0 || missing_ip6 > 0 || missing_versions > 0 {
             let kc: Option<String> = sqlx::query_scalar(
                 "SELECT kubeconfig_path FROM clusters WHERE id = ?",
             )
@@ -346,10 +357,73 @@ async fn get_one(
     cluster.availability =
         crate::cluster_availability::probe(&state, &id, &cluster.status).await;
 
+    let versions = cluster_versions(state.pool(), &cluster, &nodes).await;
+
     Ok(Json(serde_json::json!({
         "cluster": cluster,
         "nodes": nodes,
+        "versions": versions,
     })))
+}
+
+async fn versions(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let cluster = sqlx::query_as::<_, ClusterOut>(&format!(
+        "{CLUSTER_SELECT} WHERE c.id = ?"
+    ))
+    .bind(&id)
+    .fetch_optional(state.pool())
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let nodes = sqlx::query_as::<_, crate::routes::nodes::NodeOut>(&format!(
+        "{} WHERE cluster_id = ? ORDER BY role, name",
+        crate::routes::nodes::NODE_SELECT
+    ))
+    .bind(&id)
+    .fetch_all(state.pool())
+    .await?;
+
+    Ok(Json(serde_json::json!({
+        "versions": cluster_versions(state.pool(), &cluster, &nodes).await,
+    })))
+}
+
+async fn cluster_versions(
+    pool: &sqlx::SqlitePool,
+    cluster: &ClusterOut,
+    nodes: &[crate::routes::nodes::NodeOut],
+) -> Vec<crate::cluster_versions::ComponentVersion> {
+    let arch = crate::os_upgrade::normalize_arch(&cluster.arch)
+        .unwrap_or_else(|_| cluster.arch.clone());
+    let catalog_os: Option<String> = sqlx::query_scalar(
+        "SELECT version FROM os_packages WHERE arch = ? ORDER BY updated_at DESC LIMIT 1",
+    )
+    .bind(&arch)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let has_vip = cluster
+        .vip
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+        || cluster
+            .vip6
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+    crate::cluster_versions::summarize(
+        &crate::cluster_versions::ClusterVersionCtx {
+            k8s_version: &cluster.k8s_version,
+            cni: &cluster.cni,
+            catalog_os: catalog_os.as_deref(),
+            has_vip,
+        },
+        nodes,
+    )
 }
 
 async fn create(

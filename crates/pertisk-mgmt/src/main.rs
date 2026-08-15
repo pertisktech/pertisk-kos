@@ -3,6 +3,7 @@
 mod auth;
 mod cluster_availability;
 mod cluster_resources;
+mod cluster_versions;
 mod config;
 mod crypto;
 mod db;

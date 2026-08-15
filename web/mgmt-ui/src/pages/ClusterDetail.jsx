@@ -52,6 +52,72 @@ function formatHw(node) {
   return `${cores} vCPU · ${mem} · ${disk}`
 }
 
+const VERSION_SOURCE = {
+  nodes: 'nodes',
+  cluster: 'cluster',
+  image: 'image pin',
+}
+
+function VersionsTable({ components }) {
+  if (!components?.length) return null
+  return (
+    <section className="overview-versions">
+      <div className="section-head">
+        <h3 className="section-label">Components</h3>
+        <Link to="/os-packages" className="muted">OS packages</Link>
+      </div>
+      <table className="versions-table">
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Version</th>
+            <th>Target</th>
+            <th>Source</th>
+          </tr>
+        </thead>
+        <tbody>
+          {components.map((row) => {
+            const target = row.desired && row.desired !== row.version ? row.desired : null
+            return (
+              <tr key={row.id}>
+                <td>{row.name}</td>
+                <td>
+                  {row.mixed ? (
+                    <div className="versions-mixed">
+                      <span className="badge">mixed</span>
+                      {(row.nodes || []).map((n) => (
+                        <div key={n.name} className="muted mono-inline">
+                          {n.name} · {n.version || '—'}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="mono-inline">{row.version || '—'}</span>
+                  )}
+                </td>
+                <td>
+                  {target ? (
+                    row.id === 'os' ? (
+                      <Link className="mono-inline" to="/os-packages">{target}</Link>
+                    ) : row.id === 'kubernetes' ? (
+                      <Link className="mono-inline" to={`?tab=upgrade`}>{target}</Link>
+                    ) : (
+                      <span className="mono-inline">{target}</span>
+                    )
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
+                </td>
+                <td className="muted">{VERSION_SOURCE[row.source] || row.source}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </section>
+  )
+}
+
 function NodesTable({
   nodes,
   clusterId,
@@ -912,6 +978,7 @@ export default function ClusterDetail() {
 
   const c = data.cluster
   const nodes = data.nodes || []
+  const versions = data.versions || []
   const netLabel = c.network_mode || (c.vip6 && c.vip ? 'dual-stack' : c.vip6 ? 'ipv6' : 'ipv4')
   const dualStack = netLabel === 'dual-stack' || netLabel === 'ipv6'
   const cps = nodes.filter((n) => n.role === 'controlplane')
@@ -1238,10 +1305,11 @@ export default function ClusterDetail() {
                         </dd>
                       </div>
                     )}
-                    <div><dt>K8s</dt><dd>{c.k8s_version}</dd></div>
                   </dl>
                 </section>
               </div>
+
+              <VersionsTable components={versions} />
 
               <section className="overview-job">
                 <div className="section-head">

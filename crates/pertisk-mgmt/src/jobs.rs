@@ -1756,22 +1756,12 @@ async fn run_add_node(
             .await
             {
                 Ok(snap) => {
-                    let now = db::now_rfc3339();
-                    let _ = sqlx::query(
-                        r#"UPDATE nodes SET
-                             ip = COALESCE(?, ip),
-                             ip6 = COALESCE(?, ip6),
-                             k8s_version = COALESCE(?, k8s_version),
-                             updated_at = ?
-                           WHERE cluster_id = ? AND name = ?"#,
+                    let _ = crate::node_sync::persist_snapshot_by_name(
+                        state.pool(),
+                        cid,
+                        name,
+                        &snap,
                     )
-                    .bind(&snap.ip)
-                    .bind(&snap.ip6)
-                    .bind(&snap.k8s_version)
-                    .bind(&now)
-                    .bind(cid)
-                    .bind(name)
-                    .execute(state.pool())
                     .await;
                     append_log(
                         log_path,
@@ -2100,22 +2090,8 @@ async fn run_adopt_node(
         .await
         {
             Ok(snap) => {
-                let now = db::now_rfc3339();
-                let _ = sqlx::query(
-                    r#"UPDATE nodes SET
-                         ip = COALESCE(?, ip),
-                         ip6 = COALESCE(?, ip6),
-                         k8s_version = COALESCE(?, k8s_version),
-                         updated_at = ?
-                       WHERE id = ?"#,
-                )
-                .bind(&snap.ip)
-                .bind(&snap.ip6)
-                .bind(&snap.k8s_version)
-                .bind(&now)
-                .bind(&node_id)
-                .execute(state.pool())
-                .await;
+                let _ = crate::node_sync::persist_snapshot_by_id(state.pool(), &node_id, &snap)
+                    .await;
                 append_log(
                     log_path,
                     &format!(

@@ -123,6 +123,7 @@ Requires `kubectl` and (optionally) `helm` on the mgmt host PATH. Operator/admin
 API (Bearer JWT; shell needs **operator/admin**):
 
 - `GET /api/clusters/{id}/kubeconfig` — admin kubeconfig YAML download
+- `GET /api/clusters/{id}/versions` — component/package versions for overview (also included on `GET /api/clusters/{id}` as `versions`)
 - `GET /api/clusters/{id}/config-bundle` — ZIP of `{data_dir}/kubeconfigs/{name}/` (`admin.conf`, `worker.yaml`, role MachineConfigs)
 - `GET /api/clusters/{id}/k8s/namespaces`
 - `GET /api/clusters/{id}/k8s/workloads/{kind}?namespace=`
@@ -132,6 +133,8 @@ API (Bearer JWT; shell needs **operator/admin**):
 - `GET /api/clusters/{id}/k8s/shell?token=` (WebSocket host PTY; `token` = JWT)
 
 Requires `kubectl` on the mgmt host PATH (same as node sync / `kubectl top`).
+
+Cluster **Overview** lists component/package versions: Kubernetes and OS (from nodes; **mixed** when they differ), kernel and containerd (kubelet `nodeInfo`), CNI (cluster spec), and image pins for etcd / pause / kube-vip. OS **Target** is the latest catalog package for the cluster arch.
 
 ## Cluster Upgrade tab
 

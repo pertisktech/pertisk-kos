@@ -1824,6 +1824,11 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
 .mini-panel strong { display: block; font-size: 0.9rem; }
 .mini-panel p { margin: 0.2rem 0 0; font-size: 0.8rem; }
 .overview-job { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--border); }
+.overview-versions { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--border); }
+.overview-versions .section-head { margin-bottom: 0.75rem; }
+.versions-table { margin: 0; }
+.versions-table td { vertical-align: top; }
+.versions-mixed { display: flex; flex-direction: column; gap: 0.2rem; align-items: flex-start; }
 .job-chip {
   display: flex;
   flex-wrap: wrap;
