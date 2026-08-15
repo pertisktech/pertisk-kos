@@ -2,11 +2,11 @@
 /target/
 **/*.rs.bk
 
-# OS / editor
-.DS_Store
-*.swp
-.idea/
-.vscode/
+# Lab notes / host-specific deploy wrappers (keep out of public clones)
+/note.txt
+/note-second.txt
+/deploy-*.sh
+
 
 # Build artifacts
 /out/

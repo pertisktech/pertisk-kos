@@ -153,7 +153,7 @@ pub struct Dashboard {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utf8: Option<bool>,
     /// Public web management URL shown on the serial console (e.g.
-    /// `https://ptkos.apps.thaidevops.co`). Also set via `MGMT_PUBLIC_URL`.
+    /// `https://mgmt.example.com`). Also set via `MGMT_PUBLIC_URL`.
     #[serde(
         default,
         alias = "mgmtUrl",
@@ -1047,7 +1047,7 @@ machine:
     border: light
     cols: 140
     rows: 40
-    mgmt_url: https://ptkos.apps.thaidevops.co
+    mgmt_url: https://mgmt.example.com
 "#;
         let cfg = MachineConfig::from_yaml(yaml).unwrap();
         let dash = cfg.machine.dashboard.unwrap();
@@ -1058,7 +1058,7 @@ machine:
         assert_eq!(dash.utf8, None);
         assert_eq!(
             dash.mgmt_url.as_deref(),
-            Some("https://ptkos.apps.thaidevops.co")
+            Some("https://mgmt.example.com")
         );
     }
 
@@ -1238,23 +1238,23 @@ machine:
   dashboard:
     theme: catppuccin
     border: bordered
-    mgmt_url: https://ptkos.tools.pertisk.com
+    mgmt_url: https://mgmt.example.com
   observability:
-    lokiUrl: https://loki.tools.pertisk.com/loki/api/v1/push
+    lokiUrl: https://loki.example.com/loki/api/v1/push
 "#;
         let cfg = MachineConfig::from_yaml_partial(yaml).unwrap();
         assert_eq!(cfg.machine.machine_type, MachineType::Worker);
         let dash = cfg.machine.dashboard.unwrap();
         assert_eq!(
             dash.mgmt_url.as_deref(),
-            Some("https://ptkos.tools.pertisk.com")
+            Some("https://mgmt.example.com")
         );
         assert_eq!(
             cfg.machine
                 .observability
                 .as_ref()
                 .and_then(|o| o.loki_url.as_deref()),
-            Some("https://loki.tools.pertisk.com/loki/api/v1/push")
+            Some("https://loki.example.com/loki/api/v1/push")
         );
     }
 
@@ -1276,7 +1276,7 @@ cluster:
 version: v1alpha1
 machine:
   dashboard:
-    mgmt_url: https://ptkos.apps.thaidevops.co
+    mgmt_url: https://mgmt.example.com
 "#;
         let cfg = MachineConfig::from_yaml_merged(patch, Some(previous)).unwrap();
         assert_eq!(cfg.machine.machine_type, MachineType::Controlplane);
@@ -1284,7 +1284,7 @@ machine:
         assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
         assert_eq!(
             dash.mgmt_url.as_deref(),
-            Some("https://ptkos.apps.thaidevops.co")
+            Some("https://mgmt.example.com")
         );
     }
 
@@ -1406,7 +1406,7 @@ machine:
     border: bordered
     theme: catppuccin
     border: bordered
-    mgmt_url: https://ptkos.apps.thaidevops.co
+    mgmt_url: https://mgmt.example.com
 "#;
         let out = set_machine_type_yaml(yaml, MachineType::Controlplane).unwrap();
         let cfg = MachineConfig::from_yaml(&out).unwrap();
@@ -1416,7 +1416,7 @@ machine:
         assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
         assert_eq!(
             dash.mgmt_url.as_deref(),
-            Some("https://ptkos.apps.thaidevops.co")
+            Some("https://mgmt.example.com")
         );
         // Round-trip must not reintroduce duplicates.
         assert_eq!(out.matches("border:").count(), 1);

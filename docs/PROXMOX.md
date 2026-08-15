@@ -2,6 +2,8 @@
 
 Pertisk KOS is an immutable, API-only Kubernetes OS: the **same cloud image** runs as `controlplane` or `worker` (role comes from machine config). Create/join clusters with `pertiskctl` (see [Cluster bootstrap](#4-cluster-bootstrap-1-cp-or-ha) below).
 
+Production install and **SSH matrix** (when you need SSH to PVE): [DEPLOY.md](./DEPLOY.md).
+
 Do **not** put Proxmox root passwords in git, chat, or scripts. Use an **API token**.
 
 ## 1. Build a cloud disk
@@ -47,7 +49,7 @@ For **ZFS** (`local-zfs`), either:
 export PROXMOX_STORAGE=local-zfs
 export PROXMOX_UPLOAD_STORAGE=local   # directory storage for the HTTP upload
 # or:
-export PROXMOX_SSH=root@10.1.1.197    # scp + qm importdisk (most reliable)
+export PROXMOX_SSH=root@pve.example.com    # optional: scp + qm importdisk
 ```
 
 Self-signed TLS lab:
@@ -171,7 +173,7 @@ machine:
     cols: 93           # optional — pin width (else probe, fallback 80)
     rows: 25           # optional — pin height (else probe, fallback 24)
     utf8: true         # optional — force Unicode borders on Serial
-    mgmt_url: https://ptkos.apps.thaidevops.co   # shown on node panel
+    mgmt_url: https://mgmt.example.com   # shown on node panel
 ```
 
 Built-in defaults (no YAML needed): `catppuccin` / `ascii`. Size and UTF-8 follow the console probe — only pin `cols`/`rows`/`utf8` when the probe is wrong (wrong size blanks the Serial console).

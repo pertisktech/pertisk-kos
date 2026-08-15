@@ -146,7 +146,7 @@ stage-images:
 	ARCH="$(BUILD_ARCH)" DEST="$(DEST)" "$(ROOT)/scripts/stage-cloud-images.sh"
 
 ## Local build → RPM on mgmt → copy images to mgmt (create pushes to Proxmox).
-##   make deploy-lab MGMT=almalinux@10.1.1.12 PVE=10.1.1.197 VERSION=0.1.3
+##   make deploy-lab MGMT=user@mgmt.example.com PVE=pve.example.com VERSION=0.3.0
 deploy-lab:
 	@[[ -n "$(MGMT)" ]] || { echo "set MGMT=user@host" >&2; exit 1; }
 	"$(ROOT)/scripts/deploy-mgmt-lab.sh" --mgmt "$(MGMT)" \

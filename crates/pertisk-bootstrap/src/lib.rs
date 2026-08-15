@@ -861,7 +861,7 @@ mod tests {
     #[test]
     fn gen_config_includes_mgmt_url() {
         let net = GenNetworkOpts {
-            mgmt_url: Some("https://ptkos.apps.thaidevops.co".into()),
+            mgmt_url: Some("https://mgmt.example.com".into()),
             ..Default::default()
         };
         let g = gen_config_with_network(
@@ -873,8 +873,8 @@ mod tests {
             &net,
         )
         .unwrap();
-        assert!(g.controlplane_yaml.contains("mgmt_url: https://ptkos.apps.thaidevops.co"));
-        assert!(g.worker_yaml.contains("mgmt_url: https://ptkos.apps.thaidevops.co"));
+        assert!(g.controlplane_yaml.contains("mgmt_url: https://mgmt.example.com"));
+        assert!(g.worker_yaml.contains("mgmt_url: https://mgmt.example.com"));
     }
 
     #[test]

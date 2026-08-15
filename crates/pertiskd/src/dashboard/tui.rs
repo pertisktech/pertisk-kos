@@ -905,7 +905,7 @@ mod tests {
             theme: theme::WILD_CHERRY,
             chrome: theme::ASCII,
             background: None,
-            mgmt_url: Some("https://ptkos.apps.thaidevops.co".into()),
+            mgmt_url: Some("https://mgmt.example.com".into()),
         };
         terminal
             .draw(|f| panels::render_themed(f, &snap, &demo_logs(), &skin))
@@ -919,7 +919,7 @@ mod tests {
         );
         assert!(out.contains("kubelet"), "{out:?}");
         assert!(
-            out.contains("ptkos.apps.thaidevops.co") && !out.contains("F1:SUMMARY"),
+            out.contains("mgmt.example.com") && !out.contains("F1:SUMMARY"),
             "mgmt URL missing: {out:?}"
         );
     }

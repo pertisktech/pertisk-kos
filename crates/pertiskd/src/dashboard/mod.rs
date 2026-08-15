@@ -201,7 +201,7 @@ mod tests {
                     cols: Some(120),
                     rows: Some(40),
                     utf8: Some(true),
-                    mgmt_url: Some("https://ptkos.apps.thaidevops.co".into()),
+                    mgmt_url: Some("https://mgmt.example.com".into()),
                 }),
                 kubelet: None,
                 observability: None,
@@ -223,11 +223,11 @@ mod tests {
         assert_eq!(std::env::var("PERTISK_DASHBOARD_UTF8").unwrap(), "1");
         assert_eq!(
             std::env::var("MGMT_PUBLIC_URL").unwrap(),
-            "https://ptkos.apps.thaidevops.co"
+            "https://mgmt.example.com"
         );
         assert_eq!(
             mgmt_public_url().as_deref(),
-            Some("https://ptkos.apps.thaidevops.co")
+            Some("https://mgmt.example.com")
         );
         clear_dash_env();
     }

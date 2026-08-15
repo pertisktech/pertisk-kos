@@ -2,6 +2,8 @@
 
 Single-port control plane: **Rust API** (`pertisk-mgmt`) + **React UI** (Adminator-inspired shell).
 
+Production install (RPM, providers, **SSH matrix**): [DEPLOY.md](./DEPLOY.md).
+
 ## Quick start
 
 ```bash
@@ -51,16 +53,16 @@ In the Auth0 dashboard → **Applications** → your Regular Web Application →
 
 | Field | Value (example) |
 |-------|-----------------|
-| **Allowed Callback URLs** | `https://ptkos.apps.pertisk.com/api/auth/oidc/callback` |
-| **Allowed Logout URLs** | `https://ptkos.apps.pertisk.com/` |
-| **Allowed Web Origins** | `https://ptkos.apps.pertisk.com` |
+| **Allowed Callback URLs** | `https://mgmt.example.com/api/auth/oidc/callback` |
+| **Allowed Logout URLs** | `https://mgmt.example.com/` |
+| **Allowed Web Origins** | `https://mgmt.example.com` |
 
 Sign out for Auth0 users hits `GET /api/auth/logout`, which redirects to Auth0 `/v2/logout?…&federated` and then back to **Allowed Logout URLs**. Without that allowlist entry, Auth0 logout fails and the next SSO login reuses the previous account. OIDC start also sends `prompt=login` so Auth0 shows the login / account UI.
 
 If you also use a local or IP URL, list every callback on separate lines (or comma-separated), e.g.:
 
 ```text
-https://ptkos.apps.pertisk.com/api/auth/oidc/callback
+https://mgmt.example.com/api/auth/oidc/callback
 http://127.0.0.1:8080/api/auth/oidc/callback
 ```
 
@@ -191,7 +193,7 @@ Same idea as [Omni’s Proxmox infra provider](https://github.com/siderolabs/omn
 ### One-shot
 
 ```bash
-./scripts/deploy-mgmt-lab.sh --mgmt almalinux@10.1.1.12 --version 0.1.3
+./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --version 0.3.0
 # sets PROXMOX_NO_SSH=1 PROXMOX_UPLOAD_STORAGE=local
 ```
 
@@ -203,8 +205,8 @@ make stage-images VERSION=0.1.3
 make rpm VERSION=0.1.3
 
 # 2) mgmt — RPM
-MGMT=almalinux@10.1.1.12
-scp out/rpm/pertisk-mgmt-0.1.3-1.x86_64.rpm "$MGMT:/tmp/"
+MGMT=user@mgmt.example.com
+scp out/rpm/pertisk-mgmt-0.3.0-1.x86_64.rpm "$MGMT:/tmp/"
 ssh "$MGMT" 'sudo rpm -Uvh /tmp/pertisk-mgmt-*.rpm && sudo systemctl enable --now pertisk-mgmt'
 
 # 3) mgmt — images only (not Proxmox)
@@ -237,14 +239,14 @@ On Proxmox: **Datacenter → Storage → local → Content** must include **Impo
 
 ### Optional SSH mode
 
-`PROXMOX_SSH` is a **user + “prefer SSH” flag**, not a single hypervisor. Lab-up rewrites the host to the **current provider URL** (`root@10.1.1.196` on a cluster whose API is `https://10.1.1.195:8006` becomes `root@10.1.1.195`). Install the mgmt host key on **each** Proxmox; if SSH fails, import/resize fall back to the API.
+`PROXMOX_SSH` is a **user + “prefer SSH” flag**, not a single hypervisor. Lab-up rewrites the host to the **current provider URL** (`root@other-pve` on a cluster whose API is `https://this-pve:8006` becomes `root@this-pve`). Install the mgmt host key on **each** Proxmox; if SSH fails, import/resize fall back to the API.
 
 ```bash
 PROXMOX_SSH=root@any-pve   # host is ignored; rewritten per provider
 # unset PROXMOX_NO_SSH
 ```
 
-Or `./scripts/deploy-mgmt-lab.sh --mgmt … --with-ssh --pve 10.1.1.195`.
+Or `./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --with-ssh --pve pve.example.com`.
 
 ## RBAC
 

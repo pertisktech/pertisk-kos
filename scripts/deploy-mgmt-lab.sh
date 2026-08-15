@@ -6,9 +6,9 @@
 #   4) Create cluster uploads disk via Proxmox API (provider token)
 #
 # Examples:
-#   ./scripts/deploy-mgmt-lab.sh --mgmt almalinux@10.1.1.12
-#   ./scripts/deploy-mgmt-lab.sh --mgmt almalinux@10.1.1.12 --skip-build --skip-rpm
-#   ./scripts/deploy-mgmt-lab.sh --mgmt almalinux@10.1.1.12 --with-ssh --pve 10.1.1.195
+#   ./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com
+#   ./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --skip-build --skip-rpm
+#   ./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --with-ssh --pve pve.example.com
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

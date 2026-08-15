@@ -2,6 +2,8 @@
 
 Pertisk mgmt can provision clusters on **standalone ESXi** (HostAgent) via the SOAP vim25 API. This is the same idea as the [Proxmox provider](./PROXMOX.md): images live on the **mgmt** host; create uploads disks over HTTPS and talks to the hypervisor with the provider credentials only (no SSH required).
 
+Production install and **SSH matrix**: [DEPLOY.md](./DEPLOY.md).
+
 ## Requirements
 
 - ESXi 7/8 Host Client / HostAgent (not vCenter resource pools/folders UI).
@@ -56,7 +58,7 @@ On cluster create, mgmt sets `MGMT_PUBLIC_URL` (Settings → Public URL) into ge
 ```yaml
 machine:
   dashboard:
-    mgmt_url: https://ptkos.apps.thaidevops.co
+    mgmt_url: https://mgmt.example.com
 ```
 
 Shown on the guest serial console. Same for Proxmox and vSphere lab-up / add-node.

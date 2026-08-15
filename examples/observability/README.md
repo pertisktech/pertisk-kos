@@ -6,7 +6,7 @@ Logs stay on the Machine API (`pertiskctl logs`) and can also be **pushed** from
 
 ## Deploy (mgmt / edge host)
 
-Do **not** run this on Pertisk guests. Copy the stack to the host that already runs `pertisk-mgmt` (lab: `root@10.1.1.15`, `/opt/observability`).
+Do **not** run this on Pertisk guests. Copy the stack to the host that already runs `pertisk-mgmt` (`/opt/observability`).
 
 Prometheus uses **host networking** so it can scrape guest `:50001`. A Docker bridge cannot reach those VMs — Loki still works (nodes **push**), **Pertisk node** stays empty until Prometheus scrapes on the host network.
 
@@ -17,27 +17,26 @@ Prometheus uses **host networking** so it can scrape guest `:50001`. A Docker br
 # Prefer root. On AlmaLinux lab hosts use sudo on the receiver:
 rsync -a --exclude 'compose/file_sd/nodes.yml' \
   --rsync-path='sudo rsync' \
-  examples/observability/ almalinux@10.1.1.12:/opt/observability/
-# or:  … root@10.1.1.15:/opt/observability/
+  examples/observability/ user@mgmt.example.com:/opt/observability/
 ```
 
 ### 2. Start the stack
 
 ```bash
-ssh root@10.1.1.15
+ssh user@mgmt.example.com
 cd /opt/observability
 chmod +x sync-file-sd.sh
 docker compose up -d
 docker compose ps
 ```
 
-| Service     | URL (on the compose host)     | Notes |
-|-------------|-------------------------------|--------|
-| Grafana     | http://10.1.1.15:3000         | `admin` / `admin` |
-| Prometheus  | http://10.1.1.15:9990         | host network, listen `:9990` |
-| Loki        | http://10.1.1.15:3100         | |
-| Alloy       | http://10.1.1.15:3500         | Loki push ingest |
-| Pushgateway | http://10.1.1.15:9091         | optional metrics push |
+| Service     | URL (on the compose host) | Notes |
+|-------------|---------------------------|--------|
+| Grafana     | `http://<mgmt-host>:3000` | change default `admin` / `admin` |
+| Prometheus  | `http://<mgmt-host>:9990` | host network, listen `:9990` |
+| Loki        | `http://<mgmt-host>:3100` | |
+| Alloy       | `http://<mgmt-host>:3500` | Loki push ingest |
+| Pushgateway | `http://<mgmt-host>:9091` | optional metrics push |
 
 ### 3. Scrape targets (Pertisk node dashboard)
 
@@ -60,7 +59,7 @@ Use the compose host **LAN** IP (not `localhost`, not a container name):
 ```yaml
 machine:
   observability:
-    lokiUrl: http://10.1.1.15:3500/loki/api/v1/push
+    lokiUrl: http://<mgmt-lan-ip>:3500/loki/api/v1/push
 ```
 
 Apply with `pertiskctl apply` (or cluster apply). Grafana → **Pertisk logs** (Loki `{job="pertisk"}`).
@@ -83,7 +82,7 @@ On a current image, `lokiUrl` on `:3500` also implies metrics push to `:9091`. P
 3. `file_sd/nodes.yml` must list real guest IPs (`./sync-file-sd.sh`).
 4. From the **host**: `curl -sS http://<guest>:50001/metrics | grep pertisk_load1`
 
-Direct Loki (no Alloy): `http://10.1.1.15:3100/loki/api/v1/push` — no auto metrics push; set `prometheusPushUrl` or rely on step 3.
+Direct Loki (no Alloy): `http://<mgmt-lan-ip>:3100/loki/api/v1/push` — no auto metrics push; set `prometheusPushUrl` or rely on step 3.
 
 ## Architecture
 

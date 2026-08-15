@@ -127,7 +127,7 @@ export const machineConfigSchema = {
             },
             mgmt_url: {
               type: 'string',
-              description: 'Public web management URL shown on the serial console. Also set via Settings → Public URL.',
+              description: 'Public web management URL shown on the serial console (e.g. https://mgmt.example.com). Also set via Settings → Public URL.',
             },
             mgmtUrl: {
               type: 'string',

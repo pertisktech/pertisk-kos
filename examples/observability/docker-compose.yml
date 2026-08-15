@@ -6,7 +6,7 @@
 #   open http://127.0.0.1:3000   # admin / admin
 #
 # Point nodes at the compose *host* LAN IP (not localhost, not the container name):
-#   machine.observability.lokiUrl: http://10.1.1.15:3500/loki/api/v1/push
+#   machine.observability.lokiUrl: http://<mgmt-lan-ip>:3500/loki/api/v1/push
 # After compose up: ./sync-file-sd.sh  (guest :50001 scrape list from mgmt.db)
 
 name: pertisk-obs

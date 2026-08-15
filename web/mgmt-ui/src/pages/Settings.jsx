@@ -111,7 +111,7 @@ export default function Settings() {
                 From <code>MGMT_PUBLIC_URL</code> (required when listen is{' '}
                 <code>0.0.0.0</code>). Applied on cluster create as{' '}
                 <code>machine.dashboard.mgmt_url</code> (serial console).
-                Example: <code>http://10.1.1.15:8080</code>.
+                Example: <code>https://mgmt.example.com</code>.
               </p>
             </div>
             <div>

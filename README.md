@@ -8,7 +8,7 @@ Immutable, API-only Kubernetes node OS, plus an optional management plane for pr
 - **Terraform** — `terraform-provider-pertisk` for the same mgmt API (register hypervisors, create / scale / upgrade / destroy)
 - **Cluster API** — CAPx (planned): Kubebuilder controllers for `Cluster` / `Machine` / `MachineDeployment`
 
-Architecture and phases: [DESIGN.md](./DESIGN.md). Secure Boot / TPM lab: [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md). Kernel cmdline (dashboard knobs): [docs/KERNEL.md](./docs/KERNEL.md).
+Architecture and phases: [DESIGN.md](./DESIGN.md). **Production install (Proxmox / Nutanix / vSphere, SSH matrix):** [docs/DEPLOY.md](./docs/DEPLOY.md). Secure Boot / TPM lab: [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md). Kernel cmdline (dashboard knobs): [docs/KERNEL.md](./docs/KERNEL.md).
 
 ![Pertisk KOS management dashboard](docs/resources/1786259533199.jpg)
 
@@ -214,16 +214,13 @@ MGMT_ADMIN_PASSWORD=admin cargo run -p pertisk-mgmt -- --listen 127.0.0.1:8080
 cd web/mgmt-ui && npm run dev   # :5173 proxies /api → :8080
 ```
 
-### 2. Deploy mgmt RPM + cloud images to a lab host
+### 2. Deploy mgmt RPM + cloud images
 
 ```bash
-./scripts/deploy-mgmt-lab.sh --mgmt user@host --version 0.2.3
-# Host wrappers (edit VERSION / MGMT / PVE inside):
-#   ./deploy-285h.sh | ./deploy-13900hx.sh | ./deploy-h255.sh
-#   ARCH=both ./deploy-h255.sh    # amd64 + arm64 images
+./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --version 0.3.0
 ```
 
-Full RPM + Proxmox SSH notes: [docs/MGMT.md](./docs/MGMT.md#rpm-deploy-linuxamd64).
+Production steps (Proxmox / Nutanix / ESXi) and **when SSH is required:** [docs/DEPLOY.md](./docs/DEPLOY.md). RPM env notes: [docs/MGMT.md](./docs/MGMT.md#rpm-deploy-linuxamd64).
 
 ### 3. CLI cluster (Proxmox lab-up)
 

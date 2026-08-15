@@ -15,7 +15,7 @@ machine:
   #   background: "#1E1E2E" # optional; omit for terminal default black
   #   cols: 93            # only if probe is wrong — wrong size blanks Serial
   #   rows: 25
-  #   mgmt_url: https://ptkos.apps.thaidevops.co
+  #   mgmt_url: https://mgmt.example.com
   # observability:          # optional — omit disables Loki push
   #   lokiUrl: http://10.1.1.10:3500/loki/api/v1/push
 cluster:

@@ -2,6 +2,8 @@
 
 Pertisk mgmt can provision clusters on **Nutanix Prism Element** (AHV) via the REST API v2.0. Same idea as [Proxmox](./PROXMOX.md) and [vSphere](./VSPHERE.md): images live on the **mgmt** host; create uploads a qcow2 disk image over HTTPS and talks to Prism with the provider credentials only (no SSH / acli required).
 
+Production install and **SSH matrix**: [DEPLOY.md](./DEPLOY.md).
+
 ## Requirements
 
 - Prism Element (cluster VIP or CVM) on port **9440**.
