@@ -541,6 +541,13 @@ impl MachineConfig {
         Ok(cfg)
     }
 
+    /// Parse a partial machine YAML (templates / Config-tab drafts).
+    /// `machine.type` may be omitted — cluster apply sets it per node role.
+    pub fn from_yaml_partial(yaml: &str) -> Result<Self, ConfigError> {
+        const STUB: &str = "version: v1alpha1\nmachine:\n  type: worker\n";
+        Self::from_yaml_merged(yaml, Some(STUB))
+    }
+
     /// Keep an existing on-disk dashboard theme/border when the new YAML omits
     /// the section; clear size/utf8 pins so the console probe can run (a stale
     /// `cols`/`rows` that does not match the pane blanks Proxmox Serial).
@@ -1220,6 +1227,34 @@ machine:
         assert_eq!(
             incoming.machine.dashboard.unwrap().theme.as_deref(),
             Some("wild-cherry")
+        );
+    }
+
+    #[test]
+    fn from_yaml_partial_allows_omitted_type() {
+        let yaml = r#"
+version: v1alpha1
+machine:
+  dashboard:
+    theme: catppuccin
+    border: bordered
+    mgmt_url: https://ptkos.tools.pertisk.com
+  observability:
+    lokiUrl: https://loki.tools.pertisk.com/loki/api/v1/push
+"#;
+        let cfg = MachineConfig::from_yaml_partial(yaml).unwrap();
+        assert_eq!(cfg.machine.machine_type, MachineType::Worker);
+        let dash = cfg.machine.dashboard.unwrap();
+        assert_eq!(
+            dash.mgmt_url.as_deref(),
+            Some("https://ptkos.tools.pertisk.com")
+        );
+        assert_eq!(
+            cfg.machine
+                .observability
+                .as_ref()
+                .and_then(|o| o.loki_url.as_deref()),
+            Some("https://loki.tools.pertisk.com/loki/api/v1/push")
         );
     }
 

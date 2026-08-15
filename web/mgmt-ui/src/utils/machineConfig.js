@@ -28,7 +28,6 @@ export function defaultTemplateYaml(publicUrl) {
   ].join('\n')
   return `version: v1alpha1
 machine:
-  type: worker
 ${dash}
   network:
     hostname: node-1

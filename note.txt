@@ -187,3 +187,15 @@ rsync -a --exclude 'compose/file_sd/nodes.yml' \
 
 
 ssh root@10.1.1.15 'cd /opt/observability && sudo docker compose restart grafana'
+
+
+
+
+version: v1alpha1
+machine:
+  dashboard:
+    theme: catppuccin
+    border: bordered
+    mgmt_url: https://ptkos.tools.pertisk.com
+  observability:
+    lokiUrl: https://loki.tools.pertisk.com/loki/api/v1/push

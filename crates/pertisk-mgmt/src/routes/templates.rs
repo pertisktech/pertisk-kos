@@ -64,7 +64,7 @@ fn validate_yaml(yaml: &str) -> ApiResult<()> {
     if trimmed.is_empty() {
         return Err(AppError::bad("yaml must not be empty"));
     }
-    pertisk_config::MachineConfig::from_yaml(trimmed)
+    pertisk_config::MachineConfig::from_yaml_partial(trimmed)
         .map_err(|e| AppError::bad(format!("invalid machine config: {e}")))?;
     Ok(())
 }
