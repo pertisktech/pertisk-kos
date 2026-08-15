@@ -2,6 +2,7 @@
 
 use std::net::IpAddr;
 use std::path::Path;
+use std::time::Duration;
 
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -14,7 +15,6 @@ pub struct NodeSnapshot {
     pub ip: Option<String>,
     pub ip6: Option<String>,
     pub k8s_version: Option<String>,
-    pub os_version: Option<String>,
     pub kernel_version: Option<String>,
     pub container_runtime: Option<String>,
     pub kubelet_status: Option<String>,
@@ -65,7 +65,6 @@ pub async fn persist_snapshot_by_name(
              ip = COALESCE(?, ip),
              ip6 = COALESCE(?, ip6),
              k8s_version = COALESCE(?, k8s_version),
-             os_version = COALESCE(?, os_version),
              kernel_version = COALESCE(?, kernel_version),
              container_runtime = COALESCE(?, container_runtime),
              updated_at = ?
@@ -74,7 +73,6 @@ pub async fn persist_snapshot_by_name(
     .bind(&snap.ip)
     .bind(&snap.ip6)
     .bind(&snap.k8s_version)
-    .bind(&snap.os_version)
     .bind(&snap.kernel_version)
     .bind(&snap.container_runtime)
     .bind(&now)
@@ -96,7 +94,6 @@ pub async fn persist_snapshot_by_id(
              ip = COALESCE(?, ip),
              ip6 = COALESCE(?, ip6),
              k8s_version = COALESCE(?, k8s_version),
-             os_version = COALESCE(?, os_version),
              kernel_version = COALESCE(?, kernel_version),
              container_runtime = COALESCE(?, container_runtime),
              updated_at = ?
@@ -105,7 +102,6 @@ pub async fn persist_snapshot_by_id(
     .bind(&snap.ip)
     .bind(&snap.ip6)
     .bind(&snap.k8s_version)
-    .bind(&snap.os_version)
     .bind(&snap.kernel_version)
     .bind(&snap.container_runtime)
     .bind(&now)
@@ -113,6 +109,100 @@ pub async fn persist_snapshot_by_id(
     .execute(pool)
     .await?;
     Ok(r.rows_affected())
+}
+
+/// Cloud-image seed / Cargo workspace default — not the running A/B slot.
+pub fn is_placeholder_os_version(v: Option<&str>) -> bool {
+    match v.map(str::trim) {
+        None | Some("") => true,
+        Some("0.1.0") | Some("v0.1.0") => true,
+        _ => false,
+    }
+}
+
+/// Guest dashboard / `pertiskctl version` — running initramfs, not kubelet osImage.
+pub async fn sync_os_versions_from_machine_api(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    pertiskctl: &Path,
+) -> anyhow::Result<usize> {
+    if !pertiskctl.is_file() {
+        return Ok(0);
+    }
+    let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, ip, os_version FROM nodes WHERE cluster_id = ?",
+    )
+    .bind(cluster_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut futs = Vec::new();
+    for (id, ip, current) in rows {
+        let Some(ip) = ip.filter(|s| !s.trim().is_empty()) else {
+            continue;
+        };
+        if !is_placeholder_os_version(current.as_deref()) {
+            continue;
+        }
+        let bin = pertiskctl.to_path_buf();
+        futs.push(async move {
+            let ver = fetch_node_os_version(&bin, ip.trim()).await;
+            (id, ver)
+        });
+    }
+
+    let results = futures::future::join_all(futs).await;
+    let now = db::now_rfc3339();
+    let mut updated = 0usize;
+    for (id, ver) in results {
+        let Some(ver) = ver.filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        let r = sqlx::query("UPDATE nodes SET os_version = ?, updated_at = ? WHERE id = ?")
+            .bind(&ver)
+            .bind(&now)
+            .bind(&id)
+            .execute(pool)
+            .await?;
+        if r.rows_affected() > 0 {
+            updated += 1;
+        }
+    }
+    Ok(updated)
+}
+
+async fn fetch_node_os_version(pertiskctl: &Path, ip: &str) -> Option<String> {
+    let addr = format!("{ip}:50000");
+    let out = tokio::time::timeout(
+        Duration::from_secs(4),
+        Command::new(pertiskctl)
+            .args(["-e", &addr, "version"])
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    parse_pertiskctl_node_version(&stdout)
+}
+
+/// `pertiskctl version` prints the CLI version first, then `node <ver> …`.
+pub fn parse_pertiskctl_node_version(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("node ") else {
+            continue;
+        };
+        if rest.starts_with("unreachable") {
+            continue;
+        }
+        let ver = rest.split_whitespace().next().unwrap_or("");
+        if ver.is_empty() {
+            continue;
+        }
+        return Some(ver.to_string());
+    }
+    None
 }
 
 async fn fetch_from_kubectl(kubeconfig: &Path) -> anyhow::Result<Vec<(String, NodeSnapshot)>> {
@@ -176,10 +266,6 @@ async fn fetch_from_kubectl(kubeconfig: &Path) -> anyhow::Result<Vec<(String, No
         {
             snap.k8s_version = nonempty(ver);
         }
-        snap.os_version = item
-            .pointer("/status/nodeInfo/osImage")
-            .and_then(|v| v.as_str())
-            .and_then(parse_os_image);
         snap.kernel_version = item
             .pointer("/status/nodeInfo/kernelVersion")
             .and_then(|v| v.as_str())
@@ -355,6 +441,19 @@ lab-ha-wk-1   Ready    <none>          42s   v1.36.2   10.1.1.134    <none>
         assert_eq!(rows[0].0, "lab-ha-cp-1");
         assert_eq!(rows[0].1.ip.as_deref(), Some("10.1.1.31"));
         assert_eq!(rows[0].1.k8s_version.as_deref(), Some("v1.36.3"));
+    }
+
+    #[test]
+    fn parses_pertiskctl_node_version() {
+        let out = "pertiskctl 0.1.0\nnode 0.2.89 hostname=lab-ha-285h-cp-3 (api v1alpha1 / linux)\n";
+        assert_eq!(parse_pertiskctl_node_version(out).as_deref(), Some("0.2.89"));
+        assert_eq!(
+            parse_pertiskctl_node_version("pertiskctl 0.1.0\nnode: unreachable (timeout)\n")
+                .as_deref(),
+            None
+        );
+        assert!(is_placeholder_os_version(Some("0.1.0")));
+        assert!(!is_placeholder_os_version(Some("0.2.89")));
     }
 
     #[test]

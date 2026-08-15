@@ -4,6 +4,7 @@ import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 import { formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
+import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import ClusterWizard from '../components/ClusterWizard'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 
@@ -135,6 +136,7 @@ export default function Clusters() {
                             {formatProviderKind(kind)}
                           </span>
                           <span>{c.provider_name}</span>
+                          <ProviderStatusBadge availability={c.provider_availability} />
                         </div>
                         <div className="muted cluster-provider-node">
                           {c.provider_node || '—'}

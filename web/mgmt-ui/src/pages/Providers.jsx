@@ -1,8 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { useConfirm } from '../components/Confirm'
 import ProviderWizard from '../components/ProviderWizard'
+import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
+import { formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
+import { useMgmtRefresh } from '../hooks/useMgmtEvents'
+
+const AVAIL_POLL_MS = 15000
 
 function formatProbe(r, kind) {
   const label = kind === 'vsphere' ? 'ESXi' : kind === 'nutanix' ? 'Nutanix' : 'Proxmox'
@@ -41,10 +46,15 @@ export default function Providers() {
   const [msg, setMsg] = useState('')
   const [testing, setTesting] = useState(false)
 
-  function load() {
+  const load = useCallback(() => {
     api('/providers').then(setList).catch((e) => setError(e.message))
-  }
-  useEffect(load, [])
+  }, [])
+  useEffect(() => {
+    load()
+    const t = setInterval(load, AVAIL_POLL_MS)
+    return () => clearInterval(t)
+  }, [load])
+  useMgmtRefresh(load)
 
   function startCreate() {
     setError('')
@@ -121,6 +131,7 @@ export default function Providers() {
           <thead>
             <tr>
               <th>Name</th>
+              <th>Status</th>
               <th>Kind</th>
               <th>Arch</th>
               <th>URL</th>
@@ -134,7 +145,14 @@ export default function Providers() {
             {list.map((p) => (
               <tr key={p.id}>
                 <td>{p.name}</td>
-                <td>{p.kind || 'proxmox'}</td>
+                <td>
+                  <ProviderStatusBadge availability={p.availability} showUnknown />
+                </td>
+                <td>
+                  <span className={`badge kind kind-${normalizeProviderKind(p.kind)}`}>
+                    {formatProviderKind(p.kind)}
+                  </span>
+                </td>
                 <td>{p.arch || 'amd64'}</td>
                 <td className="mono">{p.url}</td>
                 <td>{p.node}</td>

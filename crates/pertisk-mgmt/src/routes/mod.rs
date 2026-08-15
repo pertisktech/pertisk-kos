@@ -10,7 +10,7 @@ mod machines;
 mod meta;
 pub(crate) mod nodes;
 pub(crate) mod os_packages;
-mod providers;
+pub(crate) mod providers;
 mod settings;
 mod templates;
 

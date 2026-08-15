@@ -134,7 +134,7 @@ API (Bearer JWT; shell needs **operator/admin**):
 
 Requires `kubectl` on the mgmt host PATH (same as node sync / `kubectl top`).
 
-Cluster **Overview** lists component/package versions: Kubernetes and OS (from nodes; **mixed** when they differ), kernel and containerd (kubelet `nodeInfo`), CNI (cluster spec), and image pins for etcd / pause / kube-vip. OS **Target** is the latest catalog package for the cluster arch.
+Cluster **Overview** lists component/package versions: Kubernetes (kubelet), OS (Machine API `version` — same as the guest dashboard; not kubelet `osImage`), kernel and containerd (kubelet `nodeInfo`), CNI (cluster spec), and image pins for etcd / pause / kube-vip. OS **Target** is the latest catalog package for the cluster arch.
 
 ## Cluster Upgrade tab
 
@@ -170,6 +170,8 @@ Recreating VMs from a new qcow2 is a reinstall, not this path.
 UI → Providers → add URL, API token, node, storage (same fields as [PROXMOX.md](./PROXMOX.md)).
 
 Secrets are encrypted at rest with `MGMT_SECRET_KEY`. For lab self-signed TLS, set **Insecure TLS = Yes**.
+
+`GET /api/providers` (and cluster list/detail) include live **`availability`**: `online` if the hypervisor API accepts stored credentials, `offline` if unreachable or auth fails. Same badges as cluster/node reachability.
 
 ## vSphere (ESXi) provider
 
@@ -293,6 +295,7 @@ Or `./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --with-ssh --pve p
 | Page | API | Notes |
 |------|-----|--------|
 | **Machines** | `GET /api/machines` | Cross-cluster node inventory with live **online** / **offline** (Machine API `:50000`); opens node detail |
+| **Providers** | `GET /api/providers` | Hypervisor inventory with live **online** / **offline** (Proxmox / ESXi / Prism API) |
 | **OS packages** | `GET/POST /api/os-packages`, `DELETE /api/os-packages/{id}`, `POST /api/os-packages/{id}/apply` | Signed A/B OS bundles by version + arch; apply to matching clusters |
 | **Templates** | `GET/POST /api/templates`, `GET/PUT/DELETE /api/templates/{id}` | Machine-config YAML blueprints; load into cluster Config tab |
 | **Audit** | `GET /api/audit?limit=&offset=&action=&resource=` | Management action log (`audit_log` table) |

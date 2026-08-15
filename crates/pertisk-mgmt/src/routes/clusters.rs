@@ -59,6 +59,10 @@ pub struct ClusterOut {
     #[sqlx(skip)]
     #[serde(default)]
     pub availability: String,
+    /// Live hypervisor API for this cluster's provider.
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub provider_availability: String,
     pub controlplanes: i64,
     pub workers: i64,
     pub vip: Option<String>,
@@ -216,6 +220,34 @@ FROM clusters c
 LEFT JOIN providers p ON p.id = c.provider_id
 "#;
 
+async fn fill_provider_availability(state: &AppState, rows: &mut [ClusterOut]) {
+    let mut ids: Vec<String> = Vec::new();
+    for c in rows.iter() {
+        if !c.provider_id.is_empty() && !ids.iter().any(|x| x == &c.provider_id) {
+            ids.push(c.provider_id.clone());
+        }
+    }
+    let futs: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            let state = state.clone();
+            let id = id.clone();
+            async move {
+                let avail = crate::provider_availability::probe(&state, &id).await;
+                (id, avail)
+            }
+        })
+        .collect();
+    let avails = futures::future::join_all(futs).await;
+    for c in rows.iter_mut() {
+        c.provider_availability = avails
+            .iter()
+            .find(|(id, _)| id == &c.provider_id)
+            .map(|(_, a)| a.clone())
+            .unwrap_or_else(|| "unknown".into());
+    }
+}
+
 async fn list(
     State(state): State<AppState>,
     CurrentUser(_): CurrentUser,
@@ -239,6 +271,7 @@ async fn list(
     for (c, a) in rows.iter_mut().zip(avails) {
         c.availability = a;
     }
+    fill_provider_availability(&state, &mut rows).await;
     Ok(Json(rows))
 }
 
@@ -342,6 +375,12 @@ async fn get_one(
                 .await;
             }
         }
+        let _ = crate::node_sync::sync_os_versions_from_machine_api(
+            state.pool(),
+            &id,
+            &state.cfg().pertiskctl,
+        )
+        .await;
     }
 
     let mut nodes = sqlx::query_as::<_, crate::routes::nodes::NodeOut>(&format!(
@@ -356,6 +395,8 @@ async fn get_one(
 
     cluster.availability =
         crate::cluster_availability::probe(&state, &id, &cluster.status).await;
+    cluster.provider_availability =
+        crate::provider_availability::probe(&state, &cluster.provider_id).await;
 
     let versions = cluster_versions(state.pool(), &cluster, &nodes).await;
 

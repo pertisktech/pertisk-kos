@@ -304,6 +304,14 @@ impl VsphereClient {
         })
     }
 
+    /// Fast API reachability (login only, 3s cap).
+    pub async fn ping(&self) -> bool {
+        matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(3), self.login()).await,
+            Ok(Ok(()))
+        )
+    }
+
     pub async fn list_storage(&self, _node: &str) -> ApiResult<Vec<ProxmoxStorage>> {
         Ok(self.inventory().await?.datastores)
     }

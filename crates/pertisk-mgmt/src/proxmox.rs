@@ -145,6 +145,18 @@ impl ProxmoxClient {
         })
     }
 
+    /// Fast API reachability (version only, 2s cap).
+    pub async fn ping(&self) -> bool {
+        matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                self.get_json("/version"),
+            )
+            .await,
+            Ok(Ok(_))
+        )
+    }
+
     pub async fn list_storage(&self, node: &str) -> ApiResult<Vec<ProxmoxStorage>> {
         let v = self.get_json(&format!("/nodes/{node}/storage")).await?;
         let list: Vec<ProxmoxStorage> = v

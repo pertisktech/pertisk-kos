@@ -472,7 +472,10 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
               <select value={form.provider_id} onChange={(e) => set('provider_id', e.target.value)}>
                 <option value="">Select…</option>
                 {providers.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {p.availability === 'offline' ? ' (offline)' : p.availability === 'online' ? ' (online)' : ''}
+                  </option>
                 ))}
               </select>
             </div>

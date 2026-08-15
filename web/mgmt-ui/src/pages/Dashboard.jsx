@@ -244,6 +244,8 @@ export default function Dashboard() {
   const ready = clusters.filter((c) => c.status === 'ready').length
   const cps = clusters.reduce((n, c) => n + (c.controlplanes || 0), 0)
   const wks = clusters.reduce((n, c) => n + (c.workers || 0), 0)
+  const providersOnline = providers.filter((p) => p.availability === 'online').length
+  const providersOffline = providers.filter((p) => p.availability === 'offline').length
   const recent = clusters.slice(0, 8)
 
   return (
@@ -260,7 +262,16 @@ export default function Dashboard() {
         <div className="stat"><div className="label">Ready</div><div className="value">{ready}</div></div>
         <div className="stat"><div className="label">Control planes</div><div className="value">{cps}</div></div>
         <div className="stat"><div className="label">Workers</div><div className="value">{wks}</div></div>
-        <div className="stat"><div className="label">Providers</div><div className="value">{providers.length}</div></div>
+        <div className="stat">
+          <div className="label">Providers</div>
+          <div className="value">{providers.length}</div>
+          {providers.length > 0 && (
+            <div className="muted" style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {providersOnline > 0 && <span className="badge online">{providersOnline} online</span>}
+              {providersOffline > 0 && <span className="badge offline">{providersOffline} offline</span>}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="section-head dash-resources-head">

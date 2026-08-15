@@ -25,6 +25,8 @@ if [[ "$TARGET_GB" -lt "$BUILD_GB" ]]; then
 fi
 ARCH="${PERTISK_ARCH:-amd64}"
 SEED="${PERTISK_SEED_CONFIG:-${ROOT}/examples/worker-cloud.yaml}"
+DEFAULT_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "${ROOT}/Cargo.toml" | head -1)"
+VERSION="${PERTISK_VERSION:-${DEFAULT_VERSION:-0.1.0}}"
 # Guest hostname: explicit env wins; else short GUID + role (cp|wk) from seed type.
 short_host_id() {
   if command -v uuidgen >/dev/null 2>&1; then
@@ -116,6 +118,7 @@ docker run --rm --privileged \
   -e PERTISK_BOOT_ASSETS=/work/boot \
   -e PERTISK_SEED_CONFIG=/work/config.yaml \
   -e PERTISK_ARCH="${ARCH}" \
+  -e PERTISK_VERSION="${VERSION}" \
   -e PERTISK_HOSTNAME="${HOSTNAME_SEED}" \
   -v "${RAW}:/work/disk.raw" \
   -v "${ASSETS}:/work/boot:ro" \

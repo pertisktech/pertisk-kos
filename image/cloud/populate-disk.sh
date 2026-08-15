@@ -7,6 +7,7 @@ DISK="${PERTISK_DISK:?PERTISK_DISK required}"
 BOOT_ASSETS="${PERTISK_BOOT_ASSETS:?PERTISK_BOOT_ASSETS required}"
 SEED_CONFIG="${PERTISK_SEED_CONFIG:?PERTISK_SEED_CONFIG required}"
 ARCH="${PERTISK_ARCH:-amd64}"
+VERSION="${PERTISK_VERSION:-0.1.0}"
 
 case "${ARCH}" in
   amd64) EFI_NAME=BOOTX64.EFI ;;
@@ -179,7 +180,7 @@ cat >/mnt/pertisk-state/boot-meta.json <<EOF
   "boot_attempts": 0,
   "boot_ok": true,
   "pending_version": null,
-  "active_version": "0.1.0"
+  "active_version": "${VERSION}"
 }
 EOF
 

@@ -19,6 +19,7 @@ mod node_sync;
 mod nutanix;
 mod os_upgrade;
 mod proxmox;
+mod provider_availability;
 mod rbac;
 mod vsphere;
 mod routes;

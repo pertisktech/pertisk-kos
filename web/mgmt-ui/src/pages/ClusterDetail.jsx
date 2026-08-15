@@ -6,6 +6,7 @@ import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 import { ClusterMetaBadges, formatArch, formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
 import { NodeStatusBadges } from '../components/NodeStatusBadges'
+import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import { useConfirm } from '../components/Confirm'
 import Checkbox from '../components/Checkbox'
 import ColorLogViewer from '../components/ColorLogViewer'
@@ -1167,6 +1168,7 @@ export default function ClusterDetail() {
                   {formatProviderKind(c.provider_kind)}
                 </span>
                 <span>{c.provider_name}</span>
+                <ProviderStatusBadge availability={c.provider_availability} />
               </>
             ) : (
               <span className="badge error">missing</span>
@@ -1255,6 +1257,8 @@ export default function ClusterDetail() {
                               {formatProviderKind(c.provider_kind)}
                             </span>
                             <Link to="/providers">{c.provider_name}</Link>
+                            {' '}
+                            <ProviderStatusBadge availability={c.provider_availability} />
                             <div className="muted" style={{ fontSize: '0.8rem' }}>
                               {c.provider_url}
                               {c.provider_node ? ` · ${c.provider_node}` : ''}

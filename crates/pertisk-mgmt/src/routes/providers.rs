@@ -25,21 +25,25 @@ pub fn routes() -> Router<AppState> {
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
-struct ProviderOut {
-    id: String,
-    name: String,
-    kind: String,
-    url: String,
-    token_id: String,
-    node: String,
-    storage: String,
-    bridge: String,
-    insecure: i64,
-    defaults_json: String,
+pub struct ProviderOut {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub url: String,
+    pub token_id: String,
+    pub node: String,
+    pub storage: String,
+    pub bridge: String,
+    pub insecure: i64,
+    pub defaults_json: String,
     /// Default guest arch for clusters on this provider (amd64|arm64).
-    arch: String,
-    created_at: String,
-    updated_at: String,
+    pub arch: String,
+    pub created_at: String,
+    pub updated_at: String,
+    /// Live hypervisor API: `online` | `offline` | `unknown` (not stored).
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub availability: String,
 }
 
 #[derive(Deserialize)]
@@ -133,11 +137,12 @@ async fn list(
     State(state): State<AppState>,
     CurrentUser(_): CurrentUser,
 ) -> ApiResult<Json<Vec<ProviderOut>>> {
-    let rows = sqlx::query_as::<_, ProviderOut>(&format!(
+    let mut rows = sqlx::query_as::<_, ProviderOut>(&format!(
         "{PROVIDER_SELECT} ORDER BY name"
     ))
     .fetch_all(state.pool())
     .await?;
+    crate::provider_availability::fill(&state, &mut rows).await;
     Ok(Json(rows))
 }
 
@@ -146,13 +151,14 @@ async fn get_one(
     CurrentUser(_): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<ProviderOut>> {
-    let row = sqlx::query_as::<_, ProviderOut>(&format!(
+    let mut row = sqlx::query_as::<_, ProviderOut>(&format!(
         "{PROVIDER_SELECT} WHERE id = ?"
     ))
     .bind(&id)
     .fetch_optional(state.pool())
     .await?
     .ok_or(AppError::NotFound)?;
+    row.availability = crate::provider_availability::probe(&state, &id).await;
     Ok(Json(row))
 }
 
