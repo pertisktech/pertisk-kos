@@ -1,5 +1,5 @@
 :root {
-  /* Flux-inspired violet theme (aligned with pertisk-kube-web) */
+  /* Deep purple chrome; green only for success/ready */
   --bg: #0c0d18;
   --bg-elevated: #131421;
   --bg-sidebar: #090a14;
@@ -9,6 +9,9 @@
   --text-muted: #8e90ad;
   --accent: #9a7bf7;
   --accent-hover: #b89ef9;
+  --accent-on: #fff;
+  --brand: #9a7bf7;
+  --brand-deep: #7e14ff;
   --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
   --accent-soft-strong: color-mix(in srgb, var(--accent) 28%, transparent);
   --success: #4ade9b;
@@ -39,6 +42,9 @@
   --text-muted: #6c6d90;
   --accent: #6d3ef5;
   --accent-hover: #8b65f7;
+  --accent-on: #fff;
+  --brand: #6d3ef5;
+  --brand-deep: #7e14ff;
   --shadow-md: 0 8px 24px rgba(22, 22, 42, 0.1);
   --scrollbar-thumb: color-mix(in srgb, var(--border) 70%, #c4c4d8);
   --scrollbar-thumb-hover: color-mix(in srgb, var(--accent) 35%, #c4c4d8);
@@ -62,13 +68,13 @@ body {
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(900px 400px at 100% -10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 65%),
-    radial-gradient(600px 300px at 0% 60%, color-mix(in srgb, #60a5fa 5%, transparent), transparent 70%);
+    radial-gradient(900px 400px at 100% -10%, color-mix(in srgb, var(--brand-deep) 14%, transparent), transparent 65%),
+    radial-gradient(600px 300px at 0% 60%, color-mix(in srgb, var(--success) 6%, transparent), transparent 70%);
   pointer-events: none;
   z-index: -1;
 }
 
-/* Modern scrollbars — violet-tinted, thin, rounded */
+/* Modern scrollbars — purple-tinted, thin, rounded */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
@@ -113,7 +119,7 @@ button, .btn {
   padding: 0.5rem 1rem;
   font-size: 0.9rem;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-on);
 }
 button:hover, .btn:hover { background: var(--accent-hover); }
 button.secondary, .btn.secondary {
@@ -212,7 +218,7 @@ label {
   flex-shrink: 0;
 }
 
-.brand span.accent { color: var(--accent); }
+.brand span.accent { color: var(--brand); }
 
 .sidebar-collapse-btn {
   display: none;
@@ -258,6 +264,13 @@ label {
   text-decoration: none;
   transition: background var(--transition-fast), color var(--transition-fast);
 }
+.nav a .icon {
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0.22rem;
+  border-radius: 7px;
+  box-sizing: border-box;
+}
 
 .nav a:hover {
   background: var(--bg-hover);
@@ -268,6 +281,10 @@ label {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
+}
+.nav a.active .icon {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
 }
 
 .nav-label {
@@ -760,8 +777,8 @@ tr.row-click:focus-visible {
   letter-spacing: 0.02em;
 }
 .badge.arch-arm64 {
-  background: color-mix(in srgb, #5b8def 22%, transparent);
-  color: #9ec0ff;
+  background: color-mix(in srgb, var(--brand) 22%, transparent);
+  color: #c4b5fd;
 }
 .badge.arch-amd64 {
   background: color-mix(in srgb, var(--text-muted) 18%, transparent);
@@ -830,7 +847,7 @@ tr.row-click:focus-visible {
   justify-content: center;
   position: relative;
   background:
-    radial-gradient(ellipse at 20% 20%, color-mix(in srgb, var(--accent) 15%, transparent), transparent 50%),
+    radial-gradient(ellipse at 20% 20%, color-mix(in srgb, var(--brand-deep) 18%, transparent), transparent 50%),
     radial-gradient(ellipse at 80% 80%, color-mix(in srgb, var(--success) 8%, transparent), transparent 45%),
     var(--bg);
 }
@@ -855,8 +872,8 @@ tr.row-click:focus-visible {
   width: 2.25rem;
   height: 2.25rem;
   border-radius: 10px;
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-  color: var(--accent);
+  background: linear-gradient(135deg, var(--brand), var(--brand-deep));
+  color: var(--accent-on);
   font-weight: 700;
   font-size: 1rem;
   letter-spacing: -0.02em;
@@ -932,11 +949,11 @@ tr.row-click:focus-visible {
 .login-sso-btn.login-sso-primary {
   border-color: transparent;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-on);
 }
 .login-sso-btn.login-sso-primary:hover {
   background: var(--accent-hover);
-  color: #fff;
+  color: var(--accent-on);
   border-color: transparent;
 }
 .login-sso-mark {
@@ -963,7 +980,7 @@ tr.row-click:focus-visible {
 .muted { color: var(--text-muted); font-size: 0.85rem; }
 .mono { font-family: var(--mono); font-size: 0.8rem; white-space: pre-wrap; }
 .log-box {
-  background: #0a0b14;
+  background: color-mix(in srgb, var(--bg) 88%, #000);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem;
@@ -1035,7 +1052,7 @@ tr.row-click:focus-visible {
 }
 a.btn-icon {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-on);
   border-radius: 8px;
   padding: 0.5rem 1rem;
   font-size: 0.9rem;
@@ -1062,8 +1079,8 @@ a.btn-icon.secondary {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: linear-gradient(135deg, var(--accent), #14b8a6);
-  color: #0c0d18;
+  background: linear-gradient(135deg, var(--brand), var(--brand-deep));
+  color: var(--accent-on);
   font-size: 0.85rem;
   font-weight: 800;
   display: inline-flex;
@@ -1097,7 +1114,7 @@ a.btn-icon.secondary {
   height: 28px;
   border-radius: 999px;
   background: var(--accent);
-  color: var(--bg);
+  color: var(--accent-on);
   font-size: 0.75rem;
   font-weight: 600;
   display: inline-flex;
@@ -1175,7 +1192,7 @@ a.btn-icon.secondary {
 .segment button:hover { color: var(--text); background: transparent; }
 .segment button.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-on);
 }
 
 .panel-grid {
@@ -1390,7 +1407,7 @@ a.btn-icon.secondary {
 }
 .wizard-step.current .wizard-step-num {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-on);
 }
 .wizard-step.done .wizard-step-num {
   background: color-mix(in srgb, var(--success) 35%, transparent);
@@ -1522,7 +1539,7 @@ a.btn-icon.secondary {
 .chk.mid .chk-box {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--accent-on);
 }
 .chk-label { font-size: 0.85rem; color: var(--text); line-height: 1.2; }
 

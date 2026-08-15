@@ -122,7 +122,7 @@ export default function K8sTab({ clusterId, ready }) {
           <p className="muted">Live view via kubectl on the management host (polls every {POLL_MS / 1000}s).</p>
         </div>
         <button type="button" className="secondary btn-icon" onClick={load} disabled={loading}>
-          <Icon name="play" size={14} /> Refresh
+          <Icon name="refresh" size={14} /> Refresh
         </button>
       </div>
 

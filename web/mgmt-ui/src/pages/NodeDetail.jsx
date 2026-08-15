@@ -293,7 +293,7 @@ export default function NodeDetail() {
       )}
 
       <div className="card">
-        <h2 className="card-title"><Icon name="play" size={18} /> Live health</h2>
+        <h2 className="card-title"><Icon name="clusters" size={18} /> Live health</h2>
         {health?.error ? (
           <p className="muted">{health.error}</p>
         ) : (
@@ -404,7 +404,7 @@ export default function NodeDetail() {
               <Tooltip contentStyle={tooltipStyle} />
               <Legend />
               <Area type="stepAfter" dataKey="ready" name="ready" stroke="var(--success)" fill="rgba(74,222,155,0.2)" strokeWidth={2} />
-              <Area type="stepAfter" dataKey="containerd" name="containerd" stroke="var(--accent)" fill="rgba(154,123,247,0.15)" strokeWidth={2} />
+              <Area type="stepAfter" dataKey="containerd" name="containerd" stroke="var(--accent)" fill="color-mix(in srgb, var(--accent) 15%, transparent)" strokeWidth={2} />
               <Area type="stepAfter" dataKey="kubelet" name="kubelet" stroke="var(--warning)" fill="rgba(251,191,36,0.12)" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
@@ -462,7 +462,7 @@ export default function NodeDetail() {
       <div className="card node-logs-card">
         <div className="section-head log-head">
           <h2 className="card-title" style={{ margin: 0 }}>
-            <Icon name="providers" size={18} /> Logs
+            <Icon name="logs" size={18} /> Logs
           </h2>
           <div className="row-actions node-log-actions">
             <select

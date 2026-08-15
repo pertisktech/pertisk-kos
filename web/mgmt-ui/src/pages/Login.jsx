@@ -12,6 +12,7 @@ import {
   setAuthProvider,
 } from '../api'
 import Checkbox from '../components/Checkbox'
+import { Icon } from '../components/Icons'
 import { APP_VERSION } from '../utils/version'
 
 function Auth0Mark({ size = 18 }) {
@@ -90,7 +91,9 @@ export default function Login() {
     <div className="login-wrap">
       <div className="login-card">
         <div className="login-brand">
-          <span className="login-brand-mark" aria-hidden>P</span>
+          <span className="login-brand-mark" aria-hidden>
+            <Icon name="clusters" size={18} />
+          </span>
           <h1>Pertisk KOS</h1>
         </div>
         {error && <div className="error">{error}</div>}

@@ -14,7 +14,7 @@ const BUSY_FALLBACK_MS = 8000
 const GAUGE_BASE = {
   cpu: 'var(--accent)',
   memory: 'var(--success)',
-  disk: '#60a5fa',
+  disk: 'var(--brand-deep)',
   track: 'color-mix(in srgb, var(--border) 70%, transparent)',
 }
 
@@ -289,7 +289,7 @@ export default function Dashboard() {
             <Icon name="clusters" size={14} /> All clusters
           </Link>
           <button type="button" className="secondary btn-icon" onClick={loadResources} disabled={resourcesLoading}>
-            <Icon name="play" size={14} /> Refresh
+            <Icon name="refresh" size={14} /> Refresh
           </button>
         </div>
       </div>

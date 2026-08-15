@@ -33,7 +33,7 @@ export default function Audit() {
           <Icon name="audit" size={22} /> Audit
         </h1>
         <button type="button" className="secondary btn-icon" onClick={load}>
-          <Icon name="check" size={16} /> Refresh
+          <Icon name="refresh" size={16} /> Refresh
         </button>
       </div>
       {error && <div className="error">{error}</div>}

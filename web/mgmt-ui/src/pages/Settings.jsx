@@ -62,7 +62,7 @@ export default function Settings() {
       {error && <div className="error">{error}</div>}
 
       <div className="card">
-        <h2 className="card-title"><Icon name="play" size={18} /> Session</h2>
+        <h2 className="card-title"><Icon name="user" size={18} /> Session</h2>
         {me ? (
           <dl className="kv">
             <div>
@@ -129,7 +129,7 @@ export default function Settings() {
       </div>
 
       <div className="card">
-        <h2 className="card-title"><Icon name="providers" size={18} /> Paths</h2>
+        <h2 className="card-title"><Icon name="folder" size={18} /> Paths</h2>
         {!cfg ? (
           <p className="muted">Loading…</p>
         ) : (
@@ -146,7 +146,7 @@ export default function Settings() {
       </div>
 
       <div className="card">
-        <h2 className="card-title"><Icon name="check" size={18} /> Authentication</h2>
+        <h2 className="card-title"><Icon name="shield" size={18} /> Authentication</h2>
         {!cfg ? (
           <p className="muted">Loading…</p>
         ) : (

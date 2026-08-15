@@ -69,7 +69,7 @@ export default function Machines() {
             </span>
           )}
           <button type="button" className="secondary btn-icon" onClick={load}>
-            <Icon name="check" size={16} /> Refresh
+            <Icon name="refresh" size={16} /> Refresh
           </button>
         </div>
       </div>

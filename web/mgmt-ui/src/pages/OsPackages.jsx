@@ -212,7 +212,7 @@ export default function OsPackages() {
                       onClick={() => openApply(p)}
                       title="Upgrade clusters"
                     >
-                      <Icon name="play" size={14} /> Upgrade
+                      <Icon name="upgrade" size={14} /> Upgrade
                     </button>
                     <button
                       type="button"
@@ -313,7 +313,7 @@ export default function OsPackages() {
                 disabled={busy || selected.size === 0}
                 onClick={apply}
               >
-                <Icon name="play" size={16} />{' '}
+                <Icon name="upgrade" size={16} />{' '}
                 {busy ? 'Starting…' : `Start OS upgrade (${selected.size})`}
               </button>
             </div>

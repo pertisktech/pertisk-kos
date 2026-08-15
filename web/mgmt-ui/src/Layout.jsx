@@ -120,7 +120,9 @@ export default function Layout() {
       >
         <div className="sidebar-header">
           <div className="brand">
-            <span className="brand-mark">P</span>
+            <span className="brand-mark" aria-hidden>
+              <Icon name="clusters" size={16} />
+            </span>
             <div className="brand-text">
               <span>
                 Pertisk <span className="accent">KOS</span>

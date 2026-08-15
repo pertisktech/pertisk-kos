@@ -23,10 +23,10 @@ const TABS = [
   { id: 'overview', label: 'Overview', icon: 'dashboard' },
   { id: 'nodes', label: 'Nodes', icon: 'worker' },
   { id: 'k8s', label: 'K8s', icon: 'cpu' },
-  { id: 'shell', label: 'Shell', icon: 'play' },
+  { id: 'shell', label: 'Shell', icon: 'terminal' },
   { id: 'config', label: 'Config', icon: 'edit' },
-  { id: 'upgrade', label: 'Upgrade', icon: 'play' },
-  { id: 'jobs', label: 'Jobs', icon: 'providers' },
+  { id: 'upgrade', label: 'Upgrade', icon: 'upgrade' },
+  { id: 'jobs', label: 'Jobs', icon: 'clock' },
 ]
 
 function NodeAddresses({ node, dualStack }) {
@@ -1326,7 +1326,7 @@ export default function ClusterDetail() {
                       disabled={c.status !== 'ready'}
                       title="Copy kubeconfig to clipboard"
                     >
-                      <Icon name="check" size={16} /> {kubeCopied ? 'Copied' : 'Copy'}
+                      <Icon name={kubeCopied ? 'check' : 'copy'} size={16} /> {kubeCopied ? 'Copied' : 'Copy'}
                     </button>
                     <button
                       type="button"
@@ -1672,7 +1672,7 @@ export default function ClusterDetail() {
                 <div className="jobs-log">
                   <div className="section-head log-head">
                     <h3 className="section-label">
-                      <Icon name="providers" size={16} /> Log
+                      <Icon name="logs" size={16} /> Log
                     </h3>
                     <div className="row-actions node-log-actions">
                       <button
@@ -2093,7 +2093,7 @@ export default function ClusterDetail() {
             <Icon name="download" size={16} /> Download
           </button>
           <button type="button" className="btn-icon" onClick={copyKubeconfig}>
-            <Icon name="check" size={16} /> {kubeCopied ? 'Copied' : 'Copy'}
+            <Icon name={kubeCopied ? 'check' : 'copy'} size={16} /> {kubeCopied ? 'Copied' : 'Copy'}
           </button>
         </div>
       </Modal>
