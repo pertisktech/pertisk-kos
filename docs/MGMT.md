@@ -140,9 +140,18 @@ Two independent rolling jobs. Kubernetes version and node OS are **not** the sam
 | Action | API | What it changes |
 |--------|-----|-----------------|
 | Kubernetes rolling upgrade | `POST /api/clusters/{id}/upgrade` `{ "version": "v1.36.3" }` | kubelet + control-plane static pods |
-| OS A/B upgrade | `POST /api/clusters/{id}/os-upgrade` (multipart) | kernel + initramfs (`pertiskd`); STATE/etcd stay |
+| OS A/B upgrade | `POST /api/clusters/{id}/os-upgrade` (multipart) or `POST /api/clusters/{id}/os-upgrade/package` `{ "package_id" }` | kernel + initramfs (`pertiskd`); STATE/etcd stay |
 
-OS upgrade upload: the four signed files (`kernel`, `initramfs`, `manifest.json`, `manifest.sig`) or a `.zip` of them. Max 512 MiB.
+**OS packages** (UI → **OS packages**): catalog of signed bundles by version + arch.
+
+| API | Notes |
+|-----|--------|
+| `GET /api/os-packages` | List `{ id, version, arch, size_bytes, has_trust_pk, … }` |
+| `POST /api/os-packages` | Multipart upload (same files as cluster OS upgrade). Upserts on `(version, arch)`. Max 512 MiB |
+| `DELETE /api/os-packages/{id}` | Remove from catalog (blocked while a job uses it) |
+| `POST /api/os-packages/{id}/apply` | `{ "cluster_ids": ["…"], "reboot": true }` — rolling `upgrade_os` per cluster |
+
+OS upgrade upload: the four signed files (`kernel`, `initramfs`, `manifest.json`, `manifest.sig`) or a `.zip` of them. Max 512 MiB. Cluster uploads are also saved into the catalog.
 
 ```bash
 make os-trust                              # once → out/secrets/os-trust.{sk,pk}
@@ -272,8 +281,8 @@ Or `./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --with-ssh --pve p
 
 | Role | Capabilities |
 |------|----------------|
-| `viewer` | Read clusters/providers/machines/templates/audit |
-| `operator` | Create/update/delete clusters, providers, nodes, upgrades, templates |
+| `viewer` | Read clusters/providers/machines/templates/os-packages/audit |
+| `operator` | Create/update/delete clusters, providers, nodes, upgrades, templates, OS packages |
 | `admin` | Operator + delete providers |
 
 ## Phase D — fleet views
@@ -281,6 +290,7 @@ Or `./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --with-ssh --pve p
 | Page | API | Notes |
 |------|-----|--------|
 | **Machines** | `GET /api/machines` | Cross-cluster node inventory with live **online** / **offline** (Machine API `:50000`); opens node detail |
+| **OS packages** | `GET/POST /api/os-packages`, `DELETE /api/os-packages/{id}`, `POST /api/os-packages/{id}/apply` | Signed A/B OS bundles by version + arch; apply to matching clusters |
 | **Templates** | `GET/POST /api/templates`, `GET/PUT/DELETE /api/templates/{id}` | Machine-config YAML blueprints; load into cluster Config tab |
 | **Audit** | `GET /api/audit?limit=&offset=&action=&resource=` | Management action log (`audit_log` table) |
 

@@ -3,7 +3,7 @@
 Immutable, API-only Kubernetes node OS, plus an optional management plane for provisioning HA clusters.
 
 - **Node OS** — Rust `pertiskd` as PID 1, gRPC management (`pertiskctl`), containerd + kubelet; no SSH in production images
-- **Serial dashboard** — Talos-style fullscreen status TUI on Proxmox / ESXi / AHV Serial
+- **Serial dashboard** — fullscreen status TUI on Proxmox / ESXi / AHV Serial
 - **Management plane** — `pertisk-mgmt` (API + React UI) creates and operates clusters on **Proxmox**, standalone **ESXi**, and **Nutanix AHV**
 - **Terraform** — `terraform-provider-pertisk` for the same mgmt API (register hypervisors, create / scale / upgrade / destroy)
 - **Cluster API** — CAPx (planned): Kubebuilder controllers for `Cluster` / `Machine` / `MachineDeployment`

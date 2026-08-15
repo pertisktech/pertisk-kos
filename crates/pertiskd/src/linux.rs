@@ -418,7 +418,7 @@ mod linux_impl {
     }
 
     pub fn redirect_stdio_serial() -> Result<()> {
-        // Prefer explicit dashboard console (Talos-style pertisk.dashboard.console).
+        // Prefer explicit dashboard console (`pertisk.dashboard.console`).
         if let Some(path) = crate::cmdline::dashboard_console_path() {
             if try_redirect_stdio(&path)? {
                 return Ok(());

@@ -147,6 +147,11 @@ impl Config {
         self.data_dir.join("os-bundles")
     }
 
+    /// Catalog of signed OS A/B packages (version + arch), reused across clusters.
+    pub fn os_packages_dir(&self) -> PathBuf {
+        self.data_dir.join("os-packages")
+    }
+
     /// Public OS trust key used to seed `STATE/secrets/os-trust.pk` when missing.
     pub fn os_trust_pk(&self) -> PathBuf {
         std::env::var("MGMT_OS_TRUST_PK")

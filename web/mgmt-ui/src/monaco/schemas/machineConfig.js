@@ -212,7 +212,7 @@ export const machineConfigSchema = {
         network: {
           type: 'object',
           additionalProperties: true,
-          description: 'Talos-style pod/service subnet lists (preferred for new configs).',
+          description: 'Pod/service subnet lists (preferred for new configs).',
           properties: {
             podSubnets: {
               type: 'array',

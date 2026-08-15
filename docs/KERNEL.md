@@ -1,6 +1,6 @@
 # Kernel command line
 
-Linux kernel reference for Pertisk KOS (Talos-shaped). Some parameters are
+Linux kernel reference for Pertisk KOS. Some parameters are
 **required** for the image to boot; others are optional. Dotted `pertisk.*`
 tokens are parsed from `/proc/cmdline` by `pertiskd` (Linux does not promote
 names containing `.` into init’s environment). Underscore `KEY=value` tokens
@@ -37,7 +37,7 @@ See [HARDENING.md](./HARDENING.md).
 ## Dashboard parameters
 
 Pertisk runs a fullscreen serial/console status dashboard by default (Proxmox /
-ESXi Serial). Talos-style knobs:
+ESXi Serial). Dashboard knobs:
 
 ### `pertisk.dashboard.disabled`
 
@@ -99,12 +99,11 @@ fills gaps; then built-ins.
 | IPv4-only vs dual-stack | `cluster.networkMode` (no hard `ipv6.disable=1` on cmdline) |
 | Machine config path | STATE partition / `PERTISK_CONFIG` |
 
-## Deferred (Talos parity backlog)
+## Deferred cmdline parameters
 
-Documented for operators familiar with Talos; **not implemented** on the
-cmdline yet:
+**Not implemented** on the cmdline yet:
 
-| Talos-style idea | Status |
+| Idea | Status |
 |------------------|--------|
 | `pertisk.platform=` (metal / aws / …) | Deferred — deploy matrix is docs/scripts only |
 | `pertisk.config=` URL / metal-iso | Deferred — STATE YAML / apply path only |

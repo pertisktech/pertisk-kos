@@ -34,6 +34,10 @@ pub fn routes() -> Router<AppState> {
                 .route("/clusters/{id}/os-upgrade", axum::routing::post(os_upgrade))
                 .layer(DefaultBodyLimit::max(512 * 1024 * 1024)),
         )
+        .route(
+            "/clusters/{id}/os-upgrade/package",
+            axum::routing::post(os_upgrade_package),
+        )
         .route("/clusters/{id}/config", axum::routing::post(update_config))
         .route("/jobs/{id}", get(get_job))
         .route("/jobs/{id}/log", get(job_log))
@@ -1096,6 +1100,8 @@ async fn os_upgrade(
     let mut reboot = true;
     let mut node_ids: Option<Vec<String>> = None;
     let mut zip_bytes: Option<Vec<u8>> = None;
+    let mut zip_name = String::new();
+    let mut arch_hint: Option<String> = None;
 
     while let Some(field) = multipart
         .next_field()
@@ -1114,6 +1120,15 @@ async fn os_upgrade(
                 let v = String::from_utf8_lossy(&data).trim().to_ascii_lowercase();
                 reboot = v != "0" && v != "false" && v != "no";
             }
+            "arch" => {
+                let raw = String::from_utf8_lossy(&data);
+                if !raw.trim().is_empty() {
+                    arch_hint = Some(
+                        crate::os_upgrade::normalize_arch(raw.trim())
+                            .map_err(|e| AppError::bad(e.to_string()))?,
+                    );
+                }
+            }
             "node_ids" => {
                 let raw = String::from_utf8_lossy(&data);
                 let parsed: Vec<String> = serde_json::from_str(raw.trim())
@@ -1123,6 +1138,9 @@ async fn os_upgrade(
                 }
             }
             "bundle" | "archive" | "zip" => {
+                if !file_name.is_empty() {
+                    zip_name = file_name.clone();
+                }
                 zip_bytes = Some(data.to_vec());
             }
             _ => {
@@ -1132,6 +1150,7 @@ async fn os_upgrade(
                     file_name.clone()
                 };
                 if orig.to_ascii_lowercase().ends_with(".zip") {
+                    zip_name = orig;
                     zip_bytes = Some(data.to_vec());
                 } else if crate::os_upgrade::canonical_bundle_name(
                     std::path::Path::new(&orig)
@@ -1161,15 +1180,36 @@ async fn os_upgrade(
         crate::os_upgrade::validate_bundle_dir(&dest).map_err(|e| AppError::bad(e.to_string()))?
     };
 
+    let cluster_arch: String = sqlx::query_scalar("SELECT arch FROM clusters WHERE id = ?")
+        .bind(&id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap_or_else(|_| "amd64".into());
+    let arch = arch_hint
+        .or_else(|| crate::os_upgrade::infer_arch_from_name(&zip_name))
+        .unwrap_or(cluster_arch);
+    let arch = crate::os_upgrade::normalize_arch(&arch)
+        .map_err(|e| AppError::bad(e.to_string()))?;
+
+    let pkg = crate::routes::os_packages::upsert_package(&state, &dest, &version, &arch)
+        .await
+        .ok();
+    let (bundle_dir, package_id) = if let Some(ref pkg) = pkg {
+        (pkg.path.clone(), Some(pkg.id.clone()))
+    } else {
+        (dest.display().to_string(), None)
+    };
+
     let job_id = jobs::enqueue(
         &state,
         Some(&id),
         "upgrade_os",
         serde_json::json!({
-            "bundle_dir": dest.display().to_string(),
+            "bundle_dir": bundle_dir,
             "version": version,
             "reboot": reboot,
             "node_ids": node_ids,
+            "package_id": package_id,
         }),
     )
     .await
@@ -1185,6 +1225,47 @@ async fn os_upgrade(
     Ok(Json(serde_json::json!({
         "job_id": job_id,
         "version": version,
+        "package_id": package_id,
+    })))
+}
+
+#[derive(Deserialize)]
+struct OsUpgradePackageReq {
+    package_id: String,
+    #[serde(default = "os_upgrade_reboot_default")]
+    reboot: bool,
+    #[serde(default)]
+    node_ids: Option<Vec<String>>,
+}
+
+fn os_upgrade_reboot_default() -> bool {
+    true
+}
+
+async fn os_upgrade_package(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<String>,
+    Json(body): Json<OsUpgradePackageReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_mutate(&user)?;
+    let package_id = body.package_id.trim();
+    if package_id.is_empty() {
+        return Err(AppError::bad("package_id is required"));
+    }
+    let (job_id, version) = crate::routes::os_packages::enqueue_from_package_id(
+        &state,
+        &user.id,
+        &id,
+        package_id,
+        body.reboot,
+        body.node_ids,
+    )
+    .await?;
+    Ok(Json(serde_json::json!({
+        "job_id": job_id,
+        "version": version,
+        "package_id": package_id,
     })))
 }
 

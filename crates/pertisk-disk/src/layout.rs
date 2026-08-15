@@ -1,4 +1,4 @@
-//! GPT partition roles and filesystem mount points (Talos-inspired).
+//! GPT partition roles and filesystem mount points.
 
 /// EFI system partition label.
 pub const PARTLABEL_EFI: &str = "EFI";

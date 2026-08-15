@@ -68,6 +68,13 @@ export function Icon({ name, size = 18, className = '' }) {
           <path d="M12 3v2M12 19v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M3 12h2M19 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
         </svg>
       )
+    case 'packages':
+      return (
+        <svg {...props}>
+          <path d="M12 3 4 7.5v9L12 21l8-4.5v-9L12 3z" />
+          <path d="M12 12 4 7.5M12 12l8-4.5M12 12v9" />
+        </svg>
+      )
     case 'plus':
       return (
         <svg {...props}>

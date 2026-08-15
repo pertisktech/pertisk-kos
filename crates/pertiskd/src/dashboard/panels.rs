@@ -28,7 +28,7 @@ const HEADER_HEIGHT: u16 = 1;
 const SUMMARY_HEIGHT: u16 = 9;
 const FOOTER_HEIGHT: u16 = 1;
 /// Below this width, collapse the three info columns into one SYSTEM box.
-/// Talos keeps three columns at classic 80-col console sizes; we match that.
+/// Keep three columns at classic 80-col console sizes.
 const WIDE_SUMMARY_MIN_COLS: u16 = 80;
 /// Bordered logs need top rule + ≥1 body row (footer hostname is the bottom).
 const MIN_LOG_HEIGHT: u16 = 2;
@@ -475,7 +475,7 @@ fn draw_compact_summary(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, sk
         format!("{} {}", snap.node_iface, snap.node_ip)
     };
     let boot = if snap.boot_ok { "ok" } else { "pending" };
-    // Five body lines fit SUMMARY_HEIGHT (7) with borders — same budget as Talos.
+    // Five body lines fit SUMMARY_HEIGHT (7) with borders.
     let lines = vec![
         Line::from(vec![
             label("TYPE       ", theme),
@@ -691,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn talos_layout_reserves_header_summary_and_footer() {
+    fn layout_reserves_header_summary_and_footer() {
         // 24: header1 + summary9 + logs13 + footer1
         assert_eq!(dashboard_heights(24), (1, 9, 13, 1));
         // 8: header1 + summary4 + logs2 + footer1 (min panes with top-only logs)

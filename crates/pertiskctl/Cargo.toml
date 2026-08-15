@@ -1,6 +1,6 @@
 [package]
 name = "pertiskctl"
-description = "Pertisk KOS CLI (talosctl-style)"
+description = "Pertisk KOS CLI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

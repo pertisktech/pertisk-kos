@@ -784,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_80_col_console_uses_talos_three_column_summary() {
+    fn classic_80_col_console_uses_three_column_summary() {
         let rows = demo_rows(80, 24, theme::ASCII);
         let summary_top = strip_escapes(&rows[1]);
         assert!(

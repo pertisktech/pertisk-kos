@@ -136,6 +136,58 @@ pub fn parse_upgrade_status_version(stdout: &str) -> Option<String> {
     None
 }
 
+/// Normalize guest arch (`amd64` | `arm64`).
+pub fn normalize_arch(raw: &str) -> anyhow::Result<String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "amd64" | "x86_64" | "x64" => Ok("amd64".into()),
+        "arm64" | "aarch64" => Ok("arm64".into()),
+        other if other.is_empty() => Ok("amd64".into()),
+        other => bail!("arch must be amd64 or arm64 (got {other})"),
+    }
+}
+
+/// Guess arch from a zip or original filename (`os-bundle-amd64-v0.2.87.zip`).
+pub fn infer_arch_from_name(name: &str) -> Option<String> {
+    let l = name.to_ascii_lowercase();
+    if l.contains("arm64") || l.contains("aarch64") {
+        return Some("arm64".into());
+    }
+    if l.contains("amd64") || l.contains("x86_64") {
+        return Some("amd64".into());
+    }
+    None
+}
+
+/// Sum file sizes in a bundle directory (non-recursive).
+pub fn dir_size_bytes(dir: &Path) -> u64 {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return 0;
+    };
+    rd.filter_map(|e| e.ok())
+        .filter_map(|e| e.metadata().ok())
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
+        .sum()
+}
+
+/// Copy signed-bundle files from `src` into `dest` (replaces dest contents).
+pub fn copy_bundle_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
+    validate_bundle_dir(src)?;
+    if dest.exists() {
+        fs::remove_dir_all(dest)
+            .with_context(|| format!("remove {}", dest.display()))?;
+    }
+    fs::create_dir_all(dest)?;
+    for name in REQUIRED_FILES.iter().copied().chain(std::iter::once(TRUST_PK_NAME)) {
+        let from = src.join(name);
+        if from.is_file() {
+            fs::copy(&from, dest.join(name))
+                .with_context(|| format!("copy {name}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// Optional `os-trust.pk` sitting next to the signed artifacts.
 pub fn bundle_trust_pk(dir: &Path) -> Option<std::path::PathBuf> {
     let p = dir.join(TRUST_PK_NAME);
@@ -233,5 +285,20 @@ mod tests {
             parse_upgrade_status_version(line).as_deref(),
             Some("0.2.86")
         );
+    }
+
+    #[test]
+    fn infer_arch_from_bundle_zip_name() {
+        assert_eq!(
+            infer_arch_from_name("os-bundle-amd64-v0.2.87.zip").as_deref(),
+            Some("amd64")
+        );
+        assert_eq!(
+            infer_arch_from_name("os-bundle-arm64-v0.2.87.zip").as_deref(),
+            Some("arm64")
+        );
+        assert_eq!(infer_arch_from_name("bundle.zip"), None);
+        assert_eq!(normalize_arch("x86_64").unwrap(), "amd64");
+        assert_eq!(normalize_arch("aarch64").unwrap(), "arm64");
     }
 }

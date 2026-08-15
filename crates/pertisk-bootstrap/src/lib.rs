@@ -1,4 +1,4 @@
-//! Control-plane bootstrap for Pertisk KOS (Talos-shaped static pods).
+//! Control-plane bootstrap for Pertisk KOS (static pods).
 
 mod addons;
 mod api;

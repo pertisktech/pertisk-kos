@@ -9,6 +9,7 @@ pub(crate) mod k8s;
 mod machines;
 mod meta;
 pub(crate) mod nodes;
+pub(crate) mod os_packages;
 mod providers;
 mod settings;
 mod templates;
@@ -39,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .merge(audit::routes())
         .merge(machines::routes())
         .merge(templates::routes())
+        .merge(os_packages::routes())
         .merge(join_tokens::routes())
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 

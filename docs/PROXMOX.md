@@ -150,9 +150,9 @@ Priority:
 2. `machine.dashboard` in `config.yaml` — **overwrites** theme/border/size/utf8/mgmt_url when those fields are set
 3. Built-in defaults (`catppuccin` / `ascii`; size + UTF-8 from console probe)
 
-Full kernel cmdline reference (defaults, KSPP, deferred Talos params): [KERNEL.md](./KERNEL.md).
+Full kernel cmdline reference (defaults, KSPP, deferred params): [KERNEL.md](./KERNEL.md).
 
-**Disable / pick console (Talos-aligned):**
+**Disable / pick console:**
 
 ```text
 pertisk.dashboard.disabled=1

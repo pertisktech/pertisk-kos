@@ -1,4 +1,4 @@
-//! `pertiskctl` — Talos-shaped node + cluster management CLI.
+//! `pertiskctl` — node + cluster management CLI.
 
 use std::path::PathBuf;
 
@@ -23,7 +23,7 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 #[derive(Parser)]
 #[command(
     name = "pertiskctl",
-    about = "Pertisk KOS management CLI (Talos-shaped)"
+    about = "Pertisk KOS management CLI"
 )]
 struct Cli {
     /// gRPC endpoint (host:port).
@@ -94,7 +94,7 @@ enum Commands {
         #[arg(short = 'f', long)]
         file: PathBuf,
     },
-    /// Generate machine configs (like `talosctl gen`).
+    /// Generate machine configs.
     Gen {
         #[command(subcommand)]
         command: GenCommands,
@@ -243,7 +243,7 @@ enum EtcdCommands {
 
 #[derive(Subcommand)]
 enum GenCommands {
-    /// Generate controlplane.yaml + worker.yaml (like `talosctl gen config`).
+    /// Generate controlplane.yaml + worker.yaml.
     Config {
         /// Cluster name (DNS-1123 label).
         cluster_name: String,

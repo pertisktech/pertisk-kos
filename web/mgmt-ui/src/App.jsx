@@ -11,6 +11,7 @@ import Machines from './pages/Machines'
 import Templates from './pages/Templates'
 import Audit from './pages/Audit'
 import Settings from './pages/Settings'
+import OsPackages from './pages/OsPackages'
 
 export default function App() {
   return (
@@ -26,6 +27,7 @@ export default function App() {
             <Route path="/clusters/:id" element={<ClusterDetail />} />
             <Route path="/clusters/:id/nodes/:nid" element={<NodeDetail />} />
             <Route path="/machines" element={<Machines />} />
+            <Route path="/os-packages" element={<OsPackages />} />
             <Route path="/templates" element={<Templates />} />
             <Route path="/providers" element={<Providers />} />
             <Route path="/audit" element={<Audit />} />

@@ -46,7 +46,7 @@ pub struct Machine {
     /// Omit for built-in defaults; set fields to override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dashboard: Option<Dashboard>,
-    /// Kubelet settings (Talos-shaped). Applied into `/var/lib/kubelet/config.yaml`.
+    /// Kubelet settings. Applied into `/var/lib/kubelet/config.yaml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kubelet: Option<MachineKubelet>,
     /// Optional log ship to Loki / Grafana Alloy (`loki.source.api`).
@@ -54,7 +54,7 @@ pub struct Machine {
     pub observability: Option<Observability>,
 }
 
-/// `machine.kubelet` — mirrors Talos-shaped kubelet knobs we honor.
+/// `machine.kubelet` — kubelet knobs we honor.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MachineKubelet {
     /// Extra KubeletConfiguration fields merged into the written config.
@@ -235,7 +235,7 @@ pub struct Install {
     pub wipe: bool,
 }
 
-/// Talos-style cluster networking (`cluster.network`).
+/// Cluster networking (`cluster.network`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClusterNetwork {
     /// Pod CIDRs (IPv4 and optional IPv6), e.g. `10.244.0.0/16`, `2001:db8:10:0::/56`.
@@ -263,7 +263,7 @@ pub struct Cluster {
     /// PEM-encoded service-account signing key (control-plane bootstrap only).
     #[serde(default, rename = "saKey")]
     pub sa_key: Option<String>,
-    /// Talos-style pod/service subnet lists (preferred for new configs).
+    /// Pod/service subnet lists (preferred for new configs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<ClusterNetwork>,
     /// Legacy cluster-wide pod network CIDR (e.g. `10.244.0.0/16`).
@@ -417,7 +417,7 @@ impl Cluster {
         self.effective_pod_subnets().join(",")
     }
 
-    /// Build Talos-style `cluster.network` from IPv4 (+ optional IPv6) CIDRs.
+    /// Build `cluster.network` from IPv4 (+ optional IPv6) CIDRs.
     pub fn network_from_cidrs(
         pod_v4: &str,
         service_v4: &str,
@@ -981,7 +981,7 @@ cluster:
     }
 
     #[test]
-    fn parses_talos_style_network_subnets() {
+    fn parses_cluster_network_subnets() {
         let yaml = r#"
 version: v1alpha1
 machine:

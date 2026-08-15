@@ -1,4 +1,4 @@
-//! Kernel cmdline helpers (Talos-aligned `pertisk.*` tokens).
+//! Kernel cmdline helpers (`pertisk.*` tokens).
 //!
 //! Dotted names like `pertisk.dashboard.disabled=1` are **not** promoted into
 //! init's environment by Linux (only `KEY=value` without `.`). We parse
@@ -59,7 +59,7 @@ where
         }
     }
 
-    // Env aliases win only when cmdline omitted that knob (Talos cmdline is
+    // Env aliases win only when cmdline omitted that knob (`pertisk.*` is
     // primary; underscore form is for convenience / lab inject).
     if !cmdline_has(cmdline, "pertisk.dashboard.disabled") {
         if let Some(v) = env("PERTISK_DASHBOARD_DISABLED") {
@@ -98,7 +98,7 @@ fn is_truthy(v: &str) -> bool {
     )
 }
 
-/// Accept `ttyS0`, `/dev/ttyS0`, reject non-tty names (Talos: must start with tty).
+/// Accept `ttyS0`, `/dev/ttyS0`, reject non-tty names (must start with tty).
 fn normalize_console(raw: &str) -> Option<String> {
     let s = raw.trim();
     if s.is_empty() {

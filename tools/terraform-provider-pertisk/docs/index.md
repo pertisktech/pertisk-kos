@@ -6,7 +6,7 @@ description: |-
 
 # Pertisk Provider
 
-The Pertisk provider talks to [pertisk-mgmt](https://github.com/pertisk-tech/pertisk-kos) to register hypervisors and create/destroy Pertisk Kubernetes clusters (Talos-shaped cloud images on Proxmox or vSphere).
+The Pertisk provider talks to [pertisk-mgmt](https://github.com/pertisk-tech/pertisk-kos) to register hypervisors and create/destroy Pertisk Kubernetes clusters (cloud images on Proxmox or vSphere).
 
 ## Example Usage
 

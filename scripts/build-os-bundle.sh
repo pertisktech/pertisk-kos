@@ -108,4 +108,4 @@ echo "    keep ${OS_TRUST_SK} offline; recreating VMs from a new qcow2 is a rein
 ls -lh "${DEST}"/{kernel,initramfs,manifest.json,manifest.sig,os-trust.pk} "${ZIP}"
 echo "==> upload ${ZIP}"
 echo "    or the files in ${DEST}"
-echo "    to Cluster → Upgrade → OS A/B upgrade"
+echo "    to OS packages in mgmt, or Cluster → Upgrade → OS A/B upgrade"

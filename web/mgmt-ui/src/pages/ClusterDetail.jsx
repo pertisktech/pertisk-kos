@@ -4,7 +4,7 @@ import { api, getToken } from '../api'
 import { defaultMachineConfigYaml } from '../utils/machineConfig'
 import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
-import { ClusterMetaBadges, formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
+import { ClusterMetaBadges, formatArch, formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
 import { NodeStatusBadges } from '../components/NodeStatusBadges'
 import { useConfirm } from '../components/Confirm'
 import Checkbox from '../components/Checkbox'
@@ -242,6 +242,8 @@ export default function ClusterDetail() {
   const [upgradeVer, setUpgradeVer] = useState('')
   const [osBundle, setOsBundle] = useState(null)
   const [osTargetVer, setOsTargetVer] = useState('')
+  const [osPackages, setOsPackages] = useState([])
+  const [osPackageId, setOsPackageId] = useState('')
   const [configYaml, setConfigYaml] = useState(() => defaultMachineConfigYaml(''))
   const configTouched = useRef(false)
   const [templates, setTemplates] = useState([])
@@ -345,6 +347,21 @@ export default function ClusterDetail() {
       })
       .catch(() => {
         if (!cancelled) setTemplates([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [tab])
+
+  useEffect(() => {
+    if (tab !== 'upgrade') return undefined
+    let cancelled = false
+    api('/os-packages')
+      .then((rows) => {
+        if (!cancelled) setOsPackages(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        if (!cancelled) setOsPackages([])
       })
     return () => {
       cancelled = true
@@ -704,7 +721,8 @@ export default function ClusterDetail() {
   }
 
   async function upgradeOs() {
-    if (!osBundleReady(osBundle)) return
+    const fromCatalog = !!osPackageId
+    if (!fromCatalog && !osBundleReady(osBundle)) return
     const ok = await confirm({
       title: 'OS A/B upgrade',
       message:
@@ -716,17 +734,25 @@ export default function ClusterDetail() {
     setBusy(true)
     setError('')
     try {
-      const fd = new FormData()
-      fd.append('reboot', 'true')
-      if (osBundle.zip) {
-        fd.append('bundle', osBundle.zip)
+      let res
+      if (fromCatalog) {
+        res = await api(`/clusters/${id}/os-upgrade/package`, {
+          method: 'POST',
+          body: { package_id: osPackageId, reboot: true },
+        })
       } else {
-        fd.append('kernel', osBundle.kernel)
-        fd.append('initramfs', osBundle.initramfs)
-        fd.append('manifest.json', osBundle.manifest)
-        fd.append('manifest.sig', osBundle.sig)
+        const fd = new FormData()
+        fd.append('reboot', 'true')
+        if (osBundle.zip) {
+          fd.append('bundle', osBundle.zip)
+        } else {
+          fd.append('kernel', osBundle.kernel)
+          fd.append('initramfs', osBundle.initramfs)
+          fd.append('manifest.json', osBundle.manifest)
+          fd.append('manifest.sig', osBundle.sig)
+        }
+        res = await api(`/clusters/${id}/os-upgrade`, { method: 'POST', body: fd })
       }
-      const res = await api(`/clusters/${id}/os-upgrade`, { method: 'POST', body: fd })
       if (res?.version) setOsTargetVer(res.version)
       if (res?.job_id) selectJob(res.job_id)
       setTab('jobs')
@@ -902,6 +928,8 @@ export default function ClusterDetail() {
     nodesWithoutIp.length === nodes.length
   const upgradeRunning = jobs.some((j) => j.kind === 'upgrade_cluster' && j.status === 'running')
   const osUpgradeRunning = jobs.some((j) => j.kind === 'upgrade_os' && j.status === 'running')
+  const clusterArch = formatArch(c.arch)
+  const osPkgsForArch = osPackages.filter((p) => formatArch(p.arch) === clusterArch)
   // Banner follows the newest job only. A later success (or in-progress job)
   // must hide older failures — including sticky clusters.error from past runs.
   // Each failure is one-time: dismiss (or close) hides it for this browser tab.
@@ -1465,21 +1493,53 @@ export default function ClusterDetail() {
                 <h3 className="section-label">OS A/B upgrade</h3>
                 <p className="muted">
                   Signed bundle only — Kubernetes is not changed. Workers first, then control planes.
-                  Trust key <span className="mono-inline">os-trust.pk</span> is installed on STATE
-                  if missing (included in <span className="mono-inline">make os-bundle</span> zip).
-                  Recreating VMs from a new qcow2 is a reinstall, not this path.
+                  Pick a catalog version or upload a new zip (
+                  <Link to="/os-packages">OS packages</Link>
+                  ). Trust key <span className="mono-inline">os-trust.pk</span> is installed on STATE
+                  if missing. Recreating VMs from a new qcow2 is a reinstall, not this path.
                 </p>
                 <div className="os-upgrade-form">
-                  <OsBundlePicker
-                    value={osBundle}
-                    onChange={setOsBundle}
-                    disabled={osUpgradeRunning || busy}
-                  />
+                  <div className="field" style={{ width: '100%' }}>
+                    <label>Catalog version</label>
+                    <select
+                      value={osPackageId}
+                      onChange={(e) => {
+                        setOsPackageId(e.target.value)
+                        if (e.target.value) setOsBundle(null)
+                      }}
+                      disabled={osUpgradeRunning || busy}
+                    >
+                      <option value="">— upload files below —</option>
+                      {osPkgsForArch.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.version} ({formatArch(p.arch)})
+                        </option>
+                      ))}
+                    </select>
+                    {osPkgsForArch.length === 0 && (
+                      <span className="muted" style={{ display: 'block', marginTop: '0.35rem' }}>
+                        No {clusterArch} packages yet.{' '}
+                        <Link to="/os-packages">Upload on OS packages</Link>
+                      </span>
+                    )}
+                  </div>
+                  {!osPackageId && (
+                    <OsBundlePicker
+                      value={osBundle}
+                      onChange={setOsBundle}
+                      disabled={osUpgradeRunning || busy}
+                    />
+                  )}
                   <button
                     type="button"
                     className="btn-icon"
                     onClick={upgradeOs}
-                    disabled={!osBundleReady(osBundle) || osUpgradeRunning || upgradeRunning || busy}
+                    disabled={
+                      (!osPackageId && !osBundleReady(osBundle)) ||
+                      osUpgradeRunning ||
+                      upgradeRunning ||
+                      busy
+                    }
                   >
                     <Icon name="play" size={16} /> {osUpgradeRunning ? 'OS upgrade running…' : 'Start OS upgrade'}
                   </button>

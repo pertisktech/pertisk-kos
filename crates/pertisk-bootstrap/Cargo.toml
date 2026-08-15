@@ -1,6 +1,6 @@
 [package]
 name = "pertisk-bootstrap"
-description = "Control-plane PKI + static-pod bootstrap (Talos-shaped)"
+description = "Control-plane PKI + static-pod bootstrap"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

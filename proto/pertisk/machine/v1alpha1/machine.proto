@@ -4,7 +4,7 @@ package pertisk.machine.v1alpha1;
 
 option go_package = "github.com/pertisk-tech/pertisk-kos/api/machine/v1alpha1";
 
-// MachineService is the node management API (Talos-shaped, not wire-compatible).
+// MachineService is the node management API.
 service MachineService {
   rpc Version(VersionRequest) returns (VersionResponse);
   rpc Health(HealthRequest) returns (HealthResponse);

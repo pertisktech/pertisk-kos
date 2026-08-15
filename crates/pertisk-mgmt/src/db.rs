@@ -128,6 +128,18 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS os_packages (
+            id TEXT PRIMARY KEY NOT NULL,
+            version TEXT NOT NULL,
+            arch TEXT NOT NULL DEFAULT 'amd64',
+            path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            has_trust_pk INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(version, arch)
+        );
+
         CREATE TABLE IF NOT EXISTS join_tokens (
             id TEXT PRIMARY KEY NOT NULL,
             cluster_id TEXT NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
@@ -216,6 +228,21 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN os_version TEXT")
         .execute(pool)
         .await;
+    let _ = sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS os_packages (
+            id TEXT PRIMARY KEY NOT NULL,
+            version TEXT NOT NULL,
+            arch TEXT NOT NULL DEFAULT 'amd64',
+            path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            has_trust_pk INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(version, arch)
+        )"#,
+    )
+    .execute(pool)
+    .await;
 
     // Backfill node hardware from cluster role defaults when unset.
     let _ = sqlx::query(
