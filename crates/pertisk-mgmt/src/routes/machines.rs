@@ -22,6 +22,7 @@ struct MachineOut {
     ip: Option<String>,
     ip6: Option<String>,
     k8s_version: Option<String>,
+    os_version: Option<String>,
     vmid: Option<i64>,
     /// proxmox | vsphere | nutanix | adopted | baremetal
     source: String,
@@ -48,7 +49,7 @@ async fn list(
     CurrentUser(_user): CurrentUser,
 ) -> ApiResult<Json<Vec<MachineOut>>> {
     let mut rows = sqlx::query_as::<_, MachineOut>(
-        r#"SELECT n.id, n.name, n.role, n.status, n.ip, n.ip6, n.k8s_version, n.vmid,
+        r#"SELECT n.id, n.name, n.role, n.status, n.ip, n.ip6, n.k8s_version, n.os_version, n.vmid,
                   COALESCE(n.source, 'proxmox') AS source,
                   n.cluster_id, c.name AS cluster_name, c.status AS cluster_status,
                   p.name AS provider_name,

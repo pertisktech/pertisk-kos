@@ -98,6 +98,7 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             ip TEXT,
             ip6 TEXT,
             k8s_version TEXT,
+            os_version TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -212,6 +213,9 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(pool)
     .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN os_version TEXT")
+        .execute(pool)
+        .await;
 
     // Backfill node hardware from cluster role defaults when unset.
     let _ = sqlx::query(

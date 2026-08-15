@@ -1,9 +1,10 @@
-PRETTY_NAME="pertisk-kos"
+PRETTY_NAME="pertisk-kos 0.1.0"
 NAME="pertisk-kos"
 ID=pertisk-kos
 ID_LIKE=pertisk
 VERSION_ID="0.1.0"
 VERSION="0.1.0"
+BUILD_ID="0.1.0"
 HOME_URL="https://github.com/pertisk-tech/pertisk-kos"
 SUPPORT_URL="https://github.com/pertisk-tech/pertisk-kos"
 BUG_REPORT_URL="https://github.com/pertisk-tech/pertisk-kos/issues"

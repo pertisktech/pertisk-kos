@@ -11,6 +11,7 @@ import Checkbox from '../components/Checkbox'
 import ColorLogViewer from '../components/ColorLogViewer'
 import Modal from '../components/Modal'
 import K8sVersionSelect from '../components/K8sVersionSelect'
+import OsBundlePicker, { osBundleReady } from '../components/OsBundlePicker'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import K8sTab from './cluster-k8s/K8sTab'
 import ShellTab from './cluster-k8s/ShellTab'
@@ -56,8 +57,10 @@ function NodesTable({
   clusterId,
   dualStack,
   showK8s = true,
+  showOs = false,
   showHw = false,
   targetVersion,
+  targetOsVersion,
   selectable = false,
   selected = new Set(),
   onToggle,
@@ -87,6 +90,7 @@ function NodesTable({
           <th>Source</th>
           <th>{dualStack ? 'IPv4 / IPv6' : 'IP'}</th>
           {showK8s && <th>K8s</th>}
+          {showOs && <th>OS</th>}
           {showHw && <th>Hardware</th>}
           <th>Status</th>
           {(onHardware || onReboot) && <th className="col-actions" />}
@@ -95,6 +99,7 @@ function NodesTable({
       <tbody>
         {nodes.map((n) => {
           const atTarget = targetVersion && n.k8s_version === targetVersion
+          const atOsTarget = targetOsVersion && n.os_version === targetOsVersion
           const upgrading = n.status === 'upgrading'
           const isSel = selected.has(n.id)
           return (
@@ -138,6 +143,16 @@ function NodesTable({
                   </span>
                   {targetVersion && !atTarget && n.k8s_version && (
                     <span className="muted ver-arrow"> → {targetVersion}</span>
+                  )}
+                </td>
+              )}
+              {showOs && (
+                <td>
+                  <span className={`mono-inline ${atOsTarget ? 'ver-match' : ''}`}>
+                    {n.os_version || '—'}
+                  </span>
+                  {targetOsVersion && !atOsTarget && (
+                    <span className="muted ver-arrow"> → {targetOsVersion}</span>
                   )}
                 </td>
               )}
@@ -225,6 +240,8 @@ export default function ClusterDetail() {
   const [selectedJob, setSelectedJob] = useState(null)
   const [error, setError] = useState('')
   const [upgradeVer, setUpgradeVer] = useState('')
+  const [osBundle, setOsBundle] = useState(null)
+  const [osTargetVer, setOsTargetVer] = useState('')
   const [configYaml, setConfigYaml] = useState(() => defaultMachineConfigYaml(''))
   const configTouched = useRef(false)
   const [templates, setTemplates] = useState([])
@@ -686,6 +703,41 @@ export default function ClusterDetail() {
     load()
   }
 
+  async function upgradeOs() {
+    if (!osBundleReady(osBundle)) return
+    const ok = await confirm({
+      title: 'OS A/B upgrade',
+      message:
+        'Upgrade the node OS (kernel + pertiskd) on all nodes?\n\nOrder: workers first, then control planes one-by-one.\nEach node: stage signed bundle → drain → reboot into the inactive slot → mark-boot-good → uncordon.\nKubernetes version is not changed. STATE and etcd stay on disk.',
+      confirmLabel: 'Start OS upgrade',
+      tone: 'primary',
+    })
+    if (!ok) return
+    setBusy(true)
+    setError('')
+    try {
+      const fd = new FormData()
+      fd.append('reboot', 'true')
+      if (osBundle.zip) {
+        fd.append('bundle', osBundle.zip)
+      } else {
+        fd.append('kernel', osBundle.kernel)
+        fd.append('initramfs', osBundle.initramfs)
+        fd.append('manifest.json', osBundle.manifest)
+        fd.append('manifest.sig', osBundle.sig)
+      }
+      const res = await api(`/clusters/${id}/os-upgrade`, { method: 'POST', body: fd })
+      if (res?.version) setOsTargetVer(res.version)
+      if (res?.job_id) selectJob(res.job_id)
+      setTab('jobs')
+      load()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function applyConfig() {
     const ok = await confirm({
       title: 'Apply machine config',
@@ -849,6 +901,7 @@ export default function ClusterDetail() {
     nodes.length > 0 &&
     nodesWithoutIp.length === nodes.length
   const upgradeRunning = jobs.some((j) => j.kind === 'upgrade_cluster' && j.status === 'running')
+  const osUpgradeRunning = jobs.some((j) => j.kind === 'upgrade_os' && j.status === 'running')
   // Banner follows the newest job only. A later success (or in-progress job)
   // must hide older failures — including sticky clusters.error from past runs.
   // Each failure is one-time: dismiss (or close) hides it for this browser tab.
@@ -1385,31 +1438,63 @@ export default function ClusterDetail() {
 
           {tab === 'upgrade' && (
             <div className="tab-body upgrade-tab">
-              <h3 className="section-label">Rolling upgrade</h3>
-              <p className="muted">
-                kubeadm-shaped rolling upgrade for near zero downtime: control planes
-                one-by-one, then workers. Each node: drain → apply new version → wait Ready → uncordon.
-                Requires HA (M≥3 + VIP) for API continuity; workers always drain for workload ZD.
-              </p>
-              <div className="upgrade-form">
-                <div className="field">
-                  <label>Target version</label>
-                  <K8sVersionSelect
-                    value={upgradeVer}
-                    onChange={setUpgradeVer}
-                    preferImage={false}
-                  />
+              <section className="upgrade-section">
+                <h3 className="section-label">Kubernetes rolling upgrade</h3>
+                <p className="muted">
+                  kubeadm-shaped rolling upgrade for near zero downtime: control planes
+                  one-by-one, then workers. Each node: drain → apply new version → wait Ready → uncordon.
+                  Requires HA (M≥3 + VIP) for API continuity; workers always drain for workload ZD.
+                  Does not change the node OS.
+                </p>
+                <div className="upgrade-form">
+                  <div className="field">
+                    <label>Target version</label>
+                    <K8sVersionSelect
+                      value={upgradeVer}
+                      onChange={setUpgradeVer}
+                      preferImage={false}
+                    />
+                  </div>
+                  <button type="button" className="btn-icon" onClick={upgrade} disabled={upgradeRunning || osUpgradeRunning}>
+                    <Icon name="play" size={16} /> {upgradeRunning ? 'Upgrade running…' : 'Start rolling upgrade'}
+                  </button>
                 </div>
-                <button type="button" className="btn-icon" onClick={upgrade} disabled={upgradeRunning}>
-                  <Icon name="play" size={16} /> {upgradeRunning ? 'Upgrade running…' : 'Start rolling upgrade'}
-                </button>
-              </div>
+              </section>
+
+              <section className="upgrade-section">
+                <h3 className="section-label">OS A/B upgrade</h3>
+                <p className="muted">
+                  Signed bundle only — Kubernetes is not changed. Workers first, then control planes.
+                  Trust key <span className="mono-inline">os-trust.pk</span> is installed on STATE
+                  if missing (included in <span className="mono-inline">make os-bundle</span> zip).
+                  Recreating VMs from a new qcow2 is a reinstall, not this path.
+                </p>
+                <div className="os-upgrade-form">
+                  <OsBundlePicker
+                    value={osBundle}
+                    onChange={setOsBundle}
+                    disabled={osUpgradeRunning || busy}
+                  />
+                  <button
+                    type="button"
+                    className="btn-icon"
+                    onClick={upgradeOs}
+                    disabled={!osBundleReady(osBundle) || osUpgradeRunning || upgradeRunning || busy}
+                  >
+                    <Icon name="play" size={16} /> {osUpgradeRunning ? 'OS upgrade running…' : 'Start OS upgrade'}
+                  </button>
+                </div>
+              </section>
+
               <section className="upgrade-nodes">
                 <h3 className="section-label">Node versions</h3>
                 <p className="muted">
-                  Cluster target: <span className="mono-inline">{c.k8s_version}</span>
+                  Cluster K8s: <span className="mono-inline">{c.k8s_version}</span>
                   {upgradeRunning && upgradeVer ? (
                     <> · upgrading toward <span className="mono-inline">{upgradeVer}</span></>
+                  ) : null}
+                  {osUpgradeRunning && osTargetVer ? (
+                    <> · OS → <span className="mono-inline">{osTargetVer}</span></>
                   ) : null}
                 </p>
                 {nodes.length === 0 ? (
@@ -1420,8 +1505,10 @@ export default function ClusterDetail() {
                     clusterId={id}
                     dualStack={dualStack}
                     showK8s
+                    showOs
                     showHw
                     targetVersion={upgradeRunning ? upgradeVer : null}
+                    targetOsVersion={osUpgradeRunning ? osTargetVer : null}
                   />
                 )}
               </section>

@@ -247,12 +247,16 @@ make help
 make build VERSION=0.2.0 ARCH=amd64 EMBED_BOOT=1 EMBED_RUNTIME=1
 make build-all VERSION=0.2.0            # amd64 + arm64
 make cloud VERSION=0.2.0 ARCH=amd64     # golden disk → out/pertisk-cloud-*.qcow2
+make os-trust                           # Ed25519 keys → out/secrets/os-trust.{sk,pk}
+make os-bundle VERSION=0.2.0 ARCH=amd64 # signed A/B OS zip → out/os-bundle-*-v*.zip
 make uki ARCH=amd64                     # Unified Kernel Image
 make pertiskctl                         # → out/bin/pertiskctl
 make mgmt / make mgmt-rpm               # UI+API binary / RPM
 ```
 
-Artifacts: `out/initramfs-<arch>.cpio.gz` (or `-debug`), versioned copies, `out/uki/`, `out/rpm/`.
+Artifacts: `out/initramfs-<arch>.cpio.gz` (or `-debug`), versioned copies, `out/uki/`, `out/rpm/`, `out/os-bundle-<arch>-v<VERSION>.zip`.
+
+`make os-bundle` is the in-place OS A/B path (kernel + initramfs, Kubernetes unchanged). Upload the zip on Cluster → Upgrade → OS A/B upgrade. `os-trust.pk` must already be on STATE; recreating VMs from a new qcow2 is a reinstall, not this path.
 
 ### 5. Preview Serial dashboard locally
 

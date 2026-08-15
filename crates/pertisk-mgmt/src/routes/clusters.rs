@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,11 @@ pub fn routes() -> Router<AppState> {
         .route("/clusters/{id}/jobs", get(list_jobs))
         .route("/clusters/{id}/delete-check", get(delete_check))
         .route("/clusters/{id}/upgrade", axum::routing::post(upgrade))
+        .merge(
+            Router::new()
+                .route("/clusters/{id}/os-upgrade", axum::routing::post(os_upgrade))
+                .layer(DefaultBodyLimit::max(512 * 1024 * 1024)),
+        )
         .route("/clusters/{id}/config", axum::routing::post(update_config))
         .route("/jobs/{id}", get(get_job))
         .route("/jobs/{id}/log", get(job_log))
@@ -273,7 +278,7 @@ async fn get_one(
     // Refresh node IP / K8s version when ready (missing IPs or active upgrade).
     if cluster.status == "ready" {
         let upgrading: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM jobs WHERE cluster_id = ? AND kind = 'upgrade_cluster' AND status = 'running'",
+            "SELECT COUNT(*) FROM jobs WHERE cluster_id = ? AND kind IN ('upgrade_cluster', 'upgrade_os') AND status = 'running'",
         )
         .bind(&id)
         .fetch_one(state.pool())
@@ -308,7 +313,7 @@ async fn get_one(
             .await?;
             if let Some(kc) = kc.filter(|s| !s.is_empty()) {
                 let log_path: Option<String> = sqlx::query_scalar(
-                    "SELECT log_path FROM jobs WHERE cluster_id = ? AND kind IN ('create_cluster', 'upgrade_cluster') ORDER BY updated_at DESC LIMIT 1",
+                    "SELECT log_path FROM jobs WHERE cluster_id = ? AND kind IN ('create_cluster', 'upgrade_cluster', 'upgrade_os') ORDER BY updated_at DESC LIMIT 1",
                 )
                 .bind(&id)
                 .fetch_optional(state.pool())
@@ -1067,6 +1072,120 @@ async fn upgrade(
     )
     .await;
     Ok(Json(serde_json::json!({ "job_id": job_id })))
+}
+
+async fn os_upgrade(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<String>,
+    mut multipart: Multipart,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_mutate(&user)?;
+    let exists: Option<String> = sqlx::query_scalar("SELECT id FROM clusters WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(state.pool())
+        .await?;
+    if exists.is_none() {
+        return Err(AppError::NotFound);
+    }
+
+    let bundle_id = Uuid::new_v4().to_string();
+    let dest = state.cfg().os_bundles_dir().join(&id).join(&bundle_id);
+    std::fs::create_dir_all(&dest).map_err(anyhow::Error::from)?;
+
+    let mut reboot = true;
+    let mut node_ids: Option<Vec<String>> = None;
+    let mut zip_bytes: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::bad(format!("multipart: {e}")))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        let file_name = field.file_name().unwrap_or("").to_string();
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::bad(format!("read field {name}: {e}")))?;
+
+        match name.as_str() {
+            "reboot" => {
+                let v = String::from_utf8_lossy(&data).trim().to_ascii_lowercase();
+                reboot = v != "0" && v != "false" && v != "no";
+            }
+            "node_ids" => {
+                let raw = String::from_utf8_lossy(&data);
+                let parsed: Vec<String> = serde_json::from_str(raw.trim())
+                    .map_err(|e| AppError::bad(format!("node_ids: {e}")))?;
+                if !parsed.is_empty() {
+                    node_ids = Some(parsed);
+                }
+            }
+            "bundle" | "archive" | "zip" => {
+                zip_bytes = Some(data.to_vec());
+            }
+            _ => {
+                let orig = if file_name.is_empty() {
+                    name.clone()
+                } else {
+                    file_name.clone()
+                };
+                if orig.to_ascii_lowercase().ends_with(".zip") {
+                    zip_bytes = Some(data.to_vec());
+                } else if crate::os_upgrade::canonical_bundle_name(
+                    std::path::Path::new(&orig)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(&orig),
+                )
+                .is_some()
+                {
+                    crate::os_upgrade::write_bundle_file(&dest, &orig, &data)
+                        .map_err(|e| AppError::bad(e.to_string()))?;
+                } else if !name.is_empty() && name != "version" {
+                    tracing::debug!(field = %name, file = %orig, "ignored os-upgrade field");
+                }
+            }
+        }
+    }
+
+    let version = if let Some(bytes) = zip_bytes {
+        let zip_path = dest.join("_upload.zip");
+        std::fs::write(&zip_path, &bytes).map_err(anyhow::Error::from)?;
+        let v = crate::os_upgrade::extract_bundle_zip(&zip_path, &dest)
+            .map_err(|e| AppError::bad(e.to_string()))?;
+        let _ = std::fs::remove_file(&zip_path);
+        v
+    } else {
+        crate::os_upgrade::validate_bundle_dir(&dest).map_err(|e| AppError::bad(e.to_string()))?
+    };
+
+    let job_id = jobs::enqueue(
+        &state,
+        Some(&id),
+        "upgrade_os",
+        serde_json::json!({
+            "bundle_dir": dest.display().to_string(),
+            "version": version,
+            "reboot": reboot,
+            "node_ids": node_ids,
+        }),
+    )
+    .await
+    .map_err(AppError::Anyhow)?;
+    audit(
+        state.pool(),
+        Some(&user.id),
+        "cluster.os_upgrade",
+        Some(&id),
+        Some(&version),
+    )
+    .await;
+    Ok(Json(serde_json::json!({
+        "job_id": job_id,
+        "version": version,
+    })))
 }
 
 #[derive(Deserialize)]

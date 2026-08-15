@@ -51,6 +51,8 @@ pub struct NodeOut {
     pub ip: Option<String>,
     pub ip6: Option<String>,
     pub k8s_version: Option<String>,
+    /// Active A/B OS bundle version (`pertiskctl upgrade-status`).
+    pub os_version: Option<String>,
     pub memory: Option<i64>,
     pub cores: Option<i64>,
     pub disk_gb: Option<i64>,
@@ -74,7 +76,7 @@ fn default_availability() -> String {
 }
 
 pub const NODE_SELECT: &str = r#"SELECT id, cluster_id, name, role, vmid, ip, ip6, k8s_version,
-       memory, cores, disk_gb, ak_public_b64, ak_enrolled_at,
+       os_version, memory, cores, disk_gb, ak_public_b64, ak_enrolled_at,
        COALESCE(source, 'proxmox') AS source, status, created_at, updated_at
        FROM nodes"#;
 

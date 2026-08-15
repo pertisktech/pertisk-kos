@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 
+use anyhow::Context;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use uuid::Uuid;
@@ -173,7 +174,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
     // Skip create/add if cluster is already deleting / gone.
     if matches!(
         kind.as_str(),
-        "create_cluster" | "add_node" | "upgrade_cluster" | "update_config" | "remove_node"
+        "create_cluster" | "add_node" | "upgrade_cluster" | "upgrade_os" | "update_config" | "remove_node"
             | "resize_node" | "reboot_node"
     ) {
         if let Some(cid) = &cluster_id {
@@ -244,6 +245,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         "resize_node" => run_resize_node(state, cluster_id.as_deref(), &payload, &log_file).await,
         "reboot_node" => run_reboot_node(state, cluster_id.as_deref(), &payload, &log_file).await,
         "upgrade_cluster" => run_upgrade(state, cluster_id.as_deref(), &payload, &log_file).await,
+        "upgrade_os" => run_upgrade_os(state, cluster_id.as_deref(), &payload, &log_file).await,
         "update_config" => {
             run_update_config(state, cluster_id.as_deref(), &payload, &log_file).await
         }
@@ -3119,6 +3121,587 @@ async fn run_upgrade(
         .await?;
     append_log(log_path, "upgrade complete — verify: kubectl get nodes\n")?;
     Ok(())
+}
+
+async fn run_upgrade_os(
+    state: &AppState,
+    cluster_id: Option<&str>,
+    payload: &str,
+    log_path: &str,
+) -> anyhow::Result<()> {
+    use std::path::Path;
+
+    let cid = cluster_id.ok_or_else(|| anyhow::anyhow!("cluster_id required"))?;
+    let p: serde_json::Value = serde_json::from_str(payload)?;
+    let bundle_dir = p
+        .get("bundle_dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("bundle_dir required"))?;
+    let _version = p
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let reboot = p.get("reboot").and_then(|v| v.as_bool()).unwrap_or(true);
+    let filter: Option<Vec<String>> = p.get("node_ids").and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+    });
+
+    let bundle_path = Path::new(bundle_dir);
+    let verified = crate::os_upgrade::validate_bundle_dir(bundle_path)?;
+    crate::os_upgrade::ensure_trust_pk(
+        bundle_path,
+        &[
+            state.cfg().os_trust_pk(),
+            PathBuf::from("/etc/pertisk-mgmt/os-trust.pk"),
+        ],
+    )?;
+    append_log(
+        log_path,
+        &format!(
+            "OS A/B upgrade → {verified} (bundle {bundle_dir})\nwill install {} on nodes if missing\n",
+            crate::os_upgrade::HOST_TRUST_PK
+        ),
+    )?;
+
+    let cluster = sqlx::query_as::<_, (String, i64, Option<String>)>(
+        "SELECT name, controlplanes, kubeconfig_path FROM clusters WHERE id = ?",
+    )
+    .bind(cid)
+    .fetch_one(state.pool())
+    .await?;
+    let (_cluster_name, controlplanes, kc) = cluster;
+    let kc_path = kc.as_ref().filter(|s| !s.is_empty()).cloned();
+    let Some(ref kc) = kc_path else {
+        anyhow::bail!(
+            "kubeconfig required to stage the OS bundle (privileged hostPath pod); Kubernetes is not changed"
+        );
+    };
+
+    if controlplanes < 3 {
+        append_log(
+            log_path,
+            &format!(
+                "NOTE: controlplanes={controlplanes} (<3) — API may blip while a CP reboots; STATE/etcd stay on disk\n"
+            ),
+        )?;
+    } else {
+        append_log(
+            log_path,
+            "HA control planes (≥3): workers first, then CPs one-by-one; Kubernetes version unchanged\n",
+        )?;
+    }
+
+    let _ = crate::node_sync::sync_cluster_nodes(
+        state.pool(),
+        cid,
+        Some(Path::new(kc)),
+        Some(log_path),
+    )
+    .await;
+
+    let mut nodes = sqlx::query_as::<_, (String, String, String, Option<String>)>(
+        "SELECT id, name, role, ip FROM nodes WHERE cluster_id = ? ORDER BY name ASC",
+    )
+    .bind(cid)
+    .fetch_all(state.pool())
+    .await?;
+    if let Some(ids) = &filter {
+        nodes.retain(|(id, _, _, _)| ids.iter().any(|x| x == id));
+        if nodes.is_empty() {
+            anyhow::bail!("no matching nodes for node_ids filter");
+        }
+    }
+
+    let mut workers: Vec<_> = nodes
+        .iter()
+        .filter(|(_, _, role, _)| role != "controlplane")
+        .cloned()
+        .collect();
+    workers.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut cps: Vec<_> = nodes
+        .iter()
+        .filter(|(_, _, role, _)| role == "controlplane")
+        .cloned()
+        .collect();
+    cps.sort_by(|a, b| a.1.cmp(&b.1));
+
+    for (i, (id, name, role, ip)) in workers.iter().enumerate() {
+        append_log(
+            log_path,
+            &format!(
+                "==> worker {}/{} {name} (os {verified})\n",
+                i + 1,
+                workers.len()
+            ),
+        )?;
+        upgrade_os_node(
+            state,
+            cid,
+            id,
+            name,
+            role,
+            ip,
+            kc,
+            bundle_path,
+            verified.as_str(),
+            reboot,
+            true,
+            log_path,
+        )
+        .await?;
+    }
+    for (i, (id, name, role, ip)) in cps.iter().enumerate() {
+        append_log(
+            log_path,
+            &format!(
+                "==> CP {}/{} {name} (os {verified})\n",
+                i + 1,
+                cps.len()
+            ),
+        )?;
+        upgrade_os_node(
+            state,
+            cid,
+            id,
+            name,
+            role,
+            ip,
+            kc,
+            bundle_path,
+            verified.as_str(),
+            reboot,
+            true,
+            log_path,
+        )
+        .await?;
+    }
+
+    append_log(
+        log_path,
+        "OS upgrade complete — Kubernetes version unchanged; verify: kubectl get nodes\n",
+    )?;
+    Ok(())
+}
+
+async fn upgrade_os_node(
+    state: &AppState,
+    cluster_id: &str,
+    id: &str,
+    name: &str,
+    _role: &str,
+    ip: &Option<String>,
+    kubeconfig: &str,
+    bundle_dir: &std::path::Path,
+    version: &str,
+    reboot: bool,
+    do_drain: bool,
+    log_path: &str,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE nodes SET status = 'upgrading', updated_at = ? WHERE id = ?")
+        .bind(db::now_rfc3339())
+        .bind(id)
+        .execute(state.pool())
+        .await?;
+
+    let ip = ip
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("no IP for {name}; cannot reach Machine API"))?;
+
+    if !state.cfg().pertiskctl.exists() {
+        anyhow::bail!(
+            "pertiskctl not found at {}",
+            state.cfg().pertiskctl.display()
+        );
+    }
+
+    wait_api_ready(kubeconfig, log_path).await?;
+    append_log(log_path, &format!("stage OS bundle on {name} via hostPath\n"))?;
+    stage_os_bundle_via_pod(kubeconfig, name, bundle_dir, log_path).await?;
+
+    if do_drain {
+        append_log(log_path, &format!("drain {name}\n"))?;
+        let _ = kubectl(
+            kubeconfig,
+            &[
+                "drain",
+                name,
+                "--ignore-daemonsets",
+                "--delete-emptydir-data",
+                "--force",
+                "--grace-period=30",
+                "--timeout=5m",
+            ],
+            log_path,
+        )
+        .await;
+    }
+
+    let mut args = vec![
+        "-e".to_string(),
+        format!("{ip}:50000"),
+        "upgrade".into(),
+        "--bundle".into(),
+        crate::os_upgrade::HOST_BUNDLE_DIR.to_string(),
+    ];
+    if reboot {
+        args.push("--reboot".into());
+    }
+    append_log(
+        log_path,
+        &format!(
+            "pertiskctl upgrade --bundle {}{}\n",
+            crate::os_upgrade::HOST_BUNDLE_DIR,
+            if reboot { " --reboot" } else { "" }
+        ),
+    )?;
+    let out = Command::new(&state.cfg().pertiskctl)
+        .args(&args)
+        .output()
+        .await?;
+    append_log(log_path, &String::from_utf8_lossy(&out.stdout))?;
+    append_log(log_path, &String::from_utf8_lossy(&out.stderr))?;
+    if !out.status.success() {
+        anyhow::bail!("pertiskctl upgrade failed on {name}");
+    }
+
+    if reboot {
+        append_log(log_path, &format!("wait Machine API {ip}:50000 after OS reboot\n"))?;
+        wait_guest_api(ip, log_path, 150).await?;
+    }
+
+    let mut marked = false;
+    for attempt in 1..=8 {
+        let mark = Command::new(&state.cfg().pertiskctl)
+            .args(["-e", &format!("{ip}:50000"), "mark-boot-good"])
+            .output()
+            .await;
+        match mark {
+            Ok(o) => {
+                append_log(log_path, &String::from_utf8_lossy(&o.stdout))?;
+                append_log(log_path, &String::from_utf8_lossy(&o.stderr))?;
+                if o.status.success() {
+                    marked = true;
+                    break;
+                }
+            }
+            Err(e) => append_log(log_path, &format!("mark-boot-good: {e}\n"))?,
+        }
+        append_log(
+            log_path,
+            &format!("mark-boot-good retry {attempt}/8\n"),
+        )?;
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+    if !marked {
+        append_log(
+            log_path,
+            "WARNING: mark-boot-good failed — node may auto-rollback after 3 failed boots\n",
+        )?;
+    }
+
+    let status = Command::new(&state.cfg().pertiskctl)
+        .args(["-e", &format!("{ip}:50000"), "upgrade-status"])
+        .output()
+        .await;
+    let mut got_ver = version.to_string();
+    if let Ok(o) = status {
+        let stdout = String::from_utf8_lossy(&o.stdout);
+        append_log(log_path, &stdout)?;
+        append_log(log_path, &String::from_utf8_lossy(&o.stderr))?;
+        if let Some(v) = crate::os_upgrade::parse_upgrade_status_version(&stdout) {
+            got_ver = v;
+        }
+    }
+
+    wait_api_ready(kubeconfig, log_path).await?;
+    append_log(log_path, &format!("wait Ready {name}\n"))?;
+    let _ = kubectl(
+        kubeconfig,
+        &[
+            "wait",
+            "--for=condition=Ready",
+            &format!("node/{name}"),
+            "--timeout=10m",
+        ],
+        log_path,
+    )
+    .await;
+    if do_drain {
+        append_log(log_path, &format!("uncordon {name}\n"))?;
+        let _ = kubectl(kubeconfig, &["uncordon", name], log_path).await;
+    }
+
+    let now = db::now_rfc3339();
+    sqlx::query(
+        "UPDATE nodes SET status = 'ready', os_version = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(&got_ver)
+    .bind(&now)
+    .bind(id)
+    .execute(state.pool())
+    .await?;
+    let _ = crate::node_sync::sync_cluster_nodes(
+        state.pool(),
+        cluster_id,
+        Some(std::path::Path::new(kubeconfig)),
+        Some(log_path),
+    )
+    .await;
+    Ok(())
+}
+
+async fn stage_os_bundle_via_pod(
+    kubeconfig: &str,
+    node_name: &str,
+    bundle_dir: &std::path::Path,
+    log_path: &str,
+) -> anyhow::Result<()> {
+    crate::os_upgrade::validate_bundle_dir(bundle_dir)?;
+    if crate::os_upgrade::bundle_trust_pk(bundle_dir).is_none() {
+        anyhow::bail!(
+            "os-trust.pk missing next to the bundle; make os-bundle includes it, or copy the public key onto the mgmt host"
+        );
+    }
+    let pod = format!(
+        "pertisk-os-{}",
+        &Uuid::new_v4().to_string().replace('-', "")[..12]
+    );
+    let host = crate::os_upgrade::HOST_BUNDLE_DIR;
+    let yaml = format!(
+        r#"apiVersion: v1
+kind: Pod
+metadata:
+  name: {pod}
+  namespace: kube-system
+  labels:
+    app: pertisk-os-upgrade
+spec:
+  nodeName: {node_name}
+  hostPID: true
+  restartPolicy: Never
+  tolerations:
+  - operator: Exists
+  containers:
+  - name: stage
+    image: alpine:3.20
+    imagePullPolicy: IfNotPresent
+    securityContext:
+      privileged: true
+    command: ["sleep", "600"]
+    volumeMounts:
+    - name: bundle
+      mountPath: /bundle
+  volumes:
+  - name: bundle
+    hostPath:
+      path: {host}
+      type: DirectoryOrCreate
+"#
+    );
+    let tmp = std::env::temp_dir().join(format!("{pod}.yaml"));
+    std::fs::write(&tmp, &yaml)?;
+
+    let mut applied = false;
+    let mut last_err = String::new();
+    for attempt in 1..=6 {
+        wait_api_ready(kubeconfig, log_path).await?;
+        let apply = Command::new("kubectl")
+            .args([
+                "--kubeconfig",
+                kubeconfig,
+                "apply",
+                "--validate=false",
+                "--request-timeout=30s",
+                "-f",
+            ])
+            .arg(&tmp)
+            .output()
+            .await?;
+        append_log(log_path, &String::from_utf8_lossy(&apply.stdout))?;
+        append_log(log_path, &String::from_utf8_lossy(&apply.stderr))?;
+        if apply.status.success() {
+            applied = true;
+            break;
+        }
+        last_err = format!(
+            "kubectl apply staging pod failed (attempt {attempt}): {}",
+            String::from_utf8_lossy(&apply.stderr)
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+    let _ = std::fs::remove_file(&tmp);
+    if !applied {
+        anyhow::bail!("{last_err}");
+    }
+
+    let wait = Command::new("kubectl")
+        .args([
+            "--kubeconfig",
+            kubeconfig,
+            "wait",
+            "--for=condition=Ready",
+            &format!("pod/{pod}"),
+            "-n",
+            "kube-system",
+            "--timeout=120s",
+        ])
+        .output()
+        .await?;
+    append_log(log_path, &String::from_utf8_lossy(&wait.stdout))?;
+    append_log(log_path, &String::from_utf8_lossy(&wait.stderr))?;
+    if !wait.status.success() {
+        let _ = delete_os_stage_pod(kubeconfig, &pod, false).await;
+        anyhow::bail!("staging pod {pod} not Ready on {node_name}");
+    }
+
+    let tar_files = [
+        "kernel",
+        "initramfs",
+        "manifest.json",
+        "manifest.sig",
+        crate::os_upgrade::TRUST_PK_NAME,
+    ];
+    let mut tar = std::process::Command::new("tar")
+        .current_dir(bundle_dir)
+        .arg("-cf")
+        .arg("-")
+        .args(tar_files)
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("spawn tar")?;
+    let stdout = tar.stdout.take().ok_or_else(|| anyhow::anyhow!("tar stdout"))?;
+    let copy = Command::new("kubectl")
+        .args([
+            "--kubeconfig",
+            kubeconfig,
+            "exec",
+            "-i",
+            "-n",
+            "kube-system",
+            &pod,
+            "--",
+            "tar",
+            "-C",
+            "/bundle",
+            "-xf",
+            "-",
+        ])
+        .stdin(stdout)
+        .output()
+        .await?;
+    let tar_status = tar.wait()?;
+    append_log(log_path, &String::from_utf8_lossy(&copy.stdout))?;
+    append_log(log_path, &String::from_utf8_lossy(&copy.stderr))?;
+    if !copy.status.success() || !tar_status.success() {
+        let _ = delete_os_stage_pod(kubeconfig, &pod, false).await;
+        anyhow::bail!("copy OS bundle onto {node_name} failed");
+    }
+
+    // Write the public key through PID 1's root (real STATE). Do not apk/nsenter:
+    // alpine may have no repos, and paths like /var/lib/... are not visible in the pod.
+    append_log(
+        log_path,
+        &format!(
+            "install {} via /proc/1/root\n",
+            crate::os_upgrade::HOST_TRUST_PK
+        ),
+    )?;
+    let install = Command::new("kubectl")
+        .args([
+            "--kubeconfig",
+            kubeconfig,
+            "exec",
+            "-n",
+            "kube-system",
+            &pod,
+            "--",
+            "sh",
+            "-c",
+            r#"set -eux
+echo "pid1=$(cat /proc/1/comm 2>/dev/null || echo unknown)"
+ls -l /bundle || true
+ls -l /bundle/os-trust.pk
+test -s /bundle/os-trust.pk
+ls -ld /proc/1/root /proc/1/root/system /proc/1/root/system/state || true
+mkdir -p /proc/1/root/system/state/secrets
+cp /bundle/os-trust.pk /proc/1/root/system/state/secrets/os-trust.pk
+chmod 700 /proc/1/root/system/state/secrets
+chmod 600 /proc/1/root/system/state/secrets/os-trust.pk
+ls -l /proc/1/root/system/state/secrets/os-trust.pk
+test -s /proc/1/root/system/state/secrets/os-trust.pk
+echo "os-trust.pk present on STATE via /proc/1/root"
+"#,
+        ])
+        .output()
+        .await?;
+    append_log(log_path, &String::from_utf8_lossy(&install.stdout))?;
+    append_log(log_path, &String::from_utf8_lossy(&install.stderr))?;
+    if !install.status.success() {
+        let _ = delete_os_stage_pod(kubeconfig, &pod, false).await;
+        let detail = format!(
+            "{}{}",
+            String::from_utf8_lossy(&install.stdout),
+            String::from_utf8_lossy(&install.stderr)
+        );
+        anyhow::bail!(
+            "failed to install os-trust.pk into PID 1 STATE on {node_name}: {}",
+            detail.trim()
+        );
+    }
+
+    delete_os_stage_pod(kubeconfig, &pod, true).await?;
+    append_log(
+        log_path,
+        &format!("staged bundle at {host} on {node_name}; trust key installed\n"),
+    )?;
+    Ok(())
+}
+
+async fn delete_os_stage_pod(kubeconfig: &str, pod: &str, wait: bool) -> anyhow::Result<()> {
+    let mut args = vec![
+        "--kubeconfig".into(),
+        kubeconfig.to_string(),
+        "delete".into(),
+        "pod".into(),
+        pod.to_string(),
+        "-n".into(),
+        "kube-system".into(),
+        "--ignore-not-found=true".into(),
+    ];
+    if wait {
+        args.push("--wait=true".into());
+        args.push("--timeout=60s".into());
+    } else {
+        args.push("--wait=false".into());
+    }
+    let _ = Command::new("kubectl").args(&args).output().await;
+    Ok(())
+}
+
+async fn wait_guest_api(ip: &str, log_path: &str, attempts: u32) -> anyhow::Result<()> {
+    use tokio::net::TcpStream;
+    use tokio::time::{sleep, timeout, Duration};
+
+    let addr = format!("{ip}:50000");
+    for i in 1..=attempts {
+        if timeout(Duration::from_secs(2), TcpStream::connect(&addr))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .is_some()
+        {
+            append_log(log_path, &format!("guest API up ({addr}) after ~{}s\n", i * 2))?;
+            sleep(Duration::from_secs(3)).await;
+            return Ok(());
+        }
+        sleep(Duration::from_secs(2)).await;
+    }
+    anyhow::bail!("guest API {addr} not ready after OS reboot")
 }
 
 /// kubeadm-shaped per-node upgrade: drain → bump version on-node → wait Ready → uncordon.

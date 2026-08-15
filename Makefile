@@ -9,6 +9,8 @@
 #   make mgmt                               # management UI+API → out/bin/pertisk-mgmt
 #   make mgmt-rpm / make rpm                # linux/amd64 RPM → out/rpm/
 #   make cloud VERSION=0.2.0 ARCH=amd64
+#   make os-trust                          # Ed25519 keys → out/secrets/os-trust.{sk,pk}
+#   make os-bundle VERSION=0.2.0 ARCH=amd64  # signed A/B OS zip for Upgrade tab
 #
 # VERSION embeds into binaries via PERTISK_BUILD_VERSION.
 # ARCH is amd64 | arm64 (aliases: x86_64 → amd64, aarch64 → arm64).
@@ -43,7 +45,7 @@ endif
 
 .PHONY: help build build-host build-all initramfs pertiskctl cloud uki enroll-ovmf \
 	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version lab-up \
-	mgmt mgmt-ui mgmt-rpm rpm
+	mgmt mgmt-ui mgmt-rpm rpm os-trust os-bundle
 
 help:
 	@echo "Pertisk KOS make targets"
@@ -57,6 +59,8 @@ help:
 	@echo "  make mgmt-rpm [VERSION=...]            # linux/amd64 RPM (API+UI) → out/rpm/"
 	@echo "  make rpm                               # alias for mgmt-rpm (amd64 deploy)"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
+	@echo "  make os-trust                         # Ed25519 os-trust.{sk,pk} → out/secrets/"
+	@echo "  make os-bundle [VERSION=...] [ARCH=...]  # signed A/B OS zip (not Kubernetes)"
 	@echo "  make stage-images [DEST=out]           # cloud + *-50g/*-75g qcow2 for RPM mgmt"
 	@echo "  make deploy-lab MGMT=user@host PVE=ip  # build→RPM→images→mgmt (see script)"
 	@echo "  make uki [VERSION=...] [ARCH=...]     # Unified Kernel Image"
@@ -139,6 +143,45 @@ cloud:
 	$(MAKE) fetch-runtime ARCH="$(BUILD_ARCH)"
 	$(MAKE) build VERSION="$(VERSION)" ARCH="$(BUILD_ARCH)" EMBED_BOOT=1 EMBED_RUNTIME=1
 	PERTISK_VERSION="$(VERSION)" PERTISK_ARCH="$(BUILD_ARCH)" "$(ROOT)/image/build-cloud-image.sh"
+
+OS_TRUST_SK ?= $(ROOT)/out/secrets/os-trust.sk
+OS_TRUST_PK ?= $(ROOT)/out/secrets/os-trust.pk
+
+## Generate Ed25519 OS trust keys (once). Copy .pk to STATE/secrets/os-trust.pk on nodes.
+## Does not overwrite existing keys unless FORCE=1.
+os-trust:
+	@mkdir -p "$(dir $(OS_TRUST_SK))"
+	@if [[ -f "$(OS_TRUST_SK)" || -f "$(OS_TRUST_PK)" ]] && [[ "$(FORCE)" != "1" ]]; then \
+	  echo "keys already exist: $(OS_TRUST_SK) $(OS_TRUST_PK)"; \
+	  echo "re-run with FORCE=1 to replace (nodes still on the old .pk cannot verify new bundles)"; \
+	  ls -lh "$(OS_TRUST_SK)" "$(OS_TRUST_PK)" 2>/dev/null || true; \
+	else \
+	  echo "==> pertisk-sign keygen → $(OS_TRUST_PK)"; \
+	  PERTISK_BUILD_VERSION="$(VERSION)" cargo build --release -p pertisk-update --bin pertisk-sign; \
+	  "$(ROOT)/target/release/pertisk-sign" keygen --secret "$(OS_TRUST_SK)" --public "$(OS_TRUST_PK)"; \
+	  chmod 600 "$(OS_TRUST_SK)"; \
+	  echo "==> keep $(OS_TRUST_SK) offline; install $(OS_TRUST_PK) as STATE/secrets/os-trust.pk"; \
+	fi
+
+## Signed A/B OS bundle: kernel, initramfs, manifest.json, manifest.sig (or a .zip of those files).
+## Kubernetes is not changed.
+## Workers first, then control planes. Trust key os-trust.pk must already be on STATE.
+## Recreating VMs from a new qcow2 is a reinstall, not this path.
+##   make os-bundle VERSION=0.2.86 ARCH=amd64
+##   make os-bundle SKIP_BUILD=1   # re-sign existing out/ kernel + initramfs
+os-bundle:
+	@echo "==> OS A/B bundle VERSION=$(VERSION) ARCH=$(BUILD_ARCH) PROFILE=$(PROFILE)"
+	@if [[ "$(SKIP_BUILD)" != "1" ]]; then \
+	  $(MAKE) fetch-runtime ARCH="$(BUILD_ARCH)"; \
+	  $(MAKE) build VERSION="$(VERSION)" ARCH="$(BUILD_ARCH)" PROFILE="$(PROFILE)" EMBED_BOOT=1 EMBED_RUNTIME=1; \
+	fi
+	PERTISK_VERSION="$(VERSION)" \
+	PERTISK_ARCH="$(BUILD_ARCH)" \
+	PERTISK_IMAGE_PROFILE="$(PROFILE)" \
+	OS_TRUST_SK="$(OS_TRUST_SK)" \
+	OS_TRUST_PK="$(OS_TRUST_PK)" \
+	SKIP_BUILD="$(SKIP_BUILD)" \
+	  "$(ROOT)/scripts/build-os-bundle.sh"
 
 ## Stage base + role-sized qcow2 for RPM mgmt (/var/lib/pertisk-mgmt/images).
 ## Optional: make stage-images DEST=/tmp/images

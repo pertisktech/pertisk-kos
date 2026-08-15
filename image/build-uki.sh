@@ -96,9 +96,11 @@ docker run --rm --platform "${PLATFORM}" \
       --linux=/work/kernel
       --initrd=/work/initrd
       --cmdline="${CMDLINE}"
-      --os-release="NAME=PertiskKOS
+      --os-release="PRETTY_NAME=pertisk-kos ${VERSION}
+NAME=pertisk-kos
 VERSION=${VERSION}
-ID=pertisk
+VERSION_ID=${VERSION}
+ID=pertisk-kos
 "
       --uname="pertisk-${VERSION}"
       --output="/out/pertisk-${ARCH}.efi"

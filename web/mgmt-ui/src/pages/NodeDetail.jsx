@@ -274,6 +274,10 @@ export default function NodeDetail() {
             <div className="value mono-inline">{node.k8s_version || '—'}</div>
           </div>
           <div className="stat">
+            <div className="label">OS</div>
+            <div className="value mono-inline">{node.os_version || '—'}</div>
+          </div>
+          <div className="stat">
             <div className="label">Hardware</div>
             <div className="value" style={{ fontSize: '0.95rem' }}>{formatHw(node)}</div>
           </div>

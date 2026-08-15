@@ -42,6 +42,7 @@ export default function Machines() {
         m.cluster_name,
         m.provider_name,
         m.k8s_version,
+        m.os_version,
         m.source,
       ]
         .filter(Boolean)
@@ -94,6 +95,7 @@ export default function Machines() {
               <th>Status</th>
               <th>IP</th>
               <th>K8s</th>
+              <th>OS</th>
               <th>AK</th>
             </tr>
           </thead>
@@ -138,6 +140,7 @@ export default function Machines() {
                   </td>
                   <td className="mono-inline">{m.ip || m.ip6 || '—'}</td>
                   <td className="mono-inline">{m.k8s_version || '—'}</td>
+                  <td className="mono-inline">{m.os_version || '—'}</td>
                   <td>
                     <span className={`badge ${m.ak_enrolled ? 'ready' : ''}`}>
                       {m.ak_enrolled ? 'enrolled' : '—'}

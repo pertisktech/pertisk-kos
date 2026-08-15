@@ -87,7 +87,7 @@ Cluster detail **Nodes** shows lifecycle status (`ready` / `provisioning` / …)
 
 Cluster → Nodes → click a node name → `/clusters/:id/nodes/:nid`.
 
-The page shows inventory (VMID, IPs, K8s, hardware), live Machine Health, and charts:
+The page shows inventory (VMID, IPs, K8s, OS, hardware), live Machine Health, and charts:
 
 | Source | How mgmt collects it |
 |--------|----------------------|
@@ -132,6 +132,26 @@ API (Bearer JWT; shell needs **operator/admin**):
 - `GET /api/clusters/{id}/k8s/shell?token=` (WebSocket host PTY; `token` = JWT)
 
 Requires `kubectl` on the mgmt host PATH (same as node sync / `kubectl top`).
+
+## Cluster Upgrade tab
+
+Two independent rolling jobs. Kubernetes version and node OS are **not** the same upgrade.
+
+| Action | API | What it changes |
+|--------|-----|-----------------|
+| Kubernetes rolling upgrade | `POST /api/clusters/{id}/upgrade` `{ "version": "v1.36.3" }` | kubelet + control-plane static pods |
+| OS A/B upgrade | `POST /api/clusters/{id}/os-upgrade` (multipart) | kernel + initramfs (`pertiskd`); STATE/etcd stay |
+
+OS upgrade upload: the four signed files (`kernel`, `initramfs`, `manifest.json`, `manifest.sig`) or a `.zip` of them. Max 512 MiB.
+
+```bash
+make os-trust                              # once → out/secrets/os-trust.{sk,pk}
+make os-bundle VERSION=0.2.86 ARCH=amd64   # → out/os-bundle-amd64-v0.2.86.zip (includes os-trust.pk)
+```
+
+Job `upgrade_os` stages the bundle onto each guest via a privileged hostPath pod (`/var/lib/pertisk-os-upgrade`), installs `os-trust.pk` on STATE if missing, then `pertiskctl upgrade --bundle … --reboot` and `mark-boot-good`. Order: workers first, then control planes. Requires `kubectl` + `pertiskctl` on the mgmt host.
+
+Recreating VMs from a new qcow2 is a reinstall, not this path.
 
 ## Proxmox provider
 

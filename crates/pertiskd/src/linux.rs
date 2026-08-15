@@ -47,7 +47,35 @@ pub fn prepare_var() -> Result<()> {
     }
 }
 
-/// Write `/etc/os-release` so kubelet reports OS-IMAGE as `pertisk-kos`.
+/// kubelet `status.nodeInfo.osImage` (`kubectl get nodes -o wide` OS-IMAGE).
+pub fn os_image_pretty_name(version: &str) -> String {
+    let v = version.trim();
+    if v.is_empty() {
+        "pertisk-kos".into()
+    } else {
+        format!("pertisk-kos {v}")
+    }
+}
+
+/// `/etc/os-release` body. `PRETTY_NAME` is what kubelet stamps on the node.
+pub fn os_release_contents(version: &str) -> String {
+    let ver = version.trim();
+    let pretty = os_image_pretty_name(ver);
+    format!(
+        "PRETTY_NAME=\"{pretty}\"\n\
+         NAME=\"pertisk-kos\"\n\
+         ID=pertisk-kos\n\
+         ID_LIKE=pertisk\n\
+         VERSION_ID=\"{ver}\"\n\
+         VERSION=\"{ver}\"\n\
+         BUILD_ID=\"{ver}\"\n\
+         HOME_URL=\"https://github.com/pertisk-tech/pertisk-kos\"\n\
+         SUPPORT_URL=\"https://github.com/pertisk-tech/pertisk-kos\"\n\
+         BUG_REPORT_URL=\"https://github.com/pertisk-tech/pertisk-kos/issues\"\n"
+    )
+}
+
+/// Write `/etc/os-release` so kubelet reports OS-IMAGE as `pertisk-kos <version>`.
 pub fn ensure_os_release() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -325,22 +353,11 @@ mod linux_impl {
     pub fn ensure_os_release() -> Result<()> {
         ensure_dir("/etc")?;
         let ver = pertisk_config::release_version();
-        let body = format!(
-            "PRETTY_NAME=\"pertisk-kos\"\n\
-             NAME=\"pertisk-kos\"\n\
-             ID=pertisk-kos\n\
-             ID_LIKE=pertisk\n\
-             VERSION_ID=\"{ver}\"\n\
-             VERSION=\"{ver}\"\n\
-             HOME_URL=\"https://github.com/pertisk-tech/pertisk-kos\"\n\
-             SUPPORT_URL=\"https://github.com/pertisk-tech/pertisk-kos\"\n\
-             BUG_REPORT_URL=\"https://github.com/pertisk-tech/pertisk-kos/issues\"\n"
-        );
-        fs::write("/etc/os-release", body)?;
+        fs::write("/etc/os-release", super::os_release_contents(ver))?;
         // Some tools also read /usr/lib/os-release.
         ensure_dir("/usr/lib")?;
         let _ = fs::copy("/etc/os-release", "/usr/lib/os-release");
-        info!(version = ver, "wrote /etc/os-release");
+        info!(version = ver, pretty = %super::os_image_pretty_name(ver), "wrote /etc/os-release");
         Ok(())
     }
 
@@ -489,5 +506,25 @@ mod linux_impl {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pretty_name_stamps_version() {
+        assert_eq!(os_image_pretty_name("0.2.87"), "pertisk-kos 0.2.87");
+        assert_eq!(os_image_pretty_name(" v1.0 "), "pertisk-kos v1.0");
+        assert_eq!(os_image_pretty_name(""), "pertisk-kos");
+    }
+
+    #[test]
+    fn os_release_pretty_name_is_kubelet_os_image() {
+        let body = os_release_contents("0.2.87");
+        assert!(body.contains("PRETTY_NAME=\"pertisk-kos 0.2.87\""));
+        assert!(body.contains("VERSION_ID=\"0.2.87\""));
+        assert!(body.contains("BUILD_ID=\"0.2.87\""));
     }
 }

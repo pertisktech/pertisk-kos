@@ -142,6 +142,19 @@ impl Config {
     pub fn kubeconfigs_dir(&self) -> PathBuf {
         self.data_dir.join("kubeconfigs")
     }
+
+    pub fn os_bundles_dir(&self) -> PathBuf {
+        self.data_dir.join("os-bundles")
+    }
+
+    /// Public OS trust key used to seed `STATE/secrets/os-trust.pk` when missing.
+    pub fn os_trust_pk(&self) -> PathBuf {
+        std::env::var("MGMT_OS_TRUST_PK")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.data_dir.join("secrets/os-trust.pk"))
+    }
 }
 
 fn derive_key(raw: &str) -> Vec<u8> {
