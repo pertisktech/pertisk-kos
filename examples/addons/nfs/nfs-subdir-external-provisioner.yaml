@@ -18,8 +18,11 @@ metadata:
   name: nfs-subdir-external-provisioner-runner
 rules:
   - apiGroups: [""]
-    resources: [nodes, persistentvolumes]
+    resources: [nodes]
     verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [persistentvolumes]
+    verbs: [get, list, watch, create, delete]
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
     verbs: [get, list, watch, update]
@@ -29,6 +32,9 @@ rules:
   - apiGroups: [""]
     resources: [events]
     verbs: [create, update, patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch]
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
