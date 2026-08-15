@@ -1845,10 +1845,12 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   resize: none;
 }
 .yaml-editor {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
   min-height: 160px;
+  background: var(--bg);
 }
 .yaml-editor--fill {
   flex: 1;
@@ -1858,6 +1860,28 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
 .yaml-editor--modal {
   height: min(52vh, 28rem);
   margin: 0 0 0.75rem;
+}
+/* vs-dark (#1e1e1e) does not match --bg; fill the rounded host so gutter + canvas align. */
+.yaml-editor .monaco-editor {
+  --vscode-editor-background: var(--bg);
+  --vscode-editorGutter-background: var(--bg);
+  --vscode-minimap-background: var(--bg);
+  --vscode-editorStickyScroll-background: var(--bg);
+  position: absolute !important;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+}
+.yaml-editor .monaco-editor .overflow-guard,
+.yaml-editor .monaco-editor-background,
+.yaml-editor .monaco-editor .margin,
+.yaml-editor .monaco-editor .margin-view-overlays {
+  background-color: var(--bg) !important;
+}
+.yaml-editor .monaco-editor .overflow-guard {
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: inherit;
 }
 .yaml-editor.muted {
   display: flex;
