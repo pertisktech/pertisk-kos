@@ -1329,6 +1329,11 @@ a.btn-icon.secondary {
   gap: 0.6rem;
 }
 .modal-card.modal-wide { width: min(520px, 100%); }
+.modal-card.modal-yaml {
+  width: min(880px, 100%);
+  max-height: min(92vh, 960px);
+  overflow: auto;
+}
 .modal-card.modal-wizard {
   width: min(720px, 100%);
   max-height: min(92vh, 900px);
@@ -1838,6 +1843,28 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   min-height: 160px;
   margin: 0.75rem 0 1rem;
   resize: none;
+}
+.yaml-editor {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  min-height: 160px;
+}
+.yaml-editor--fill {
+  flex: 1;
+  min-height: 220px;
+  margin: 0.75rem 0 1rem;
+}
+.yaml-editor--modal {
+  height: min(52vh, 28rem);
+  margin: 0 0 0.75rem;
+}
+.yaml-editor.muted {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
 }
 .upgrade-tab .upgrade-form {
   display: flex;

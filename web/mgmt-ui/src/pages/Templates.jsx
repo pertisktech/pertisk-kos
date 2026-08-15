@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
 import { defaultTemplateYaml } from '../utils/machineConfig'
+
+const YamlEditor = lazy(() => import('../components/YamlEditor'))
 
 const DEFAULT_FORM = {
   name: '',
@@ -162,6 +164,7 @@ export default function Templates() {
       <Modal
         open={open}
         wide
+        cardClassName="modal-yaml"
         title={editingId ? 'Edit template' : 'New template'}
         icon="templates"
         onClose={() => setOpen(false)}
@@ -195,13 +198,15 @@ export default function Templates() {
         </div>
         <div className="field">
           <label>YAML</label>
-          <textarea
-            className="config-editor"
-            value={form.yaml}
-            onChange={(e) => setForm({ ...form, yaml: e.target.value })}
-            spellCheck={false}
-            rows={16}
-          />
+          <Suspense fallback={<div className="yaml-editor yaml-editor--modal muted">Loading editor…</div>}>
+            <YamlEditor
+              className="yaml-editor--modal"
+              schema="machine"
+              path={`template-${editingId || 'new'}`}
+              value={form.yaml}
+              onChange={(yaml) => setForm((f) => ({ ...f, yaml }))}
+            />
+          </Suspense>
         </div>
         <div className="form-footer">
           <button type="button" className="secondary" onClick={() => setOpen(false)}>

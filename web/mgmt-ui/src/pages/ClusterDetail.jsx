@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, getToken } from '../api'
 import { defaultMachineConfigYaml } from '../utils/machineConfig'
@@ -14,6 +14,8 @@ import K8sVersionSelect from '../components/K8sVersionSelect'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import K8sTab from './cluster-k8s/K8sTab'
 import ShellTab from './cluster-k8s/ShellTab'
+
+const YamlEditor = lazy(() => import('../components/YamlEditor'))
 
 const TABS = [
   { id: 'overview', label: 'Overview', icon: 'dashboard' },
@@ -1361,15 +1363,18 @@ export default function ClusterDetail() {
                   </select>
                 </label>
               </div>
-              <textarea
-                className="config-editor"
-                value={configYaml}
-                onChange={(e) => {
-                  configTouched.current = true
-                  setConfigYaml(e.target.value)
-                }}
-                spellCheck={false}
-              />
+              <Suspense fallback={<div className="yaml-editor yaml-editor--fill muted">Loading editor…</div>}>
+                <YamlEditor
+                  className="yaml-editor--fill"
+                  schema="machine"
+                  path={`cluster-${id}`}
+                  value={configYaml}
+                  onChange={(next) => {
+                    configTouched.current = true
+                    setConfigYaml(next)
+                  }}
+                />
+              </Suspense>
               <div className="form-footer" style={{ marginBottom: 0 }}>
                 <button type="button" className="btn-icon" onClick={applyConfig}>
                   <Icon name="check" size={16} /> Apply to all nodes
@@ -1830,6 +1835,7 @@ export default function ClusterDetail() {
         open={kubeconfigOpen}
         title="Kubeconfig"
         icon="download"
+        cardClassName="modal-yaml"
         onClose={() => {
           setKubeconfigOpen(false)
           setKubeCopied(false)
@@ -1838,20 +1844,15 @@ export default function ClusterDetail() {
         <p className="muted" style={{ marginTop: 0 }}>
           <code className="mono-inline">{kubeconfigFilenameShown || 'cluster.yaml'}</code>
         </p>
-        <pre
-          style={{
-            whiteSpace: 'pre-wrap',
-            fontSize: '0.75rem',
-            background: 'var(--bg-elevated, #111)',
-            padding: '0.75rem',
-            borderRadius: 6,
-            overflow: 'auto',
-            maxHeight: '50vh',
-            margin: '0 0 0.75rem',
-          }}
-        >
-          {kubeconfigText}
-        </pre>
+        <Suspense fallback={<div className="yaml-editor yaml-editor--modal muted">Loading editor…</div>}>
+          <YamlEditor
+            className="yaml-editor--modal"
+            schema="kubeconfig"
+            path={`cluster-${id}`}
+            value={kubeconfigText}
+            readOnly
+          />
+        </Suspense>
         <div className="modal-actions">
           <button
             type="button"

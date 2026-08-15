@@ -20,6 +20,12 @@ export default defineConfig({
       },
     },
   },
+  worker: {
+    format: 'es',
+  },
+  optimizeDeps: {
+    include: ['monaco-editor', 'monaco-yaml'],
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

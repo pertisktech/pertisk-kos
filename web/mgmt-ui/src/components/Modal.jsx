@@ -9,13 +9,14 @@ export default function Modal({
   wide = false,
   icon = 'edit',
   tone = 'primary',
+  cardClassName = '',
 }) {
   if (!open) return null
 
   return (
     <div className="modal-backdrop" role="presentation">
       <div
-        className={`modal-card ${wide ? 'modal-wide' : ''}`}
+        className={`modal-card ${wide ? 'modal-wide' : ''} ${cardClassName}`.trim()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"

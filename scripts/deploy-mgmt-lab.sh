@@ -164,41 +164,44 @@ else
   PUBLIC_URL_MODE=preserve
   MGMT_PUBLIC_URL="$DEFAULT_PUBLIC_URL"
 fi
-ssh "$MGMT_HOST" "sudo bash -c '
-  ENV=/etc/pertisk-mgmt/pertisk-mgmt.env
-  touch \"\$ENV\"
-  set_kv() {
-    local k=\"\$1\" v=\"\$2\"
-    if grep -q \"^\${k}=\" \"\$ENV\" 2>/dev/null; then
-      sed -i \"s|^\${k}=.*|\${k}=\${v}|\" \"\$ENV\"
-    elif grep -q \"^# *\${k}=\" \"\$ENV\" 2>/dev/null; then
-      sed -i \"s|^# *\${k}=.*|\${k}=\${v}|\" \"\$ENV\"
-    else
-      echo \"\${k}=\${v}\" >> \"\$ENV\"
-    fi
-  }
-  set_kv PERTISK_IMAGES_DIR /var/lib/pertisk-mgmt/images
-  set_kv PROXMOX_NO_SSH 1
-  set_kv PROXMOX_UPLOAD_STORAGE local
-  set_kv LAB_SUBNET ${LAB_SUBNET}
-  existing_public=\"\$(grep -E \"^MGMT_PUBLIC_URL=\" \"\$ENV\" 2>/dev/null | head -1 | cut -d= -f2- || true)\"
-  if [[ \"${PUBLIC_URL_MODE}\" == \"explicit\" ]]; then
-    set_kv MGMT_PUBLIC_URL ${MGMT_PUBLIC_URL}
-    echo \"MGMT_PUBLIC_URL=${MGMT_PUBLIC_URL} (from deploy env)\"
-  elif [[ -n \"\$existing_public\" ]]; then
-    echo \"MGMT_PUBLIC_URL=\${existing_public} (preserved)\"
+# Pipe via bash -s so the remote login shell (often zsh + nomatch) never
+# parses the script. Nested `bash -c '… sed -i '/pattern/' …'` breaks quotes.
+ssh "$MGMT_HOST" "sudo bash -s" <<EOF
+set -euo pipefail
+ENV=/etc/pertisk-mgmt/pertisk-mgmt.env
+touch "\$ENV"
+set_kv() {
+  local k="\$1" v="\$2"
+  if grep -q "^\${k}=" "\$ENV" 2>/dev/null; then
+    sed -i "s|^\${k}=.*|\${k}=\${v}|" "\$ENV"
+  elif grep -q "^# *\${k}=" "\$ENV" 2>/dev/null; then
+    sed -i "s|^# *\${k}=.*|\${k}=\${v}|" "\$ENV"
   else
-    set_kv MGMT_PUBLIC_URL ${MGMT_PUBLIC_URL}
-    echo \"MGMT_PUBLIC_URL=${MGMT_PUBLIC_URL} (default; was unset)\"
+    echo "\${k}=\${v}" >> "\$ENV"
   fi
-  # Drop duplicate / stale PROXMOX_SSH lines (deploy used to comment+append forever).
-  sed -i '/^[[:space:]]*#*[[:space:]]*PROXMOX_SSH=/d' \"\$ENV\" 2>/dev/null || true
-  if [[ \"${WITH_SSH}\" == \"1\" ]]; then
-    : # set below after PROXMOX_NO_SSH flip
-  else
-    echo \"# PROXMOX_SSH=root@pve\" >> \"\$ENV\"
-  fi
-'"
+}
+set_kv PERTISK_IMAGES_DIR /var/lib/pertisk-mgmt/images
+set_kv PROXMOX_NO_SSH 1
+set_kv PROXMOX_UPLOAD_STORAGE local
+set_kv LAB_SUBNET ${LAB_SUBNET}
+existing_public="\$(grep -E "^MGMT_PUBLIC_URL=" "\$ENV" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+if [[ "${PUBLIC_URL_MODE}" == "explicit" ]]; then
+  set_kv MGMT_PUBLIC_URL ${MGMT_PUBLIC_URL}
+  echo "MGMT_PUBLIC_URL=${MGMT_PUBLIC_URL} (from deploy env)"
+elif [[ -n "\$existing_public" ]]; then
+  echo "MGMT_PUBLIC_URL=\${existing_public} (preserved)"
+else
+  set_kv MGMT_PUBLIC_URL ${MGMT_PUBLIC_URL}
+  echo "MGMT_PUBLIC_URL=${MGMT_PUBLIC_URL} (default; was unset)"
+fi
+# Drop duplicate / stale PROXMOX_SSH lines (deploy used to comment+append forever).
+sed -i '/^[[:space:]]*#*[[:space:]]*PROXMOX_SSH=/d' "\$ENV" 2>/dev/null || true
+if [[ "${WITH_SSH}" == "1" ]]; then
+  : # set below after PROXMOX_NO_SSH flip
+else
+  echo "# PROXMOX_SSH=root@pve" >> "\$ENV"
+fi
+EOF
 # Reflect what landed on the host for the summary line below.
 MGMT_PUBLIC_URL="$(ssh "$MGMT_HOST" "sudo grep -E '^MGMT_PUBLIC_URL=' /etc/pertisk-mgmt/pertisk-mgmt.env 2>/dev/null | head -1 | cut -d= -f2-" || true)"
 MGMT_PUBLIC_URL="${MGMT_PUBLIC_URL:-$DEFAULT_PUBLIC_URL}"
@@ -206,20 +209,21 @@ echo "==> MGMT_PUBLIC_URL=${MGMT_PUBLIC_URL}"
 
 if [[ "$WITH_SSH" == "1" && -n "$PVE_SSH" ]]; then
   echo "==> optional SSH mode PROXMOX_SSH=${PVE_SSH}"
-  ssh "$MGMT_HOST" "sudo bash -c '
-    ENV=/etc/pertisk-mgmt/pertisk-mgmt.env
-    set_kv() {
-      local k=\"\$1\" v=\"\$2\"
-      if grep -q \"^\${k}=\" \"\$ENV\" 2>/dev/null; then
-        sed -i \"s|^\${k}=.*|\${k}=\${v}|\" \"\$ENV\"
-      else
-        echo \"\${k}=\${v}\" >> \"\$ENV\"
-      fi
-    }
-    set_kv PROXMOX_NO_SSH 0
-    sed -i \"/^[[:space:]]*#*[[:space:]]*PROXMOX_SSH=/d\" \"\$ENV\" 2>/dev/null || true
-    echo \"PROXMOX_SSH=${PVE_SSH}\" >> \"\$ENV\"
-  '"
+  ssh "$MGMT_HOST" "sudo bash -s" <<EOF
+set -euo pipefail
+ENV=/etc/pertisk-mgmt/pertisk-mgmt.env
+set_kv() {
+  local k="\$1" v="\$2"
+  if grep -q "^\${k}=" "\$ENV" 2>/dev/null; then
+    sed -i "s|^\${k}=.*|\${k}=\${v}|" "\$ENV"
+  else
+    echo "\${k}=\${v}" >> "\$ENV"
+  fi
+}
+set_kv PROXMOX_NO_SSH 0
+sed -i '/^[[:space:]]*#*[[:space:]]*PROXMOX_SSH=/d' "\$ENV" 2>/dev/null || true
+echo "PROXMOX_SSH=${PVE_SSH}" >> "\$ENV"
+EOF
   ssh "$MGMT_HOST" 'sudo -u pertisk-mgmt -H bash -c "
     mkdir -p ~/.ssh && chmod 700 ~/.ssh
     [[ -f ~/.ssh/id_ed25519 ]] || ssh-keygen -t ed25519 -N \"\" -f ~/.ssh/id_ed25519 -C pertisk-mgmt@mgmt
