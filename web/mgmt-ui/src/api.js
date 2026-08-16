@@ -80,8 +80,9 @@ export function clearToken() {
 
 /**
  * Sign out of the SPA. Auth0 users are redirected through `/api/auth/logout`
- * so the Auth0 (and federated IdP) SSO cookie is cleared — otherwise the next
- * "Continue with Auth0" silently reuses the previous account.
+ * so the Auth0 app SSO cookie is cleared — otherwise the next
+ * "Continue with Auth0" silently reuses the previous Auth0 session.
+ * Upstream IdPs (Google, etc.) are left signed in.
  */
 export function logoutAndRedirect(provider = getAuthProvider()) {
   clearToken()

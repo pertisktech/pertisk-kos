@@ -34,12 +34,39 @@ cd web/mgmt-ui && npm run dev   # http://127.0.0.1:5173 proxies /api → :8080
 | `MGMT_ADMIN_USER` / `MGMT_ADMIN_PASSWORD` | Seeded local admin |
 | `MGMT_SECRET_KEY` | JWT + AES key (hex 64 chars or any string) |
 | `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET` | SSO |
-| `MGMT_PUBLIC_URL` | Public base URL for OIDC callback + guest serial (`machine.dashboard.mgmt_url`). Set in `/etc/pertisk-mgmt/pertisk-mgmt.env`. `deploy-mgmt-lab.sh` preserves an existing value unless you export `MGMT_PUBLIC_URL=…` for that run. |
+| `MGMT_PUBLIC_URL` | Public base URL for OIDC callback + guest serial (`machine.dashboard.mgmt_url`) + password-reset links. Set in `/etc/pertisk-mgmt/pertisk-mgmt.env`. `deploy-mgmt-lab.sh` preserves an existing value unless you export `MGMT_PUBLIC_URL=…` for that run. |
+| `MGMT_SMTP_HOST` / `MGMT_SMTP_FROM` | Enable outbound email (see SMTP section) |
+| `MGMT_ADMIN_EMAILS` | Comma-separated admin inboxes for Auth0 first-login notices |
 | `MGMT_METRICS_TOKEN` | Optional Bearer when scraping guest `:50001/metrics` |
 | `MGMT_METRICS_TLS_CA` / `MGMT_METRICS_TLS_CERT` / `MGMT_METRICS_TLS_KEY` | Optional client mTLS for `https://{ip}:50001/metrics` (all three required together) |
 | `MGMT_PERTISKCTL` | Path to `pertiskctl` (default `./out/bin/pertiskctl`) |
 
-Auth0 role claim: `https://pertisk.io/role` or `role` → `admin` \| `operator` \| `viewer`.
+Auth0 role claim: `https://pertisk.io/role` or `role` → `admin` \| `operator` \| `viewer`. On first Auth0 sign-in the identity is auto-provisioned (default role `viewer` when the claim is absent). Pertisk does **not** gate Auth0 access with a local approval queue — configure allowlists / Actions / claim mapping in Auth0. When SMTP and `MGMT_ADMIN_EMAILS` are set, mgmt sends a non-blocking notice to those addresses after the first Auth0 identity is created.
+
+### Local user management
+
+Admins can manage accounts on the **Users** page (`/#/users`):
+
+- Create local users with an email, role, and either a temporary password or a reset email
+- Change roles, disable/enable accounts (the last enabled admin cannot be disabled or demoted)
+- Resend password-reset email for local users (Auth0-only identities have no local password)
+
+Public local reset (enumeration-safe): `POST /api/auth/password-reset/request` and `POST /api/auth/password-reset/confirm`. UI: **Forgot password?** on the login page and `/#/reset-password?token=…`.
+
+### SMTP (password reset + Auth0 notices)
+
+Email features are disabled cleanly when SMTP is not configured. Set both host and from address:
+
+| Env | Description |
+|-----|-------------|
+| `MGMT_SMTP_HOST` | SMTP relay hostname |
+| `MGMT_SMTP_PORT` | Port (default `587`) |
+| `MGMT_SMTP_FROM` / `MGMT_SMTP_SENDER` | From address (Mailbox format, e.g. `Pertisk <noreply@example.com>`) |
+| `MGMT_SMTP_USER` / `MGMT_SMTP_USERNAME` / `MGMT_SMTP_PASSWORD` | Optional AUTH credentials (both user and password required together; `USERNAME` is an alias for `USER`) |
+| `MGMT_SMTP_TLS` | `none` \| `starttls` (default) \| `tls` (implicit TLS, typical port 465) |
+| `MGMT_ADMIN_EMAILS` | Comma-separated recipients for Auth0 first-login notices |
+
+Reset links use `MGMT_PUBLIC_URL` (`{public}/#/reset-password?token=…`). Send failures are logged and audited; they never block an Auth0 login.
 
 ### Auth0 Application Settings
 
@@ -57,7 +84,7 @@ In the Auth0 dashboard → **Applications** → your Regular Web Application →
 | **Allowed Logout URLs** | `https://mgmt.example.com/` |
 | **Allowed Web Origins** | `https://mgmt.example.com` |
 
-Sign out for Auth0 users hits `GET /api/auth/logout`, which redirects to Auth0 `/v2/logout?…&federated` and then back to **Allowed Logout URLs**. Without that allowlist entry, Auth0 logout fails and the next SSO login reuses the previous account. OIDC start also sends `prompt=login` so Auth0 shows the login / account UI.
+Sign out for Auth0 users hits `GET /api/auth/logout`, which redirects to Auth0 `/v2/logout` (Auth0 app session only — not federated IdP logout) and then back to **Allowed Logout URLs**. Without that allowlist entry, Auth0 logout fails and the next SSO login may reuse the previous Auth0 session. OIDC start also sends `prompt=login` so Auth0 shows the login / account UI.
 
 If you also use a local or IP URL, list every callback on separate lines (or comma-separated), e.g.:
 

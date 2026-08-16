@@ -33,6 +33,50 @@ pub struct Config {
     pub metrics_tls: Option<MetricsTls>,
     /// Directory of prebuilt cloud qcow2 images (lab-up --skip-build).
     pub images_dir: PathBuf,
+    /// Optional SMTP for password reset and Auth0 first-login notices.
+    pub smtp: Option<SmtpConfig>,
+    /// Recipients for Auth0 first-login / admin notices (comma-separated env).
+    pub admin_emails: Vec<String>,
+}
+
+/// SMTP relay settings (env-only). Absent when host/from are unset.
+#[derive(Debug, Clone)]
+pub struct SmtpConfig {
+    pub host: String,
+    pub port: u16,
+    pub from: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub tls: SmtpTlsMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmtpTlsMode {
+    /// Plain SMTP (lab / internal only).
+    None,
+    /// STARTTLS after connect (typical submission port 587).
+    Starttls,
+    /// Implicit TLS (typical port 465).
+    Tls,
+}
+
+impl SmtpTlsMode {
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" | "off" | "plain" => Ok(Self::None),
+            "starttls" | "opportunistic" => Ok(Self::Starttls),
+            "tls" | "ssl" | "wrapper" => Ok(Self::Tls),
+            other => bail!("invalid MGMT_SMTP_TLS={other}; use none|starttls|tls"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Starttls => "starttls",
+            Self::Tls => "tls",
+        }
+    }
 }
 
 /// Client PEMs for scraping guest metrics when nodes enable metrics mTLS.
@@ -113,6 +157,17 @@ impl Config {
             bail!("AUTH_MODE requires AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET");
         }
 
+        let smtp = resolve_smtp()?;
+        let admin_emails = std::env::var("MGMT_ADMIN_EMAILS")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
         Ok(Self {
             listen,
             db,
@@ -132,7 +187,13 @@ impl Config {
             metrics_token,
             metrics_tls,
             images_dir,
+            smtp,
+            admin_emails,
         })
+    }
+
+    pub fn smtp_configured(&self) -> bool {
+        self.smtp.is_some()
     }
 
     pub fn jobs_dir(&self) -> PathBuf {
@@ -174,6 +235,55 @@ fn hash_key(raw: &str) -> Vec<u8> {
     let mut h = Sha256::new();
     h.update(raw.as_bytes());
     h.finalize().to_vec()
+}
+
+fn resolve_smtp() -> anyhow::Result<Option<SmtpConfig>> {
+    let host = std::env::var("MGMT_SMTP_HOST")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let from = std::env::var("MGMT_SMTP_FROM")
+        .or_else(|_| std::env::var("MGMT_SMTP_SENDER"))
+        .ok()
+        .filter(|s| !s.is_empty());
+    match (host, from) {
+        (None, None) => Ok(None),
+        (Some(host), Some(from)) => {
+            let port = std::env::var("MGMT_SMTP_PORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(587);
+            let tls = SmtpTlsMode::parse(
+                &std::env::var("MGMT_SMTP_TLS").unwrap_or_else(|_| "starttls".into()),
+            )?;
+            let username = std::env::var("MGMT_SMTP_USER")
+                .or_else(|_| std::env::var("MGMT_SMTP_USERNAME"))
+                .ok()
+                .filter(|s| !s.is_empty());
+            let password = std::env::var("MGMT_SMTP_PASSWORD")
+                .ok()
+                .filter(|s| !s.is_empty());
+            if username.is_some() != password.is_some() {
+                bail!(
+                    "incomplete SMTP auth; set both MGMT_SMTP_USER (or MGMT_SMTP_USERNAME) and MGMT_SMTP_PASSWORD"
+                );
+            }
+            if username.is_none() {
+                tracing::warn!(
+                    host = %host,
+                    "SMTP configured without credentials; many relays (e.g. Gmail) will reject sends"
+                );
+            }
+            Ok(Some(SmtpConfig {
+                host,
+                port,
+                from,
+                username,
+                password,
+                tls,
+            }))
+        }
+        _ => bail!("incomplete SMTP env; set both MGMT_SMTP_HOST and MGMT_SMTP_FROM (or MGMT_SMTP_SENDER)"),
+    }
 }
 
 fn resolve_metrics_tls() -> anyhow::Result<Option<MetricsTls>> {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   api,
   setToken,
@@ -137,6 +137,9 @@ export default function Login() {
             <button type="submit" className="login-submit" disabled={loading}>
               {loading ? 'Signing in…' : 'Sign in'}
             </button>
+            <p className="muted" style={{ marginTop: '0.85rem', marginBottom: 0, textAlign: 'center' }}>
+              <Link to="/forgot-password">Forgot password?</Link>
+            </p>
           </form>
         )}
 

@@ -13,6 +13,7 @@ pub(crate) mod os_packages;
 pub(crate) mod providers;
 mod settings;
 mod templates;
+mod users;
 
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::request::Parts;
@@ -29,6 +30,7 @@ pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .merge(health::routes())
         .merge(auth_routes::routes())
+        .merge(users::routes())
         .merge(meta::routes())
         .merge(settings::routes())
         .merge(dashboard::routes())
@@ -60,7 +62,8 @@ async fn auth_middleware(
         || path == "/auth/login"
         || path == "/auth/mode"
         || path == "/auth/logout"
-        || path.starts_with("/auth/oidc/");
+        || path.starts_with("/auth/oidc/")
+        || path.starts_with("/auth/password-reset/");
     if public {
         return Ok(next.run(req).await);
     }

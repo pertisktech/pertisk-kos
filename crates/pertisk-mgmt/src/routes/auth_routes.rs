@@ -11,6 +11,7 @@ use crate::auth::{
     Role,
 };
 use crate::error::{ApiResult, AppError};
+use crate::mail::{self, auth0_new_user_email};
 use crate::rbac::role_from_claims;
 use crate::routes::CurrentUser;
 use crate::state::AppState;
@@ -68,9 +69,13 @@ async fn login(State(state): State<AppState>, Json(body): Json<LoginReq>) -> Api
     if !state.cfg().auth_mode.allows_local() {
         return Err(AppError::bad("local auth disabled"));
     }
-    let Some((id, hash, role)) = find_user_by_username(state.pool(), &body.username).await? else {
+    let Some((id, hash, role, disabled)) = find_user_by_username(state.pool(), &body.username).await?
+    else {
         return Err(AppError::Unauthorized);
     };
+    if disabled {
+        return Err(AppError::Unauthorized);
+    }
     let Some(hash) = hash else {
         return Err(AppError::Unauthorized);
     };
@@ -109,8 +114,10 @@ async fn me(CurrentUser(user): CurrentUser) -> Json<Value> {
     }))
 }
 
-/// End the browser Auth0 SSO session, then return to the login page.
-/// Without this, "Continue with Auth0" silently reuses the previous account.
+/// End the Auth0 application SSO session, then return to the login page.
+/// Without this, "Continue with Auth0" silently reuses the previous Auth0 cookie.
+/// Does **not** use `federated` logout — that would also sign the user out of
+/// Google / other upstream IdPs across the browser.
 async fn logout(State(state): State<AppState>) -> impl IntoResponse {
     let cfg = state.cfg();
     let return_to = format!("{}/", cfg.public_url.trim_end_matches('/'));
@@ -123,10 +130,8 @@ async fn logout(State(state): State<AppState>) -> impl IntoResponse {
     let Some(client_id) = cfg.auth0_client_id.as_ref() else {
         return Redirect::temporary("/#/login");
     };
-    // `federated` also clears the upstream IdP session (e.g. Google) so the
-    // next login can show an account picker instead of the previous user.
     let url = format!(
-        "https://{domain}/v2/logout?client_id={client_id}&returnTo={}&federated",
+        "https://{domain}/v2/logout?client_id={client_id}&returnTo={}",
         urlencoding(&return_to)
     );
     Redirect::temporary(&url)
@@ -221,9 +226,34 @@ async fn oidc_callback(
         .and_then(|v| v.as_str())
         .unwrap_or(sub)
         .to_string();
+    let email = userinfo
+        .get("email")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let role = role_from_claims(&userinfo);
-    let user = find_or_create_auth0_user(state.pool(), sub, &username, role).await?;
+    let (user, created) =
+        find_or_create_auth0_user(state.pool(), sub, &username, email.as_deref(), role).await?;
     let jwt = issue_token(cfg, &user)?;
+    if created {
+        audit(
+            state.pool(),
+            Some(&user.id),
+            "user.auth0_provision",
+            Some(&user.id),
+            Some(&username),
+        )
+        .await;
+        if !state.cfg().admin_emails.is_empty() {
+            let (subject, body_text) =
+                auth0_new_user_email(state.cfg(), &username, user.role.as_str(), &user.id);
+            mail::spawn_send(
+                state.cfg(),
+                state.cfg().admin_emails.clone(),
+                subject,
+                body_text,
+            );
+        }
+    }
     audit(
         state.pool(),
         Some(&user.id),

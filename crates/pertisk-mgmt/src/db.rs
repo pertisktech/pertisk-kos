@@ -28,6 +28,18 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             password_hash TEXT,
             role TEXT NOT NULL DEFAULT 'viewer',
             auth0_sub TEXT UNIQUE,
+            email TEXT,
+            disabled INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id TEXT PRIMARY KEY NOT NULL,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
             created_at TEXT NOT NULL
         );
 
@@ -247,6 +259,27 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(version, arch)
+        )"#,
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN email TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN updated_at TEXT")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id TEXT PRIMARY KEY NOT NULL,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT NOT NULL
         )"#,
     )
     .execute(pool)

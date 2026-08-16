@@ -15,6 +15,7 @@ const NAV = [
   { to: '/machines', label: 'Machines', icon: 'machines' },
   { to: '/templates', label: 'Templates', icon: 'templates' },
   { to: '/providers', label: 'Providers', icon: 'providers' },
+  { to: '/users', label: 'Users', icon: 'users', adminOnly: true },
   { to: '/audit', label: 'Audit', icon: 'audit' },
   { to: '/settings', label: 'Settings', icon: 'settings' },
 ]
@@ -95,7 +96,7 @@ export default function Layout() {
       title: 'Sign out',
       message:
         user?.provider === 'auth0'
-          ? 'End your session and clear Auth0 SSO on this device?'
+          ? 'End your Pertisk session and clear Auth0 for this app? Your Google or other accounts stay signed in.'
           : 'End your session on this device?',
       confirmLabel: 'Sign out',
       tone: 'primary',
@@ -142,7 +143,7 @@ export default function Layout() {
         </div>
 
         <nav className="nav" aria-label="Primary">
-          {NAV.map(({ to, label, icon, end }) => (
+          {NAV.filter((n) => !n.adminOnly || user?.role === 'admin').map(({ to, label, icon, end }) => (
             <NavLink
               key={to}
               to={to}

@@ -12,6 +12,7 @@ mod events;
 mod jobs;
 mod k8s;
 mod kubeconfig;
+mod mail;
 mod node_attestation;
 mod node_availability;
 mod node_status;

@@ -31,6 +31,7 @@ struct SettingsResp {
     lab_up: PathInfo,
     pertiskctl: PathInfo,
     auth: AuthInfo,
+    smtp: SmtpInfo,
     jwt_ttl_secs: i64,
     metrics_token_configured: bool,
     metrics_tls_configured: bool,
@@ -48,6 +49,17 @@ struct AuthInfo {
     auth0_audience: Option<String>,
 }
 
+#[derive(Serialize)]
+struct SmtpInfo {
+    configured: bool,
+    host: Option<String>,
+    from: Option<String>,
+    port: Option<u16>,
+    tls: Option<String>,
+    admin_emails_configured: bool,
+    admin_email_count: usize,
+}
+
 fn path_info(p: &std::path::Path) -> PathInfo {
     PathInfo {
         path: p.display().to_string(),
@@ -61,6 +73,26 @@ async fn settings(State(state): State<AppState>) -> Json<SettingsResp> {
         crate::config::AuthMode::Local => "local",
         crate::config::AuthMode::Auth0 => "auth0",
         crate::config::AuthMode::Both => "both",
+    };
+    let smtp = match &cfg.smtp {
+        Some(s) => SmtpInfo {
+            configured: true,
+            host: Some(s.host.clone()),
+            from: Some(s.from.clone()),
+            port: Some(s.port),
+            tls: Some(s.tls.as_str().into()),
+            admin_emails_configured: !cfg.admin_emails.is_empty(),
+            admin_email_count: cfg.admin_emails.len(),
+        },
+        None => SmtpInfo {
+            configured: false,
+            host: None,
+            from: None,
+            port: None,
+            tls: None,
+            admin_emails_configured: !cfg.admin_emails.is_empty(),
+            admin_email_count: cfg.admin_emails.len(),
+        },
     };
     Json(SettingsResp {
         service: "pertisk-mgmt".into(),
@@ -84,6 +116,7 @@ async fn settings(State(state): State<AppState>) -> Json<SettingsResp> {
             auth0_client_id: cfg.auth0_client_id.clone(),
             auth0_audience: cfg.auth0_audience.clone(),
         },
+        smtp,
         jwt_ttl_secs: cfg.jwt_ttl_secs,
         metrics_token_configured: cfg.metrics_token.is_some(),
         metrics_tls_configured: cfg.metrics_tls.is_some(),
