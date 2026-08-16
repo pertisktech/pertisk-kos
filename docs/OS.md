@@ -82,3 +82,8 @@ UEFI
 | kube-vip | v0.8.9 | check GitHub releases | static pod (VIP clusters) |
 
 Sources: [PACKAGE.md](./PACKAGE.md), `image/fetch-kernel.sh`, `pertisk-bootstrap` defaults.
+
+## Related
+
+- [MIGRATE.md](./MIGRATE.md) — move workloads / join external CP / etcd backup-restore
+- [MGMT.md](./MGMT.md) — OS packages, adopt, join tokens

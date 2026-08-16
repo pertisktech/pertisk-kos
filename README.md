@@ -346,6 +346,9 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 | [docs/VSPHERE.md](./docs/VSPHERE.md) | ESXi provider |
 | [docs/NUTANIX.md](./docs/NUTANIX.md) | Nutanix AHV (Prism Element) provider |
 | [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md) | Platforms, runtime pins, CNI |
+| [docs/OS.md](./docs/OS.md) | Disk layout, A/B upgrade, process tree |
+| [docs/MIGRATE.md](./docs/MIGRATE.md) | Migrate to Pertisk (online manifests / etcd DR) |
+| [docs/PACKAGE.md](./docs/PACKAGE.md) | Upstream release links / kernel pins |
 | [docs/HARDENING.md](./docs/HARDENING.md) | CIS-ish worker checklist |
 | [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md) | UKI + OVMF enroll + TPM PCR Attest lab |
 | [image/README.md](./image/README.md) | Initramfs / QEMU |
