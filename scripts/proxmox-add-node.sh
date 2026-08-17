@@ -186,6 +186,47 @@ vm_mac() {
   echo "${mac}" | tr 'A-F' 'a-f'
 }
 
+qemu_agent_ipv4() {
+  local vmid="$1" json ip
+  json="$(api_get "/nodes/${NODE}/qemu/${vmid}/agent/network-get-interfaces" 2>/dev/null || true)"
+  [[ -n "$json" ]] || return 0
+  ip="$(printf '%s' "$json" | python3 -c '
+import json,sys
+raw=sys.stdin.read()
+try:
+    data=json.loads(raw)
+except Exception:
+    sys.exit(0)
+blob=data.get("data") or data
+result=blob.get("result") if isinstance(blob, dict) else blob
+if not isinstance(result, list):
+    sys.exit(0)
+for iface in result:
+    if not isinstance(iface, dict):
+        continue
+    name=(iface.get("name") or "").lower()
+    if name in ("lo", "lo0"):
+        continue
+    for a in iface.get("ip-addresses") or []:
+        if not isinstance(a, dict):
+            continue
+        if (a.get("ip-address-type") or "").lower() != "ipv4":
+            continue
+        ip=a.get("ip-address") or ""
+        if ip and not ip.startswith("127."):
+            print(ip)
+            sys.exit(0)
+' 2>/dev/null || true)"
+  if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    if [[ -n "${LAB_SUBNET:-}" ]]; then
+      local base="${LAB_SUBNET%/*}"
+      base="${base%.*}."
+      [[ "$ip" == ${base}* ]] || return 0
+    fi
+    echo "$ip"
+  fi
+}
+
 arp_ip_for_mac() {
   local mac="$1" out=""
   mac="$(echo "$mac" | tr 'A-F' 'a-f')"
@@ -272,6 +313,9 @@ wait_ip() {
     (( SECONDS < deadline )) || break
 
     ip="$(arp_ip_for_mac "$mac" || true)"
+    if [[ -z "$ip" ]]; then
+      ip="$(qemu_agent_ipv4 "$vmid" || true)"
+    fi
     if [[ -z "$ip" && -n "${LAB_SUBNET:-}" ]]; then
       if [[ "$nudged" == "0" ]] || (( SECONDS % 45 < 3 )); then
         nudged=1

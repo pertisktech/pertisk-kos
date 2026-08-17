@@ -20,10 +20,19 @@ pub struct NodeServices {
 impl NodeServices {
     /// Attempt to start runtime services. Missing binaries are soft-warned.
     pub fn start(cfg: &MachineConfig, logs: &LogRing) -> Result<Self> {
+        Self::start_with_guest_agent(cfg, logs, guest_agent::start())
+    }
+
+    /// Like [`start`] but reuses an already-running qemu-ga (early boot).
+    pub fn start_with_guest_agent(
+        cfg: &MachineConfig,
+        logs: &LogRing,
+        guest_agent: Option<GuestAgentHandle>,
+    ) -> Result<Self> {
         let mut services = Self {
             containerd: None,
             kubelet: None,
-            guest_agent: guest_agent::start(),
+            guest_agent,
         };
 
         match start_containerd_with_sink(&RuntimePaths::default(), Some(logs.sink("containerd"))) {

@@ -234,3 +234,41 @@ clean:
 	cargo clean
 	rm -rf "$(ROOT)/out"/.initramfs-tmp-*
 	@echo "cleaned cargo target + initramfs temps (out/ artifacts kept; rm -rf out to wipe)"
+
+
+# Delete a tag (local and remote).
+delete-tag:
+ifndef TAG
+	$(error TAG is not set. Usage: make delete-tag TAG=v1.0.0)
+endif
+	@echo "Deleting tag $(TAG)..."
+	git tag -d $(TAG)
+	git push origin -d $(TAG)
+
+# Create a new tag.
+create-tag:
+ifndef TAG
+	$(error TAG is not set. Usage: make create-tag TAG=v1.0.0)
+endif
+	@echo "Creating tag $(TAG)..."
+	git tag $(TAG)
+	git push origin $(TAG)
+
+# Delete and recreate a tag (force update). Use after amending a release commit.
+# Usage: make retag TAG=v1.0.0
+retag:
+ifndef TAG
+	$(error TAG is not set. Usage: make retag TAG=v1.0.0)
+endif
+	@echo "Recreating tag $(TAG)..."
+	@echo "Deleting local tag (if exists)..."
+	-git tag -d $(TAG) 2>/dev/null || true
+	@echo "Deleting remote tag (if exists)..."
+	-git push origin -d $(TAG) 2>/dev/null || true
+	@echo "Creating new tag $(TAG)..."
+	git tag $(TAG)
+	@echo "Pushing tag $(TAG) to origin..."
+	git push origin $(TAG)
+	@echo "✓ Tag $(TAG) created and pushed successfully"
+
+clean-tag: retag

@@ -480,6 +480,117 @@ vm_mac() {
   echo "${mac}" | tr 'A-F' 'a-f'
 }
 
+# IPv4 from QEMU guest agent (Proxmox virtio serial — no L2 ARP needed).
+# Guest reports DHCP as soon as qemu-ga is up (pertiskd starts it after early net).
+qemu_agent_ipv4() {
+  local vmid="$1" json ip
+  [[ "${PROVIDER_KIND}" == "vsphere" || "${PROVIDER_KIND}" == "nutanix" ]] && return 0
+  [[ -n "${BASE:-}" && -n "${NODE:-}" ]] || return 0
+  json="$(api_get "/nodes/${NODE}/qemu/${vmid}/agent/network-get-interfaces" 2>/dev/null || true)"
+  [[ -n "$json" ]] || return 0
+  ip="$(printf '%s' "$json" | python3 -c '
+import json,sys
+raw=sys.stdin.read()
+try:
+    data=json.loads(raw)
+except Exception:
+    sys.exit(0)
+blob=data.get("data") or data
+result=blob.get("result") if isinstance(blob, dict) else blob
+if not isinstance(result, list):
+    sys.exit(0)
+for iface in result:
+    if not isinstance(iface, dict):
+        continue
+    name=(iface.get("name") or "").lower()
+    if name in ("lo", "lo0"):
+        continue
+    for a in iface.get("ip-addresses") or []:
+        if not isinstance(a, dict):
+            continue
+        if (a.get("ip-address-type") or "").lower() != "ipv4":
+            continue
+        ip=a.get("ip-address") or ""
+        if ip and not ip.startswith("127."):
+            print(ip)
+            sys.exit(0)
+' 2>/dev/null || true)"
+  if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    if [[ -n "${LAB_SUBNET:-}" ]]; then
+      local base="${LAB_SUBNET%/*}"
+      base="${base%.*}."
+      [[ "$ip" == ${base}* ]] || return 0
+    fi
+    echo "$ip"
+  fi
+}
+
+# Global/ULA IPv6 from QGA (skip link-local fe80::).
+qemu_agent_ipv6() {
+  local vmid="$1" json ip
+  [[ "${PROVIDER_KIND}" == "vsphere" || "${PROVIDER_KIND}" == "nutanix" ]] && return 0
+  [[ -n "${BASE:-}" && -n "${NODE:-}" ]] || return 0
+  json="$(api_get "/nodes/${NODE}/qemu/${vmid}/agent/network-get-interfaces" 2>/dev/null || true)"
+  [[ -n "$json" ]] || return 0
+  ip="$(printf '%s' "$json" | python3 -c '
+import json,sys
+raw=sys.stdin.read()
+try:
+    data=json.loads(raw)
+except Exception:
+    sys.exit(0)
+blob=data.get("data") or data
+result=blob.get("result") if isinstance(blob, dict) else blob
+if not isinstance(result, list):
+    sys.exit(0)
+for iface in result:
+    if not isinstance(iface, dict):
+        continue
+    name=(iface.get("name") or "").lower()
+    if name in ("lo", "lo0"):
+        continue
+    addrs=[]
+    for a in iface.get("ip-addresses") or []:
+        if not isinstance(a, dict):
+            continue
+        if (a.get("ip-address-type") or "").lower() != "ipv6":
+            continue
+        ip=(a.get("ip-address") or "").split("%")[0]
+        if not ip or ip.lower().startswith("fe80:"):
+            continue
+        addrs.append(ip)
+    # Prefer GUA (not fd/fc ULA) when both exist.
+    for ip in addrs:
+        if not ip.lower().startswith(("fd", "fc")):
+            print(ip)
+            sys.exit(0)
+    if addrs:
+        print(addrs[0])
+        sys.exit(0)
+' 2>/dev/null || true)"
+  [[ -n "$ip" ]] && echo "$ip"
+}
+
+wait_guest_ipv6() {
+  local vmid="$1" label="$2" deadline ip6="" last=0
+  [[ "${DUAL_STACK}" == "1" ]] || return 0
+  deadline=$((SECONDS + 90))
+  log "VM ${vmid} (${label}) waiting for IPv6 (dual-stack, QGA)"
+  while (( SECONDS < deadline )); do
+    ip6="$(qemu_agent_ipv6 "$vmid" || true)"
+    if [[ -n "$ip6" ]]; then
+      log "VM ${vmid} IPv6=${ip6}"
+      return 0
+    fi
+    if (( SECONDS - last >= 15 )); then
+      last=$SECONDS
+      log "VM ${vmid} no global/ULA IPv6 yet…"
+    fi
+    sleep 3
+  done
+  log "WARNING: VM ${vmid} (${label}) still has IPv4 only after dual-stack apply (no GUA/ULA via QGA)"
+}
+
 nutanix_vm_mac() {
   local name="$1" base api resp uuid detail mac nics
   base="${NUTANIX_URL%/}"
@@ -774,6 +885,10 @@ wait_ip() {
     (( SECONDS < deadline )) || break
 
     ip="$(arp_ip_for_mac "$mac" || true)"
+    # Proxmox QGA: guest IPv4 without sharing L2 / ARP with mgmt.
+    if [[ -z "$ip" ]]; then
+      ip="$(qemu_agent_ipv4 "$vmid" || true)"
+    fi
     # Nutanix: AHV may learn the guest IP even when mgmt is not on guest L2.
     if [[ -z "$ip" && "${PROVIDER_KIND}" == "nutanix" && -n "$label" ]]; then
       ip="$(nutanix_vm_ips "$label" 2>/dev/null | head -1 || true)"
@@ -826,6 +941,9 @@ wait_ip() {
       if (( SECONDS - last_log >= 15 )); then
         last_log=$SECONDS
         log "VM ${vmid} no ARP yet for ${mac}…"
+        if [[ "${PROVIDER_KIND}" == "proxmox" || -z "${PROVIDER_KIND:-}" ]]; then
+          log "hint: Proxmox Summary IP / QGA for VM ${vmid}; mgmt L2 ARP optional when qemu-ga is up."
+        fi
         if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
           log "hint: open Prism → ${label} → Serial Console (kServer). If still on EFI stub only, guest never reached userspace."
           log "hint: confirm AHV network '${NUTANIX_NETWORK:-?}' is same L2/DHCP as LAB_SUBNET=${LAB_SUBNET:-?} (mgmt ${NUTANIX_HTTP_ADDR:-auto})."
@@ -839,9 +957,9 @@ wait_ip() {
 hint: Prism → ${label} → Serial Console for pertiskd logs"
   fi
   die "timed out waiting for IP/API for VM ${vmid} MAC=${mac} (PROXMOX_SSH=${PROXMOX_SSH:-unset} subnet=${LAB_SUBNET:-unset})
-hint: without PROXMOX_SSH, mgmt must share L2 with guests (LAB_SUBNET ping-sweep).
-      Nutanix IPAM can show ARP before the guest boots — require ping / :50000.
-      check: ip -4 neigh | grep -i ${mac}; ping -c2 <ip>; nc -zv <ip> 50000
+hint: without PROXMOX_SSH, mgmt uses QGA then LAB_SUBNET ping-sweep.
+      check: Proxmox → VM ${vmid} → Summary (QEMU Guest Agent IPs);
+             ip -4 neigh | grep -i ${mac}; ping -c2 <ip>; nc -zv <ip> 50000
       resume: lab-up --skip-build --skip-vms --cp-vmid ${CP_VMID} --controlplanes ${CONTROLPLANES} --workers ${WORKERS}"
 }
 
@@ -863,13 +981,14 @@ wait_api() {
 # "config.yaml: No such file"). Re-apply after a short wait so the second
 # write hits the real volume. New images also block apply until STATE is bound.
 apply_machine_yaml() {
-  local ip="$1" yaml="$2" i
+  local ip="$1" yaml="$2" vmid="${3:-}" i
   [[ -f "$yaml" ]] || die "apply: missing ${yaml}"
   log "apply ${yaml##*/} → ${ip} (wait for STATE mount)"
   for i in $(seq 1 24); do
     if "$CTL" -e "${ip}:50000" apply -f "$yaml"; then
       sleep 8
       if "$CTL" -e "${ip}:50000" apply -f "$yaml"; then
+        [[ -n "$vmid" ]] && wait_guest_ipv6 "$vmid" "${yaml##*/}"
         return 0
       fi
     fi
@@ -1583,7 +1702,7 @@ step_cluster() {
     log "WARNING: reset CP1 failed — continuing (fresh guests are fine)"
   fi
   log "apply controlplane → ${CP_IP}"
-  apply_machine_yaml "$CP_IP" "$CLUSTER_OUT/controlplane.yaml"
+  apply_machine_yaml "$CP_IP" "$CLUSTER_OUT/controlplane.yaml" "$CP_VMID"
   # Apply only writes STATE + flags reload; give pertiskd a moment to start
   # containerd/kubelet as controlplane before the long bootstrap RPC.
   sleep 8
@@ -1598,7 +1717,7 @@ step_cluster() {
       boot_try=$((boot_try + 1))
       (( boot_try < 6 )) || die "bootstrap CP1 failed"
       log "config.yaml missing after apply (STATE race); re-apply and retry ${boot_try}/5"
-      apply_machine_yaml "$CP_IP" "$CLUSTER_OUT/controlplane.yaml"
+      apply_machine_yaml "$CP_IP" "$CLUSTER_OUT/controlplane.yaml" "$CP_VMID"
       wait_api "$CP_IP"
       continue
     fi
@@ -1649,7 +1768,7 @@ Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate th
       log "WARNING: reset ${host} failed — continuing (fresh guests are fine)"
     fi
     log "apply + join-controlplane ${host} @ ${ip}"
-    apply_machine_yaml "$ip" "$cpyaml"
+    apply_machine_yaml "$ip" "$cpyaml" "$cvid"
     # apply reloads runtime; give Machine API a moment before the long join RPC
     sleep 5
     wait_api "$ip"
@@ -1712,7 +1831,7 @@ Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate th
       log "WARNING: reset ${host} failed — continuing (fresh guests are fine)"
     fi
     log "join worker ${host} @ ${ip}"
-    apply_machine_yaml "$ip" "$wyaml"
+    apply_machine_yaml "$ip" "$wyaml" "$wvid"
     # apply reloads kubelet; give TLS bootstrap a moment before the wait loop
     sleep 5
     wait_api "$ip"

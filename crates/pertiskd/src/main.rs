@@ -373,6 +373,10 @@ fn run() -> Result<()> {
         }
     }
 
+    // Start qemu-ga before STATE/EPHEMERAL so Proxmox QGA can report DHCP IPs
+    // while lab-up is still waiting (no L2 ARP required).
+    let mut guest_agent = guest_agent::start();
+
     if let Ok(mut st) = api_state.lock() {
         st.set_message("mounting STATE");
     }
@@ -539,10 +543,10 @@ fn run() -> Result<()> {
         NodeServices {
             containerd: None,
             kubelet: None,
-            guest_agent: guest_agent::start(),
+            guest_agent,
         }
     } else if let Some(ref cfg) = cfg {
-        match NodeServices::start(cfg, log_ring()) {
+        match NodeServices::start_with_guest_agent(cfg, log_ring(), guest_agent) {
             Ok(s) => s,
             Err(err) => {
                 warn!(error = %err, "runtime services failed to start");
@@ -557,7 +561,7 @@ fn run() -> Result<()> {
         NodeServices {
             containerd: None,
             kubelet: None,
-            guest_agent: guest_agent::start(),
+            guest_agent,
         }
     };
 

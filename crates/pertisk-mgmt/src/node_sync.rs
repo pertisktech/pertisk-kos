@@ -415,6 +415,12 @@ pub async fn wait_node_addresses(
             }
         }
         if tokio::time::Instant::now() >= deadline {
+            if want_ip6 && last.ip.is_some() && last.ip6.is_none() {
+                anyhow::bail!(
+                    "{node_name} has IPv4 ({}) but no IPv6 InternalIP after dual-stack wait",
+                    last.ip.as_deref().unwrap_or("?")
+                );
+            }
             if last.ip.is_some() || last.ip6.is_some() {
                 return Ok(last);
             }

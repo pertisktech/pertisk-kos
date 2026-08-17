@@ -1751,7 +1751,7 @@ async fn run_add_node(
                 &kc,
                 name,
                 want_ip6,
-                std::time::Duration::from_secs(180),
+                std::time::Duration::from_secs(if want_ip6 { 300 } else { 180 }),
             )
             .await
             {
@@ -2085,7 +2085,7 @@ async fn run_adopt_node(
             &kc,
             &name,
             want_ip6,
-            std::time::Duration::from_secs(180),
+            std::time::Duration::from_secs(if want_ip6 { 300 } else { 180 }),
         )
         .await
         {
