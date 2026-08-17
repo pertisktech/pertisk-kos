@@ -17,14 +17,24 @@ RUN npm run build
 
 # Platform set by `docker buildx --platform linux/amd64`.
 FROM rust:${RUST_VERSION}-bookworm AS build
+ARG NFPM_VERSION=2.43.3
 # etcd-client (via pertiskctl → pertisk-bootstrap) needs protoc at build time.
+# rust:bookworm already has curl; fetch nfpm here so the pkg stage needs no apt
+# (debian:bookworm-slim apt often has empty indexes on self-hosted runners).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       protobuf-compiler \
       pkg-config \
       libssl-dev \
       ca-certificates \
   && rm -rf /var/lib/apt/lists/* \
-  && protoc --version
+  && protoc --version \
+  && curl -fsSL \
+      "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" \
+      -o /tmp/nfpm.tgz \
+  && tar -xzf /tmp/nfpm.tgz -C /usr/local/bin nfpm \
+  && rm -f /tmp/nfpm.tgz \
+  && chmod +x /usr/local/bin/nfpm \
+  && nfpm --version
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
@@ -38,17 +48,7 @@ RUN cargo build --release -p pertisk-mgmt -p pertiskctl
 
 FROM debian:bookworm-slim AS pkg
 ARG VERSION=0.1.0
-ARG NFPM_VERSION=2.43.3
-# Asset name uses GoReleaser style: Linux_x86_64 (not linux_amd64).
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
-  && rm -rf /var/lib/apt/lists/* \
-  && curl -fsSL \
-      "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" \
-      -o /tmp/nfpm.tgz \
-  && tar -xzf /tmp/nfpm.tgz -C /usr/local/bin nfpm \
-  && rm -f /tmp/nfpm.tgz \
-  && chmod +x /usr/local/bin/nfpm \
-  && nfpm --version
+COPY --from=build /usr/local/bin/nfpm /usr/local/bin/nfpm
 
 WORKDIR /work
 COPY packaging/mgmt /work/packaging/mgmt

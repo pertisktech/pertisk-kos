@@ -21,9 +21,16 @@ command -v docker >/dev/null 2>&1 || {
 mkdir -p "${OUT_DIR}"
 echo "==> build pertisk-mgmt RPM VERSION=${VERSION} ARCH=amd64 → ${OUT_DIR}"
 
+# Self-hosted Linux: host network so apt/GitHub match the runner (bridge NAT often fails).
+NET_ARGS=()
+if [[ "$(uname -s)" == Linux ]]; then
+  NET_ARGS+=(--network host)
+fi
+
 # Prefer buildx for cross-platform from macOS; fall back to plain docker build.
 if docker buildx version >/dev/null 2>&1; then
   docker buildx build \
+    "${NET_ARGS[@]}" \
     --platform linux/amd64 \
     --build-arg "VERSION=${VERSION}" \
     -f "${ROOT}/packaging/mgmt/Dockerfile.rpm" \
@@ -32,6 +39,7 @@ if docker buildx version >/dev/null 2>&1; then
     "${ROOT}"
 else
   docker build \
+    "${NET_ARGS[@]}" \
     --platform linux/amd64 \
     --build-arg "VERSION=${VERSION}" \
     -f "${ROOT}/packaging/mgmt/Dockerfile.rpm" \
