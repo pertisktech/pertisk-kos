@@ -1,0 +1,115 @@
+# Release on push tag v* — build pertisk-mgmt RPM and publish a GitHub Release.
+# Terraform provider releases use terraform-provider-pertisk/v* (separate workflow).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_BUILD_JOBS: "14"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  release:
+    name: RPM + GitHub Release
+    runs-on: [self-hosted, linux]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          case "$TAG" in
+            v*) VERSION="${TAG#v}" ;;
+            *)
+              echo "::error::Expected tag v*, got ${TAG}"
+              exit 1
+              ;;
+          esac
+          echo "TAG=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Disable Docker keychain
+        run: |
+          mkdir -p "$RUNNER_TEMP/.docker"
+          echo '{"credsStore":""}' > "$RUNNER_TEMP/.docker/config.json"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/.docker" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # docker-container driver isolates network/clock; apt GPG fails on some runners.
+          driver: docker
+
+      - name: Build RPM
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: make release VERSION="$VERSION"
+
+      - name: Verify RPM
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          echo "=== out/rpm ==="
+          ls -lh out/rpm
+          rpm="$(ls -1t out/rpm/pertisk-mgmt-*.rpm | head -1)"
+          test -f "$rpm"
+          echo "RPM=${rpm}"
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd out/rpm
+          shopt -s nullglob
+          files=( pertisk-mgmt-*.rpm )
+          test "${#files[@]}" -ge 1
+          sha256sum "${files[@]}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Release notes
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          rpm="$(basename "$(ls -1t out/rpm/pertisk-mgmt-*.rpm | head -1)")"
+          cat > out/rpm/RELEASE_BODY.md <<EOF
+          ## pertisk-mgmt RPM
+
+          linux/amd64 package (API + embedded UI + pertiskctl).
+
+          | Format | Architecture | File |
+          |--------|--------------|------|
+          | RPM | x86_64 | \`${rpm}\` |
+
+          ### Install (RHEL / Rocky / Alma)
+
+          \`\`\`bash
+          sudo rpm -Uvh ${rpm}
+          sudo systemctl enable --now pertisk-mgmt
+          \`\`\`
+
+          See [docs/MGMT.md](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/docs/MGMT.md) for env, images, and Proxmox.
+          EOF
+          cat out/rpm/RELEASE_BODY.md
+
+      - name: Publish GitHub Release
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          TAG: ${{ steps.version.outputs.TAG }}
+          PACKAGES_DIR: out/rpm
+          NOTES_FILE: out/rpm/RELEASE_BODY.md
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/ci-publish-release.sh
+          ./scripts/ci-publish-release.sh

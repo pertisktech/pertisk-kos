@@ -7,7 +7,7 @@
 #   make build-all VERSION=0.2.0       # amd64 + arm64
 #   make build-host VERSION=0.2.0      # host cargo release bins
 #   make mgmt                               # management UI+API → out/bin/pertisk-mgmt
-#   make mgmt-rpm / make rpm                # linux/amd64 RPM → out/rpm/
+#   make mgmt-rpm / make rpm / make release # linux/amd64 RPM → out/rpm/
 #   make cloud VERSION=0.2.0 ARCH=amd64
 #   make os-trust                          # Ed25519 keys → out/secrets/os-trust.{sk,pk}
 #   make os-bundle VERSION=0.2.0 ARCH=amd64  # signed A/B OS zip for Upgrade tab
@@ -45,7 +45,8 @@ endif
 
 .PHONY: help build build-host build-all initramfs pertiskctl cloud uki enroll-ovmf \
 	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version lab-up \
-	mgmt mgmt-ui mgmt-rpm rpm os-trust os-bundle
+	mgmt mgmt-ui mgmt-rpm rpm release os-trust os-bundle \
+	create-tag delete-tag retag clean-tag
 
 help:
 	@echo "Pertisk KOS make targets"
@@ -58,6 +59,8 @@ help:
 	@echo "  make mgmt-ui                           # build React UI into crates/pertisk-mgmt/static"
 	@echo "  make mgmt-rpm [VERSION=...]            # linux/amd64 RPM (API+UI) → out/rpm/"
 	@echo "  make rpm                               # alias for mgmt-rpm (amd64 deploy)"
+	@echo "  make release [VERSION=...]             # RPM for GitHub Release (CI on tag v*)"
+	@echo "  make create-tag TAG=vX.Y.Z             # push tag (triggers .github/workflows/release.yml)"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
 	@echo "  make os-trust                         # Ed25519 os-trust.{sk,pk} → out/secrets/"
 	@echo "  make os-bundle [VERSION=...] [ARCH=...]  # signed A/B OS zip (not Kubernetes)"
@@ -136,6 +139,14 @@ mgmt-rpm:
 
 ## Alias: package web/API for amd64 deploy.
 rpm: mgmt-rpm
+
+## Release artifacts: linux/amd64 pertisk-mgmt RPM (CI runs this on tag v* only).
+## Cut a release with: make create-tag TAG=v0.1.0
+release: rpm
+	@rpm=$$(ls -1t "$(ROOT)/out/rpm"/pertisk-mgmt-*.rpm 2>/dev/null | head -1); \
+	  [[ -n "$$rpm" && -f "$$rpm" ]] || { echo "ERROR: no RPM in out/rpm/" >&2; exit 1; }; \
+	  echo "==> release VERSION=$(VERSION)"; \
+	  ls -lh "$(ROOT)/out/rpm"/pertisk-mgmt-*.rpm
 
 ## Cloud golden disk (kernel + systemd-boot + containerd/kubelet in initramfs).
 cloud:
