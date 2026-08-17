@@ -59,8 +59,8 @@ help:
 	@echo "  make mgmt-ui                           # build React UI into crates/pertisk-mgmt/static"
 	@echo "  make mgmt-rpm [VERSION=...]            # linux/amd64 RPM (API+UI) → out/rpm/"
 	@echo "  make rpm                               # alias for mgmt-rpm (amd64 deploy)"
-	@echo "  make release [VERSION=...]             # RPM for GitHub Release (CI on tag v*)"
-	@echo "  make create-tag TAG=vX.Y.Z             # push tag (triggers .github/workflows/release.yml)"
+	@echo "  make release [VERSION=...]             # RPM for GitHub Release (CI on tag X.Y.Z)"
+	@echo "  make create-tag TAG=0.1.10             # push tag (triggers .github/workflows/release.yml)"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
 	@echo "  make os-trust                         # Ed25519 os-trust.{sk,pk} → out/secrets/"
 	@echo "  make os-bundle [VERSION=...] [ARCH=...]  # signed A/B OS zip (not Kubernetes)"
@@ -140,8 +140,8 @@ mgmt-rpm:
 ## Alias: package web/API for amd64 deploy.
 rpm: mgmt-rpm
 
-## Release artifacts: linux/amd64 pertisk-mgmt RPM (CI runs this on tag v* only).
-## Cut a release with: make create-tag TAG=v0.1.0
+## Release artifacts: linux/amd64 pertisk-mgmt RPM (CI runs this on tag X.Y.Z).
+## Cut a release with: make create-tag TAG=0.1.10
 release: rpm
 	@rpm=$$(ls -1t "$(ROOT)/out/rpm"/pertisk-mgmt-*.rpm 2>/dev/null | head -1); \
 	  [[ -n "$$rpm" && -f "$$rpm" ]] || { echo "ERROR: no RPM in out/rpm/" >&2; exit 1; }; \
@@ -250,7 +250,7 @@ clean:
 # Delete a tag (local and remote).
 delete-tag:
 ifndef TAG
-	$(error TAG is not set. Usage: make delete-tag TAG=v1.0.0)
+	$(error TAG is not set. Usage: make delete-tag TAG=0.1.10)
 endif
 	@echo "Deleting tag $(TAG)..."
 	git tag -d $(TAG)
@@ -259,17 +259,17 @@ endif
 # Create a new tag.
 create-tag:
 ifndef TAG
-	$(error TAG is not set. Usage: make create-tag TAG=v1.0.0)
+	$(error TAG is not set. Usage: make create-tag TAG=0.1.10)
 endif
 	@echo "Creating tag $(TAG)..."
 	git tag $(TAG)
 	git push origin $(TAG)
 
 # Delete and recreate a tag (force update). Use after amending a release commit.
-# Usage: make retag TAG=v1.0.0
+# Usage: make retag TAG=0.1.10
 retag:
 ifndef TAG
-	$(error TAG is not set. Usage: make retag TAG=v1.0.0)
+	$(error TAG is not set. Usage: make retag TAG=0.1.10)
 endif
 	@echo "Recreating tag $(TAG)..."
 	@echo "Deleting local tag (if exists)..."

@@ -1,4 +1,4 @@
-# Release on push tag v* — build pertisk-mgmt RPM and publish a GitHub Release.
+# Release on push tag X.Y.Z (e.g. 0.1.10) — build pertisk-mgmt RPM and GitHub Release.
 # Terraform provider releases use terraform-provider-pertisk/v* (separate workflow).
 
 name: Release
@@ -6,7 +6,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "*.*.*"
 
 permissions:
   contents: write
@@ -28,13 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF#refs/tags/}"
-          case "$TAG" in
-            v*) VERSION="${TAG#v}" ;;
-            *)
-              echo "::error::Expected tag v*, got ${TAG}"
-              exit 1
-              ;;
-          esac
+          VERSION="${TAG#v}"
           echo "TAG=${TAG}" >> "$GITHUB_OUTPUT"
           echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
 

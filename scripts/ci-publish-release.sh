@@ -56,7 +56,7 @@ if [[ -n "$NOTES_FILE" && ! -f "$NOTES_FILE" ]]; then
   exit 1
 fi
 
-TITLE="Release v${VERSION}"
+TITLE="Release ${VERSION}"
 if gh release view "$TAG" >/dev/null 2>&1; then
   echo "Updating existing release ${TAG}"
   if [[ -n "$NOTES_FILE" ]]; then
