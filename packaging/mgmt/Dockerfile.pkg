@@ -97,17 +97,27 @@ COPY examples ./examples
 COPY --from=ui /ui/dist ./crates/pertisk-mgmt/static
 ARG VERSION=0.1.0
 ENV PERTISK_BUILD_VERSION=${VERSION}
+# Same-arch: native cargo (system libssl / gcc). Cross: cargo-zigbuild.
+# rustls avoids openssl-sys, which commonly fails under zig (cargo exit 101).
 RUN set -eu; \
     case "${TARGETARCH}" in \
       amd64) RUST_TARGET=x86_64-unknown-linux-gnu ;; \
       arm64) RUST_TARGET=aarch64-unknown-linux-gnu ;; \
       *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    rustup target add "${RUST_TARGET}"; \
-    cargo zigbuild --release --target "${RUST_TARGET}" -p pertisk-mgmt -p pertiskctl; \
     mkdir -p /opt/bins; \
-    cp "target/${RUST_TARGET}/release/pertisk-mgmt" "target/${RUST_TARGET}/release/pertiskctl" /opt/bins/; \
-    file /opt/bins/pertisk-mgmt /opt/bins/pertiskctl || true
+    if [ "${TARGETARCH}" = "${BUILDARCH}" ]; then \
+      echo "==> native cargo build (${RUST_TARGET})"; \
+      cargo build --release -p pertisk-mgmt -p pertiskctl; \
+      cp target/release/pertisk-mgmt target/release/pertiskctl /opt/bins/; \
+    else \
+      echo "==> cargo zigbuild --target ${RUST_TARGET} (vendored OpenSSL)"; \
+      rustup target add "${RUST_TARGET}"; \
+      cargo zigbuild --release --target "${RUST_TARGET}" \
+        -p pertisk-mgmt --features vendored-openssl \
+        -p pertiskctl; \
+      cp "target/${RUST_TARGET}/release/pertisk-mgmt" "target/${RUST_TARGET}/release/pertiskctl" /opt/bins/; \
+    fi
 
 FROM --platform=$BUILDPLATFORM build AS pkg
 ARG TARGETARCH

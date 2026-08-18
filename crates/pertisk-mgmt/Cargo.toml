@@ -45,6 +45,12 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-native-tls", "builder"] }
 pertisk-config = { workspace = true }
 pertisk-tpm = { workspace = true }
+# Enabled only for cargo-zigbuild (no target OpenSSL sysroot).
+openssl = { version = "0.10", optional = true }
+
+[features]
+default = []
+vendored-openssl = ["dep:openssl", "openssl/vendored"]
 
 [dev-dependencies]
 tempfile = "3"
