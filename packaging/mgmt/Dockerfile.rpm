@@ -2,9 +2,14 @@
 # Used by: make mgmt-rpm / scripts/build-mgmt-rpm.sh
 #
 #   docker buildx build --platform linux/amd64 -f packaging/mgmt/Dockerfile.rpm ...
+#
+# No apt-get: debian:bookworm-slim indexes often fail on self-hosted runners
+# ("Package ca-certificates has no installation candidate" / "Unable to locate curl").
+# rust:bookworm already has curl, unzip, ca-certificates, pkg-config, libssl-dev.
 
 ARG RUST_VERSION=1.88
 ARG NFPM_VERSION=2.43.3
+ARG PROTOC_VERSION=29.3
 
 FROM --platform=$BUILDPLATFORM node:22-bookworm AS ui
 WORKDIR /ui
@@ -18,15 +23,15 @@ RUN npm run build
 # Platform set by `docker buildx --platform linux/amd64`.
 FROM rust:${RUST_VERSION}-bookworm AS build
 ARG NFPM_VERSION=2.43.3
+ARG PROTOC_VERSION=29.3
 # etcd-client (via pertiskctl → pertisk-bootstrap) needs protoc at build time.
-# rust:bookworm already has curl; fetch nfpm here so the pkg stage needs no apt
-# (debian:bookworm-slim apt often has empty indexes on self-hosted runners).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      protobuf-compiler \
-      pkg-config \
-      libssl-dev \
-      ca-certificates \
-  && rm -rf /var/lib/apt/lists/* \
+# Official zip is linux-x86_64; this stage is always linux/amd64.
+RUN curl -fsSL \
+      "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" \
+      -o /tmp/protoc.zip \
+  && unzip -o /tmp/protoc.zip -d /usr/local \
+  && rm -f /tmp/protoc.zip \
+  && chmod +x /usr/local/bin/protoc \
   && protoc --version \
   && curl -fsSL \
       "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" \
@@ -46,9 +51,9 @@ ARG VERSION=0.1.0
 ENV PERTISK_BUILD_VERSION=${VERSION}
 RUN cargo build --release -p pertisk-mgmt -p pertiskctl
 
-FROM debian:bookworm-slim AS pkg
+# Reuse rust:bookworm (nfpm + unix tools already present). Do not FROM debian:*-slim.
+FROM build AS pkg
 ARG VERSION=0.1.0
-COPY --from=build /usr/local/bin/nfpm /usr/local/bin/nfpm
 
 WORKDIR /work
 COPY packaging/mgmt /work/packaging/mgmt
