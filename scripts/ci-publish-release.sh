@@ -77,7 +77,7 @@ shopt -s nullglob
 assets=()
 while IFS= read -r -d '' f; do
   assets+=("$f")
-done < <(find "$PACKAGES_DIR" \( -name '*.rpm' -o -name '*.deb' -o -name 'SHA256SUMS.txt' \) -type f -print0 | sort -z)
+done < <(find "$PACKAGES_DIR" \( -name '*.rpm' -o -name '*.deb' -o -name 'SHA256SUMS.txt' -o -name 'pertiskctl-linux-*' \) -type f -print0 | sort -z)
 
 if [[ "${#assets[@]}" -eq 0 ]]; then
   echo "::error::No release assets to upload under ${PACKAGES_DIR}" >&2

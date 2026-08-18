@@ -1,0 +1,21 @@
+name: pertiskctl
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+release: 1
+section: default
+priority: optional
+maintainer: Pertisk <ops@pertisk.io>
+description: |
+  Pertisk node CLI (apply, bootstrap, logs, upgrade).
+  Do not install this package on a host that already has pertisk-mgmt
+  (that RPM/DEB already ships /usr/bin/pertiskctl).
+vendor: Pertisk
+homepage: https://github.com/pertisk-tech/pertisk-kos
+license: Apache-2.0
+
+contents:
+  - src: ${STAGING}/usr/bin/pertiskctl
+    dst: /usr/bin/pertiskctl
+    file_info:
+      mode: 0755

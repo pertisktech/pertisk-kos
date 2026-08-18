@@ -71,8 +71,11 @@ if [[ ${#rpms[@]} -gt 0 ]]; then
 fi
 
 echo "==> package artifacts"
-ls -lh "${OUT_DIR}"/pertisk-mgmt*.{rpm,deb} 2>/dev/null || ls -lh "${OUT_DIR}"
+ls -lh "${OUT_DIR}"/pertisk-mgmt*.{rpm,deb} "${OUT_DIR}"/pertiskctl*.{rpm,deb} "${OUT_DIR}"/pertiskctl-linux-* 2>/dev/null || ls -lh "${OUT_DIR}"
 echo ""
-echo "Install RPM (RHEL/Rocky/Alma):  sudo rpm -Uvh ${OUT_DIR}/pertisk-mgmt-*.rpm"
-echo "Install DEB (Debian/Ubuntu):    sudo apt-get install -y ${OUT_DIR}/pertisk-mgmt_*.deb"
+echo "Install mgmt RPM:  sudo rpm -Uvh ${OUT_DIR}/pertisk-mgmt-*.rpm"
+echo "Install mgmt DEB:  sudo apt-get install -y ${OUT_DIR}/pertisk-mgmt_*.deb"
+echo "CLI only RPM:      sudo rpm -Uvh ${OUT_DIR}/pertiskctl-*.rpm"
+echo "CLI only DEB:      sudo apt-get install -y ${OUT_DIR}/pertiskctl_*.deb"
+echo "CLI binary:        ${OUT_DIR}/pertiskctl-linux-{amd64,arm64}"
 echo "See docs/MGMT.md"

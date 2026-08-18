@@ -125,6 +125,7 @@ ARG VERSION=0.1.0
 
 WORKDIR /work
 COPY packaging/mgmt /work/packaging/mgmt
+COPY packaging/ctl /work/packaging/ctl
 COPY scripts /work/repo-scripts
 COPY examples /work/repo-examples
 RUN mkdir -p staging/usr/bin staging/usr/lib/systemd/system staging/etc/pertisk-mgmt staging/scripts \
@@ -153,6 +154,14 @@ RUN set -eu; \
         packaging/mgmt/nfpm.yaml.tmpl > nfpm.yaml; \
     nfpm package --config nfpm.yaml --packager rpm --target /out/; \
     nfpm package --config nfpm.yaml --packager deb --target /out/; \
+    sed -e "s|\${VERSION}|${VERSION}|g" \
+        -e "s|\${ARCH}|${ARCH}|g" \
+        -e "s|\${STAGING}|/work/staging|g" \
+        packaging/ctl/nfpm.yaml.tmpl > nfpm-ctl.yaml; \
+    nfpm package --config nfpm-ctl.yaml --packager rpm --target /out/; \
+    nfpm package --config nfpm-ctl.yaml --packager deb --target /out/; \
+    cp staging/usr/bin/pertiskctl "/out/pertiskctl-linux-${ARCH}"; \
+    chmod 0755 "/out/pertiskctl-linux-${ARCH}"; \
     ls -lh /out/
 
 FROM scratch AS export

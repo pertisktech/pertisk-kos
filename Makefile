@@ -151,10 +151,14 @@ rpm: mgmt-rpm
 ## Cut a release with: make create-tag TAG=0.1.10
 release: mgmt-pkg
 	@shopt -s nullglob; \
-	  pkgs=( "$(ROOT)/out/pkg"/pertisk-mgmt*.rpm "$(ROOT)/out/pkg"/pertisk-mgmt*.deb ); \
-	  [[ $${#pkgs[@]} -ge 4 ]] || { echo "ERROR: expected DEB+RPM for amd64 and arm64 in out/pkg/" >&2; ls -la "$(ROOT)/out/pkg" >&2; exit 1; }; \
+	  pkgs=( "$(ROOT)/out/pkg"/pertisk-mgmt*.rpm "$(ROOT)/out/pkg"/pertisk-mgmt*.deb \
+	         "$(ROOT)/out/pkg"/pertiskctl*.rpm "$(ROOT)/out/pkg"/pertiskctl*.deb \
+	         "$(ROOT)/out/pkg"/pertiskctl-linux-* ); \
+	  [[ $${#pkgs[@]} -ge 10 ]] || { echo "ERROR: expected mgmt+pertiskctl DEB/RPM/binaries for amd64 and arm64 in out/pkg/" >&2; ls -la "$(ROOT)/out/pkg" >&2; exit 1; }; \
 	  echo "==> release VERSION=$(VERSION)"; \
-	  ls -lh "$(ROOT)/out/pkg"/pertisk-mgmt*.rpm "$(ROOT)/out/pkg"/pertisk-mgmt*.deb
+	  ls -lh "$(ROOT)/out/pkg"/pertisk-mgmt*.rpm "$(ROOT)/out/pkg"/pertisk-mgmt*.deb \
+	         "$(ROOT)/out/pkg"/pertiskctl*.rpm "$(ROOT)/out/pkg"/pertiskctl*.deb \
+	         "$(ROOT)/out/pkg"/pertiskctl-linux-*
 
 ## Cloud golden disk (kernel + systemd-boot + containerd/kubelet in initramfs).
 cloud:
