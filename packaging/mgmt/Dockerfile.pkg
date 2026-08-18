@@ -4,12 +4,17 @@
 #   docker buildx build --platform linux/amd64 -f packaging/mgmt/Dockerfile.pkg ...
 #   docker buildx build --platform linux/arm64 -f packaging/mgmt/Dockerfile.pkg ...
 #
-# No apt-get: debian:bookworm-slim indexes often fail on self-hosted runners.
-# rust:bookworm already has curl, unzip, ca-certificates, pkg-config, libssl-dev.
+# Always RUN on BUILDPLATFORM (host). Arm64 packages are cross-compiled with
+# cargo-zigbuild so we never execute aarch64 /bin/sh (QEMU "exec format error"
+# with the docker driver on self-hosted amd64 runners).
+# No apt-get: debian:bookworm-slim indexes often fail on those runners.
+# rust:bookworm already has curl, unzip, xz-utils, ca-certificates, pkg-config.
 
 ARG RUST_VERSION=1.88
 ARG NFPM_VERSION=2.43.3
 ARG PROTOC_VERSION=29.3
+ARG ZIG_VERSION=0.13.0
+ARG CARGO_ZIGBUILD_VERSION=0.19.8
 
 FROM --platform=$BUILDPLATFORM node:22-bookworm AS ui
 WORKDIR /ui
@@ -20,18 +25,19 @@ ARG VERSION=0.1.0
 ENV VITE_APP_VERSION=${VERSION}
 RUN npm run build
 
-# Target platform from `docker buildx --platform linux/amd64|linux/arm64`.
-FROM rust:${RUST_VERSION}-bookworm AS build
+FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-bookworm AS build
+ARG BUILDARCH
 ARG TARGETARCH
 ARG NFPM_VERSION=2.43.3
 ARG PROTOC_VERSION=29.3
-# etcd-client (via pertiskctl → pertisk-bootstrap) needs protoc at build time.
-# Protobuf zip uses linux-aarch_64 (underscore); nfpm tarball uses Linux_arm64.
+ARG ZIG_VERSION=0.13.0
+ARG CARGO_ZIGBUILD_VERSION=0.19.8
+# Host tools (protoc/nfpm/zig) match BUILDARCH; cargo-zigbuild emits TARGETARCH bins.
 RUN set -eu; \
-    case "${TARGETARCH}" in \
-      amd64) PROTOC_ZIP=linux-x86_64; NFPM_TAR=Linux_x86_64 ;; \
-      arm64) PROTOC_ZIP=linux-aarch_64; NFPM_TAR=Linux_arm64 ;; \
-      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    case "${BUILDARCH}" in \
+      amd64) HOST_CPU=x86_64; PROTOC_ZIP=linux-x86_64; NFPM_TAR=Linux_x86_64 ;; \
+      arm64) HOST_CPU=aarch64; PROTOC_ZIP=linux-aarch_64; NFPM_TAR=Linux_arm64 ;; \
+      *) echo "unsupported BUILDARCH=${BUILDARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL \
       "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_ZIP}.zip" \
@@ -46,7 +52,22 @@ RUN set -eu; \
     tar -xzf /tmp/nfpm.tgz -C /usr/local/bin nfpm; \
     rm -f /tmp/nfpm.tgz; \
     chmod +x /usr/local/bin/nfpm; \
-    nfpm --version
+    nfpm --version; \
+    curl -fsSL \
+      "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${HOST_CPU}-${ZIG_VERSION}.tar.xz" \
+      -o /tmp/zig.tar.xz; \
+    tar -xJf /tmp/zig.tar.xz -C /usr/local; \
+    rm -f /tmp/zig.tar.xz; \
+    mv "/usr/local/zig-linux-${HOST_CPU}-${ZIG_VERSION}" /usr/local/zig; \
+    ln -sf /usr/local/zig/zig /usr/local/bin/zig; \
+    zig version; \
+    curl -fsSL \
+      "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${CARGO_ZIGBUILD_VERSION}/cargo-zigbuild-${HOST_CPU}-unknown-linux-musl.tar.gz" \
+      -o /tmp/cargo-zigbuild.tgz; \
+    tar -xzf /tmp/cargo-zigbuild.tgz -C /usr/local/bin; \
+    rm -f /tmp/cargo-zigbuild.tgz; \
+    chmod +x /usr/local/bin/cargo-zigbuild; \
+    cargo-zigbuild --help >/dev/null
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
@@ -55,10 +76,19 @@ COPY examples ./examples
 COPY --from=ui /ui/dist ./crates/pertisk-mgmt/static
 ARG VERSION=0.1.0
 ENV PERTISK_BUILD_VERSION=${VERSION}
-RUN cargo build --release -p pertisk-mgmt -p pertiskctl
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) RUST_TARGET=x86_64-unknown-linux-gnu ;; \
+      arm64) RUST_TARGET=aarch64-unknown-linux-gnu ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    rustup target add "${RUST_TARGET}"; \
+    cargo zigbuild --release --target "${RUST_TARGET}" -p pertisk-mgmt -p pertiskctl; \
+    mkdir -p /opt/bins; \
+    cp "target/${RUST_TARGET}/release/pertisk-mgmt" "target/${RUST_TARGET}/release/pertiskctl" /opt/bins/; \
+    file /opt/bins/pertisk-mgmt /opt/bins/pertiskctl || true
 
-# Reuse rust:bookworm (nfpm + unix tools already present). Do not FROM debian:*-slim.
-FROM build AS pkg
+FROM --platform=$BUILDPLATFORM build AS pkg
 ARG TARGETARCH
 ARG VERSION=0.1.0
 
@@ -73,8 +103,8 @@ RUN mkdir -p staging/usr/bin staging/usr/lib/systemd/system staging/etc/pertisk-
   && cp -a /work/repo-examples/. staging/usr/share/pertisk-mgmt/examples/ \
   && chmod +x staging/usr/share/pertisk-mgmt/scripts/*.sh
 
-COPY --from=build /src/target/release/pertisk-mgmt staging/usr/bin/pertisk-mgmt
-COPY --from=build /src/target/release/pertiskctl staging/usr/bin/pertiskctl
+COPY --from=build /opt/bins/pertisk-mgmt staging/usr/bin/pertisk-mgmt
+COPY --from=build /opt/bins/pertiskctl staging/usr/bin/pertiskctl
 COPY packaging/mgmt/pertisk-mgmt.service staging/usr/lib/systemd/system/pertisk-mgmt.service
 COPY packaging/mgmt/pertisk-mgmt.env staging/etc/pertisk-mgmt/pertisk-mgmt.env
 COPY packaging/mgmt/scripts/preinstall.sh staging/scripts/preinstall.sh

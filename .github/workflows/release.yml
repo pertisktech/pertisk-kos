@@ -38,13 +38,11 @@ jobs:
           echo '{"credsStore":""}' > "$RUNNER_TEMP/.docker/config.json"
           echo "DOCKER_CONFIG=$RUNNER_TEMP/.docker" >> "$GITHUB_ENV"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           # docker-container driver isolates network/clock; apt GPG fails on some runners.
+          # Arm64 packages are cross-compiled (cargo-zigbuild) on the host; no QEMU.
           driver: docker
 
       - name: Build DEB + RPM (amd64, arm64)
