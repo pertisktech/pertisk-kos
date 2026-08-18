@@ -1,10 +1,10 @@
-# Build linux/amd64 pertisk-mgmt (+ pertiskctl) and package as RPM via nfpm.
-# Used by: make mgmt-rpm / scripts/build-mgmt-rpm.sh
+# Build linux pertisk-mgmt (+ pertiskctl) and package as RPM + DEB via nfpm.
+# Used by: make mgmt-pkg / scripts/build-mgmt-pkg.sh
 #
-#   docker buildx build --platform linux/amd64 -f packaging/mgmt/Dockerfile.rpm ...
+#   docker buildx build --platform linux/amd64 -f packaging/mgmt/Dockerfile.pkg ...
+#   docker buildx build --platform linux/arm64 -f packaging/mgmt/Dockerfile.pkg ...
 #
-# No apt-get: debian:bookworm-slim indexes often fail on self-hosted runners
-# ("Package ca-certificates has no installation candidate" / "Unable to locate curl").
+# No apt-get: debian:bookworm-slim indexes often fail on self-hosted runners.
 # rust:bookworm already has curl, unzip, ca-certificates, pkg-config, libssl-dev.
 
 ARG RUST_VERSION=1.88
@@ -20,31 +20,37 @@ ARG VERSION=0.1.0
 ENV VITE_APP_VERSION=${VERSION}
 RUN npm run build
 
-# Platform set by `docker buildx --platform linux/amd64`.
+# Target platform from `docker buildx --platform linux/amd64|linux/arm64`.
 FROM rust:${RUST_VERSION}-bookworm AS build
+ARG TARGETARCH
 ARG NFPM_VERSION=2.43.3
 ARG PROTOC_VERSION=29.3
 # etcd-client (via pertiskctl → pertisk-bootstrap) needs protoc at build time.
-# Official zip is linux-x86_64; this stage is always linux/amd64.
-RUN curl -fsSL \
-      "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" \
-      -o /tmp/protoc.zip \
-  && unzip -o /tmp/protoc.zip -d /usr/local \
-  && rm -f /tmp/protoc.zip \
-  && chmod +x /usr/local/bin/protoc \
-  && protoc --version \
-  && curl -fsSL \
-      "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" \
-      -o /tmp/nfpm.tgz \
-  && tar -xzf /tmp/nfpm.tgz -C /usr/local/bin nfpm \
-  && rm -f /tmp/nfpm.tgz \
-  && chmod +x /usr/local/bin/nfpm \
-  && nfpm --version
+# Protobuf zip uses linux-aarch_64 (underscore); nfpm tarball uses Linux_arm64.
+RUN set -euo pipefail; \
+    case "${TARGETARCH}" in \
+      amd64) PROTOC_ZIP=linux-x86_64; NFPM_TAR=Linux_x86_64 ;; \
+      arm64) PROTOC_ZIP=linux-aarch_64; NFPM_TAR=Linux_arm64 ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL \
+      "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_ZIP}.zip" \
+      -o /tmp/protoc.zip; \
+    unzip -o /tmp/protoc.zip -d /usr/local; \
+    rm -f /tmp/protoc.zip; \
+    chmod +x /usr/local/bin/protoc; \
+    protoc --version; \
+    curl -fsSL \
+      "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${NFPM_TAR}.tar.gz" \
+      -o /tmp/nfpm.tgz; \
+    tar -xzf /tmp/nfpm.tgz -C /usr/local/bin nfpm; \
+    rm -f /tmp/nfpm.tgz; \
+    chmod +x /usr/local/bin/nfpm; \
+    nfpm --version
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY proto ./proto
-# include_str! from pertisk-bootstrap (coredns + metrics-server manifests)
 COPY examples ./examples
 COPY --from=ui /ui/dist ./crates/pertisk-mgmt/static
 ARG VERSION=0.1.0
@@ -53,6 +59,7 @@ RUN cargo build --release -p pertisk-mgmt -p pertiskctl
 
 # Reuse rust:bookworm (nfpm + unix tools already present). Do not FROM debian:*-slim.
 FROM build AS pkg
+ARG TARGETARCH
 ARG VERSION=0.1.0
 
 WORKDIR /work
@@ -74,12 +81,18 @@ COPY packaging/mgmt/scripts/preinstall.sh staging/scripts/preinstall.sh
 COPY packaging/mgmt/scripts/postinstall.sh staging/scripts/postinstall.sh
 COPY packaging/mgmt/scripts/preremove.sh staging/scripts/preremove.sh
 
-RUN sed -e "s|\${VERSION}|${VERSION}|g" \
-        -e "s|\${ARCH}|amd64|g" \
+RUN set -euo pipefail; \
+    case "${TARGETARCH}" in \
+      amd64|arm64) ARCH="${TARGETARCH}" ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    sed -e "s|\${VERSION}|${VERSION}|g" \
+        -e "s|\${ARCH}|${ARCH}|g" \
         -e "s|\${STAGING}|/work/staging|g" \
-        packaging/mgmt/nfpm.yaml.tmpl > nfpm.yaml \
-  && nfpm package --config nfpm.yaml --packager rpm --target /out/ \
-  && ls -lh /out/
+        packaging/mgmt/nfpm.yaml.tmpl > nfpm.yaml; \
+    nfpm package --config nfpm.yaml --packager rpm --target /out/; \
+    nfpm package --config nfpm.yaml --packager deb --target /out/; \
+    ls -lh /out/
 
 FROM scratch AS export
 COPY --from=pkg /out/ /

@@ -2,13 +2,13 @@
 
 Install **pertisk-mgmt** on a Linux host, register a hypervisor, then create clusters from the UI (or Terraform). Guests are immutable: **there is no SSH into Pertisk nodes**.
 
-Related: [MGMT.md](./MGMT.md) (RPM / env), [PROXMOX.md](./PROXMOX.md), [NUTANIX.md](./NUTANIX.md), [VSPHERE.md](./VSPHERE.md).
+Related: [MGMT.md](./MGMT.md) (packages / env), [PROXMOX.md](./PROXMOX.md), [NUTANIX.md](./NUTANIX.md), [VSPHERE.md](./VSPHERE.md).
 
 ## SSH matrix
 
 | Hop | Proxmox (amd64) | Proxmox (arm64) | Nutanix AHV | vSphere (ESXi) |
 |-----|-----------------|-----------------|-------------|----------------|
-| **Build laptop → mgmt host** | Yes — copy RPM + qcow2 | Yes | Yes | Yes |
+| **Build laptop → mgmt host** | Yes — copy DEB/RPM + qcow2 | Yes | Yes | Yes |
 | **Mgmt → hypervisor API** | Yes — token (`:8006`) | Yes — token | Yes — user/password (`:9440`) | Yes — user/password (`/sdk` SOAP) |
 | **Mgmt → hypervisor SSH** | **Not required** (`PROXMOX_NO_SSH=1`) | **Required** (`PROXMOX_SSH=root@<pve>` for `qm create --arch aarch64`) | **Not required**. Optional `NUTANIX_CVM_SSH` only to attach serial if REST fails | **Not required** (never used) |
 | **Anyone → Pertisk guest** | **Never** — Machine API `:50000` / serial console | Never | Never | Never |
@@ -26,7 +26,8 @@ On a machine with Docker + Rust toolchain:
 ```bash
 make cloud ARCH=amd64 VERSION=0.3.0          # → out/pertisk-cloud-amd64*.qcow2
 # make cloud ARCH=arm64 VERSION=0.3.0        # if you need arm64 guests
-make mgmt-rpm VERSION=0.3.0                  # → out/rpm/pertisk-mgmt-0.3.0-1.x86_64.rpm
+make mgmt-rpm VERSION=0.3.0                  # amd64 DEB+RPM → out/pkg/
+# make mgmt-pkg VERSION=0.3.0                # amd64+arm64 DEB+RPM (release)
 ```
 
 Keep `VERSION` in sync on image and RPM.
@@ -35,16 +36,19 @@ Keep `VERSION` in sync on image and RPM.
 
 ## 1. Install pertisk-mgmt
 
-SSH **to the mgmt host** (Alma / Rocky / RHEL amd64):
+SSH **to the mgmt host** (Alma / Rocky / RHEL, or Debian / Ubuntu):
 
 ```bash
 MGMT=user@mgmt.example.com
-scp out/rpm/pertisk-mgmt-0.3.0-1.x86_64.rpm "$MGMT:/tmp/"
+# RPM (x86_64 or aarch64)
+scp out/pkg/pertisk-mgmt-0.3.0-1.x86_64.rpm "$MGMT:/tmp/"
+# DEB: scp out/pkg/pertisk-mgmt_0.3.0-1_amd64.deb "$MGMT:/tmp/"
 scp out/pertisk-cloud-amd64*.qcow2 "$MGMT:/tmp/"
 
 ssh "$MGMT" 'sudo bash -s' <<'EOF'
 set -euo pipefail
 rpm -Uvh /tmp/pertisk-mgmt-*.rpm
+# apt-get install -y /tmp/pertisk-mgmt_*.deb
 mkdir -p /var/lib/pertisk-mgmt/images
 mv /tmp/pertisk-cloud-amd64*.qcow2 /var/lib/pertisk-mgmt/images/
 chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images

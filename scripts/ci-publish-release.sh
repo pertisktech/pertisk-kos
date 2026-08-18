@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create or update a GitHub Release and upload RPM assets (self-hosted runners).
+# Create or update a GitHub Release and upload DEB/RPM assets (self-hosted runners).
 set -euo pipefail
 
 : "${VERSION:?VERSION required}"
@@ -77,7 +77,7 @@ shopt -s nullglob
 assets=()
 while IFS= read -r -d '' f; do
   assets+=("$f")
-done < <(find "$PACKAGES_DIR" \( -name '*.rpm' -o -name 'SHA256SUMS.txt' \) -type f -print0 | sort -z)
+done < <(find "$PACKAGES_DIR" \( -name '*.rpm' -o -name '*.deb' -o -name 'SHA256SUMS.txt' \) -type f -print0 | sort -z)
 
 if [[ "${#assets[@]}" -eq 0 ]]; then
   echo "::error::No release assets to upload under ${PACKAGES_DIR}" >&2

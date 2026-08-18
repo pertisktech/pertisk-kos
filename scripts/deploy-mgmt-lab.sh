@@ -109,9 +109,9 @@ fi
 if [[ "$SKIP_RPM" != "1" ]]; then
   echo "==> [2/3] build + install RPM VERSION=${VERSION}"
   make -C "$ROOT" rpm VERSION="$VERSION"
-  RPM="$(ls -1t "${ROOT}/out/rpm/pertisk-mgmt-${VERSION}"-*.rpm 2>/dev/null | head -1 || true)"
-  [[ -n "$RPM" && -f "$RPM" ]] || RPM="$(ls -1t "${ROOT}/out/rpm/pertisk-mgmt-"*.rpm 2>/dev/null | head -1 || true)"
-  [[ -n "$RPM" && -f "$RPM" ]] || { echo "ERROR: no RPM in out/rpm/" >&2; exit 1; }
+  RPM="$(ls -1t "${ROOT}/out/pkg/pertisk-mgmt-${VERSION}"-*.rpm "${ROOT}/out/rpm/pertisk-mgmt-${VERSION}"-*.rpm 2>/dev/null | head -1 || true)"
+  [[ -n "$RPM" && -f "$RPM" ]] || RPM="$(ls -1t "${ROOT}/out/pkg/pertisk-mgmt-"*.rpm "${ROOT}/out/rpm/pertisk-mgmt-"*.rpm 2>/dev/null | head -1 || true)"
+  [[ -n "$RPM" && -f "$RPM" ]] || { echo "ERROR: no RPM in out/pkg/ or out/rpm/" >&2; exit 1; }
   scp "$RPM" "${MGMT_HOST}:/tmp/pertisk-mgmt.rpm"
   # Same NEVRA is already installed after a prior deploy (e.g. amd64 then arm64-only
   # with the same VERSION) — rpm -Uvh alone exits non-zero; --replacepkgs refreshes.

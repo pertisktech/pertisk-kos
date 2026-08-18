@@ -2,7 +2,7 @@
 
 Single-port control plane: **Rust API** (`pertisk-mgmt`) + **React UI** (Adminator-inspired shell).
 
-Production install (RPM, providers, **SSH matrix**): [DEPLOY.md](./DEPLOY.md).
+Production install (RPM / DEB, providers, **SSH matrix**): [DEPLOY.md](./DEPLOY.md).
 
 ## Quick start
 
@@ -237,14 +237,18 @@ docker run -p 8080:8080 -e MGMT_ADMIN_PASSWORD=admin -e MGMT_SECRET_KEY=dev \
   -v pertisk-mgmt-data:/data pertisk-mgmt
 ```
 
-## RPM deploy (mgmt only — no copy to Proxmox)
+<a id="rpm-deploy-linuxamd64"></a>
+
+## Package deploy (mgmt only — no copy to Proxmox)
 
 Same idea as [Omni’s Proxmox infra provider](https://github.com/siderolabs/omni-infra-provider-proxmox): talk to Proxmox over the **API token only**. Images live on the **mgmt** host; create uploads them with `content=import` + `scsi0 … import-from=` (no `scp` / SSH to PVE).
 
+GitHub Releases ship **DEB + RPM** for **amd64** and **arm64** (`out/pkg/`). Lab `make rpm` builds amd64 only.
+
 ```text
-[laptop]  stage-images + rpm
+[laptop]  stage-images + packages
     │
-    ├─ RPM + qcow2 ──► [mgmt]  /var/lib/pertisk-mgmt/images/
+    ├─ DEB/RPM + qcow2 ──► [mgmt]  /var/lib/pertisk-mgmt/images/
     │
     └─ UI Create ────► [mgmt] ──HTTPS API──► [Proxmox]
                          upload → local:import/…
@@ -261,14 +265,18 @@ Same idea as [Omni’s Proxmox infra provider](https://github.com/siderolabs/omn
 ### Manual
 
 ```bash
-# 1) laptop
+# 1) laptop — amd64 only: make rpm    full matrix: make mgmt-pkg
 make stage-images VERSION=0.1.3
 make rpm VERSION=0.1.3
 
-# 2) mgmt — RPM
+# 2) mgmt — RPM (RHEL / Rocky / Alma)
 MGMT=user@mgmt.example.com
-scp out/rpm/pertisk-mgmt-0.3.0-1.x86_64.rpm "$MGMT:/tmp/"
+scp out/pkg/pertisk-mgmt-0.3.0-1.x86_64.rpm "$MGMT:/tmp/"
 ssh "$MGMT" 'sudo rpm -Uvh /tmp/pertisk-mgmt-*.rpm && sudo systemctl enable --now pertisk-mgmt'
+
+# 2b) mgmt — DEB (Debian / Ubuntu)
+# scp out/pkg/pertisk-mgmt_0.3.0-1_amd64.deb "$MGMT:/tmp/"
+# ssh "$MGMT" 'sudo apt-get install -y /tmp/pertisk-mgmt_*.deb && sudo systemctl enable --now pertisk-mgmt'
 
 # 3) mgmt — images only (not Proxmox)
 scp out/pertisk-cloud-amd64*.qcow2 "$MGMT:/tmp/"

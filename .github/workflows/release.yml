@@ -1,4 +1,4 @@
-# Release on push tag X.Y.Z (e.g. 0.1.10) — build pertisk-mgmt RPM and GitHub Release.
+# Release on push tag X.Y.Z (e.g. 0.1.10) — pertisk-mgmt DEB+RPM (amd64/arm64) and GitHub Release.
 # Terraform provider releases use terraform-provider-pertisk/v* (separate workflow).
 
 name: Release
@@ -17,7 +17,7 @@ env:
 
 jobs:
   release:
-    name: RPM + GitHub Release
+    name: Packages + GitHub Release
     runs-on: [self-hosted, linux]
     steps:
       - name: Checkout
@@ -38,36 +38,44 @@ jobs:
           echo '{"credsStore":""}' > "$RUNNER_TEMP/.docker/config.json"
           echo "DOCKER_CONFIG=$RUNNER_TEMP/.docker" >> "$GITHUB_ENV"
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           # docker-container driver isolates network/clock; apt GPG fails on some runners.
           driver: docker
 
-      - name: Build RPM
+      - name: Build DEB + RPM (amd64, arm64)
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}
+          PKG_PLATFORMS: linux/amd64,linux/arm64
         run: make release VERSION="$VERSION"
 
-      - name: Verify RPM
+      - name: Verify packages
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           set -euo pipefail
-          echo "=== out/rpm ==="
-          ls -lh out/rpm
-          rpm="$(ls -1t out/rpm/pertisk-mgmt-*.rpm | head -1)"
-          test -f "$rpm"
-          echo "RPM=${rpm}"
+          echo "=== out/pkg ==="
+          ls -lh out/pkg
+          shopt -s nullglob
+          rpms=( out/pkg/pertisk-mgmt-*.rpm )
+          debs=( out/pkg/pertisk-mgmt_*.deb )
+          test "${#rpms[@]}" -ge 2
+          test "${#debs[@]}" -ge 2
+          echo "RPMs: ${rpms[*]}"
+          echo "DEBs: ${debs[*]}"
 
       - name: Checksums
         run: |
           set -euo pipefail
-          cd out/rpm
+          cd out/pkg
           shopt -s nullglob
-          files=( pertisk-mgmt-*.rpm )
-          test "${#files[@]}" -ge 1
-          sha256sum "${files[@]}" > SHA256SUMS.txt
+          files=( pertisk-mgmt-*.rpm pertisk-mgmt_*.deb )
+          test "${#files[@]}" -ge 4
+          sha256sum "${files[@]}" | sort > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Release notes
@@ -75,33 +83,52 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           set -euo pipefail
-          rpm="$(basename "$(ls -1t out/rpm/pertisk-mgmt-*.rpm | head -1)")"
-          cat > out/rpm/RELEASE_BODY.md <<EOF
-          ## pertisk-mgmt RPM
-
-          linux/amd64 package (API + embedded UI + pertiskctl).
-
-          | Format | Architecture | File |
-          |--------|--------------|------|
-          | RPM | x86_64 | \`${rpm}\` |
-
-          ### Install (RHEL / Rocky / Alma)
-
-          \`\`\`bash
-          sudo rpm -Uvh ${rpm}
-          sudo systemctl enable --now pertisk-mgmt
-          \`\`\`
-
-          See [docs/MGMT.md](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/docs/MGMT.md) for env, images, and Proxmox.
-          EOF
-          cat out/rpm/RELEASE_BODY.md
+          shopt -s nullglob
+          {
+            echo "## pertisk-mgmt packages"
+            echo
+            echo "linux/amd64 and linux/arm64 (API + embedded UI + pertiskctl)."
+            echo
+            echo "| Format | Architecture | File |"
+            echo "|--------|--------------|------|"
+            for f in out/pkg/pertisk-mgmt-*.rpm out/pkg/pertisk-mgmt_*.deb; do
+              [[ -f "$f" ]] || continue
+              base="$(basename "$f")"
+              case "$base" in
+                *.x86_64.rpm) fmt=RPM; arch=x86_64 ;;
+                *.aarch64.rpm) fmt=RPM; arch=aarch64 ;;
+                *_amd64.deb) fmt=DEB; arch=amd64 ;;
+                *_arm64.deb) fmt=DEB; arch=arm64 ;;
+                *) fmt=package; arch=? ;;
+              esac
+              echo "| ${fmt} | ${arch} | \`${base}\` |"
+            done
+            echo
+            echo "### Install RPM (RHEL / Rocky / Alma)"
+            echo
+            echo '```bash'
+            echo "sudo rpm -Uvh pertisk-mgmt-${VERSION}-1.\$(uname -m).rpm"
+            echo "sudo systemctl enable --now pertisk-mgmt"
+            echo '```'
+            echo
+            echo "### Install DEB (Debian / Ubuntu)"
+            echo
+            echo '```bash'
+            echo "arch=\$(dpkg --print-architecture)"
+            echo "sudo apt-get install -y ./pertisk-mgmt_${VERSION}-1_\${arch}.deb"
+            echo "sudo systemctl enable --now pertisk-mgmt"
+            echo '```'
+            echo
+            echo "See [docs/MGMT.md](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/docs/MGMT.md) for env, images, and Proxmox."
+          } > out/pkg/RELEASE_BODY.md
+          cat out/pkg/RELEASE_BODY.md
 
       - name: Publish GitHub Release
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}
           TAG: ${{ steps.version.outputs.TAG }}
-          PACKAGES_DIR: out/rpm
-          NOTES_FILE: out/rpm/RELEASE_BODY.md
+          PACKAGES_DIR: out/pkg
+          NOTES_FILE: out/pkg/RELEASE_BODY.md
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail

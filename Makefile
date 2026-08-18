@@ -7,7 +7,8 @@
 #   make build-all VERSION=0.2.0       # amd64 + arm64
 #   make build-host VERSION=0.2.0      # host cargo release bins
 #   make mgmt                               # management UI+API → out/bin/pertisk-mgmt
-#   make mgmt-rpm / make rpm / make release # linux/amd64 RPM → out/rpm/
+#   make mgmt-pkg / make release           # DEB+RPM amd64/arm64 → out/pkg/
+#   make mgmt-rpm / make rpm               # linux/amd64 DEB+RPM (lab)
 #   make cloud VERSION=0.2.0 ARCH=amd64
 #   make os-trust                          # Ed25519 keys → out/secrets/os-trust.{sk,pk}
 #   make os-bundle VERSION=0.2.0 ARCH=amd64  # signed A/B OS zip for Upgrade tab
@@ -45,7 +46,7 @@ endif
 
 .PHONY: help build build-host build-all initramfs pertiskctl cloud uki enroll-ovmf \
 	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version lab-up \
-	mgmt mgmt-ui mgmt-rpm rpm release os-trust os-bundle \
+	mgmt mgmt-ui mgmt-pkg mgmt-rpm rpm release os-trust os-bundle \
 	create-tag delete-tag retag clean-tag
 
 help:
@@ -57,9 +58,10 @@ help:
 	@echo "  make pertiskctl [VERSION=...]          # host CLI → out/bin/pertiskctl"
 	@echo "  make mgmt [VERSION=...]                # management API+UI → out/bin/pertisk-mgmt"
 	@echo "  make mgmt-ui                           # build React UI into crates/pertisk-mgmt/static"
-	@echo "  make mgmt-rpm [VERSION=...]            # linux/amd64 RPM (API+UI) → out/rpm/"
-	@echo "  make rpm                               # alias for mgmt-rpm (amd64 deploy)"
-	@echo "  make release [VERSION=...]             # RPM for GitHub Release (CI on tag X.Y.Z)"
+	@echo "  make mgmt-pkg [VERSION=...]            # DEB+RPM amd64+arm64 → out/pkg/"
+	@echo "  make mgmt-rpm [VERSION=...]            # linux/amd64 DEB+RPM (lab) → out/pkg/"
+	@echo "  make rpm                               # alias for mgmt-rpm"
+	@echo "  make release [VERSION=...]             # DEB+RPM amd64/arm64 for GitHub Release"
 	@echo "  make create-tag TAG=0.1.10             # push tag (triggers .github/workflows/release.yml)"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
 	@echo "  make os-trust                         # Ed25519 os-trust.{sk,pk} → out/secrets/"
@@ -133,20 +135,26 @@ mgmt: mgmt-ui
 	@ls -lh "$(ROOT)/out/bin/pertisk-mgmt"
 	@echo "==> $(ROOT)/out/bin/pertisk-mgmt"
 
-## linux/amd64 RPM of management API+UI (Docker buildx; for RHEL/Rocky/Alma deploy).
+## linux packages (DEB + RPM). Override: make mgmt-pkg PKG_PLATFORMS=linux/amd64
+PKG_PLATFORMS ?= linux/amd64,linux/arm64
+mgmt-pkg:
+	PKG_PLATFORMS="$(PKG_PLATFORMS)" VERSION="$(VERSION)" "$(ROOT)/scripts/build-mgmt-pkg.sh"
+
+## linux/amd64 DEB+RPM only (lab deploy). Full matrix: make mgmt-pkg
 mgmt-rpm:
-	VERSION="$(VERSION)" "$(ROOT)/scripts/build-mgmt-rpm.sh"
+	PKG_PLATFORMS=linux/amd64 VERSION="$(VERSION)" "$(ROOT)/scripts/build-mgmt-pkg.sh"
 
 ## Alias: package web/API for amd64 deploy.
 rpm: mgmt-rpm
 
-## Release artifacts: linux/amd64 pertisk-mgmt RPM (CI runs this on tag X.Y.Z).
+## Release artifacts: DEB+RPM for linux/amd64 and linux/arm64 (CI on tag X.Y.Z).
 ## Cut a release with: make create-tag TAG=0.1.10
-release: rpm
-	@rpm=$$(ls -1t "$(ROOT)/out/rpm"/pertisk-mgmt-*.rpm 2>/dev/null | head -1); \
-	  [[ -n "$$rpm" && -f "$$rpm" ]] || { echo "ERROR: no RPM in out/rpm/" >&2; exit 1; }; \
+release: mgmt-pkg
+	@shopt -s nullglob; \
+	  pkgs=( "$(ROOT)/out/pkg"/pertisk-mgmt*.rpm "$(ROOT)/out/pkg"/pertisk-mgmt*.deb ); \
+	  [[ $${#pkgs[@]} -ge 4 ]] || { echo "ERROR: expected DEB+RPM for amd64 and arm64 in out/pkg/" >&2; ls -la "$(ROOT)/out/pkg" >&2; exit 1; }; \
 	  echo "==> release VERSION=$(VERSION)"; \
-	  ls -lh "$(ROOT)/out/rpm"/pertisk-mgmt-*.rpm
+	  ls -lh "$(ROOT)/out/pkg"/pertisk-mgmt*.rpm "$(ROOT)/out/pkg"/pertisk-mgmt*.deb
 
 ## Cloud golden disk (kernel + systemd-boot + containerd/kubelet in initramfs).
 cloud:
