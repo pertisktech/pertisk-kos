@@ -14,7 +14,7 @@ ARG RUST_VERSION=1.88
 ARG NFPM_VERSION=2.43.3
 ARG PROTOC_VERSION=29.3
 ARG ZIG_VERSION=0.13.0
-ARG CARGO_ZIGBUILD_VERSION=0.19.8
+ARG CARGO_ZIGBUILD_VERSION=0.23.0
 
 FROM --platform=$BUILDPLATFORM node:22-bookworm AS ui
 WORKDIR /ui
@@ -31,41 +31,62 @@ ARG TARGETARCH
 ARG NFPM_VERSION=2.43.3
 ARG PROTOC_VERSION=29.3
 ARG ZIG_VERSION=0.13.0
-ARG CARGO_ZIGBUILD_VERSION=0.19.8
+ARG CARGO_ZIGBUILD_VERSION=0.23.0
 # Host tools (protoc/nfpm/zig) match BUILDARCH; cargo-zigbuild emits TARGETARCH bins.
+# Split RUNs so a curl HTTP 22 names the failing URL in the log.
 RUN set -eu; \
     case "${BUILDARCH}" in \
       amd64) HOST_CPU=x86_64; PROTOC_ZIP=linux-x86_64; NFPM_TAR=Linux_x86_64 ;; \
       arm64) HOST_CPU=aarch64; PROTOC_ZIP=linux-aarch_64; NFPM_TAR=Linux_arm64 ;; \
       *) echo "unsupported BUILDARCH=${BUILDARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL \
+    echo "BUILDARCH=${BUILDARCH} HOST_CPU=${HOST_CPU}"; \
+    echo "==> protoc"; \
+    curl -fL --retry 3 --retry-delay 2 \
       "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_ZIP}.zip" \
       -o /tmp/protoc.zip; \
     unzip -o /tmp/protoc.zip -d /usr/local; \
     rm -f /tmp/protoc.zip; \
     chmod +x /usr/local/bin/protoc; \
     protoc --version; \
-    curl -fsSL \
+    echo "==> nfpm"; \
+    curl -fL --retry 3 --retry-delay 2 \
       "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${NFPM_TAR}.tar.gz" \
       -o /tmp/nfpm.tgz; \
     tar -xzf /tmp/nfpm.tgz -C /usr/local/bin nfpm; \
     rm -f /tmp/nfpm.tgz; \
     chmod +x /usr/local/bin/nfpm; \
-    nfpm --version; \
-    curl -fsSL \
+    nfpm --version
+RUN set -eu; \
+    case "${BUILDARCH}" in \
+      amd64) HOST_CPU=x86_64 ;; \
+      arm64) HOST_CPU=aarch64 ;; \
+      *) echo "unsupported BUILDARCH=${BUILDARCH}" >&2; exit 1 ;; \
+    esac; \
+    echo "==> zig ${ZIG_VERSION} (${HOST_CPU})"; \
+    curl -fL --retry 3 --retry-delay 2 \
       "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${HOST_CPU}-${ZIG_VERSION}.tar.xz" \
       -o /tmp/zig.tar.xz; \
     tar -xJf /tmp/zig.tar.xz -C /usr/local; \
     rm -f /tmp/zig.tar.xz; \
     mv "/usr/local/zig-linux-${HOST_CPU}-${ZIG_VERSION}" /usr/local/zig; \
     ln -sf /usr/local/zig/zig /usr/local/bin/zig; \
-    zig version; \
-    curl -fsSL \
-      "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${CARGO_ZIGBUILD_VERSION}/cargo-zigbuild-${HOST_CPU}-unknown-linux-musl.tar.gz" \
-      -o /tmp/cargo-zigbuild.tgz; \
-    tar -xzf /tmp/cargo-zigbuild.tgz -C /usr/local/bin; \
-    rm -f /tmp/cargo-zigbuild.tgz; \
+    zig version
+RUN set -eu; \
+    case "${BUILDARCH}" in \
+      amd64) CZ_ASSET=cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz ;; \
+      arm64) CZ_ASSET=cargo-zigbuild-aarch64-unknown-linux-gnu.tar.xz ;; \
+      *) echo "unsupported BUILDARCH=${BUILDARCH}" >&2; exit 1 ;; \
+    esac; \
+    echo "==> cargo-zigbuild ${CARGO_ZIGBUILD_VERSION} ${CZ_ASSET}"; \
+    curl -fL --retry 3 --retry-delay 2 \
+      "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${CARGO_ZIGBUILD_VERSION}/${CZ_ASSET}" \
+      -o /tmp/cargo-zigbuild.tar.xz; \
+    mkdir -p /tmp/cargo-zigbuild; \
+    tar -xJf /tmp/cargo-zigbuild.tar.xz -C /tmp/cargo-zigbuild; \
+    rm -f /tmp/cargo-zigbuild.tar.xz; \
+    find /tmp/cargo-zigbuild -type f -name cargo-zigbuild -exec mv {} /usr/local/bin/cargo-zigbuild \;; \
+    rm -rf /tmp/cargo-zigbuild; \
     chmod +x /usr/local/bin/cargo-zigbuild; \
     cargo-zigbuild --help >/dev/null
 WORKDIR /src
