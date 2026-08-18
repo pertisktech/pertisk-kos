@@ -27,7 +27,7 @@ ARG NFPM_VERSION=2.43.3
 ARG PROTOC_VERSION=29.3
 # etcd-client (via pertiskctl → pertisk-bootstrap) needs protoc at build time.
 # Protobuf zip uses linux-aarch_64 (underscore); nfpm tarball uses Linux_arm64.
-RUN set -euo pipefail; \
+RUN set -eu; \
     case "${TARGETARCH}" in \
       amd64) PROTOC_ZIP=linux-x86_64; NFPM_TAR=Linux_x86_64 ;; \
       arm64) PROTOC_ZIP=linux-aarch_64; NFPM_TAR=Linux_arm64 ;; \
@@ -81,7 +81,7 @@ COPY packaging/mgmt/scripts/preinstall.sh staging/scripts/preinstall.sh
 COPY packaging/mgmt/scripts/postinstall.sh staging/scripts/postinstall.sh
 COPY packaging/mgmt/scripts/preremove.sh staging/scripts/preremove.sh
 
-RUN set -euo pipefail; \
+RUN set -eu; \
     case "${TARGETARCH}" in \
       amd64|arm64) ARCH="${TARGETARCH}" ;; \
       *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
