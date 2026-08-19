@@ -47,20 +47,16 @@ async fn list(
 ) -> ApiResult<Json<Vec<AuditOut>>> {
     let limit = q.limit.clamp(1, 500);
     let offset = q.offset.max(0);
-    let action = q
-        .action
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+    let action = q.action.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let resource = q
         .resource
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    let rows = match (action, resource) {
-        (Some(a), Some(r)) => {
-            sqlx::query_as::<_, AuditOut>(
+    let rows =
+        match (action, resource) {
+            (Some(a), Some(r)) => sqlx::query_as::<_, AuditOut>(
                 r#"SELECT a.id, a.user_id, u.username, a.action, a.resource, a.detail, a.created_at
                    FROM audit_log a
                    LEFT JOIN users u ON u.id = a.user_id
@@ -73,10 +69,8 @@ async fn list(
             .bind(limit)
             .bind(offset)
             .fetch_all(state.pool())
-            .await?
-        }
-        (Some(a), None) => {
-            sqlx::query_as::<_, AuditOut>(
+            .await?,
+            (Some(a), None) => sqlx::query_as::<_, AuditOut>(
                 r#"SELECT a.id, a.user_id, u.username, a.action, a.resource, a.detail, a.created_at
                    FROM audit_log a
                    LEFT JOIN users u ON u.id = a.user_id
@@ -88,10 +82,8 @@ async fn list(
             .bind(limit)
             .bind(offset)
             .fetch_all(state.pool())
-            .await?
-        }
-        (None, Some(r)) => {
-            sqlx::query_as::<_, AuditOut>(
+            .await?,
+            (None, Some(r)) => sqlx::query_as::<_, AuditOut>(
                 r#"SELECT a.id, a.user_id, u.username, a.action, a.resource, a.detail, a.created_at
                    FROM audit_log a
                    LEFT JOIN users u ON u.id = a.user_id
@@ -103,10 +95,8 @@ async fn list(
             .bind(limit)
             .bind(offset)
             .fetch_all(state.pool())
-            .await?
-        }
-        (None, None) => {
-            sqlx::query_as::<_, AuditOut>(
+            .await?,
+            (None, None) => sqlx::query_as::<_, AuditOut>(
                 r#"SELECT a.id, a.user_id, u.username, a.action, a.resource, a.detail, a.created_at
                    FROM audit_log a
                    LEFT JOIN users u ON u.id = a.user_id
@@ -116,9 +106,8 @@ async fn list(
             .bind(limit)
             .bind(offset)
             .fetch_all(state.pool())
-            .await?
-        }
-    };
+            .await?,
+        };
 
     Ok(Json(rows))
 }

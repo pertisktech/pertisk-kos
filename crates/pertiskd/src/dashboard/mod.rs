@@ -66,10 +66,7 @@ pub fn apply_config(cfg: Option<&MachineConfig>) {
                 set_var("PERTISK_DASHBOARD_ROWS", &rows.to_string());
             }
             if let Some(utf8) = dash.utf8 {
-                set_var(
-                    "PERTISK_DASHBOARD_UTF8",
-                    if utf8 { "1" } else { "0" },
-                );
+                set_var("PERTISK_DASHBOARD_UTF8", if utf8 { "1" } else { "0" });
             }
             if let Some(url) = dash.mgmt_url.as_deref() {
                 set_var("MGMT_PUBLIC_URL", url);

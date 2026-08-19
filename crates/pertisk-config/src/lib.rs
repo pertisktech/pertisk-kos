@@ -87,11 +87,7 @@ impl MachineKubelet {
 impl Machine {
     /// `machine.kubelet.extraConfig.maxPods` when set.
     pub fn max_pods(&self) -> Option<u32> {
-        self.kubelet
-            .as_ref()?
-            .extra_config
-            .as_ref()?
-            .max_pods
+        self.kubelet.as_ref()?.extra_config.as_ref()?.max_pods
     }
 }
 
@@ -154,11 +150,7 @@ pub struct Dashboard {
     pub utf8: Option<bool>,
     /// Public web management URL shown on the serial console (e.g.
     /// `https://mgmt.example.com`). Also set via `MGMT_PUBLIC_URL`.
-    #[serde(
-        default,
-        alias = "mgmtUrl",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, alias = "mgmtUrl", skip_serializing_if = "Option::is_none")]
     pub mgmt_url: Option<String>,
 }
 
@@ -215,6 +207,22 @@ pub struct Network {
     pub nameservers: Vec<String>,
 }
 
+impl Network {
+    /// First-boot default: DHCP on `eth0` (resolved to the first NIC if missing).
+    pub fn dhcp_default() -> Self {
+        Self {
+            hostname: None,
+            interfaces: vec![Interface {
+                interface: "eth0".into(),
+                dhcp: true,
+                addresses: vec![],
+                gateway: None,
+            }],
+            nameservers: vec![],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Interface {
     pub interface: String,
@@ -242,7 +250,11 @@ pub struct ClusterNetwork {
     #[serde(default, rename = "podSubnets", skip_serializing_if = "Vec::is_empty")]
     pub pod_subnets: Vec<String>,
     /// Service CIDRs (IPv4 and optional IPv6), e.g. `10.96.0.0/12`, `2001:db8:96:1::/112`.
-    #[serde(default, rename = "serviceSubnets", skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        rename = "serviceSubnets",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub service_subnets: Vec<String>,
 }
 
@@ -270,13 +282,25 @@ pub struct Cluster {
     #[serde(default, rename = "podSubnet", skip_serializing_if = "Option::is_none")]
     pub pod_subnet: Option<String>,
     /// Legacy cluster service CIDR (default `10.96.0.0/12`).
-    #[serde(default, rename = "serviceSubnet", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "serviceSubnet",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub service_subnet: Option<String>,
     /// Legacy IPv6 pod CIDR when [`NetworkMode::DualStack`].
-    #[serde(default, rename = "podCidrIPv6", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "podCidrIPv6",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub pod_cidr_ipv6: Option<String>,
     /// Legacy IPv6 service CIDR when dual-stack.
-    #[serde(default, rename = "serviceCidrIPv6", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "serviceCidrIPv6",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub service_cidr_ipv6: Option<String>,
     /// Node / cluster IP family mode. Default IPv4-only.
     #[serde(default, rename = "networkMode")]
@@ -452,7 +476,12 @@ impl Cluster {
     /// `certSANs` plus optional `vip6` for apiserver/etcd certificates.
     pub fn pki_extra_sans(&self) -> Vec<String> {
         let mut sans = self.cert_sans.clone();
-        if let Some(v6) = self.vip6.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(v6) = self
+            .vip6
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             if !sans.iter().any(|s| s == v6) {
                 sans.push(v6.to_string());
             }
@@ -524,7 +553,10 @@ impl MachineConfig {
     /// present. Partial updates (e.g. only `machine.dashboard`) keep
     /// `machine.type`, `network`, `cluster`, and other fields so kubelet is
     /// not left without a cluster block.
-    pub fn from_yaml_merged(incoming: &str, previous_yaml: Option<&str>) -> Result<Self, ConfigError> {
+    pub fn from_yaml_merged(
+        incoming: &str,
+        previous_yaml: Option<&str>,
+    ) -> Result<Self, ConfigError> {
         let patch = parse_yaml_value(incoming)?;
         let merged = match previous_yaml {
             Some(prev) => {
@@ -715,7 +747,11 @@ fn remove_earlier_key_occurrence(yaml: &str, key: &str, hint_line: usize) -> Opt
     let indices: Vec<usize> = lines
         .iter()
         .enumerate()
-        .filter(|(i, l)| line_indent(l) == indent && is_key(l) && same_mapping_parent(&lines, *i, hint_idx, indent))
+        .filter(|(i, l)| {
+            line_indent(l) == indent
+                && is_key(l)
+                && same_mapping_parent(&lines, *i, hint_idx, indent)
+        })
         .map(|(i, _)| i)
         .collect();
 
@@ -817,10 +853,7 @@ pub fn set_machine_type_yaml(yaml: &str, machine_type: MachineType) -> Result<St
         .get_mut(serde_yaml::Value::from("machine"))
         .and_then(|m| m.as_mapping_mut())
         .ok_or_else(|| ConfigError::Msg("machine must be a mapping".into()))?;
-    machine.insert(
-        serde_yaml::Value::from("type"),
-        serde_yaml::Value::from(ty),
-    );
+    machine.insert(serde_yaml::Value::from("type"), serde_yaml::Value::from(ty));
     Ok(serde_yaml::to_string(&doc)?)
 }
 
@@ -923,6 +956,14 @@ machine:
     }
 
     #[test]
+    fn dhcp_default_uses_eth0() {
+        let net = Network::dhcp_default();
+        assert_eq!(net.interfaces.len(), 1);
+        assert_eq!(net.interfaces[0].interface, "eth0");
+        assert!(net.interfaces[0].dhcp);
+    }
+
+    #[test]
     fn parses_cluster_with_ca() {
         let yaml = r#"
 version: v1alpha1
@@ -972,10 +1013,7 @@ cluster:
             cluster.service_cluster_ip_range(),
             "10.96.0.0/12,2001:db8:96:1::/112"
         );
-        assert_eq!(
-            cluster.cluster_cidr(),
-            "10.244.0.0/16,2001:db8:10:0::/56"
-        );
+        assert_eq!(cluster.cluster_cidr(), "10.244.0.0/16,2001:db8:10:0::/56");
         assert_eq!(cluster.vip6.as_deref(), Some("fd00:1::210"));
         assert!(cluster.pki_extra_sans().contains(&"fd00:1::210".into()));
     }
@@ -1005,14 +1043,14 @@ cluster:
         );
         assert_eq!(
             cluster.effective_service_subnets(),
-            vec!["10.96.0.0/12".to_string(), "2001:db8:96:1::/112".to_string()]
+            vec![
+                "10.96.0.0/12".to_string(),
+                "2001:db8:96:1::/112".to_string()
+            ]
         );
         assert_eq!(cluster.ipv4_pod_subnet(), "10.10.0.0/16");
         assert_eq!(cluster.ipv4_service_subnet(), "10.96.0.0/12");
-        assert_eq!(
-            cluster.cluster_cidr(),
-            "10.10.0.0/16,2001:db8:10:0::/56"
-        );
+        assert_eq!(cluster.cluster_cidr(), "10.10.0.0/16,2001:db8:10:0::/56");
         assert_eq!(
             cluster.service_cluster_ip_range(),
             "10.96.0.0/12,2001:db8:96:1::/112"
@@ -1056,10 +1094,7 @@ machine:
         assert_eq!(dash.cols, Some(140));
         assert_eq!(dash.rows, Some(40));
         assert_eq!(dash.utf8, None);
-        assert_eq!(
-            dash.mgmt_url.as_deref(),
-            Some("https://mgmt.example.com")
-        );
+        assert_eq!(dash.mgmt_url.as_deref(), Some("https://mgmt.example.com"));
     }
 
     #[test]
@@ -1245,10 +1280,7 @@ machine:
         let cfg = MachineConfig::from_yaml_partial(yaml).unwrap();
         assert_eq!(cfg.machine.machine_type, MachineType::Worker);
         let dash = cfg.machine.dashboard.unwrap();
-        assert_eq!(
-            dash.mgmt_url.as_deref(),
-            Some("https://mgmt.example.com")
-        );
+        assert_eq!(dash.mgmt_url.as_deref(), Some("https://mgmt.example.com"));
         assert_eq!(
             cfg.machine
                 .observability
@@ -1282,10 +1314,7 @@ machine:
         assert_eq!(cfg.machine.machine_type, MachineType::Controlplane);
         let dash = cfg.machine.dashboard.unwrap();
         assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
-        assert_eq!(
-            dash.mgmt_url.as_deref(),
-            Some("https://mgmt.example.com")
-        );
+        assert_eq!(dash.mgmt_url.as_deref(), Some("https://mgmt.example.com"));
     }
 
     #[test]
@@ -1313,10 +1342,7 @@ machine:
 "#;
         let cfg = MachineConfig::from_yaml_merged(patch, Some(previous)).unwrap();
         assert_eq!(cfg.machine.machine_type, MachineType::Worker);
-        assert_eq!(
-            cfg.machine.network.hostname.as_deref(),
-            Some("wk-1")
-        );
+        assert_eq!(cfg.machine.network.hostname.as_deref(), Some("wk-1"));
         assert_eq!(
             cfg.cluster.as_ref().map(|c| c.endpoint.as_str()),
             Some("https://10.1.1.210:6443")
@@ -1335,10 +1361,7 @@ machine:
     border: bordered
 "#;
         let out = ensure_dashboard_mgmt_url(yaml, "http://10.1.1.15:8080").unwrap();
-        assert!(
-            out.contains("mgmt_url: http://10.1.1.15:8080"),
-            "{out}"
-        );
+        assert!(out.contains("mgmt_url: http://10.1.1.15:8080"), "{out}");
         assert!(out.contains("theme: catppuccin"));
     }
 
@@ -1356,10 +1379,7 @@ machine:
         let cfg = MachineConfig::from_yaml(&out).unwrap();
         let dash = cfg.machine.dashboard.unwrap();
         assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
-        assert_eq!(
-            dash.mgmt_url.as_deref(),
-            Some("https://ptkos.example:8080")
-        );
+        assert_eq!(dash.mgmt_url.as_deref(), Some("https://ptkos.example:8080"));
     }
 
     #[test]
@@ -1371,8 +1391,7 @@ machine:
   dashboard:
     mgmt_url: https://keep.example
 "#;
-        let out =
-            ensure_dashboard_mgmt_url(yaml, "https://settings.example").unwrap();
+        let out = ensure_dashboard_mgmt_url(yaml, "https://settings.example").unwrap();
         let cfg = MachineConfig::from_yaml(&out).unwrap();
         assert_eq!(
             cfg.machine.dashboard.unwrap().mgmt_url.as_deref(),
@@ -1414,10 +1433,7 @@ machine:
         let dash = cfg.machine.dashboard.unwrap();
         assert_eq!(dash.border.as_deref(), Some("bordered"));
         assert_eq!(dash.theme.as_deref(), Some("catppuccin"));
-        assert_eq!(
-            dash.mgmt_url.as_deref(),
-            Some("https://mgmt.example.com")
-        );
+        assert_eq!(dash.mgmt_url.as_deref(), Some("https://mgmt.example.com"));
         // Round-trip must not reintroduce duplicates.
         assert_eq!(out.matches("border:").count(), 1);
     }

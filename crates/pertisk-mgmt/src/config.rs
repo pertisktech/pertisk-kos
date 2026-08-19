@@ -121,9 +121,8 @@ impl Config {
         lab_up: PathBuf,
         pertiskctl: PathBuf,
     ) -> anyhow::Result<Self> {
-        let auth_mode = AuthMode::parse(
-            &std::env::var("AUTH_MODE").unwrap_or_else(|_| "local".into()),
-        )?;
+        let auth_mode =
+            AuthMode::parse(&std::env::var("AUTH_MODE").unwrap_or_else(|_| "local".into()))?;
         let admin_user = std::env::var("MGMT_ADMIN_USER").unwrap_or_else(|_| "admin".into());
         let admin_password = std::env::var("MGMT_ADMIN_PASSWORD").ok();
         let secret_raw = std::env::var("MGMT_SECRET_KEY").unwrap_or_else(|_| {
@@ -146,13 +145,20 @@ impl Config {
             .unwrap_or_else(|_| data_dir.join("images"));
 
         let auth0_domain = std::env::var("AUTH0_DOMAIN").ok().filter(|s| !s.is_empty());
-        let auth0_client_id = std::env::var("AUTH0_CLIENT_ID").ok().filter(|s| !s.is_empty());
-        let auth0_client_secret =
-            std::env::var("AUTH0_CLIENT_SECRET").ok().filter(|s| !s.is_empty());
-        let auth0_audience = std::env::var("AUTH0_AUDIENCE").ok().filter(|s| !s.is_empty());
+        let auth0_client_id = std::env::var("AUTH0_CLIENT_ID")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let auth0_client_secret = std::env::var("AUTH0_CLIENT_SECRET")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let auth0_audience = std::env::var("AUTH0_AUDIENCE")
+            .ok()
+            .filter(|s| !s.is_empty());
 
         if auth_mode.allows_auth0()
-            && (auth0_domain.is_none() || auth0_client_id.is_none() || auth0_client_secret.is_none())
+            && (auth0_domain.is_none()
+                || auth0_client_id.is_none()
+                || auth0_client_secret.is_none())
         {
             bail!("AUTH_MODE requires AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET");
         }
@@ -282,12 +288,16 @@ fn resolve_smtp() -> anyhow::Result<Option<SmtpConfig>> {
                 tls,
             }))
         }
-        _ => bail!("incomplete SMTP env; set both MGMT_SMTP_HOST and MGMT_SMTP_FROM (or MGMT_SMTP_SENDER)"),
+        _ => bail!(
+            "incomplete SMTP env; set both MGMT_SMTP_HOST and MGMT_SMTP_FROM (or MGMT_SMTP_SENDER)"
+        ),
     }
 }
 
 fn resolve_metrics_tls() -> anyhow::Result<Option<MetricsTls>> {
-    let ca = std::env::var("MGMT_METRICS_TLS_CA").ok().filter(|s| !s.is_empty());
+    let ca = std::env::var("MGMT_METRICS_TLS_CA")
+        .ok()
+        .filter(|s| !s.is_empty());
     let cert = std::env::var("MGMT_METRICS_TLS_CERT")
         .ok()
         .filter(|s| !s.is_empty());
@@ -368,10 +378,7 @@ pub fn public_url_host_unusable(url: &str) -> bool {
     let Some(host) = url_host(url) else {
         return true;
     };
-    matches!(
-        host.as_str(),
-        "" | "0.0.0.0" | "::" | "[::]"
-    )
+    matches!(host.as_str(), "" | "0.0.0.0" | "::" | "[::]")
 }
 
 fn url_host(url: &str) -> Option<String> {

@@ -863,18 +863,41 @@ api_reachable() {
   fi
 }
 
-# ICMP proves the guest stack is up. Nutanix IPAM reserves an IP at NIC create and
-# ARP/neigh can show that MAC→IP before the OS has DHCP'd or bound :50000.
+# ICMP is a liveness hint. Nutanix IPAM issues an address at NIC create; AHV may
+# ARP that MAC→IP before the guest answers ping. :50000 is the live signal.
 guest_icmp_alive() {
   local ip="$1"
   ping -c1 -W2 "$ip" >/dev/null 2>&1
 }
 
+# Offer the Prism IPAM address over DHCP from mgmt so an already-running guest
+# (dashboard "no ip") can bind it without recreating the VM.
+nutanix_start_ipam_dhcp() {
+  local mac="$1" ip="$2" helper gw prefix
+  helper="${ROOT}/scripts/nutanix-ipam-dhcp.sh"
+  [[ -x "$helper" ]] || helper="/usr/share/pertisk-mgmt/scripts/nutanix-ipam-dhcp.sh"
+  [[ -x "$helper" ]] || return 0
+  gw="${NUTANIX_GATEWAY:-${LAB_GATEWAY:-}}"
+  if [[ -z "$gw" ]]; then
+    gw="$(ip -4 route show default 2>/dev/null | awk '{
+      for (i = 1; i < NF; i++) if ($i == "via") { print $(i+1); exit }
+    }')"
+  fi
+  prefix="${LAB_SUBNET##*/}"
+  [[ "$prefix" =~ ^[0-9]+$ ]] || prefix=24
+  log "IPAM DHCP helper ${mac} → ${ip} (guest has no address yet; AHV reservation is not a lease)"
+  "$helper" "$mac" "$ip" "${gw:-}" "$prefix" || log "warn: IPAM DHCP helper failed (need root for UDP/67?)"
+}
+
 wait_ip() {
-  local vmid="$1" label="$2" mac ip="" nudged=0 saw_ip=0 last_log=0 live=0
-  local ip_deadline api_deadline=0 deadline
+  local vmid="$1" label="$2" mac ip="" nxip="" alt="" nudged=0 saw_ip=0 last_log=0 live=0 issued=0 dhcp_helper=0
+  local ip_deadline api_deadline=0 deadline left
   mac="$(vm_mac "$vmid" "$label")"
-  log "VM ${vmid} (${label}) MAC=${mac} — waiting for DHCP IP (timeout ${IP_TIMEOUT}s; +${API_AFTER_IP_TIMEOUT}s after live IP for :50000)"
+  if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
+    log "VM ${vmid} (${label}) MAC=${mac} — waiting for IPAM/DHCP IP (timeout ${IP_TIMEOUT}s; +${API_AFTER_IP_TIMEOUT}s after issued IP for :50000)"
+  else
+    log "VM ${vmid} (${label}) MAC=${mac} — waiting for DHCP IP (timeout ${IP_TIMEOUT}s; +${API_AFTER_IP_TIMEOUT}s after live IP for :50000)"
+  fi
   ip_deadline=$((SECONDS + IP_TIMEOUT))
   while true; do
     if (( saw_ip )); then
@@ -889,11 +912,17 @@ wait_ip() {
     if [[ -z "$ip" ]]; then
       ip="$(qemu_agent_ipv4 "$vmid" || true)"
     fi
-    # Nutanix: AHV may learn the guest IP even when mgmt is not on guest L2.
-    if [[ -z "$ip" && "${PROVIDER_KIND}" == "nutanix" && -n "$label" ]]; then
-      ip="$(nutanix_vm_ips "$label" 2>/dev/null | head -1 || true)"
-      if [[ -z "$ip" ]]; then
-        ip="$(nutanix_vm_ips "${NAME_PREFIX}-${vmid}" 2>/dev/null | head -1 || true)"
+    # Nutanix: Prism IPAM assignment is the issued address (authoritative even
+    # when mgmt is not on guest L2). AHV may ARP that MAC→IP before ICMP.
+    issued=0
+    if [[ "${PROVIDER_KIND}" == "nutanix" && -n "$label" ]]; then
+      nxip="$(nutanix_vm_ips "$label" 2>/dev/null | head -1 || true)"
+      if [[ -z "$nxip" ]]; then
+        nxip="$(nutanix_vm_ips "${NAME_PREFIX}-${vmid}" 2>/dev/null | head -1 || true)"
+      fi
+      if [[ -n "$nxip" ]]; then
+        ip="$nxip"
+        issued=1
       fi
     fi
     # Only sweep when we still have no IP — never re-sweep while waiting on :50000.
@@ -901,6 +930,16 @@ wait_ip() {
       if [[ "$nudged" == "0" ]] || (( SECONDS % 60 < 3 )); then
         nudged=1
         ip="$(ping_sweep_find "$mac" "$LAB_SUBNET" || true)"
+      fi
+    fi
+    # Ghost IPAM reservation: guest DHCP may land on a different address.
+    if [[ -n "$ip" && -n "$LAB_SUBNET" ]] && ! api_reachable "$ip"; then
+      if (( SECONDS % 60 < 5 )); then
+        alt="$(scan_api_subnet_for_mac "$mac" "$LAB_SUBNET" || true)"
+        if [[ -n "$alt" ]] && api_reachable "$alt"; then
+          ip="$alt"
+          issued=1
+        fi
       fi
     fi
     if [[ -n "$ip" ]] && api_reachable "$ip"; then
@@ -913,28 +952,41 @@ wait_ip() {
       if guest_icmp_alive "$ip"; then
         live=1
       fi
-      if (( live )); then
+      # Nutanix IPAM issued the address — wait for :50000 even without ICMP.
+      # AHV answers ARP for the reservation before the guest stack is up.
+      if (( live || issued )); then
         if (( !saw_ip )); then
           saw_ip=1
           api_deadline=$((SECONDS + API_AFTER_IP_TIMEOUT))
           last_log=$SECONDS
-          log "VM ${vmid} live=${ip} (ICMP ok) — waiting for Machine API :50000 (timeout ${API_AFTER_IP_TIMEOUT}s)"
+          if (( live )); then
+            log "VM ${vmid} live=${ip} (ICMP ok) — waiting for Machine API :50000 (timeout ${API_AFTER_IP_TIMEOUT}s)"
+          else
+            log "VM ${vmid} IPAM issued ${ip} — waiting for Machine API :50000 (timeout ${API_AFTER_IP_TIMEOUT}s; ICMP optional on AHV)"
+            if [[ "${PROVIDER_KIND}" == "nutanix" && "$dhcp_helper" == "0" ]]; then
+              dhcp_helper=1
+              nutanix_start_ipam_dhcp "$mac" "$ip"
+            fi
+          fi
         elif (( SECONDS - last_log >= 20 )); then
           last_log=$SECONDS
-          local left=$((api_deadline - SECONDS))
+          left=$((api_deadline - SECONDS))
           (( left < 0 )) && left=0
-          log "VM ${vmid} live=${ip} but :50000 not ready yet... (${left}s left)"
+          if (( live )); then
+            log "VM ${vmid} live=${ip} but :50000 not ready yet... (${left}s left)"
+          else
+            log "VM ${vmid} issued=${ip} but :50000 not ready yet... (${left}s left)"
+            if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
+              log "hint: Prism Serial Console on ${label}. VGA EFI stub is normal; Serial should show pertiskd."
+            fi
+          fi
         fi
       else
-        # Candidate from ARP/IPAM only — do not start the long API timer.
+        # Candidate from ARP only — do not start the long API timer.
         saw_ip=0
         if (( SECONDS - last_log >= 15 )); then
           last_log=$SECONDS
-          log "VM ${vmid} candidate IP=${ip} for ${mac} but no ICMP (AHV IPAM ARP?) — still waiting for live guest…"
-          if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
-            log "hint: Prism Serial Console on ${label}. VGA EFI stub is normal; Serial should show pertiskd."
-            log "hint: from mgmt: ping -c2 ${ip}; nc -zv ${ip} 50000"
-          fi
+          log "VM ${vmid} candidate IP=${ip} for ${mac} but no ICMP — still waiting for live guest…"
         fi
       fi
     else
@@ -953,8 +1005,21 @@ wait_ip() {
     sleep 3
   done
   if (( saw_ip )); then
+    if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
+      die "timed out waiting for Machine API :50000 on ${ip:-?} (VM ${vmid} MAC=${mac}; AHV IPAM issued this address but the guest never bound :50000)
+hint: Prism → ${label} → Serial Console for pertiskd logs (VGA EFI stub is normal).
+      --skip-vms reuses this guest and will time out again. Recreate the VMs (omit --skip-vms), or:
+      sudo /usr/share/pertisk-mgmt/scripts/nutanix-ipam-dhcp.sh ${mac} ${ip:-?} ${LAB_GATEWAY:-${NUTANIX_GATEWAY:-}}
+      then Prism power-cycle ${label} so it DISCOVERs again.
+      from mgmt: nc -zv ${ip:-?} 50000"
+    fi
     die "timed out waiting for Machine API :50000 on ${ip:-?} (VM ${vmid} MAC=${mac}; ICMP was up but guest services slow — try IP_TIMEOUT/API_AFTER_IP_TIMEOUT)
 hint: Prism → ${label} → Serial Console for pertiskd logs"
+  fi
+  if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
+    die "timed out waiting for IP/API for VM ${vmid} MAC=${mac} (subnet=${LAB_SUBNET:-unset})
+hint: Prism IPAM did not report a NIC IP. Check network '${NUTANIX_NETWORK:-?}' and Serial Console on ${label}.
+      resume: lab-up --skip-build --skip-vms --cp-vmid ${CP_VMID} --controlplanes ${CONTROLPLANES} --workers ${WORKERS}"
   fi
   die "timed out waiting for IP/API for VM ${vmid} MAC=${mac} (PROXMOX_SSH=${PROXMOX_SSH:-unset} subnet=${LAB_SUBNET:-unset})
 hint: without PROXMOX_SSH, mgmt uses QGA then LAB_SUBNET ping-sweep.

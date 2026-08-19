@@ -106,10 +106,7 @@ pub async fn probe_readyz(kc: &Path, server: Option<&str>) -> bool {
 
 /// Parallel /readyz against kubeconfig server + optional overrides; returns first working server override
 /// (`None` means kubeconfig default worked).
-pub async fn first_reachable_server(
-    kc: &Path,
-    extra_servers: &[String],
-) -> Option<Option<String>> {
+pub async fn first_reachable_server(kc: &Path, extra_servers: &[String]) -> Option<Option<String>> {
     let mut candidates: Vec<Option<String>> = vec![None];
     for s in extra_servers {
         let t = s.trim();

@@ -174,21 +174,16 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     .context("migrate")?;
 
     // Additive columns for existing DBs (ignore if already present).
-    let _ = sqlx::query(
-        "ALTER TABLE clusters ADD COLUMN network_mode TEXT NOT NULL DEFAULT 'ipv4'",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "ALTER TABLE clusters ADD COLUMN max_pods INTEGER NOT NULL DEFAULT 250",
-    )
-    .execute(pool)
-    .await;
-    let _ = sqlx::query(
-        "ALTER TABLE clusters ADD COLUMN arch TEXT NOT NULL DEFAULT 'amd64'",
-    )
-    .execute(pool)
-    .await;
+    let _ =
+        sqlx::query("ALTER TABLE clusters ADD COLUMN network_mode TEXT NOT NULL DEFAULT 'ipv4'")
+            .execute(pool)
+            .await;
+    let _ = sqlx::query("ALTER TABLE clusters ADD COLUMN max_pods INTEGER NOT NULL DEFAULT 250")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE clusters ADD COLUMN arch TEXT NOT NULL DEFAULT 'amd64'")
+        .execute(pool)
+        .await;
     let _ = sqlx::query(
         "ALTER TABLE clusters ADD COLUMN pod_subnet TEXT NOT NULL DEFAULT '10.244.0.0/16'",
     )
@@ -205,11 +200,9 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("ALTER TABLE clusters ADD COLUMN service_subnet_ipv6 TEXT")
         .execute(pool)
         .await;
-    let _ = sqlx::query(
-        "ALTER TABLE providers ADD COLUMN arch TEXT NOT NULL DEFAULT 'amd64'",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE providers ADD COLUMN arch TEXT NOT NULL DEFAULT 'amd64'")
+        .execute(pool)
+        .await;
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN ip6 TEXT")
         .execute(pool)
         .await;
@@ -234,11 +227,9 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN ek_fingerprint TEXT")
         .execute(pool)
         .await;
-    let _ = sqlx::query(
-        "ALTER TABLE nodes ADD COLUMN source TEXT NOT NULL DEFAULT 'proxmox'",
-    )
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN source TEXT NOT NULL DEFAULT 'proxmox'")
+        .execute(pool)
+        .await;
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN os_version TEXT")
         .execute(pool)
         .await;

@@ -124,7 +124,10 @@ impl NutanixClient {
             return Ok(Value::Null);
         }
         serde_json::from_str(&text).map_err(|e| {
-            AppError::bad(format!("nutanix JSON parse failed: {e} ({})", text.chars().take(200).collect::<String>()))
+            AppError::bad(format!(
+                "nutanix JSON parse failed: {e} ({})",
+                text.chars().take(200).collect::<String>()
+            ))
         })
     }
 
@@ -141,9 +144,7 @@ impl NutanixClient {
     }
 
     async fn delete(&self, path: &str) -> ApiResult<()> {
-        let _ = self
-            .request(reqwest::Method::DELETE, path, None)
-            .await?;
+        let _ = self.request(reqwest::Method::DELETE, path, None).await?;
         Ok(())
     }
 
@@ -188,10 +189,7 @@ impl NutanixClient {
                 .or_else(|| h.get("status"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            hosts.push(ProxmoxNode {
-                node: name,
-                status,
-            });
+            hosts.push(ProxmoxNode { node: name, status });
         }
         if hosts.is_empty() {
             hosts.push(ProxmoxNode {
@@ -364,9 +362,11 @@ impl NutanixClient {
     ) -> ApiResult<Option<NutanixVm>> {
         let want = Self::vm_name(prefix, vmid);
         let suffix = format!("-{vmid}");
-        Ok(self.list_vms().await?.into_iter().find(|v| {
-            v.name == want || v.name == vmid.to_string() || v.name.ends_with(&suffix)
-        }))
+        Ok(self
+            .list_vms()
+            .await?
+            .into_iter()
+            .find(|v| v.name == want || v.name == vmid.to_string() || v.name.ends_with(&suffix)))
     }
 
     pub async fn check_vmids(
@@ -405,9 +405,10 @@ impl NutanixClient {
         for vmid in start..=end {
             let want = Self::vm_name(prefix, vmid);
             let suffix = format!("-{vmid}");
-            if let Some(vm) = existing.iter().find(|v| {
-                v.name == want || v.name.ends_with(&suffix) || v.name == vmid.to_string()
-            }) {
+            if let Some(vm) = existing
+                .iter()
+                .find(|v| v.name == want || v.name.ends_with(&suffix) || v.name == vmid.to_string())
+            {
                 conflicts.push(VmIdConflict {
                     vmid,
                     name: Some(vm.name.clone()),
@@ -426,13 +427,7 @@ impl NutanixClient {
         } else {
             let detail = conflicts
                 .iter()
-                .map(|c| {
-                    format!(
-                        "{} ({})",
-                        c.vmid,
-                        c.name.as_deref().unwrap_or("unnamed")
-                    )
-                })
+                .map(|c| format!("{} ({})", c.vmid, c.name.as_deref().unwrap_or("unnamed")))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("VM names already in use on Nutanix: {detail}")
@@ -503,9 +498,8 @@ impl NutanixClient {
                 if node_message.is_empty() {
                     node_message = format!("network `{net}` not found — available: {avail}");
                 } else {
-                    node_message = format!(
-                        "{node_message}; network `{net}` not found — available: {avail}"
-                    );
+                    node_message =
+                        format!("{node_message}; network `{net}` not found — available: {avail}");
                 }
             }
         }
@@ -682,9 +676,7 @@ impl NutanixClient {
             !d.get("is_cdrom").and_then(|v| v.as_bool()).unwrap_or(false)
                 && !d.get("is_empty").and_then(|v| v.as_bool()).unwrap_or(false)
         }) else {
-            return Err(AppError::bad(format!(
-                "VM `{name}` has no disk to grow"
-            )));
+            return Err(AppError::bad(format!("VM `{name}` has no disk to grow")));
         };
         let disk_uuid = disk
             .get("disk_address")

@@ -7,8 +7,7 @@ use crate::api::KubeClient;
 use crate::manifests;
 
 /// Embedded copy of `examples/addons/metrics-server.yaml` (with lab TLS flag).
-pub const METRICS_SERVER_YAML: &str =
-    include_str!("../../../examples/addons/metrics-server.yaml");
+pub const METRICS_SERVER_YAML: &str = include_str!("../../../examples/addons/metrics-server.yaml");
 
 pub fn ensure_metrics_server(client: &KubeClient) -> Result<()> {
     manifests::apply_yaml_documents(client, METRICS_SERVER_YAML)

@@ -76,6 +76,11 @@ mod linux_impl {
         "scsi_mod",
         "virtio_scsi",
         "virtio_blk",
+        "cdrom",
+        "sr_mod",
+        "isofs",
+        "ata_piix",
+        "ahci",
         // ESXi VirtualLsiLogicController → mptspi (Fusion SPI).
         "scsi_transport_spi",
         "mptbase",

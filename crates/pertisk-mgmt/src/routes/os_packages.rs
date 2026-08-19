@@ -95,7 +95,10 @@ async fn create(
 ) -> ApiResult<Json<PackageOut>> {
     require_mutate(&user)?;
     let tmp_id = Uuid::new_v4().to_string();
-    let dest = state.cfg().os_packages_dir().join(format!(".upload-{tmp_id}"));
+    let dest = state
+        .cfg()
+        .os_packages_dir()
+        .join(format!(".upload-{tmp_id}"));
     std::fs::create_dir_all(&dest).map_err(anyhow::Error::from)?;
 
     let mut zip_bytes: Option<Vec<u8>> = None;
@@ -169,8 +172,7 @@ async fn create(
         let arch = arch_hint
             .or_else(|| os_upgrade::infer_arch_from_name(&name_hint))
             .unwrap_or_else(|| "amd64".into());
-        let arch =
-            os_upgrade::normalize_arch(&arch).map_err(|e| AppError::bad(e.to_string()))?;
+        let arch = os_upgrade::normalize_arch(&arch).map_err(|e| AppError::bad(e.to_string()))?;
 
         upsert_package(&state, &dest, &version, &arch).await
     }
@@ -199,13 +201,12 @@ pub(crate) async fn upsert_package(
 ) -> ApiResult<PackageOut> {
     os_upgrade::validate_bundle_dir(src).map_err(|e| AppError::bad(e.to_string()))?;
     let now = db::now_rfc3339();
-    let existing: Option<(String, String)> = sqlx::query_as(
-        "SELECT id, path FROM os_packages WHERE version = ? AND arch = ?",
-    )
-    .bind(version)
-    .bind(arch)
-    .fetch_optional(state.pool())
-    .await?;
+    let existing: Option<(String, String)> =
+        sqlx::query_as("SELECT id, path FROM os_packages WHERE version = ? AND arch = ?")
+            .bind(version)
+            .bind(arch)
+            .fetch_optional(state.pool())
+            .await?;
 
     let (id, dest) = if let Some((id, path)) = existing {
         (id, PathBuf::from(path))
@@ -262,8 +263,7 @@ pub(crate) async fn enqueue_from_package_id(
     let pkg = load_package(state, package_id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let job_id =
-        enqueue_from_package(state, user_id, cluster_id, &pkg, reboot, node_ids).await?;
+    let job_id = enqueue_from_package(state, user_id, cluster_id, &pkg, reboot, node_ids).await?;
     Ok((job_id, pkg.version))
 }
 
@@ -346,12 +346,11 @@ pub(crate) async fn enqueue_from_package(
     reboot: bool,
     node_ids: Option<Vec<String>>,
 ) -> ApiResult<String> {
-    let row: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT id, arch, status FROM clusters WHERE id = ?",
-    )
-    .bind(cluster_id)
-    .fetch_optional(state.pool())
-    .await?;
+    let row: Option<(String, String, String)> =
+        sqlx::query_as("SELECT id, arch, status FROM clusters WHERE id = ?")
+            .bind(cluster_id)
+            .fetch_optional(state.pool())
+            .await?;
     let Some((_, cluster_arch, status)) = row else {
         return Err(AppError::NotFound);
     };

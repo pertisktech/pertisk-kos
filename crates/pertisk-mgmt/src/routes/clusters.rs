@@ -20,10 +20,7 @@ pub fn routes() -> Router<AppState> {
         .route("/clusters/check-vmids", axum::routing::post(check_vmids))
         .route("/clusters/suggest-vmid", axum::routing::post(suggest_vmid))
         .route("/clusters/check-vip", axum::routing::post(check_vip))
-        .route(
-            "/clusters/{id}",
-            get(get_one).delete(delete),
-        )
+        .route("/clusters/{id}", get(get_one).delete(delete))
         .route("/clusters/{id}/kubeconfig", get(kubeconfig))
         .route("/clusters/{id}/versions", get(versions))
         .route("/clusters/{id}/config-bundle", get(config_bundle))
@@ -252,11 +249,10 @@ async fn list(
     State(state): State<AppState>,
     CurrentUser(_): CurrentUser,
 ) -> ApiResult<Json<Vec<ClusterOut>>> {
-    let mut rows = sqlx::query_as::<_, ClusterOut>(&format!(
-        "{CLUSTER_SELECT} ORDER BY c.created_at DESC"
-    ))
-    .fetch_all(state.pool())
-    .await?;
+    let mut rows =
+        sqlx::query_as::<_, ClusterOut>(&format!("{CLUSTER_SELECT} ORDER BY c.created_at DESC"))
+            .fetch_all(state.pool())
+            .await?;
 
     let futs: Vec<_> = rows
         .iter()
@@ -280,13 +276,11 @@ async fn get_one(
     CurrentUser(_): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let mut cluster = sqlx::query_as::<_, ClusterOut>(&format!(
-        "{CLUSTER_SELECT} WHERE c.id = ?"
-    ))
-    .bind(&id)
-    .fetch_optional(state.pool())
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let mut cluster = sqlx::query_as::<_, ClusterOut>(&format!("{CLUSTER_SELECT} WHERE c.id = ?"))
+        .bind(&id)
+        .fetch_optional(state.pool())
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     // Self-heal sticky errors: a later successful job (or ready status with a
     // leftover error column) must not keep poisoning the UI banner.
@@ -300,7 +294,8 @@ async fn get_one(
         Some((st, _)) if st == "succeeded" || st == "running" || st == "queued" => true,
         _ => cluster.status == "ready" && cluster.error.as_ref().is_some_and(|e| !e.is_empty()),
     };
-    if heal && (cluster.status == "error" || cluster.error.as_ref().is_some_and(|e| !e.is_empty())) {
+    if heal && (cluster.status == "error" || cluster.error.as_ref().is_some_and(|e| !e.is_empty()))
+    {
         let now = db::now_rfc3339();
         let _ = sqlx::query(
             "UPDATE clusters SET status = 'ready', error = NULL, updated_at = ? WHERE id = ? AND status != 'deleting'",
@@ -353,12 +348,11 @@ async fn get_one(
         .await
         .unwrap_or(0);
         if upgrading > 0 || missing_ip > 0 || missing_ip6 > 0 || missing_versions > 0 {
-            let kc: Option<String> = sqlx::query_scalar(
-                "SELECT kubeconfig_path FROM clusters WHERE id = ?",
-            )
-            .bind(&id)
-            .fetch_optional(state.pool())
-            .await?;
+            let kc: Option<String> =
+                sqlx::query_scalar("SELECT kubeconfig_path FROM clusters WHERE id = ?")
+                    .bind(&id)
+                    .fetch_optional(state.pool())
+                    .await?;
             if let Some(kc) = kc.filter(|s| !s.is_empty()) {
                 let log_path: Option<String> = sqlx::query_scalar(
                     "SELECT log_path FROM jobs WHERE cluster_id = ? AND kind IN ('create_cluster', 'upgrade_cluster', 'upgrade_os') ORDER BY updated_at DESC LIMIT 1",
@@ -393,8 +387,7 @@ async fn get_one(
 
     crate::node_availability::fill(&mut nodes).await;
 
-    cluster.availability =
-        crate::cluster_availability::probe(&state, &id, &cluster.status).await;
+    cluster.availability = crate::cluster_availability::probe(&state, &id, &cluster.status).await;
     cluster.provider_availability =
         crate::provider_availability::probe(&state, &cluster.provider_id).await;
 
@@ -412,13 +405,11 @@ async fn versions(
     CurrentUser(_): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let cluster = sqlx::query_as::<_, ClusterOut>(&format!(
-        "{CLUSTER_SELECT} WHERE c.id = ?"
-    ))
-    .bind(&id)
-    .fetch_optional(state.pool())
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let cluster = sqlx::query_as::<_, ClusterOut>(&format!("{CLUSTER_SELECT} WHERE c.id = ?"))
+        .bind(&id)
+        .fetch_optional(state.pool())
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     let nodes = sqlx::query_as::<_, crate::routes::nodes::NodeOut>(&format!(
         "{} WHERE cluster_id = ? ORDER BY role, name",
@@ -438,8 +429,8 @@ async fn cluster_versions(
     cluster: &ClusterOut,
     nodes: &[crate::routes::nodes::NodeOut],
 ) -> Vec<crate::cluster_versions::ComponentVersion> {
-    let arch = crate::os_upgrade::normalize_arch(&cluster.arch)
-        .unwrap_or_else(|_| cluster.arch.clone());
+    let arch =
+        crate::os_upgrade::normalize_arch(&cluster.arch).unwrap_or_else(|_| cluster.arch.clone());
     let catalog_os: Option<String> = sqlx::query_scalar(
         "SELECT version FROM os_packages WHERE arch = ? ORDER BY updated_at DESC LIMIT 1",
     )
@@ -448,10 +439,7 @@ async fn cluster_versions(
     .await
     .ok()
     .flatten();
-    let has_vip = cluster
-        .vip
-        .as_deref()
-        .is_some_and(|s| !s.trim().is_empty())
+    let has_vip = cluster.vip.as_deref().is_some_and(|s| !s.trim().is_empty())
         || cluster
             .vip6
             .as_deref()
@@ -498,10 +486,14 @@ async fn create(
         let vip = body.vip.as_deref().unwrap_or("").trim();
         let vip6 = body.vip6.as_deref().unwrap_or("").trim();
         if matches!(mode.as_str(), "ipv4" | "dual-stack") && vip.is_empty() {
-            return Err(AppError::bad("vip required when controlplanes > 1 (ipv4/dual-stack)"));
+            return Err(AppError::bad(
+                "vip required when controlplanes > 1 (ipv4/dual-stack)",
+            ));
         }
         if matches!(mode.as_str(), "ipv6" | "dual-stack") && vip6.is_empty() {
-            return Err(AppError::bad("vip6 required when controlplanes > 1 (ipv6/dual-stack)"));
+            return Err(AppError::bad(
+                "vip6 required when controlplanes > 1 (ipv6/dual-stack)",
+            ));
         }
         let vip_check = validate_vips(
             &state,
@@ -537,7 +529,9 @@ async fn create(
         return Err(AppError::bad("service_subnet is required"));
     }
     if !looks_like_ipv4_cidr(&pod_subnet) {
-        return Err(AppError::bad("pod_subnet must be an IPv4 CIDR (e.g. 10.244.0.0/16)"));
+        return Err(AppError::bad(
+            "pod_subnet must be an IPv4 CIDR (e.g. 10.244.0.0/16)",
+        ));
     }
     if !looks_like_ipv4_cidr(&service_subnet) {
         return Err(AppError::bad(
@@ -588,7 +582,12 @@ async fn create(
     let Some((_, provider_arch)) = provider else {
         return Err(AppError::bad("provider not found"));
     };
-    let arch = match body.arch.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let arch = match body
+        .arch
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(a) => match a.to_ascii_lowercase().as_str() {
             "amd64" | "x86_64" | "x64" => "amd64".to_string(),
             "arm64" | "aarch64" => "arm64".to_string(),
@@ -698,12 +697,11 @@ async fn delete_check(
     .ok_or(AppError::NotFound)?;
 
     let (cid, name, provider_id, cp_vmid, cps, workers) = row;
-    let node_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE cluster_id = ?")
-            .bind(&cid)
-            .fetch_one(state.pool())
-            .await
-            .unwrap_or(0);
+    let node_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE cluster_id = ?")
+        .bind(&cid)
+        .fetch_one(state.pool())
+        .await
+        .unwrap_or(0);
 
     let provider = sqlx::query_as::<_, (String, String, String, String, String, String, i64)>(
         "SELECT id, name, kind, url, token_id, node, insecure FROM providers WHERE id = ?",
@@ -761,10 +759,12 @@ async fn delete_check(
                             reachable = true;
                             version = Some(r.version);
                         }
-                        Err(e) => check_error = Some(match &e {
-                            AppError::BadRequest(m) | AppError::Conflict(m) => m.clone(),
-                            other => other.to_string(),
-                        }),
+                        Err(e) => {
+                            check_error = Some(match &e {
+                                AppError::BadRequest(m) | AppError::Conflict(m) => m.clone(),
+                                other => other.to_string(),
+                            })
+                        }
                     }
                 }
                 Err(e) => check_error = Some(format!("decrypt secret: {e}")),
@@ -1033,7 +1033,10 @@ async fn config_bundle(
     }
 
     let entries = std::fs::read_dir(&dir).map_err(|e| {
-        AppError::bad(format!("cannot read cluster config dir {}: {e}", dir.display()))
+        AppError::bad(format!(
+            "cannot read cluster config dir {}: {e}",
+            dir.display()
+        ))
     })?;
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -1303,8 +1306,8 @@ async fn os_upgrade(
     let arch = arch_hint
         .or_else(|| crate::os_upgrade::infer_arch_from_name(&zip_name))
         .unwrap_or(cluster_arch);
-    let arch = crate::os_upgrade::normalize_arch(&arch)
-        .map_err(|e| AppError::bad(e.to_string()))?;
+    let arch =
+        crate::os_upgrade::normalize_arch(&arch).map_err(|e| AppError::bad(e.to_string()))?;
 
     let pkg = crate::routes::os_packages::upsert_package(&state, &dest, &version, &arch)
         .await
@@ -1514,13 +1517,7 @@ async fn suggest_vmid(
             }));
         }
         // Skip past the first conflict.
-        let bump = check
-            .conflicts
-            .iter()
-            .map(|c| c.vmid)
-            .max()
-            .unwrap_or(next)
-            + 1;
+        let bump = check.conflicts.iter().map(|c| c.vmid).max().unwrap_or(next) + 1;
         next = ((bump + 9) / 10) * 10;
         if next < bump {
             next = bump;
@@ -1569,7 +1566,11 @@ async fn check_vip(
     Json(body): Json<CheckVipIn>,
 ) -> ApiResult<Json<VipCheck>> {
     let vip = body.vip.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let vip6 = body.vip6.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let vip6 = body
+        .vip6
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if vip.is_none() && vip6.is_none() {
         return Ok(Json(VipCheck {
             ok: true,
@@ -1718,23 +1719,13 @@ async fn provider_check_vmids(
     .ok_or_else(|| AppError::bad("provider not found"))?;
     let secret = crypto::decrypt(&state.cfg().secret_key, &row.3).map_err(AppError::Anyhow)?;
     if row.0 == "vsphere" {
-        let client = crate::vsphere::VsphereClient::new(
-            row.1,
-            row.2,
-            secret,
-            row.5 != 0,
-        );
+        let client = crate::vsphere::VsphereClient::new(row.1, row.2, secret, row.5 != 0);
         // Prefix unknown at check time (cluster name not chosen yet). Match bare
         // `{vmid}`, legacy `{prefix}-{vmid}`, and any inventory name ending in `-{vmid}`.
         // Create uses `{cluster}-cp-N` / `{cluster}-wk-N` (same as Proxmox).
         client.check_vmids(&row.4, cp_vmid, count, None).await
     } else if row.0 == "nutanix" {
-        let client = crate::nutanix::NutanixClient::new(
-            row.1,
-            row.2,
-            secret,
-            row.5 != 0,
-        );
+        let client = crate::nutanix::NutanixClient::new(row.1, row.2, secret, row.5 != 0);
         client.check_vmids(&row.4, cp_vmid, count, None).await
     } else {
         let client = ProxmoxClient {

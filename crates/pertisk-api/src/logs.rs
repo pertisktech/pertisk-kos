@@ -13,9 +13,7 @@ use crate::containers;
 
 #[derive(Debug, Error)]
 pub enum LogsError {
-    #[error(
-        "unknown service '{0}' (want pertiskd|containerd|kubelet|dmesg|container:<id>)"
-    )]
+    #[error("unknown service '{0}' (want pertiskd|containerd|kubelet|dmesg|container:<id>)")]
     UnknownService(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -169,12 +167,10 @@ fn follow_dmesg(
     let mut last: Vec<String> = Vec::new();
     while !cancel.load(std::sync::atomic::Ordering::Relaxed) {
         let snap = match Command::new("dmesg").arg("-T").output() {
-            Ok(out) if out.status.success() => {
-                String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .map(|l| l.to_string())
-                    .collect::<Vec<_>>()
-            }
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>(),
             _ => {
                 std::thread::sleep(Duration::from_secs(2));
                 continue;
@@ -393,9 +389,7 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let path_c = path.clone();
         let cancel_c = Arc::clone(&cancel);
-        let handle = thread::spawn(move || {
-            follow_file(&path_c, "test", &tx, &cancel_c)
-        });
+        let handle = thread::spawn(move || follow_file(&path_c, "test", &tx, &cancel_c));
 
         thread::sleep(Duration::from_millis(100));
         {

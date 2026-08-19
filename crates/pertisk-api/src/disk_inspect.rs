@@ -29,9 +29,7 @@ pub fn inspect_disks() -> DiskInspectSnapshot {
     }
     #[cfg(target_os = "linux")]
     {
-        use pertisk_disk::{
-            find_by_partlabel, MountPaths, PARTLABEL_EPHEMERAL, PARTLABEL_STATE,
-        };
+        use pertisk_disk::{find_by_partlabel, MountPaths, PARTLABEL_EPHEMERAL, PARTLABEL_STATE};
 
         let paths = MountPaths::standard();
         let volumes = vec![

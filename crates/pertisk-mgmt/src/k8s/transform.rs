@@ -72,10 +72,7 @@ pub fn transform_deployment(obj: &Value) -> Value {
     let (name, ns, created) = meta(obj);
     let status = obj.get("status").cloned().unwrap_or(Value::Null);
     let spec = obj.get("spec").cloned().unwrap_or(Value::Null);
-    let desired = spec
-        .get("replicas")
-        .and_then(|r| r.as_u64())
-        .unwrap_or(0);
+    let desired = spec.get("replicas").and_then(|r| r.as_u64()).unwrap_or(0);
     let ready = status
         .get("readyReplicas")
         .and_then(|r| r.as_u64())
@@ -126,10 +123,7 @@ pub fn transform_statefulset(obj: &Value) -> Value {
     let (name, ns, created) = meta(obj);
     let status = obj.get("status").cloned().unwrap_or(Value::Null);
     let spec = obj.get("spec").cloned().unwrap_or(Value::Null);
-    let desired = spec
-        .get("replicas")
-        .and_then(|r| r.as_u64())
-        .unwrap_or(0);
+    let desired = spec.get("replicas").and_then(|r| r.as_u64()).unwrap_or(0);
     let ready = status
         .get("readyReplicas")
         .and_then(|r| r.as_u64())
@@ -204,14 +198,8 @@ pub fn transform_job(obj: &Value) -> Value {
         .get("succeeded")
         .and_then(|r| r.as_u64())
         .unwrap_or(0);
-    let failed = status
-        .get("failed")
-        .and_then(|r| r.as_u64())
-        .unwrap_or(0);
-    let active = status
-        .get("active")
-        .and_then(|r| r.as_u64())
-        .unwrap_or(0);
+    let failed = status.get("failed").and_then(|r| r.as_u64()).unwrap_or(0);
+    let active = status.get("active").and_then(|r| r.as_u64()).unwrap_or(0);
     let completions = obj
         .get("spec")
         .and_then(|s| s.get("completions"))
@@ -239,10 +227,7 @@ pub fn transform_job(obj: &Value) -> Value {
 pub fn transform_cronjob(obj: &Value) -> Value {
     let (name, ns, created) = meta(obj);
     let spec = obj.get("spec").cloned().unwrap_or(Value::Null);
-    let schedule = spec
-        .get("schedule")
-        .and_then(|s| s.as_str())
-        .unwrap_or("");
+    let schedule = spec.get("schedule").and_then(|s| s.as_str()).unwrap_or("");
     let suspend = spec
         .get("suspend")
         .and_then(|s| s.as_bool())
@@ -272,9 +257,7 @@ pub fn transform_pod(obj: &Value) -> Value {
         .get("phase")
         .and_then(|p| p.as_str())
         .unwrap_or("Unknown");
-    let containers = status
-        .get("containerStatuses")
-        .and_then(|c| c.as_array());
+    let containers = status.get("containerStatuses").and_then(|c| c.as_array());
     let (ready_n, total_n) = match containers {
         Some(arr) => {
             let total = arr.len() as u64;
@@ -293,10 +276,7 @@ pub fn transform_pod(obj: &Value) -> Value {
                 .sum::<u64>()
         })
         .unwrap_or(0);
-    let images = container_images(
-        obj.get("spec")
-            .and_then(|s| s.get("containers")),
-    );
+    let images = container_images(obj.get("spec").and_then(|s| s.get("containers")));
     let container_names: Vec<String> = obj
         .get("spec")
         .and_then(|s| s.get("containers"))

@@ -19,13 +19,13 @@ mod node_status;
 mod node_sync;
 mod nutanix;
 mod os_upgrade;
-mod proxmox;
 mod provider_availability;
+mod proxmox;
 mod rbac;
-mod vsphere;
 mod routes;
 mod state;
 mod static_files;
+mod vsphere;
 
 use anyhow::Context;
 use clap::Parser;
@@ -53,7 +53,11 @@ struct Args {
     data_dir: PathBuf,
 
     /// Path to proxmox-lab-up.sh (Phase 3 job runner).
-    #[arg(long, env = "MGMT_LAB_UP", default_value = "./scripts/proxmox-lab-up.sh")]
+    #[arg(
+        long,
+        env = "MGMT_LAB_UP",
+        default_value = "./scripts/proxmox-lab-up.sh"
+    )]
     lab_up: PathBuf,
 
     /// Path to pertiskctl binary.
@@ -64,13 +68,20 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            EnvFilter::new("pertisk_mgmt=info,tower_http=info,sqlx=warn")
-        }))
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("pertisk_mgmt=info,tower_http=info,sqlx=warn")),
+        )
         .init();
 
     let args = Args::parse();
-    let cfg = Config::from_env(args.listen, args.db, args.data_dir, args.lab_up, args.pertiskctl)?;
+    let cfg = Config::from_env(
+        args.listen,
+        args.db,
+        args.data_dir,
+        args.lab_up,
+        args.pertiskctl,
+    )?;
 
     std::fs::create_dir_all(&cfg.data_dir).context("create data dir")?;
     if let Some(parent) = cfg.db.parent() {

@@ -94,9 +94,7 @@ pub fn extract_bundle_zip(zip_path: &Path, dest: &Path) -> anyhow::Result<String
         let out_path = dest.join(canon);
         let parent = out_path.parent().unwrap_or(dest);
         fs::create_dir_all(parent)?;
-        let out_canon = parent
-            .canonicalize()
-            .unwrap_or_else(|_| dest_canon.clone());
+        let out_canon = parent.canonicalize().unwrap_or_else(|_| dest_canon.clone());
         if !out_canon.starts_with(&dest_canon) {
             bail!("refusing zip path outside dest");
         }
@@ -174,15 +172,17 @@ pub fn dir_size_bytes(dir: &Path) -> u64 {
 pub fn copy_bundle_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
     validate_bundle_dir(src)?;
     if dest.exists() {
-        fs::remove_dir_all(dest)
-            .with_context(|| format!("remove {}", dest.display()))?;
+        fs::remove_dir_all(dest).with_context(|| format!("remove {}", dest.display()))?;
     }
     fs::create_dir_all(dest)?;
-    for name in REQUIRED_FILES.iter().copied().chain(std::iter::once(TRUST_PK_NAME)) {
+    for name in REQUIRED_FILES
+        .iter()
+        .copied()
+        .chain(std::iter::once(TRUST_PK_NAME))
+    {
         let from = src.join(name);
         if from.is_file() {
-            fs::copy(&from, dest.join(name))
-                .with_context(|| format!("copy {name}"))?;
+            fs::copy(&from, dest.join(name)).with_context(|| format!("copy {name}"))?;
         }
     }
     Ok(())
@@ -233,7 +233,10 @@ mod tests {
             canonical_bundle_name("initramfs-amd64.cpio.gz"),
             Some("initramfs")
         );
-        assert_eq!(canonical_bundle_name("manifest.json"), Some("manifest.json"));
+        assert_eq!(
+            canonical_bundle_name("manifest.json"),
+            Some("manifest.json")
+        );
         assert_eq!(canonical_bundle_name("os-trust.pk"), Some("os-trust.pk"));
         assert_eq!(canonical_bundle_name("readme.txt"), None);
     }
@@ -280,7 +283,8 @@ mod tests {
 
     #[test]
     fn parse_status_line() {
-        let line = "active=A next=B previous_good=A boot_ok=true attempts=0 version=0.2.86 pending=";
+        let line =
+            "active=A next=B previous_good=A boot_ok=true attempts=0 version=0.2.86 pending=";
         assert_eq!(
             parse_upgrade_status_version(line).as_deref(),
             Some("0.2.86")

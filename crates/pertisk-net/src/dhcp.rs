@@ -134,7 +134,13 @@ fn lease_path(iface: &str) -> Option<PathBuf> {
     }?;
     let safe: String = iface
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     Some(dir.join(format!("{safe}.lease")))
 }
@@ -267,10 +273,7 @@ pub fn ensure_maintainer(iface: &str) {
             tracing::error!(interface = iface, error = %e, "failed to spawn DHCP maintainer");
             std::thread::spawn(|| {})
         });
-    map.insert(
-        iface.to_string(),
-        Maintainer { stop, handle },
-    );
+    map.insert(iface.to_string(), Maintainer { stop, handle });
     tracing::info!(interface = iface, "DHCP lease maintainer started");
 }
 
@@ -345,7 +348,10 @@ fn maintain_loop(iface: &str, stop: &AtomicBool) {
             if iface_has_v4(iface) {
                 continue;
             }
-            tracing::warn!(interface = iface, "IPv4 lost on infinite lease; rediscovering");
+            tracing::warn!(
+                interface = iface,
+                "IPv4 lost on infinite lease; rediscovering"
+            );
             lease = None;
             continue;
         }
@@ -465,9 +471,7 @@ fn acquire(iface: &str) -> Result<Lease, NetError> {
 /// RFC 2131 INIT-REBOOT: broadcast REQUEST for a previously bound address.
 #[cfg(target_os = "linux")]
 fn init_reboot(iface: &str, requested: Ipv4Addr) -> Result<Lease, NetError> {
-    use dhcproto::v4::{
-        DhcpOption, Encodable, Encoder, Flags, Message, MessageType, Opcode, OptionCode,
-    };
+    use dhcproto::v4::{DhcpOption, Flags, Message, MessageType, Opcode, OptionCode};
     use rand::RngCore;
     use std::net::SocketAddrV4;
 
@@ -505,9 +509,7 @@ fn init_reboot(iface: &str, requested: Ipv4Addr) -> Result<Lease, NetError> {
             .insert(DhcpOption::RequestedIpAddress(requested));
         msg.opts_mut()
             .insert(DhcpOption::ParameterRequestList(param_request_list()));
-        let mut buf = Vec::new();
-        msg.encode(&mut Encoder::new(&mut buf))
-            .map_err(|e| NetError::Msg(format!("dhcp encode init-reboot: {e}")))?;
+        let buf = encode_dhcp(&msg)?;
         tracing::debug!(
             interface = iface,
             %requested,
@@ -542,9 +544,7 @@ fn init_reboot(iface: &str, requested: Ipv4Addr) -> Result<Lease, NetError> {
 
 #[cfg(target_os = "linux")]
 fn acquire_discover(iface: &str) -> Result<Lease, NetError> {
-    use dhcproto::v4::{
-        DhcpOption, Encodable, Encoder, Flags, Message, MessageType, Opcode, OptionCode,
-    };
+    use dhcproto::v4::{DhcpOption, Flags, Message, MessageType, Opcode, OptionCode};
     use rand::RngCore;
     use std::net::SocketAddrV4;
 
@@ -564,11 +564,22 @@ fn acquire_discover(iface: &str) -> Result<Lease, NetError> {
 
     let sock = open_dhcp_socket(iface, Ipv4Addr::UNSPECIFIED)?;
     let dest = SocketAddrV4::new(Ipv4Addr::BROADCAST, 67);
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(45);
     let mut offer: Option<Message> = None;
     let mut discovers = 0u32;
+    let mut used_client_id = true;
+    // AHV Acropolis IPAM often keys only on chaddr; ClientIdentifier can yield silence.
+    let drop_client_id_at = Instant::now() + Duration::from_secs(12);
 
     while Instant::now() < deadline && offer.is_none() {
+        let use_client_id = Instant::now() < drop_client_id_at;
+        if used_client_id && !use_client_id {
+            tracing::info!(
+                interface = iface,
+                "DHCP discover without client-id (AHV IPAM / chaddr-only)"
+            );
+        }
+        used_client_id = use_client_id;
         let mut msg = Message::default();
         msg.set_opcode(Opcode::BootRequest);
         msg.set_xid(xid);
@@ -577,13 +588,13 @@ fn acquire_discover(iface: &str) -> Result<Lease, NetError> {
         msg.set_secs(discovers.saturating_mul(2).min(u16::MAX as u32) as u16);
         msg.opts_mut()
             .insert(DhcpOption::MessageType(MessageType::Discover));
-        msg.opts_mut()
-            .insert(DhcpOption::ClientIdentifier(client_id.clone()));
+        if use_client_id {
+            msg.opts_mut()
+                .insert(DhcpOption::ClientIdentifier(client_id.clone()));
+        }
         msg.opts_mut()
             .insert(DhcpOption::ParameterRequestList(param_request_list()));
-        let mut buf = Vec::new();
-        msg.encode(&mut Encoder::new(&mut buf))
-            .map_err(|e| NetError::Msg(format!("dhcp encode discover: {e}")))?;
+        let buf = encode_dhcp(&msg)?;
         discovers += 1;
         tracing::debug!(interface = iface, discovers, mac = ?mac, "DHCP discover");
         match sock.send_to(&buf, dest) {
@@ -626,17 +637,17 @@ fn acquire_discover(iface: &str) -> Result<Lease, NetError> {
         msg.set_chaddr(&mac);
         msg.opts_mut()
             .insert(DhcpOption::MessageType(MessageType::Request));
-        msg.opts_mut()
-            .insert(DhcpOption::ClientIdentifier(client_id.clone()));
+        if used_client_id {
+            msg.opts_mut()
+                .insert(DhcpOption::ClientIdentifier(client_id.clone()));
+        }
         msg.opts_mut()
             .insert(DhcpOption::RequestedIpAddress(yiaddr));
         msg.opts_mut()
             .insert(DhcpOption::ServerIdentifier(server_ip));
         msg.opts_mut()
             .insert(DhcpOption::ParameterRequestList(param_request_list()));
-        let mut buf = Vec::new();
-        msg.encode(&mut Encoder::new(&mut buf))
-            .map_err(|e| NetError::Msg(format!("dhcp encode request: {e}")))?;
+        let buf = encode_dhcp(&msg)?;
         tracing::debug!(interface = iface, %yiaddr, "DHCP request");
         if let Err(err) = sock.send_to(&buf, dest) {
             tracing::warn!(interface = iface, error = %err, "DHCP request send failed");
@@ -680,9 +691,7 @@ fn rebind(lease: &Lease) -> Result<Lease, NetError> {
 
 #[cfg(target_os = "linux")]
 fn request_keep(lease: &Lease, broadcast: bool) -> Result<Lease, NetError> {
-    use dhcproto::v4::{
-        DhcpOption, Encodable, Encoder, Flags, Message, MessageType, Opcode, OptionCode,
-    };
+    use dhcproto::v4::{DhcpOption, Flags, Message, MessageType, Opcode, OptionCode};
     use rand::RngCore;
     use std::net::SocketAddrV4;
 
@@ -719,9 +728,7 @@ fn request_keep(lease: &Lease, broadcast: bool) -> Result<Lease, NetError> {
         .insert(DhcpOption::ParameterRequestList(param_request_list()));
     // RFC 2131: RENEWING/REBINDING must not include Requested IP / Server ID.
 
-    let mut buf = Vec::new();
-    msg.encode(&mut Encoder::new(&mut buf))
-        .map_err(|e| NetError::Msg(format!("dhcp encode renew/rebind: {e}")))?;
+    let buf = encode_dhcp(&msg)?;
     let kind = if broadcast { "rebind" } else { "renew" };
     tracing::debug!(interface = %lease.iface, %dest, kind, "DHCP keep-alive request");
     sock.send_to(&buf, dest)
@@ -850,7 +857,10 @@ fn lease_timers(lease_secs: u32, ack: &dhcproto::v4::Message) -> (u32, u32) {
         Some(DhcpOption::Rebinding(t)) if *t > t1 && *t < lease_secs => *t,
         _ => ((lease_secs as u64 * 7) / 8).min(u64::from(lease_secs.saturating_sub(1))) as u32,
     };
-    let t2 = t2.max(t1.saturating_add(1).min(lease_secs.saturating_sub(1).max(1)));
+    let t2 = t2.max(
+        t1.saturating_add(1)
+            .min(lease_secs.saturating_sub(1).max(1)),
+    );
     (t1.min(t2.saturating_sub(1)).max(1), t2.max(1))
 }
 
@@ -899,6 +909,26 @@ fn iface_has_v4(iface: &str) -> bool {
     addrs
         .iter()
         .any(|a| a.contains('.') && !a.starts_with("127."))
+}
+
+/// BOOTP/DHCP packets historically padded to ≥300 octets. AHV Acropolis DHCP
+/// (and some relays) drop shorter DISCOVERs. Zeros after END are PAD options.
+#[cfg(target_os = "linux")]
+fn pad_bootp(buf: &mut Vec<u8>) {
+    const BOOTP_MIN: usize = 300;
+    if buf.len() < BOOTP_MIN {
+        buf.resize(BOOTP_MIN, 0);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn encode_dhcp(msg: &dhcproto::v4::Message) -> Result<Vec<u8>, NetError> {
+    use dhcproto::v4::{Encodable, Encoder};
+    let mut buf = Vec::with_capacity(548);
+    msg.encode(&mut Encoder::new(&mut buf))
+        .map_err(|e| NetError::Msg(format!("dhcp encode: {e}")))?;
+    pad_bootp(&mut buf);
+    Ok(buf)
 }
 
 #[cfg(target_os = "linux")]
@@ -1078,6 +1108,16 @@ mod tests {
     }
 
     #[test]
+    fn bootp_pad_reaches_300() {
+        let mut buf = vec![1u8; 48];
+        super::pad_bootp(&mut buf);
+        assert_eq!(buf.len(), 300);
+        assert!(buf[48..].iter().all(|b| *b == 0));
+        super::pad_bootp(&mut buf);
+        assert_eq!(buf.len(), 300);
+    }
+
+    #[test]
     fn persists_and_loads_preferred_ip() {
         use super::{peek_persisted_ip, persist_lease, set_lease_dir, should_reclaim, Lease};
         use std::time::Instant;
@@ -1098,18 +1138,9 @@ mod tests {
             acquired: Instant::now(),
         };
         persist_lease(&lease);
-        assert_eq!(
-            peek_persisted_ip("eth0"),
-            Some(Ipv4Addr::new(10, 1, 1, 50))
-        );
-        assert!(!should_reclaim(
-            "eth0",
-            Some(Ipv4Addr::new(10, 1, 1, 50))
-        ));
-        assert!(should_reclaim(
-            "eth0",
-            Some(Ipv4Addr::new(10, 1, 1, 99))
-        ));
+        assert_eq!(peek_persisted_ip("eth0"), Some(Ipv4Addr::new(10, 1, 1, 50)));
+        assert!(!should_reclaim("eth0", Some(Ipv4Addr::new(10, 1, 1, 50))));
+        assert!(should_reclaim("eth0", Some(Ipv4Addr::new(10, 1, 1, 99))));
         set_lease_dir(None);
     }
 }

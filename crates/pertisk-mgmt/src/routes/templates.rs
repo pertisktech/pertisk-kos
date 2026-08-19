@@ -16,10 +16,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/templates", get(list).post(create))
-        .route(
-            "/templates/{id}",
-            get(get_one).put(update).delete(delete),
-        )
+        .route("/templates/{id}", get(get_one).put(update).delete(delete))
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]

@@ -137,11 +137,9 @@ async fn list(
     State(state): State<AppState>,
     CurrentUser(_): CurrentUser,
 ) -> ApiResult<Json<Vec<ProviderOut>>> {
-    let mut rows = sqlx::query_as::<_, ProviderOut>(&format!(
-        "{PROVIDER_SELECT} ORDER BY name"
-    ))
-    .fetch_all(state.pool())
-    .await?;
+    let mut rows = sqlx::query_as::<_, ProviderOut>(&format!("{PROVIDER_SELECT} ORDER BY name"))
+        .fetch_all(state.pool())
+        .await?;
     crate::provider_availability::fill(&state, &mut rows).await;
     Ok(Json(rows))
 }
@@ -151,13 +149,11 @@ async fn get_one(
     CurrentUser(_): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<ProviderOut>> {
-    let mut row = sqlx::query_as::<_, ProviderOut>(&format!(
-        "{PROVIDER_SELECT} WHERE id = ?"
-    ))
-    .bind(&id)
-    .fetch_optional(state.pool())
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let mut row = sqlx::query_as::<_, ProviderOut>(&format!("{PROVIDER_SELECT} WHERE id = ?"))
+        .bind(&id)
+        .fetch_optional(state.pool())
+        .await?
+        .ok_or(AppError::NotFound)?;
     row.availability = crate::provider_availability::probe(&state, &id).await;
     Ok(Json(row))
 }
@@ -180,9 +176,7 @@ async fn probe_provider(
                 token_secret.to_string(),
                 insecure,
             );
-            client
-                .probe(Some(node), Some(storage), Some(bridge))
-                .await
+            client.probe(Some(node), Some(storage), Some(bridge)).await
         }
         "nutanix" => {
             let client = NutanixClient::new(
@@ -191,9 +185,7 @@ async fn probe_provider(
                 token_secret.to_string(),
                 insecure,
             );
-            client
-                .probe(Some(node), Some(storage), Some(bridge))
-                .await
+            client.probe(Some(node), Some(storage), Some(bridge)).await
         }
         _ => {
             let client = ProxmoxClient {
@@ -245,8 +237,8 @@ async fn create(
 
     let id = Uuid::new_v4().to_string();
     let now = db::now_rfc3339();
-    let enc = crypto::encrypt(&state.cfg().secret_key, &body.token_secret)
-        .map_err(AppError::Anyhow)?;
+    let enc =
+        crypto::encrypt(&state.cfg().secret_key, &body.token_secret).map_err(AppError::Anyhow)?;
     let defaults = body.defaults.to_string();
     sqlx::query(
         r#"INSERT INTO providers
@@ -287,13 +279,11 @@ async fn update(
     Json(body): Json<ProviderPatch>,
 ) -> ApiResult<Json<ProviderOut>> {
     require_mutate(&user)?;
-    let existing = sqlx::query_as::<_, ProviderOut>(&format!(
-        "{PROVIDER_SELECT} WHERE id = ?"
-    ))
-    .bind(&id)
-    .fetch_optional(state.pool())
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let existing = sqlx::query_as::<_, ProviderOut>(&format!("{PROVIDER_SELECT} WHERE id = ?"))
+        .bind(&id)
+        .fetch_optional(state.pool())
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     let kind = existing.kind.clone();
     let name = body.name.unwrap_or(existing.name);

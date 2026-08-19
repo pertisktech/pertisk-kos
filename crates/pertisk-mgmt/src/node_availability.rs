@@ -76,5 +76,8 @@ async fn tcp_open(ip: &str, port: u16) -> bool {
     let Ok(addr) = format!("{ip}:{port}").parse::<SocketAddr>() else {
         return false;
     };
-    matches!(timeout(PROBE_TIMEOUT, TcpStream::connect(addr)).await, Ok(Ok(_)))
+    matches!(
+        timeout(PROBE_TIMEOUT, TcpStream::connect(addr)).await,
+        Ok(Ok(_))
+    )
 }

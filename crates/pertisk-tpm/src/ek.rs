@@ -16,11 +16,7 @@ use crate::error::{Error, Result};
 use crate::wire::{NV_EK_CERT_ECC_P256, NV_EK_CERT_ECC_P384, NV_EK_CERT_RSA};
 
 /// Preferred NV indexes for EK certificates (TCG EK Credential Profile).
-pub const EK_CERT_NV_INDEXES: &[u32] = &[
-    NV_EK_CERT_ECC_P256,
-    NV_EK_CERT_ECC_P384,
-    NV_EK_CERT_RSA,
-];
+pub const EK_CERT_NV_INDEXES: &[u32] = &[NV_EK_CERT_ECC_P256, NV_EK_CERT_ECC_P384, NV_EK_CERT_RSA];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EkChainStatus {
@@ -100,7 +96,10 @@ pub fn resolve_ca_dir(override_dir: Option<&Path>) -> Option<PathBuf> {
         Path::new("/system/state/secrets/tpm-ek-cas"),
         Path::new("/etc/pertisk/tpm-ek-cas"),
     ];
-    defaults.iter().find(|p| p.is_dir()).map(|p| (*p).to_path_buf())
+    defaults
+        .iter()
+        .find(|p| p.is_dir())
+        .map(|p| (*p).to_path_buf())
 }
 
 /// Read EK cert from TPM NV (and optionally verify against manufacturer CAs).
@@ -201,8 +200,8 @@ fn pem_to_der(pem: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn parse_subject_issuer(der: &[u8]) -> Result<(String, String)> {
-    let (_, cert) = X509Certificate::from_der(der)
-        .map_err(|e| Error::Parse(format!("EK X.509 parse: {e}")))?;
+    let (_, cert) =
+        X509Certificate::from_der(der).map_err(|e| Error::Parse(format!("EK X.509 parse: {e}")))?;
     Ok((cert.subject().to_string(), cert.issuer().to_string()))
 }
 
@@ -224,8 +223,7 @@ pub fn verify_ek_chain(leaf_der: &[u8], ca_dir: &Path) -> std::result::Result<St
     if anchors.is_empty() {
         return Err(format!("no PEM certificates in {}", ca_dir.display()));
     }
-    let (_, leaf) =
-        X509Certificate::from_der(leaf_der).map_err(|e| format!("leaf parse: {e}"))?;
+    let (_, leaf) = X509Certificate::from_der(leaf_der).map_err(|e| format!("leaf parse: {e}"))?;
 
     for ca in &anchors {
         let (_, ca_cert) =
@@ -367,7 +365,8 @@ fn b64_decode(s: &str) -> Result<Vec<u8>> {
         } else {
             val(d).ok_or_else(|| Error::Parse("base64".into()))?
         };
-        let n = (u32::from(av) << 18) | (u32::from(bv) << 12) | (u32::from(cv) << 6) | u32::from(dv);
+        let n =
+            (u32::from(av) << 18) | (u32::from(bv) << 12) | (u32::from(cv) << 6) | u32::from(dv);
         out.push(((n >> 16) & 0xff) as u8);
         if pad < 2 {
             out.push(((n >> 8) & 0xff) as u8);

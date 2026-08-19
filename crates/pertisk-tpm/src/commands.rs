@@ -6,9 +6,8 @@ use crate::wire::{
     marshal_ecc_ak_public, marshal_ecc_storage_public, marshal_pcr_selection,
     marshal_sensitive_create_empty, parse_response, response_params, Reader, Writer,
     AK_PERSISTENT_HANDLE, TPM_ALG_ECDSA, TPM_ALG_NULL, TPM_CC_CREATE, TPM_CC_CREATE_PRIMARY,
-    TPM_CC_EVICT_CONTROL, TPM_CC_FLUSH_CONTEXT, TPM_CC_LOAD, TPM_CC_NV_READ,
-    TPM_CC_NV_READ_PUBLIC, TPM_CC_QUOTE, TPM_CC_READ_PUBLIC, TPM_RH_OWNER, TPM_ST_NO_SESSIONS,
-    TPM_ST_SESSIONS,
+    TPM_CC_EVICT_CONTROL, TPM_CC_FLUSH_CONTEXT, TPM_CC_LOAD, TPM_CC_NV_READ, TPM_CC_NV_READ_PUBLIC,
+    TPM_CC_QUOTE, TPM_CC_READ_PUBLIC, TPM_RH_OWNER, TPM_ST_NO_SESSIONS, TPM_ST_SESSIONS,
 };
 
 pub struct LoadedKey {

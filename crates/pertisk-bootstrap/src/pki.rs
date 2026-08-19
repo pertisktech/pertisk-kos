@@ -65,8 +65,7 @@ fn load_ca(ca_crt_pem: &str, ca_key_pem: &str) -> Result<CaIssuer> {
     let ca_crt = ca_crt_pem.trim().to_string();
     let ca_key = ca_key_pem.trim().to_string();
     let key = KeyPair::from_pem(&ca_key).context("parse caKey PEM")?;
-    let issuer =
-        Issuer::from_ca_cert_pem(&ca_crt, key).context("load existing CA for signing")?;
+    let issuer = Issuer::from_ca_cert_pem(&ca_crt, key).context("load existing CA for signing")?;
     Ok(CaIssuer {
         issuer,
         ca_crt,
@@ -131,7 +130,14 @@ fn etcd_sans(advertise_ip: &str, hostname: &str, extra_sans: &[String]) -> Vec<S
     unique_sans(names)
 }
 
-fn issue_leaf(ca: &CaIssuer, sa_key: String, sa_pub: String, apiserver_names: &[String], etcd_names: &[String], hostname: &str) -> Result<ClusterPki> {
+fn issue_leaf(
+    ca: &CaIssuer,
+    sa_key: String,
+    sa_pub: String,
+    apiserver_names: &[String],
+    etcd_names: &[String],
+    hostname: &str,
+) -> Result<ClusterPki> {
     let apiserver = issue_server(ca, "kube-apiserver", apiserver_names)?;
     let etcd = issue_server(ca, "etcd", etcd_names)?;
     let admin = issue_client(ca, "kubernetes-admin", &["system:masters"])?;
@@ -176,7 +182,13 @@ pub fn generate_pki(
         &ca,
         sa_key,
         sa_pub,
-        &apiserver_sans(advertise_ip, hostname, endpoint_host, kubernetes_svc_ip, extra_sans),
+        &apiserver_sans(
+            advertise_ip,
+            hostname,
+            endpoint_host,
+            kubernetes_svc_ip,
+            extra_sans,
+        ),
         &etcd_sans(advertise_ip, hostname, extra_sans),
         hostname,
     )
@@ -193,7 +205,10 @@ pub fn generate_pki_with_optional_existing(
     ca_key: Option<&str>,
     sa_key: Option<&str>,
 ) -> Result<ClusterPki> {
-    match (ca_crt.map(str::trim).filter(|s| !s.is_empty()), ca_key.map(str::trim).filter(|s| !s.is_empty())) {
+    match (
+        ca_crt.map(str::trim).filter(|s| !s.is_empty()),
+        ca_key.map(str::trim).filter(|s| !s.is_empty()),
+    ) {
         (Some(crt), Some(key)) => generate_pki_from_existing(
             crt,
             key,
@@ -237,7 +252,13 @@ pub fn generate_pki_from_existing(
         &ca,
         sa_key,
         sa_pub,
-        &apiserver_sans(advertise_ip, hostname, endpoint_host, kubernetes_svc_ip, extra_sans),
+        &apiserver_sans(
+            advertise_ip,
+            hostname,
+            endpoint_host,
+            kubernetes_svc_ip,
+            extra_sans,
+        ),
         &etcd_sans(advertise_ip, hostname, extra_sans),
         hostname,
     )

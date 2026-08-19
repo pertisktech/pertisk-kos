@@ -65,9 +65,7 @@ pub fn bootstrap_control_plane(
 
     let paths = BootstrapPaths::default_state(state_root);
     if paths.is_bootstrapped() {
-        let expected = advertise_address
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
+        let expected = advertise_address.map(str::trim).filter(|s| !s.is_empty());
         if let Some(want) = expected {
             if let Some(stored) = paths.read_advertise() {
                 if stored != want {
@@ -250,19 +248,14 @@ lab expects {want}. Soft-reset this node and recreate: pertiskctl -e {want}:5000
     let token = cluster.token.clone();
     let node_name = hostname.clone();
     let defer_addons = matches!(cluster.cni, pertisk_config::CniMode::None);
-    finalize_bootstrap_when_ready(
-        &admin_path,
-        token.as_deref(),
-        &node_name,
-        defer_addons,
-    )
-    .with_context(|| {
-        format!(
-            "post-bootstrap finalize failed (advertise={advertise}). \
+    finalize_bootstrap_when_ready(&admin_path, token.as_deref(), &node_name, defer_addons)
+        .with_context(|| {
+            format!(
+                "post-bootstrap finalize failed (advertise={advertise}). \
 Check containerd can pull registry.k8s.io/kube-apiserver + etcd images \
 (pertiskctl -e {advertise}:50000 logs containerd -n 80)"
-        )
-    })?;
+            )
+        })?;
 
     Ok(BootstrapResult {
         already_bootstrapped: false,
@@ -574,7 +567,12 @@ pub(crate) fn finalize_bootstrap_when_ready(
     Ok(())
 }
 
-pub(crate) fn ensure_created(client: &api::KubeClient, path: &str, body: &str, name: &str) -> Result<()> {
+pub(crate) fn ensure_created(
+    client: &api::KubeClient,
+    path: &str,
+    body: &str,
+    name: &str,
+) -> Result<()> {
     let (status, resp) = client.post_json(path, body)?;
     if status == 201 || status == 200 || status == 409 {
         info!(name, status, "ensured API object");
@@ -873,7 +871,9 @@ mod tests {
             &net,
         )
         .unwrap();
-        assert!(g.controlplane_yaml.contains("mgmt_url: https://mgmt.example.com"));
+        assert!(g
+            .controlplane_yaml
+            .contains("mgmt_url: https://mgmt.example.com"));
         assert!(g.worker_yaml.contains("mgmt_url: https://mgmt.example.com"));
     }
 

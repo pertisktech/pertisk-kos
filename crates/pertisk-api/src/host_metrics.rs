@@ -292,8 +292,7 @@ fn collect_linux() -> HostSnapshot {
     let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    let (load1, load5, load15) =
-        parse_loadavg(&read("/proc/loadavg"));
+    let (load1, load5, load15) = parse_loadavg(&read("/proc/loadavg"));
     let uptime_seconds = parse_uptime(&read("/proc/uptime"));
     let memory = parse_meminfo(&read("/proc/meminfo"));
     let cpus = parse_stat(&read("/proc/stat"), ticks);
@@ -409,7 +408,10 @@ pub fn parse_stat(text: &str, ticks: f64) -> Vec<CpuCounters> {
         } else {
             continue;
         };
-        let mut vals = rest.1.split_whitespace().filter_map(|v| v.parse::<u64>().ok());
+        let mut vals = rest
+            .1
+            .split_whitespace()
+            .filter_map(|v| v.parse::<u64>().ok());
         let mut seconds = [0.0; 8];
         for slot in seconds.iter_mut() {
             *slot = vals.next().unwrap_or(0) as f64 / hz;
@@ -433,7 +435,9 @@ pub fn parse_netdev(text: &str) -> Vec<NetCounters> {
         if device.is_empty() || device == "lo" {
             continue;
         }
-        let mut nums = rest.split_whitespace().filter_map(|v| v.parse::<u64>().ok());
+        let mut nums = rest
+            .split_whitespace()
+            .filter_map(|v| v.parse::<u64>().ok());
         let rx_bytes = nums.next().unwrap_or(0);
         let rx_packets = nums.next().unwrap_or(0);
         for _ in 0..6 {
@@ -607,7 +611,9 @@ Inter-|   Receive                                                |  Transmit
         assert!(body.contains("pertisk_memory_total_bytes 1024"));
         assert!(body.contains("pertisk_network_receive_bytes_total{device=\"eth0\"} 8000"));
         assert!(body.contains("pertisk_disk_read_bytes_total{device=\"sda\"}"));
-        assert!(body.contains("pertisk_filesystem_size_bytes{label=\"STATE\",mountpoint=\"/system/state\"} 1000"));
+        assert!(body.contains(
+            "pertisk_filesystem_size_bytes{label=\"STATE\",mountpoint=\"/system/state\"} 1000"
+        ));
         assert!(body.contains("pertisk_load1 0.5"));
         assert!(body.contains("pertisk_host_info{hostname=\"node-1\"} 1"));
     }

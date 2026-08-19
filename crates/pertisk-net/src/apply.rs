@@ -100,7 +100,8 @@ mod linux {
                     }
                     match link::run_dhcp(&name) {
                         Ok(()) => {
-                            let addrs = rt.block_on(link::list_addresses(&name)).unwrap_or_default();
+                            let addrs =
+                                rt.block_on(link::list_addresses(&name)).unwrap_or_default();
                             info!(
                                 interface = %name,
                                 configured = %iface.interface,
@@ -142,7 +143,9 @@ mod linux {
                         continue;
                     }
                     match rt.block_on(link::add_address(&name, addr)) {
-                        Ok(()) => info!(interface = %name, addr, "static address added (with DHCP)"),
+                        Ok(()) => {
+                            info!(interface = %name, addr, "static address added (with DHCP)")
+                        }
                         Err(err) => warn!(
                             interface = %name,
                             addr,

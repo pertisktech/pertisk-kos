@@ -70,7 +70,10 @@ pub fn read_pcrs_from_sysfs(tpm_class: &Path) -> AttestSnapshot {
     if pcrs.is_empty() {
         return AttestSnapshot {
             available: false,
-            message: format!("TPM at {} present but no PCR digests readable", dev.display()),
+            message: format!(
+                "TPM at {} present but no PCR digests readable",
+                dev.display()
+            ),
             pcrs,
             tpm_sysfs: Some(dev),
         };
@@ -78,11 +81,7 @@ pub fn read_pcrs_from_sysfs(tpm_class: &Path) -> AttestSnapshot {
 
     AttestSnapshot {
         available: true,
-        message: format!(
-            "read {} SHA-256 PCR(s) from {}",
-            pcrs.len(),
-            bank.display()
-        ),
+        message: format!("read {} SHA-256 PCR(s) from {}", pcrs.len(), bank.display()),
         pcrs,
         tpm_sysfs: Some(dev),
     }

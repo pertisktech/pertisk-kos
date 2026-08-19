@@ -14,12 +14,12 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/clusters/{id}/nodes", get(list).post(add))
         .route("/clusters/{id}/nodes/adopt", post(adopt))
-        .route("/clusters/{id}/nodes/bulk-delete", axum::routing::post(bulk_delete))
-        .route("/clusters/{id}/nodes/bulk-reboot", post(bulk_reboot))
         .route(
-            "/clusters/{cid}/nodes/{nid}",
-            get(get_one).delete(remove),
+            "/clusters/{id}/nodes/bulk-delete",
+            axum::routing::post(bulk_delete),
         )
+        .route("/clusters/{id}/nodes/bulk-reboot", post(bulk_reboot))
+        .route("/clusters/{cid}/nodes/{nid}", get(get_one).delete(remove))
         .route("/clusters/{cid}/nodes/{nid}/status", get(status))
         .route("/clusters/{cid}/nodes/{nid}/logs", get(logs))
         .route("/clusters/{cid}/nodes/{nid}/reboot", post(reboot))
@@ -35,10 +35,7 @@ pub fn routes() -> Router<AppState> {
             "/clusters/{cid}/nodes/{nid}/attestation/verify",
             post(attestation_verify),
         )
-        .route(
-            "/clusters/{cid}/nodes/{nid}/hardware",
-            put(update_hardware),
-        )
+        .route("/clusters/{cid}/nodes/{nid}/hardware", put(update_hardware))
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
@@ -163,13 +160,12 @@ async fn get_one(
     CurrentUser(_): CurrentUser,
     Path((cid, nid)): Path<(String, String)>,
 ) -> ApiResult<Json<NodeOut>> {
-    let row = sqlx::query_as::<_, NodeOut>(&format!(
-        "{NODE_SELECT} WHERE id = ? AND cluster_id = ?"
-    ))
-    .bind(&nid)
-    .bind(&cid)
-    .fetch_optional(state.pool())
-    .await?;
+    let row =
+        sqlx::query_as::<_, NodeOut>(&format!("{NODE_SELECT} WHERE id = ? AND cluster_id = ?"))
+            .bind(&nid)
+            .bind(&cid)
+            .fetch_optional(state.pool())
+            .await?;
     let Some(mut node) = row else {
         return Err(AppError::NotFound);
     };
@@ -182,13 +178,12 @@ async fn status(
     CurrentUser(_): CurrentUser,
     Path((cid, nid)): Path<(String, String)>,
 ) -> ApiResult<Json<crate::node_status::NodeStatusOut>> {
-    let row = sqlx::query_as::<_, NodeOut>(&format!(
-        "{NODE_SELECT} WHERE id = ? AND cluster_id = ?"
-    ))
-    .bind(&nid)
-    .bind(&cid)
-    .fetch_optional(state.pool())
-    .await?;
+    let row =
+        sqlx::query_as::<_, NodeOut>(&format!("{NODE_SELECT} WHERE id = ? AND cluster_id = ?"))
+            .bind(&nid)
+            .bind(&cid)
+            .fetch_optional(state.pool())
+            .await?;
     let Some(node) = row else {
         return Err(AppError::NotFound);
     };
@@ -218,13 +213,12 @@ async fn logs(
     Path((cid, nid)): Path<(String, String)>,
     Query(q): Query<LogsQuery>,
 ) -> ApiResult<Json<crate::node_status::NodeLogsOut>> {
-    let row = sqlx::query_as::<_, NodeOut>(&format!(
-        "{NODE_SELECT} WHERE id = ? AND cluster_id = ?"
-    ))
-    .bind(&nid)
-    .bind(&cid)
-    .fetch_optional(state.pool())
-    .await?;
+    let row =
+        sqlx::query_as::<_, NodeOut>(&format!("{NODE_SELECT} WHERE id = ? AND cluster_id = ?"))
+            .bind(&nid)
+            .bind(&cid)
+            .fetch_optional(state.pool())
+            .await?;
     let Some(node) = row else {
         return Err(AppError::NotFound);
     };
@@ -325,7 +319,11 @@ async fn adopt(
         if n.is_empty() {
             return Err(AppError::bad("name must not be empty when set"));
         }
-        if n.len() > 63 || !n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
+        if n.len() > 63
+            || !n
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        {
             return Err(AppError::bad(
                 "name must be a DNS-ish hostname (alnum, -, ., max 63)",
             ));
@@ -555,18 +553,13 @@ async fn update_hardware(
     Ok(Json(serde_json::json!({ "job_id": job_id })))
 }
 
-async fn load_node_ip(
-    state: &AppState,
-    cid: &str,
-    nid: &str,
-) -> ApiResult<(NodeOut, String)> {
-    let row = sqlx::query_as::<_, NodeOut>(&format!(
-        "{NODE_SELECT} WHERE id = ? AND cluster_id = ?"
-    ))
-    .bind(nid)
-    .bind(cid)
-    .fetch_optional(state.pool())
-    .await?;
+async fn load_node_ip(state: &AppState, cid: &str, nid: &str) -> ApiResult<(NodeOut, String)> {
+    let row =
+        sqlx::query_as::<_, NodeOut>(&format!("{NODE_SELECT} WHERE id = ? AND cluster_id = ?"))
+            .bind(nid)
+            .bind(cid)
+            .fetch_optional(state.pool())
+            .await?;
     let Some(node) = row else {
         return Err(AppError::NotFound);
     };

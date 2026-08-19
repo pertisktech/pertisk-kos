@@ -265,7 +265,7 @@ fn rows_to_ifaces(rows: &[String]) -> Vec<IfaceAddrs> {
         };
         let _state = parts.next();
         let addresses: Vec<String> = parts
-            .filter(|p| *p != "(no" && *p != "ip)")
+            .filter(|p| *p != "(no" && *p != "ipv4)" && *p != "ip)")
             .map(|s| s.to_string())
             .collect();
         out.push(IfaceAddrs {
@@ -289,12 +289,7 @@ fn ifaces_to_rows(ifaces: &[IfaceAddrs]) -> Vec<String> {
             if addrs.is_empty() {
                 format!("{}  {}  (no ipv4)", i.name, state)
             } else if !has_v4 {
-                format!(
-                    "{}  {}  (no ipv4) {}",
-                    i.name,
-                    state,
-                    addrs.join("  ")
-                )
+                format!("{}  {}  (no ipv4) {}", i.name, state, addrs.join("  "))
             } else {
                 format!("{}  {}  {}", i.name, state, addrs.join("  "))
             }
@@ -494,13 +489,13 @@ fn first_ipv4(addresses: &[String]) -> Option<&str> {
 fn first_global_ipv6(addresses: &[String]) -> Option<&str> {
     // Prefer SLAAC GUA over synthetic fd00:: ULA (same rule as kubelet --node-ip).
     // Dashboard shows IPv6 as bare address (no /prefix); IPv4 keeps its CIDR.
-    pertisk_net::prefer_global_ipv6(addresses.iter().map(|s| s.as_str())).map(|a| {
-        a.split('/').next().unwrap_or(a)
-    })
+    pertisk_net::prefer_global_ipv6(addresses.iter().map(|s| s.as_str()))
+        .map(|a| a.split('/').next().unwrap_or(a))
 }
 
 fn row_has_ipv4(row: &str) -> bool {
-    row.split_whitespace().any(|p| p.contains('.') && p.contains('/'))
+    row.split_whitespace()
+        .any(|p| p.contains('.') && p.contains('/'))
 }
 
 #[derive(Debug, Default)]
@@ -620,9 +615,9 @@ fn push_disk_unique(disks: &mut Vec<DiskUsage>, next: Option<DiskUsage>) {
     let Some(d) = next else {
         return;
     };
-    let dup = disks.iter().any(|x| {
-        x.total_bytes == d.total_bytes && x.used_bytes == d.used_bytes
-    });
+    let dup = disks
+        .iter()
+        .any(|x| x.total_bytes == d.total_bytes && x.used_bytes == d.used_bytes);
     if !dup {
         disks.push(d);
     }
@@ -665,7 +660,9 @@ fn process_count() -> usize {
 pub fn parse_proc_stat_cpu(text: &str) -> Option<(u64, u64)> {
     for line in text.lines() {
         let rest = line.strip_prefix("cpu ")?;
-        let mut vals = rest.split_whitespace().filter_map(|v| v.parse::<u64>().ok());
+        let mut vals = rest
+            .split_whitespace()
+            .filter_map(|v| v.parse::<u64>().ok());
         // user nice system idle iowait irq softirq steal …
         let user = vals.next()?;
         let nice = vals.next()?;
@@ -882,10 +879,7 @@ cluster:
         .expect("config");
         let cluster = cfg.cluster.as_ref().expect("cluster");
         assert!(cluster.is_dual_stack());
-        assert_eq!(
-            cluster.cluster_cidr(),
-            "10.244.0.0/16,2001:db8:10:0::/56"
-        );
+        assert_eq!(cluster.cluster_cidr(), "10.244.0.0/16,2001:db8:10:0::/56");
         assert_eq!(
             cluster_network_display(cluster),
             (
@@ -1054,6 +1048,10 @@ Cached:          2048000 kB
             p.node_ip,
             "10.1.1.173/24 2405:9800:b901:194c:be24:11ff:fe91:e066 fd00:a:1:1::ad"
         );
-        assert!(!p.node_ip.contains("/64"), "ipv6 must not include subnet: {}", p.node_ip);
+        assert!(
+            !p.node_ip.contains("/64"),
+            "ipv6 must not include subnet: {}",
+            p.node_ip
+        );
     }
 }

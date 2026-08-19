@@ -144,11 +144,7 @@ async fn restart_deployment(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_mutate(&user)?;
     let (kc, _) = resolve_ready_kubeconfig(&state, &id).await?;
-    kubectl_ok(
-        &kc,
-        &["rollout", "restart", "deployment", &name, "-n", &ns],
-    )
-    .await?;
+    kubectl_ok(&kc, &["rollout", "restart", "deployment", &name, "-n", &ns]).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -304,7 +300,13 @@ struct PtySession {
 }
 
 fn pick_shell_bin() -> &'static str {
-    for cand in ["/bin/bash", "/usr/bin/bash", "/bin/zsh", "/usr/bin/zsh", "/bin/sh"] {
+    for cand in [
+        "/bin/bash",
+        "/usr/bin/bash",
+        "/bin/zsh",
+        "/usr/bin/zsh",
+        "/bin/sh",
+    ] {
         if std::path::Path::new(cand).is_file() {
             return cand;
         }
@@ -336,9 +338,8 @@ async fn spawn_host_shell(
     };
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
-    let path = std::env::var("PATH").unwrap_or_else(|_| {
-        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()
-    });
+    let path = std::env::var("PATH")
+        .unwrap_or_else(|_| "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
     // Prefer login-capable shells so profile / helm completions load when present.
     let shell = pick_shell_bin();
     let mut cmd = CommandBuilder::new(shell);
@@ -349,7 +350,10 @@ async fn spawn_host_shell(
     }
     cmd.env("HOME", &home);
     cmd.env("TERM", "xterm-256color");
-    cmd.env("LANG", std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into()));
+    cmd.env(
+        "LANG",
+        std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into()),
+    );
     cmd.env("PATH", &path);
     cmd.env("KUBECONFIG", kubeconfig);
     cmd.env("PERTISK_CLUSTER", cluster_name);

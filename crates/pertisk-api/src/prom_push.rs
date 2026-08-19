@@ -198,11 +198,7 @@ impl PromPushHandle {
     }
 }
 
-fn run_loop(
-    settings: PromPushSettings,
-    state: SharedState,
-    cancel: std::sync::Arc<AtomicBool>,
-) {
+fn run_loop(settings: PromPushSettings, state: SharedState, cancel: std::sync::Arc<AtomicBool>) {
     let url = grouping_url(&settings.url, &settings.hostname, &settings.cluster);
     let mut backoff = Duration::from_secs(5);
     while !cancel.load(Ordering::Relaxed) {

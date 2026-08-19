@@ -74,9 +74,7 @@ pub async fn send_email(
     Ok(())
 }
 
-fn build_transport(
-    smtp: &SmtpConfig,
-) -> anyhow::Result<AsyncSmtpTransport<Tokio1Executor>> {
+fn build_transport(smtp: &SmtpConfig) -> anyhow::Result<AsyncSmtpTransport<Tokio1Executor>> {
     let mut builder = match smtp.tls {
         SmtpTlsMode::Tls => {
             let tls = TlsParameters::new(smtp.host.clone())
@@ -117,7 +115,12 @@ If you did not request this, you can ignore this email.\n"
     (subject, body)
 }
 
-pub fn auth0_new_user_email(cfg: &Config, username: &str, role: &str, user_id: &str) -> (String, String) {
+pub fn auth0_new_user_email(
+    cfg: &Config,
+    username: &str,
+    role: &str,
+    user_id: &str,
+) -> (String, String) {
     let subject = "Pertisk KOS: new Auth0 user signed in".to_string();
     let body = format!(
         "A new Auth0 identity signed into Pertisk KOS for the first time.\n\n\

@@ -96,8 +96,8 @@ AHV **VGA** freezes on `EFI stub: Loaded initrd…` — that is **expected**. Pe
 
 1. Prism → VM → **Serial Console**. PE **ignores** `vm_serial_ports` on create — the upload script attaches serial afterward (v2 PUT / v3 / optional `NUTANIX_CVM_SSH` + `acli vm.serial_port_create … type=kServer index=0`). Power-cycle after attaching.
 2. Default disk bus is **`pci`** (virtio-blk → `/dev/vda`). SCSI often hangs after EFI stub on AHV; override with `NUTANIX_DISK_BUS=scsi` if needed.
-3. If Serial shows the dashboard but lab-up finds no **ICMP**/`:50000` → wrong L2 or firewall. AHV **IPAM** can put a MAC→IP in ARP before the guest OS is up — lab-up now requires ping (or `:50000`) before treating the IP as live.
-4. Quick check from mgmt: `ping -c2 <ip>; nc -zv <ip> 50000`.
+3. Put guest NICs on an **unmanaged** AHV network (same virtual switch / VLAN as mgmt). This lab has `vlan.0` (vs0, VLAN 0, no IPAM) next to `homelab-subnet` (vs0, VLAN 0, **managed IPAM**). Managed IPAM shows an address in Prism immediately but does **not** lease it to the guest and usually **does not flood DHCP** onto the wire — Serial stays `(no ipv4)`, mgmt `nc` is `No route to host`, and a DHCP helper on mgmt `:67` sees no DISCOVER. Set the provider **Network / bridge** to `vlan.0` (OpenWrt DHCP on 10.1.1.0/24), or Edit `homelab-subnet` and **enable DHCP** (expand the pool if “Free IPs in Pool” is tiny). Netcfg-disk inject is a fallback when you must stay on IPAM; pin UEFI boot via v3 to pci:0.
+4. Quick check from mgmt: `nc -zv <ip> 50000`. Recreate VMs after changing the network (omit `--skip-vms`). Guest image rebuild is needed only for netcfg/`sr_mod`/DHCP padding inside pertiskd.
 
 Recreate VMs after updating scripts. Guest image rebuild is needed for DHCP-before-STATE / partprobe timeout fixes inside `pertiskd`.
 

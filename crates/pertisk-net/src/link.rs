@@ -23,11 +23,7 @@ pub fn ipv6_enabled() -> bool {
 #[cfg(target_os = "linux")]
 pub fn enable_iface_ipv6(iface: &str) {
     let base = format!("/proc/sys/net/ipv6/conf/{iface}");
-    for (key, val) in [
-        ("disable_ipv6", "0"),
-        ("accept_ra", "1"),
-        ("autoconf", "1"),
-    ] {
+    for (key, val) in [("disable_ipv6", "0"), ("accept_ra", "1"), ("autoconf", "1")] {
         let path = format!("{base}/{key}");
         let _ = std::fs::write(&path, val);
     }
@@ -79,11 +75,7 @@ fn disable_iface_ipv6(iface: &str) {
         return;
     }
     let base = format!("/proc/sys/net/ipv6/conf/{iface}");
-    for (key, val) in [
-        ("disable_ipv6", "1"),
-        ("accept_ra", "0"),
-        ("autoconf", "0"),
-    ] {
+    for (key, val) in [("disable_ipv6", "1"), ("accept_ra", "0"), ("autoconf", "0")] {
         let path = format!("{base}/{key}");
         let _ = std::fs::write(&path, val);
     }
@@ -138,9 +130,7 @@ pub async fn add_address(iface: &str, cidr: &str) -> Result<(), NetError> {
                     .execute()
                     .await
                     .map_err(|e| {
-                        NetError::Msg(format!(
-                            "IPv4 add failed ioctl=({ioctl_err}) netlink=({e})"
-                        ))
+                        NetError::Msg(format!("IPv4 add failed ioctl=({ioctl_err}) netlink=({e})"))
                     })?;
                 tracing::info!(interface = iface, cidr, "address added");
                 return Ok(());
@@ -210,19 +200,11 @@ fn try_ip_addr_replace(iface: &str, cidr: &str) -> Result<(), NetError> {
 
 /// Add an IPv4 address via `SIOCSIFADDR` / `SIOCSIFNETMASK` (no netlink).
 #[cfg(target_os = "linux")]
-pub fn add_ipv4_ioctl(
-    iface: &str,
-    ip: std::net::Ipv4Addr,
-    prefix: u8,
-) -> Result<(), NetError> {
+pub fn add_ipv4_ioctl(iface: &str, ip: std::net::Ipv4Addr, prefix: u8) -> Result<(), NetError> {
     use std::os::fd::AsRawFd;
 
-    let sock = socket2::Socket::new(
-        socket2::Domain::IPV4,
-        socket2::Type::DGRAM,
-        None,
-    )
-    .map_err(|e| NetError::Msg(format!("ioctl socket: {e}")))?;
+    let sock = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)
+        .map_err(|e| NetError::Msg(format!("ioctl socket: {e}")))?;
 
     let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
     for (dst, src) in req.ifr_name.iter_mut().zip(iface.bytes()) {
@@ -274,12 +256,8 @@ pub fn add_ipv4_ioctl(
 pub fn del_ipv4_ioctl(iface: &str) -> Result<(), NetError> {
     use std::os::fd::AsRawFd;
 
-    let sock = socket2::Socket::new(
-        socket2::Domain::IPV4,
-        socket2::Type::DGRAM,
-        None,
-    )
-    .map_err(|e| NetError::Msg(format!("ioctl socket: {e}")))?;
+    let sock = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)
+        .map_err(|e| NetError::Msg(format!("ioctl socket: {e}")))?;
     let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
     for (dst, src) in req.ifr_name.iter_mut().zip(iface.bytes()) {
         *dst = src as libc::c_char;
@@ -299,12 +277,8 @@ pub fn del_ipv4_ioctl(iface: &str) -> Result<(), NetError> {
 pub fn add_default_route_v4_ioctl(gateway: std::net::Ipv4Addr) -> Result<(), NetError> {
     use std::os::fd::AsRawFd;
 
-    let sock = socket2::Socket::new(
-        socket2::Domain::IPV4,
-        socket2::Type::DGRAM,
-        None,
-    )
-    .map_err(|e| NetError::Msg(format!("route ioctl socket: {e}")))?;
+    let sock = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)
+        .map_err(|e| NetError::Msg(format!("route ioctl socket: {e}")))?;
 
     let mut rt: libc::rtentry = unsafe { std::mem::zeroed() };
     // libc::rtentry uses sockaddr (not sockaddr_in); write inet fields through raw bytes.
@@ -541,9 +515,9 @@ pub async fn ensure_stable_ula(iface: &str) -> Result<(), NetError> {
         if let Some(v4) = v4 {
             let synthetic = ula_cidr_from_ipv4(v4);
             let syn_ip = synthetic.split('/').next().unwrap_or(synthetic.as_str());
-            let still_present = addrs.iter().any(|a| {
-                a.split('/').next().unwrap_or(a.as_str()) == syn_ip
-            });
+            let still_present = addrs
+                .iter()
+                .any(|a| a.split('/').next().unwrap_or(a.as_str()) == syn_ip);
             if still_present {
                 match del_address(iface, &synthetic).await {
                     Ok(()) => tracing::info!(
@@ -632,9 +606,10 @@ pub async fn del_address(iface: &str, cidr: &str) -> Result<(), NetError> {
         .await
         .map_err(|e| NetError::Msg(e.to_string()))?
     {
-        let matches = addr.attributes.iter().any(|attr| {
-            matches!(attr, AddressAttribute::Address(ip) if *ip == want)
-        });
+        let matches = addr
+            .attributes
+            .iter()
+            .any(|attr| matches!(attr, AddressAttribute::Address(ip) if *ip == want));
         if !matches {
             continue;
         }

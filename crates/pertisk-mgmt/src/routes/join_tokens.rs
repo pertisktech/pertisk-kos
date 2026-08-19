@@ -18,10 +18,7 @@ use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route(
-            "/clusters/{id}/join-tokens",
-            get(list).post(create),
-        )
+        .route("/clusters/{id}/join-tokens", get(list).post(create))
         .route(
             "/clusters/{cid}/join-tokens/{tid}",
             get(get_one).delete(revoke),
@@ -99,13 +96,12 @@ async fn resolve_cp_ip(state: &AppState, cid: &str) -> Option<String> {
     if let Some((Some(ip),)) = row {
         return Some(ip);
     }
-    let vip: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT vip FROM clusters WHERE id = ?")
-            .bind(cid)
-            .fetch_optional(state.pool())
-            .await
-            .ok()
-            .flatten();
+    let vip: Option<(Option<String>,)> = sqlx::query_as("SELECT vip FROM clusters WHERE id = ?")
+        .bind(cid)
+        .fetch_optional(state.pool())
+        .await
+        .ok()
+        .flatten();
     vip.and_then(|(v,)| v.filter(|s| !s.is_empty()))
 }
 
@@ -169,9 +165,7 @@ fn build_instructions(
     out.push_str(&format!(
         "./scripts/adopt-node.sh --role {role} --name {cluster_name}-… \\\n"
     ));
-    out.push_str(&format!(
-        "  --node-ip <NODE_IP> --cp-ip {cp} \\\n"
-    ));
+    out.push_str(&format!("  --node-ip <NODE_IP> --cp-ip {cp} \\\n"));
     out.push_str(&format!(
         "  --cluster-out ./out/kubeconfigs/{cluster_name} --cluster-name {cluster_name}\n"
     ));
@@ -269,9 +263,7 @@ async fn create(
         if h <= 0 {
             return None;
         }
-        Some(
-            (chrono::Utc::now() + chrono::Duration::hours(h)).to_rfc3339(),
-        )
+        Some((chrono::Utc::now() + chrono::Duration::hours(h)).to_rfc3339())
     });
     let label = body.label.trim().to_string();
     sqlx::query(

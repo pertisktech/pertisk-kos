@@ -96,11 +96,7 @@ pub fn init_loki_cli(url: Option<String>, token: Option<String>) {
 /// Start, stop, or restart the pusher from current machine config + CLI.
 pub fn apply_loki_push(cfg: Option<&MachineConfig>, state_root: &Path) {
     let cli = CLI.get().cloned().unwrap_or_default();
-    let settings = LokiSettings::resolve(
-        cfg,
-        cli.url.as_deref(),
-        cli.token.as_deref(),
-    );
+    let settings = LokiSettings::resolve(cfg, cli.url.as_deref(), cli.token.as_deref());
     let mut slot = HANDLE.lock().unwrap_or_else(|e| e.into_inner());
     match (settings, slot.as_ref().map(|h| h.settings.clone())) {
         (None, None) => {}
@@ -188,7 +184,10 @@ fn run_loop(settings: LokiSettings, state_root: PathBuf, cancel: std::sync::Arc<
     while !cancel.load(Ordering::Relaxed) {
         for (svc, tail) in &mut files {
             for line in read_new_lines(tail) {
-                pending.entry((*svc).into()).or_default().push(stamp_line(line));
+                pending
+                    .entry((*svc).into())
+                    .or_default()
+                    .push(stamp_line(line));
             }
         }
         match poll_dmesg() {
@@ -199,7 +198,10 @@ fn run_loop(settings: LokiSettings, state_root: PathBuf, cancel: std::sync::Arc<
             Some(snap) => {
                 if snap.len() > dmesg_last.len() && snap[..dmesg_last.len()] == *dmesg_last {
                     for line in snap[dmesg_last.len()..].iter().cloned() {
-                        pending.entry("dmesg".into()).or_default().push(stamp_line(line));
+                        pending
+                            .entry("dmesg".into())
+                            .or_default()
+                            .push(stamp_line(line));
                     }
                 }
                 dmesg_last = snap;
@@ -383,7 +385,10 @@ machine:
             extra_labels: BTreeMap::from([("env".into(), "dev".into())]),
         };
         let mut pending = BTreeMap::new();
-        pending.insert("pertiskd".into(), vec![(1_700_000_000_000_000_000, "hello".into())]);
+        pending.insert(
+            "pertiskd".into(),
+            vec![(1_700_000_000_000_000_000, "hello".into())],
+        );
         let body = encode_push(&settings, &pending);
         let stream = &body["streams"][0];
         assert_eq!(stream["stream"]["job"], "pertisk");

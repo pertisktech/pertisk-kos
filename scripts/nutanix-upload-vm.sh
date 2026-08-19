@@ -23,6 +23,7 @@ NETWORK="${NUTANIX_NETWORK:-}"
 STORAGE="${NUTANIX_STORAGE:-}"
 START=1
 IMAGE_NAME="${NUTANIX_IMAGE_NAME:-}"
+REPAIR_NAME=""
 
 usage() {
   cat <<'EOF'
@@ -39,6 +40,7 @@ Options:
   --network NAME    AHV network name (default $NUTANIX_NETWORK)
   --storage NAME    storage container (default $NUTANIX_STORAGE)
   --no-start        do not power on after create
+  --repair-name NAME  existing VM: power off, attach IPAM netcfg, power on
 EOF
   exit 1
 }
@@ -54,16 +56,23 @@ while [[ $# -gt 0 ]]; do
     --network) NETWORK="$2"; shift 2 ;;
     --storage) STORAGE="$2"; shift 2 ;;
     --no-start) START=0; shift ;;
+    --repair-name) REPAIR_NAME="$2"; shift 2 ;;
     -h | --help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
 done
 
-[[ -n "${VMID}" && -n "${DISK}" ]] || usage
-[[ -f "${DISK}" ]] || {
-  echo "disk not found: ${DISK}" >&2
-  exit 1
-}
+if [[ -n "$REPAIR_NAME" ]]; then
+  NAME="$REPAIR_NAME"
+  VMID="${VMID:-0}"
+  DISK="${DISK:-/dev/null}"
+else
+  [[ -n "${VMID}" && -n "${DISK}" ]] || usage
+  [[ -f "${DISK}" ]] || {
+    echo "disk not found: ${DISK}" >&2
+    exit 1
+  }
+fi
 
 : "${NUTANIX_URL:?set NUTANIX_URL}"
 : "${NUTANIX_USER:?set NUTANIX_USER}"
@@ -407,19 +416,86 @@ raise SystemExit("storage container %r not found" % want)
 [[ -n "$CONTAINER_UUID" ]] || { echo "storage container '${STORAGE}' not found" >&2; exit 1; }
 
 NETWORKS="$(api_get networks)"
-NETWORK_UUID="$(NETWORKS_JSON="$NETWORKS" python3 -c '
+NETWORK_INFO="$(NETWORKS_JSON="$NETWORKS" python3 -c '
 import json,os,sys
 want=sys.argv[1]
+
+def ents(data):
+    e=data.get("entities") if isinstance(data,dict) else None
+    if e is None:
+        return data if isinstance(data,list) else [data]
+    return e
+
+def pick_gw(obj):
+    if not isinstance(obj, dict):
+        return ""
+    ip=obj.get("ip_config") or obj.get("ipConfig") or {}
+    if not isinstance(ip, dict):
+        ip={}
+    for k in ("default_gateway","default_gateway_ip","gateway","defaultGateway"):
+        v=ip.get(k) or obj.get(k)
+        if isinstance(v,str) and "." in v:
+            return v
+    return ""
+
+def pick_prefix(obj):
+    if not isinstance(obj, dict):
+        return ""
+    ip=obj.get("ip_config") or obj.get("ipConfig") or {}
+    if isinstance(ip, dict):
+        p=ip.get("prefix_length") or ip.get("prefixLength")
+        if isinstance(p,int) and 0 < p <= 32:
+            return str(p)
+    return ""
+
 data=json.loads(os.environ["NETWORKS_JSON"])
-ents=data.get("entities") or (data if isinstance(data,list) else [data])
-for e in ents:
+for e in ents(data):
     if e.get("name")==want:
-        print(e.get("uuid") or "")
+        print((e.get("uuid") or "")+"\t"+(pick_gw(e) or "")+"\t"+(pick_prefix(e) or ""))
         raise SystemExit
 raise SystemExit("network %r not found" % want)
 ' "$NETWORK")"
+NETWORK_UUID="${NETWORK_INFO%%$'\t'*}"
+NETWORK_GATEWAY="$(printf '%s\n' "$NETWORK_INFO" | awk -F'\t' '{print $2}')"
+NETWORK_PREFIX="$(printf '%s\n' "$NETWORK_INFO" | awk -F'\t' '{print $3}')"
 [[ -n "$NETWORK_UUID" ]] || { echo "network '${NETWORK}' not found" >&2; exit 1; }
+# List payload is often thin — GET the network for ip_config.default_gateway.
+if [[ -z "${NETWORK_GATEWAY}" || -z "${NETWORK_PREFIX}" ]]; then
+  NET_DET="$(api_get "networks/${NETWORK_UUID}" 2>/dev/null || true)"
+  if [[ -n "${NET_DET:-}" ]]; then
+    extra="$(echo "$NET_DET" | python3 -c '
+import json,sys
+e=json.load(sys.stdin)
+ip=e.get("ip_config") or e.get("ipConfig") or {}
+if not isinstance(ip, dict):
+    ip={}
+gw=""
+for k in ("default_gateway","default_gateway_ip","gateway","defaultGateway"):
+    v=ip.get(k) or e.get(k)
+    if isinstance(v,str) and "." in v:
+        gw=v
+        break
+pref=""
+p=ip.get("prefix_length") or ip.get("prefixLength")
+if isinstance(p,int) and 0 < p <= 32:
+    pref=str(p)
+print(gw+"\t"+pref)
+' 2>/dev/null || true)"
+    [[ -z "${NETWORK_GATEWAY}" ]] && NETWORK_GATEWAY="$(printf '%s\n' "$extra" | awk -F'\t' '{print $1}')"
+    [[ -z "${NETWORK_PREFIX}" ]] && NETWORK_PREFIX="$(printf '%s\n' "$extra" | awk -F'\t' '{print $2}')"
+  fi
+fi
+if [[ -n "${NETWORK_GATEWAY}" ]]; then
+  echo "==> AHV network '${NETWORK}' uuid=${NETWORK_UUID} gateway=${NETWORK_GATEWAY} prefix=${NETWORK_PREFIX:-?}"
+  echo "warn: '${NETWORK}' is a *managed* IPAM subnet. AHV reserves Prism NIC IPs and typically" >&2
+  echo "      does NOT DHCP the guest or flood DISCOVER onto vs0 (mgmt :67 stays silent; dashboard has no ipv4)." >&2
+  echo "      Use an unmanaged network on the same virtual switch (this cluster: vlan.0 on vs0 VLAN 0)" >&2
+  echo "      or Prism → Network → ${NETWORK} → Edit → enable DHCP for the IPAM pool." >&2
+else
+  echo "==> AHV network '${NETWORK}' uuid=${NETWORK_UUID} (unmanaged / no IPAM — guest DHCP from LAN)"
+fi
 
+if [[ -z "$REPAIR_NAME" ]]; then
 # Delete existing VM with same name (recreate).
 EXISTING="$(api_get vms)"
 EXIST_UUID="$(EXISTING_JSON="$EXISTING" python3 -c '
@@ -674,19 +750,439 @@ ensure_serial_port() {
 }
 
 ensure_serial_port "$VM_UUID" "$NAME" || true
+else
+  echo "==> repair netcfg on existing VM ${NAME} (no recreate)"
+  EXISTING="$(api_get vms)"
+  VM_UUID="$(EXISTING_JSON="$EXISTING" python3 -c '
+import json,os,sys
+want=sys.argv[1]
+data=json.loads(os.environ["EXISTING_JSON"])
+ents=data.get("entities") or (data if isinstance(data,list) else [data])
+for e in ents:
+    if e.get("name")==want:
+        print(e.get("uuid") or "")
+        raise SystemExit
+' "$NAME" || true)"
+  [[ -n "$VM_UUID" ]] || { echo "VM ${NAME} not found" >&2; exit 1; }
+  echo "==> ${NAME} uuid=${VM_UUID}"
+  DET="$(api_get "vms/${VM_UUID}?include_vm_nic_config=true" 2>/dev/null || api_get "vms/${VM_UUID}")"
+  DISK_BUS="$(echo "$DET" | jq -r '
+    (.vm_disks // .vm_disk_info // [])[0].disk_address.device_bus
+    // "pci"
+  ')"
+  [[ -n "$DISK_BUS" && "$DISK_BUS" != "null" ]] || DISK_BUS="pci"
+  NET0_MAC="$(echo "$DET" | jq -r '
+    (.vm_nics // .nic_list // [])[0].mac_address
+    // (.vm_nics // .nic_list // [])[0].mac_addr
+    // empty
+  ')"
+  echo "==> disk bus=${DISK_BUS} mac=${NET0_MAC:-unknown}"
+fi
+
+# Inject Prism IPAM address as a tiny extra disk the guest applies at boot.
+# AHV IPAM reservations are not DHCP leases — without this the dashboard stays (no ipv4).
+fetch_ipam_ips() {
+  local uuid="$1" det
+  det="$(api_get "vms/${uuid}?include_vm_nic_config=true" 2>/dev/null || true)"
+  echo "${det:-}" | jq -r '
+    [(.vm_nics // .nic_list // [])[]
+      | (.ip_addresses // [])[]?, .ip_address?, .requested_ip_address?, .endpoint_address?
+    ] | map(select(. != null and . != "" and (contains(".") ))) | unique | .[]
+  ' 2>/dev/null || true
+}
+
+netcfg_gateway_for() {
+  local ip="$1" via=""
+  if [[ -n "${NUTANIX_GATEWAY:-}" ]]; then
+    echo "${NUTANIX_GATEWAY}"
+    return 0
+  fi
+  if [[ -n "${LAB_GATEWAY:-}" ]]; then
+    echo "${LAB_GATEWAY}"
+    return 0
+  fi
+  if [[ -n "${NETWORK_GATEWAY:-}" ]]; then
+    echo "${NETWORK_GATEWAY}"
+    return 0
+  fi
+  # Same L2 as mgmt: the host default route is the guest gateway (e.g. OpenWrt).
+  via="$(ip -4 route show default 2>/dev/null | awk '{
+    for (i = 1; i < NF; i++) if ($i == "via") { print $(i+1); exit }
+  }')"
+  if [[ "$via" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ && "$via" == "${ip%.*}."* ]]; then
+    echo "$via"
+    return 0
+  fi
+  echo "${ip%.*}.1"
+}
+
+netcfg_prefix() {
+  if [[ -n "${NETWORK_PREFIX:-}" ]]; then
+    echo "${NETWORK_PREFIX}"
+    return 0
+  fi
+  local p="${LAB_SUBNET:-}"
+  if [[ "$p" == */* ]]; then
+    echo "${p##*/}"
+  else
+    echo 24
+  fi
+}
+
+import_raw_image() {
+  local path="$1" img_name="$2"
+  local addr port url create_img uuid vmdisk state img i
+  addr="$(detect_http_addr)"
+  port="${NUTANIX_HTTP_PORT:-18765}"
+  HTTP_DIR="$(mktemp -d /var/tmp/pertisk-nutanix-http.XXXXXX 2>/dev/null || mktemp -d)"
+  ln -sf "$(cd "$(dirname "$path")" && pwd)/$(basename "$path")" "${HTTP_DIR}/disk.raw"
+  open_fw_port "$port"
+  if ss -ltn "( sport = :${port} )" 2>/dev/null | grep -q ":${port}"; then
+    echo "port ${port} already in use — set NUTANIX_HTTP_PORT" >&2
+    return 1
+  fi
+  python3 -m http.server "$port" --bind 0.0.0.0 --directory "$HTTP_DIR" >/dev/null 2>&1 &
+  HTTP_PID=$!
+  sleep 0.4
+  kill -0 "$HTTP_PID" 2>/dev/null || {
+    echo "failed to start HTTP server on :${port} for netcfg" >&2
+    return 1
+  }
+  url="http://${addr}:${port}/disk.raw"
+  echo "==> Prism netcfg import from ${url}" >&2
+  create_img="$(api_json POST images "$(jq -n \
+    --arg name "$img_name" \
+    --arg cuuid "$CONTAINER_UUID" \
+    --arg url "$url" \
+    '{
+      name: $name,
+      image_type: "DISK_IMAGE",
+      image_import_spec: {
+        storage_container_uuid: $cuuid,
+        url: $url
+      }
+    }')")"
+  uuid="$(resolve_create_uuid "$create_img" image "$img_name")" || {
+    echo "netcfg image import failed: $create_img" >&2
+    stop_http
+    return 1
+  }
+  for i in $(seq 1 180); do
+    img="$(api_get "images/${uuid}")"
+    state="$(echo "$img" | jq -r '.image_state // .status // empty' | tr 'a-z' 'A-Z')"
+    vmdisk="$(echo "$img" | jq -r '.vmdisk_uuid // .vm_disk_id // empty')"
+    if [[ "$state" == "ACTIVE" || "$state" == "COMPLETE" ]] && [[ -n "$vmdisk" ]]; then
+      NETCFG_IMAGE_UUID="$uuid"
+      echo "$vmdisk"
+      stop_http
+      return 0
+    fi
+    if [[ "$state" == "ERROR" ]]; then
+      echo "netcfg image import ERROR" >&2
+      stop_http
+      return 1
+    fi
+    sleep 2
+  done
+  echo "netcfg image import timed out" >&2
+  stop_http
+  return 1
+}
+
+NETCFG_IMAGE_UUID=""
+
+set_power() {
+  local uuid="$1" trans="$2" resp
+  echo "==> power ${trans}" >&2
+  resp="$(api_json POST "vms/${uuid}/set_power_state" "$(jq -n --arg t "$trans" '{transition:$t}')")"
+  if echo "${resp:-}" | jq -e '.task_uuid' >/dev/null 2>&1; then
+    wait_task "$(echo "$resp" | jq -r '.task_uuid')" "vm" >/dev/null || return 1
+  elif echo "${resp:-}" | jq -e '.message // .error_detail' >/dev/null 2>&1; then
+    echo "power ${trans} failed: $resp" >&2
+    return 1
+  fi
+  return 0
+}
+
+wait_v3_task() {
+  local tu="$1" api3="${BASE}/api/nutanix/v3" st
+  for _ in $(seq 1 90); do
+    st="$("${CURL[@]}" "${api3}/tasks/${tu}" 2>/dev/null | jq -r '.status // empty' || true)"
+    case "${st}" in
+      SUCCEEDED|Succeeded|COMPLETE|Complete) return 0 ;;
+      FAILED|Failed|ABORTED|Aborted)
+        echo "v3 task ${tu} ${st}" >&2
+        return 1
+        ;;
+    esac
+    sleep 2
+  done
+  echo "v3 task ${tu} timed out" >&2
+  return 1
+}
+
+vm_disk_count() {
+  local uuid="$1" det n n3
+  det="$(api_get "vms/${uuid}?include_vm_disk_config=true" 2>/dev/null || api_get "vms/${uuid}" 2>/dev/null || true)"
+  n="$(echo "${det:-}" | jq '(.vm_disks // .vm_disk_info // []) | length' 2>/dev/null || echo 0)"
+  n3="$("${CURL[@]}" "${BASE}/api/nutanix/v3/vms/${uuid}" 2>/dev/null \
+    | jq '(.spec.resources.disk_list // []) | length' 2>/dev/null || echo 0)"
+  if [[ "${n3:-0}" -gt "${n:-0}" ]]; then
+    echo "$n3"
+  else
+    echo "${n:-0}"
+  fi
+}
+
+# Extra virtio disks can steal UEFI boot from the OS image (guest never reaches pertiskd).
+pin_boot_os_disk() {
+  local uuid="$1" bus="${2:-$DISK_BUS}" body resp tu api3 get3 put3 adapter
+  echo "==> pin UEFI boot to OS disk (${bus}:0) via v2+v3" >&2
+  body="$(jq -n --arg bus "$bus" '{
+    boot: {
+      uefi_boot: true,
+      secure_boot: false,
+      boot_device_type: "disk",
+      disk_address: { device_bus: $bus, device_index: 0 }
+    }
+  }')"
+  resp="$(api_json PUT "vms/${uuid}" "$body" 2>/dev/null || true)"
+  tu="$(echo "${resp:-}" | jq -r '.task_uuid // empty')"
+  if [[ -n "$tu" ]]; then
+    wait_task "$tu" "boot" >/dev/null || true
+  fi
+  api3="${BASE}/api/nutanix/v3"
+  get3="$("${CURL[@]}" "${api3}/vms/${uuid}" 2>/dev/null || true)"
+  echo "${get3:-}" | jq -e '.spec.resources' >/dev/null 2>&1 || return 0
+  adapter="$(echo "$get3" | jq -r \
+    '.spec.resources.disk_list[0].device_properties.disk_address.adapter_type // "PCI"')"
+  put3="$(echo "$get3" | jq --arg adapter "$adapter" '
+    del(.status)
+    | .spec.resources.power_state = "OFF"
+    | .spec.resources.boot_config = (
+        (.spec.resources.boot_config // {boot_type:"UEFI"}) + {
+          boot_type: "UEFI",
+          boot_device: { disk_address: { adapter_type: $adapter, device_index: 0 } }
+        }
+      )
+  ')"
+  resp="$("${CURL[@]}" -X PUT -H 'Content-Type: application/json' -d "$put3" \
+    "${api3}/vms/${uuid}" 2>/dev/null || true)"
+  tu="$(echo "${resp:-}" | jq -r '.status.execution_context.task_uuid // .task_uuid // empty')"
+  if [[ -n "$tu" ]]; then
+    wait_v3_task "$tu" || true
+  fi
+}
+
+wait_ipam_ip() {
+  local uuid="$1" secs="${2:-20}" i ip
+  for i in $(seq 1 "$secs"); do
+    ip="$(fetch_ipam_ips "$uuid" | head -1 || true)"
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "$ip"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+learn_ipam_ip() {
+  local uuid="$1" ip
+  ip="$(wait_ipam_ip "$uuid" 12 || true)"
+  if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "$ip"
+    return 0
+  fi
+  echo "==> IPAM empty while powered off — brief power-on to learn address" >&2
+  set_power "$uuid" ON || true
+  ip="$(wait_ipam_ip "$uuid" 45 || true)"
+  set_power "$uuid" OFF || true
+  sleep 2
+  if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "$ip"
+    return 0
+  fi
+  return 1
+}
+
+detach_extra_disk() {
+  local uuid="$1" bus="$2" idx="$3" body resp tu
+  body="$(jq -n --arg uuid "$uuid" --arg bus "$bus" --argjson idx "$idx" '{
+    uuid: $uuid,
+    vm_disks: [{ disk_address: { device_bus: $bus, device_index: $idx } }]
+  }')"
+  resp="$(api_json POST "vms/${uuid}/disks/detach" "$body" 2>/dev/null || true)"
+  tu="$(echo "${resp:-}" | jq -r '.task_uuid // empty')"
+  [[ -n "$tu" ]] || return 0
+  echo "==> disks/detach ${bus}:${idx} task=${tu}" >&2
+  wait_task "$tu" "disk" >/dev/null || true
+}
+
+# PE v2 attach endpoint is /disks/attach (POST /disks is not the attach API).
+attach_via_v2_attach() {
+  local uuid="$1" vmdisk="$2" bus="$3" idx="$4" cdrom="$5"
+  local body resp tu
+  body="$(jq -n \
+    --arg uuid "$uuid" --arg disk "$vmdisk" --arg bus "$bus" \
+    --argjson idx "$idx" --argjson cdrom "$cdrom" '{
+    uuid: $uuid,
+    vm_disks: [{
+      is_cdrom: $cdrom,
+      is_thin_provisioned: true,
+      disk_address: { device_bus: $bus, device_index: $idx, vmdisk_uuid: $disk },
+      vm_disk_clone: {
+        disk_address: { device_bus: $bus, device_index: $idx, vmdisk_uuid: $disk }
+      }
+    }]
+  }')"
+  resp="$(api_json POST "vms/${uuid}/disks/attach" "$body" 2>/dev/null || true)"
+  tu="$(echo "${resp:-}" | jq -r '.task_uuid // empty')"
+  if [[ -z "$tu" ]]; then
+    echo "==> disks/attach ${bus}:${idx} cdrom=${cdrom} rejected: $(echo "${resp:-}" | tr -d '\n' | head -c 280)" >&2
+    return 1
+  fi
+  echo "==> disks/attach ${bus}:${idx} cdrom=${cdrom} task=${tu}" >&2
+  wait_task "$tu" "disk" >/dev/null
+}
+
+attach_via_v3() {
+  local uuid="$1" image_uuid="$2" adapter="$3"
+  local api3="${BASE}/api/nutanix/v3" get3 put3 resp tu
+  [[ -n "$image_uuid" ]] || return 1
+  get3="$("${CURL[@]}" "${api3}/vms/${uuid}" 2>/dev/null || true)"
+  echo "${get3:-}" | jq -e '.spec.resources.disk_list' >/dev/null 2>&1 || return 1
+  adapter="$(echo "${get3}" | jq -r \
+    '.spec.resources.disk_list[0].device_properties.disk_address.adapter_type // empty')"
+  [[ -n "$adapter" ]] || adapter="${3:-SCSI}"
+  echo "==> v3 append netcfg disk (${adapter}:1) from image ${image_uuid}" >&2
+  put3="$(echo "$get3" | jq --arg img "$image_uuid" --arg adapter "$adapter" '
+    del(.status)
+    | .spec.resources.power_state = "OFF"
+    | .spec.resources.disk_list += [{
+        device_properties: {
+          device_type: "DISK",
+          disk_address: { adapter_type: $adapter, device_index: 1 }
+        },
+        data_source_reference: { kind: "image", uuid: $img }
+      }]
+    | .spec.resources.boot_config = (
+        (.spec.resources.boot_config // {}) + {
+          boot_device: { disk_address: { adapter_type: $adapter, device_index: 0 } }
+        }
+      )
+  ')"
+  resp="$("${CURL[@]}" -X PUT -H 'Content-Type: application/json' -d "$put3" \
+    "${api3}/vms/${uuid}" 2>/dev/null || true)"
+  tu="$(echo "${resp:-}" | jq -r '
+    .status.execution_context.task_uuid // .task_uuid // empty
+  ' 2>/dev/null || true)"
+  if [[ -z "$tu" ]]; then
+    echo "==> v3 disk PUT rejected: $(echo "${resp:-}" | tr -d '\n' | head -c 280)" >&2
+    return 1
+  fi
+  wait_v3_task "$tu"
+}
+
+attach_via_acli() {
+  local name="$1" vmdisk="$2" bus="$3"
+  local ssh_target="${NUTANIX_CVM_SSH:-${NUTANIX_SSH:-}}"
+  [[ -n "$ssh_target" ]] || return 1
+  echo "==> acli vm.disk_create ${name} clone_from_vmdisk=${vmdisk} bus=${bus}" >&2
+  ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o BatchMode=yes \
+    "$ssh_target" "acli vm.disk_create '${name}' clone_from_vmdisk='${vmdisk}' bus='${bus}' index=1"
+}
+
+# MAC-filtered DHCPv4 on mgmt so the guest can bind the IPAM address when
+# AHV is not actually serving DHCP (reservation ≠ lease).
+ensure_ipam_dhcp_helper() {
+  local mac="$1" ip="$2" gw="$3" prefix="$4"
+  local helper
+  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/nutanix-ipam-dhcp.sh"
+  if [[ ! -x "$helper" ]]; then
+    helper="/usr/share/pertisk-mgmt/scripts/nutanix-ipam-dhcp.sh"
+  fi
+  if [[ ! -x "$helper" ]]; then
+    echo "warn: nutanix-ipam-dhcp.sh not found" >&2
+    return 0
+  fi
+  "$helper" "$mac" "$ip" "$gw" "$prefix" || true
+}
+
+attach_netcfg_media() {
+  local uuid="$1" vmdisk="$2" bus bus_up
+  bus="$DISK_BUS"
+  bus_up="$(echo "$bus" | tr 'a-z' 'A-Z')"
+  echo "==> attach IPAM netcfg via POST vms/.../disks/attach (${bus}:1)" >&2
+  detach_extra_disk "$uuid" "$bus" 1
+  detach_extra_disk "$uuid" "$bus_up" 1
+  if attach_via_v2_attach "$uuid" "$vmdisk" "$bus" 1 false \
+    || attach_via_v2_attach "$uuid" "$vmdisk" "$bus_up" 1 false \
+    || { [[ "$bus_up" != "SCSI" ]] && attach_via_v2_attach "$uuid" "$vmdisk" "scsi" 1 false; } \
+    || attach_via_v3 "$uuid" "${NETCFG_IMAGE_UUID:-}" "$bus_up" \
+    || attach_via_acli "$NAME" "$vmdisk" "$bus"; then
+    pin_boot_os_disk "$uuid" "$bus"
+    echo "==> netcfg attached; disk count=$(vm_disk_count "$uuid")" >&2
+    return 0
+  fi
+  echo "==> disk attach failed — try IDE CD-ROM via disks/attach" >&2
+  if attach_via_v2_attach "$uuid" "$vmdisk" "ide" 0 true \
+    || attach_via_v2_attach "$uuid" "$vmdisk" "IDE" 0 true; then
+    pin_boot_os_disk "$uuid" "$bus"
+    return 0
+  fi
+  return 1
+}
+
+attach_ipam_netcfg() {
+  local uuid="$1" ip prefix gw raw img_name vmdisk mac
+  ip="$(learn_ipam_ip "$uuid" || true)"
+  if [[ ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "==> no Prism IPAM IP yet — guest will try DHCP" >&2
+    return 0
+  fi
+  prefix="$(netcfg_prefix)"
+  gw="$(netcfg_gateway_for "$ip")"
+  echo "==> IPAM ${ip}/${prefix} gw=${gw} → guest netcfg" >&2
+  mac="${NET0_MAC:-}"
+  ensure_ipam_dhcp_helper "$mac" "$ip" "$gw" "$prefix" || true
+  raw="$(mktemp /var/tmp/pertisk-netcfg.XXXXXX.raw)"
+  python3 - "$raw" "${ip}/${prefix}" "$gw" <<'PY'
+import sys
+path, cidr, gw = sys.argv[1], sys.argv[2], sys.argv[3]
+blob = f"PERTISK-NET\nIPV4={cidr}\nGATEWAY={gw}\nNAMESERVER={gw}\nINTERFACE=eth0\n".encode()
+size = 16 * 1024 * 1024
+open(path, "wb").write(blob + b"\x00" * (size - len(blob)))
+PY
+  img_name="${NAME}-netcfg"
+  old="$(find_image_uuid "$img_name" || true)"
+  [[ -n "$old" ]] && delete_image "$old"
+  if ! vmdisk="$(import_raw_image "$raw" "$img_name")"; then
+    echo "warn: netcfg image import failed — guest DHCP helper only" >&2
+    rm -f "$raw"
+    return 0
+  fi
+  rm -f "$raw"
+  if ! attach_netcfg_media "$uuid" "$vmdisk"; then
+    echo "warn: netcfg attach failed — guest will use IPAM DHCP helper on mgmt :67" >&2
+  fi
+}
+
+if [[ -n "$REPAIR_NAME" ]]; then
+  set_power "$VM_UUID" OFF || true
+  sleep 2
+fi
+attach_ipam_netcfg "$VM_UUID"
+
+if [[ -n "$REPAIR_NAME" ]]; then
+  echo "==> repair: power off, attach done, power on" >&2
+fi
 
 if [[ "$START" == "1" ]]; then
-  echo "==> power on"
-  POW="$(api_json POST "vms/${VM_UUID}/set_power_state" '{"transition":"ON"}')"
-  if echo "${POW:-}" | jq -e '.task_uuid' >/dev/null 2>&1; then
-    if ! wait_task "$(echo "$POW" | jq -r '.task_uuid')" "vm" >/dev/null; then
-      echo "power on failed for ${NAME} (${VM_UUID})" >&2
-      echo "HINT: NoHostResources → lower --memory / worker size, or free AHV capacity." >&2
-      echo "      Check Prism: VM may exist but be powered off." >&2
-      exit 1
-    fi
-  elif echo "${POW:-}" | jq -e '.message // .error_detail' >/dev/null 2>&1; then
-    echo "power on failed: $POW" >&2
+  if ! set_power "$VM_UUID" ON; then
+    echo "power on failed for ${NAME} (${VM_UUID})" >&2
+    echo "HINT: NoHostResources → lower --memory / worker size, or free AHV capacity." >&2
+    echo "      Check Prism: VM may exist but be powered off." >&2
     exit 1
   fi
 fi
@@ -737,7 +1233,7 @@ if [[ -z "$MAC" ]]; then
   echo >&2
   exit 1
 fi
-echo "OK ${NAME} uuid=${VM_UUID} image=${IMAGE_UUID} mac=${MAC}"
+echo "OK ${NAME} uuid=${VM_UUID} image=${IMAGE_UUID:-repair} mac=${MAC}"
 echo "    note: AHV VGA often stays on 'EFI stub: Loaded initrd…' — open Prism → Serial Console"
 # IPAM can reserve an address at NIC create; that is not proof the guest booted.
 DET="$(api_get "vms/${VM_UUID}?include_vm_nic_config=true" 2>/dev/null || true)"

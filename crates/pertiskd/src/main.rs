@@ -23,8 +23,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use pertisk_api::{
     apply_loki_push, apply_prom_push, init_loki_cli, init_prom_push_cli, shared, SharedState,
-    TlsPaths, DEFAULT_LISTEN,
-    DEFAULT_METRICS_LISTEN,
+    TlsPaths, DEFAULT_LISTEN, DEFAULT_METRICS_LISTEN,
 };
 use pertisk_config::MachineConfig;
 use pertisk_disk::{
@@ -198,12 +197,7 @@ fn install_console_panic_hook() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let msg = format!("pertiskd PANIC: {info}\n");
-        for path in [
-            "/dev/ttyAMA0",
-            "/dev/console",
-            "/dev/ttyS0",
-            "/dev/tty0",
-        ] {
+        for path in ["/dev/ttyAMA0", "/dev/console", "/dev/ttyS0", "/dev/tty0"] {
             if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(path) {
                 let _ = f.write_all(msg.as_bytes());
                 let _ = f.flush();
@@ -340,24 +334,24 @@ fn run() -> Result<()> {
                 warn!(error = %err, "hostname apply failed");
             }
         }
-        if !args.skip_network {
-            if let Err(err) = pertisk_net::apply_network(&cfg.machine.network) {
-                warn!(error = %err, "early network apply failed");
+    }
+    if !args.skip_network {
+        match pertisk_net::apply_provider_netcfg() {
+            Ok(true) => info!("provider netcfg applied (AHV IPAM disk)"),
+            other => {
+                if let Err(err) = other {
+                    warn!(error = %err, "provider netcfg apply failed");
+                }
+                if let Some(ref cfg) = early_cfg {
+                    if let Err(err) = pertisk_net::apply_network(&cfg.machine.network) {
+                        warn!(error = %err, "early network apply failed");
+                    }
+                } else if let Err(err) =
+                    pertisk_net::apply_network(&pertisk_config::Network::dhcp_default())
+                {
+                    warn!(error = %err, "early default DHCP failed");
+                }
             }
-        }
-    } else if !args.skip_network {
-        let early_net = pertisk_config::Network {
-            hostname: None,
-            interfaces: vec![pertisk_config::Interface {
-                interface: "eth0".into(),
-                dhcp: true,
-                addresses: vec![],
-                gateway: None,
-            }],
-            nameservers: vec![],
-        };
-        if let Err(err) = pertisk_net::apply_network(&early_net) {
-            warn!(error = %err, "early default DHCP failed");
         }
     }
 
@@ -575,7 +569,8 @@ fn run() -> Result<()> {
     if !args.skip_metrics {
         let token = resolve_metrics_token(&args, &volume);
         let tls = resolve_tls(&args);
-        if let Err(err) = start_metrics_thread(api_state.clone(), &args.metrics_listen, token, tls) {
+        if let Err(err) = start_metrics_thread(api_state.clone(), &args.metrics_listen, token, tls)
+        {
             warn!(error = %err, "metrics endpoint failed to start");
         }
     }

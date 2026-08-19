@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::{
-    audit, consume_password_reset_token, create_password_reset_token, ensure_not_last_enabled_admin,
-    get_user, hash_password, list_users, set_user_password, Role, UserRecord,
+    audit, consume_password_reset_token, create_password_reset_token,
+    ensure_not_last_enabled_admin, get_user, hash_password, list_users, set_user_password, Role,
+    UserRecord,
 };
 use crate::db;
 use crate::error::{ApiResult, AppError};
@@ -55,7 +56,10 @@ impl From<UserRecord> for UserResp {
     }
 }
 
-async fn list(State(state): State<AppState>, CurrentUser(user): CurrentUser) -> ApiResult<Json<Vec<UserResp>>> {
+async fn list(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+) -> ApiResult<Json<Vec<UserResp>>> {
     require_admin(&user)?;
     let users = list_users(state.pool()).await?;
     Ok(Json(users.into_iter().map(UserResp::from).collect()))
@@ -112,10 +116,7 @@ async fn create(
     let password_hash = if body.send_reset_email {
         None
     } else {
-        Some(
-            hash_password(body.password.as_deref().unwrap_or(""))
-                .map_err(AppError::Anyhow)?,
-        )
+        Some(hash_password(body.password.as_deref().unwrap_or("")).map_err(AppError::Anyhow)?)
     };
 
     let result = sqlx::query(
@@ -328,7 +329,17 @@ async fn reset_request(
         return Ok(ok);
     }
 
-    let row = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, i64)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+        ),
+    >(
         "SELECT id, username, email, password_hash, auth0_sub, COALESCE(disabled, 0) FROM users \
          WHERE username = ? OR email = ?",
     )

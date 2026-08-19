@@ -63,10 +63,7 @@ pub struct VmIdCheck {
 
 impl ProxmoxClient {
     pub fn auth_header(&self) -> String {
-        format!(
-            "PVEAPIToken={}={}",
-            self.token_id, self.token_secret
-        )
+        format!("PVEAPIToken={}={}", self.token_id, self.token_secret)
     }
 
     fn client(&self) -> ApiResult<reqwest::Client> {
@@ -114,9 +111,7 @@ impl ProxmoxClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(AppError::bad(format!(
-                "proxmox {status}: {body}"
-            )));
+            return Err(AppError::bad(format!("proxmox {status}: {body}")));
         }
         resp.json()
             .await
@@ -148,11 +143,8 @@ impl ProxmoxClient {
     /// Fast API reachability (version only, 2s cap).
     pub async fn ping(&self) -> bool {
         matches!(
-            tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                self.get_json("/version"),
-            )
-            .await,
+            tokio::time::timeout(std::time::Duration::from_secs(2), self.get_json("/version"),)
+                .await,
             Ok(Ok(_))
         )
     }
@@ -198,9 +190,9 @@ impl ProxmoxClient {
         let enabled = found.enabled.unwrap_or(1) != 0;
         let active = found.active.unwrap_or(1) != 0;
         let content = found.content.clone().unwrap_or_default();
-        let can_images = content.split(',').any(|c| {
-            matches!(c.trim(), "images" | "rootdir" | "import")
-        });
+        let can_images = content
+            .split(',')
+            .any(|c| matches!(c.trim(), "images" | "rootdir" | "import"));
         let mut ok = enabled && active;
         let mut message = format!(
             "storage `{storage}` ok on `{node}` (type={}, content={})",
@@ -233,7 +225,10 @@ impl ProxmoxClient {
     }
 
     /// List QEMU VMs on a node (vmid / name / status).
-    pub async fn list_qemu(&self, node: &str) -> ApiResult<Vec<(i64, Option<String>, Option<String>)>> {
+    pub async fn list_qemu(
+        &self,
+        node: &str,
+    ) -> ApiResult<Vec<(i64, Option<String>, Option<String>)>> {
         let v = self.get_json(&format!("/nodes/{node}/qemu")).await?;
         let mut out = Vec::new();
         if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
@@ -258,12 +253,7 @@ impl ProxmoxClient {
     }
 
     /// Check whether VMIDs in `[start, start+count)` are free on the node.
-    pub async fn check_vmids(
-        &self,
-        node: &str,
-        start: i64,
-        count: i64,
-    ) -> ApiResult<VmIdCheck> {
+    pub async fn check_vmids(&self, node: &str, start: i64, count: i64) -> ApiResult<VmIdCheck> {
         if start < 100 {
             return Ok(VmIdCheck {
                 ok: false,
@@ -307,13 +297,7 @@ impl ProxmoxClient {
         } else {
             let detail = conflicts
                 .iter()
-                .map(|c| {
-                    format!(
-                        "{} ({})",
-                        c.vmid,
-                        c.name.as_deref().unwrap_or("unnamed")
-                    )
-                })
+                .map(|c| format!("{} ({})", c.vmid, c.name.as_deref().unwrap_or("unnamed")))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("VMIDs already in use on `{node}`: {detail}")
@@ -330,11 +314,7 @@ impl ProxmoxClient {
     }
 
     /// Connection + optional node/storage checks used by provider probe/test.
-    pub async fn probe(
-        &self,
-        node: Option<&str>,
-        storage: Option<&str>,
-    ) -> ApiResult<ProbeResult> {
+    pub async fn probe(&self, node: Option<&str>, storage: Option<&str>) -> ApiResult<ProbeResult> {
         let conn = self.test_connection().await?;
         let mut node_ok = true;
         let mut node_message = String::new();
@@ -390,9 +370,7 @@ impl ProxmoxClient {
 
     /// Map Proxmox node CPU/kernel machine to guest image arch (amd64|arm64).
     pub async fn detect_node_arch(&self, node: &str) -> ApiResult<String> {
-        let v = self
-            .get_json(&format!("/nodes/{node}/status"))
-            .await?;
+        let v = self.get_json(&format!("/nodes/{node}/status")).await?;
         let machine = v
             .pointer("/data/current-kernel/machine")
             .and_then(|x| x.as_str())
@@ -401,14 +379,9 @@ impl ProxmoxClient {
                 v.pointer("/data/kversion")
                     .and_then(|x| x.as_str())
                     .and_then(|kv| {
-                        kv.split_whitespace()
-                            .rev()
-                            .find(|t| {
-                                matches!(
-                                    *t,
-                                    "x86_64" | "amd64" | "aarch64" | "arm64" | "armv8l"
-                                )
-                            })
+                        kv.split_whitespace().rev().find(|t| {
+                            matches!(*t, "x86_64" | "amd64" | "aarch64" | "arm64" | "armv8l")
+                        })
                     })
             })
             .unwrap_or("");
@@ -485,10 +458,7 @@ impl ProxmoxClient {
         if cores.is_none() && memory_mb.is_none() {
             return Ok(());
         }
-        let mut form: Vec<(&str, String)> = vec![(
-            "hotplug",
-            "cpu,memory,disk,network,usb".into(),
-        )];
+        let mut form: Vec<(&str, String)> = vec![("hotplug", "cpu,memory,disk,network,usb".into())];
         if memory_mb.is_some() {
             form.push(("numa", "1".into()));
         }
@@ -510,12 +480,9 @@ impl ProxmoxClient {
     pub async fn restart_vm(&self, node: &str, vmid: i64) -> ApiResult<()> {
         let status = self.vm_qmp_status(node, vmid).await.unwrap_or_default();
         if status == "stopped" {
-            self.post_form(
-                &format!("/nodes/{node}/qemu/{vmid}/status/start"),
-                &[],
-            )
-            .await
-            .map_err(|e| AppError::bad(format!("start vm {vmid} failed: {e}")))?;
+            self.post_form(&format!("/nodes/{node}/qemu/{vmid}/status/start"), &[])
+                .await
+                .map_err(|e| AppError::bad(format!("start vm {vmid} failed: {e}")))?;
             return Ok(());
         }
 
@@ -533,12 +500,9 @@ impl ProxmoxClient {
                 break;
             }
         }
-        self.post_form(
-            &format!("/nodes/{node}/qemu/{vmid}/status/start"),
-            &[],
-        )
-        .await
-        .map_err(|e| AppError::bad(format!("start vm {vmid} after resize failed: {e}")))?;
+        self.post_form(&format!("/nodes/{node}/qemu/{vmid}/status/start"), &[])
+            .await
+            .map_err(|e| AppError::bad(format!("start vm {vmid} after resize failed: {e}")))?;
         Ok(())
     }
 
@@ -565,10 +529,7 @@ impl ProxmoxClient {
             }
         }
         let size = format!("{disk_gb}G");
-        let form = vec![
-            ("disk", "scsi0".to_string()),
-            ("size", size),
-        ];
+        let form = vec![("disk", "scsi0".to_string()), ("size", size)];
         match self
             .put_form(&format!("/nodes/{node}/qemu/{vmid}/resize"), &form)
             .await
@@ -599,10 +560,7 @@ impl ProxmoxClient {
             Err(e) => {
                 let msg = e.to_string();
                 // Already at/above size is often reported as an error — treat as soft ok.
-                if msg.contains("smaller")
-                    || msg.contains("already")
-                    || msg.contains("equal")
-                {
+                if msg.contains("smaller") || msg.contains("already") || msg.contains("equal") {
                     return Ok(());
                 }
                 Err(AppError::bad(format!("resize disk {vmid} failed: {msg}")))
@@ -629,9 +587,7 @@ impl ProxmoxClient {
                 if exit == "OK" || exit.is_empty() {
                     return Ok(());
                 }
-                return Err(AppError::bad(format!(
-                    "proxmox task {upid} failed: {exit}"
-                )));
+                return Err(AppError::bad(format!("proxmox task {upid} failed: {exit}")));
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }

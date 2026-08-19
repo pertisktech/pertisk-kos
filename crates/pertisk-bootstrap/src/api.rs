@@ -131,9 +131,10 @@ fn parse_http_response(raw: &str) -> Result<(u16, String)> {
         .parse()
         .context("HTTP status number")?;
 
-    let chunked = head
-        .lines()
-        .any(|l| l.to_ascii_lowercase().starts_with("transfer-encoding:") && l.to_ascii_lowercase().contains("chunked"));
+    let chunked = head.lines().any(|l| {
+        l.to_ascii_lowercase().starts_with("transfer-encoding:")
+            && l.to_ascii_lowercase().contains("chunked")
+    });
     let body = if chunked {
         decode_chunked_body(body).context("decode chunked HTTP body")?
     } else {

@@ -28,10 +28,7 @@ pub fn write_static_pods(manifests_dir: &Path, p: &StaticPodParams<'_>) -> Resul
         format!("v{}", p.kubernetes_version)
     };
 
-    write_yaml(
-        &manifests_dir.join("etcd.yaml"),
-        &etcd_pod(p),
-    )?;
+    write_yaml(&manifests_dir.join("etcd.yaml"), &etcd_pod(p))?;
     write_yaml(
         &manifests_dir.join("kube-apiserver.yaml"),
         &apiserver_pod(p.advertise_ip, &ver, p.service_cidr, p.pki_host_path),
@@ -63,8 +60,7 @@ pub fn bump_control_plane_images(manifests_dir: &Path, kubernetes_version: &str)
         if !path.is_file() {
             continue;
         }
-        let old = fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let old = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let new = bump_registry_k8s_image_tags(&old, &ver);
         if new != old {
             fs::write(&path, new).with_context(|| format!("write {}", path.display()))?;

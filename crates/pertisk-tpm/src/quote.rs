@@ -58,7 +58,9 @@ impl QuoteBundle {
 pub fn produce_quote(nonce: &[u8]) -> QuoteBundle {
     match produce_quote_inner(nonce) {
         Ok(b) => b,
-        Err(Error::NoDevice) => QuoteBundle::unavailable("no TPM device (/dev/tpmrm0 or /dev/tpm0)"),
+        Err(Error::NoDevice) => {
+            QuoteBundle::unavailable("no TPM device (/dev/tpmrm0 or /dev/tpm0)")
+        }
         Err(e) => QuoteBundle::unavailable(format!("TPM Quote failed: {e}")),
     }
 }

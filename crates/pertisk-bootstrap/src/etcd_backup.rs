@@ -100,8 +100,7 @@ async fn etcd_snapshot_inner(
         _ => default_snapshot_path(),
     };
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("mkdir {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
     }
 
     let mut client = connect_local(state_root).await?;
@@ -200,12 +199,7 @@ async fn etcd_restore_inner(
     }
     fs::create_dir_all(ETCD_DATA).context("mkdir /var/lib/etcd")?;
 
-    run_etcdutl_restore(
-        snapshot_path,
-        member_name,
-        initial_cluster,
-        peer_url,
-    )?;
+    run_etcdutl_restore(snapshot_path, member_name, initial_cluster, peer_url)?;
 
     enable_etcd_static_pod()?;
     wait_etcd_up(state_root, Duration::from_secs(120)).await?;
@@ -219,8 +213,7 @@ async fn etcd_restore_inner(
 fn disable_etcd_static_pod() -> Result<()> {
     let live = Path::new(ETCD_MANIFEST_LIVE);
     if live.is_file() {
-        fs::rename(live, ETCD_MANIFEST_DISABLED)
-            .context("disable etcd static pod manifest")?;
+        fs::rename(live, ETCD_MANIFEST_DISABLED).context("disable etcd static pod manifest")?;
         info!("disabled etcd static pod (manifest moved aside)");
     }
     Ok(())

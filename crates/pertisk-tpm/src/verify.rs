@@ -59,11 +59,7 @@ pub fn verify_quote(
     }
 
     let (x, y) = extract_ecc_xy(ak_public)?;
-    let point = EncodedPoint::from_affine_coordinates(
-        field_bytes(&x)?,
-        field_bytes(&y)?,
-        false,
-    );
+    let point = EncodedPoint::from_affine_coordinates(field_bytes(&x)?, field_bytes(&y)?, false);
     let vk = VerifyingKey::from_encoded_point(&point)
         .map_err(|e| Error::Verify(format!("AK public key: {e}")))?;
 
@@ -97,7 +93,7 @@ fn parse_tpms_attest(data: &[u8]) -> Result<AttestQuote> {
     let _ = r.u32()?;
     let _ = r.u8()?;
     let _ = r.u64()?; // firmwareVersion
-    // TPMS_QUOTE_INFO
+                      // TPMS_QUOTE_INFO
     let pcr_select = parse_pcr_selection_indices(&mut r)?;
     let pcr_digest = r.tpm2b()?.to_vec();
     Ok(AttestQuote {
@@ -158,7 +154,7 @@ fn extract_ecc_xy(tpmt_public: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let _name_alg = r.u16()?;
     let _attrs = r.u32()?;
     r.skip_tpm2b()?; // authPolicy
-    // TPMS_ECC_PARMS
+                     // TPMS_ECC_PARMS
     let sym = r.u16()?;
     if sym == crate::wire::TPM_ALG_AES {
         let _ = r.u16()?; // keyBits
@@ -229,8 +225,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
     (0..s.len())
         .step_by(2)
         .map(|i| {
-            u8::from_str_radix(&s[i..i + 2], 16)
-                .map_err(|e| Error::Verify(format!("hex: {e}")))
+            u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| Error::Verify(format!("hex: {e}")))
         })
         .collect()
 }

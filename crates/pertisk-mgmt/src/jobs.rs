@@ -33,6 +33,8 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) -> Opt
         "PROXMOX_UPLOAD_STORAGE",
         "PROXMOX_SSH_AUTO",
         "LAB_SUBNET",
+        "LAB_GATEWAY",
+        "NUTANIX_GATEWAY",
         "PROXMOX_IMAGES_DIR",
         "ARCH",
         "PERTISK_ARCH",
@@ -68,18 +70,12 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) -> Opt
         // this job's provider host (10.1.1.196 leftover must not hit 10.1.1.195).
         if let Some(rewritten) = rewrite_proxmox_ssh_for_provider(&ssh, provider_url) {
             cmd.env("PROXMOX_SSH", &rewritten);
-            note = Some(format!(
-                "PROXMOX_SSH={ssh} → {rewritten} (this provider)\n"
-            ));
+            note = Some(format!("PROXMOX_SSH={ssh} → {rewritten} (this provider)\n"));
         }
         using_ssh = true;
     } else if ssh_auto {
         if let Some(host) = pve_host_from_url(provider_url) {
-            if host
-                .chars()
-                .all(|c| c.is_ascii_digit() || c == '.')
-                && host.contains('.')
-            {
+            if host.chars().all(|c| c.is_ascii_digit() || c == '.') && host.contains('.') {
                 cmd.env("PROXMOX_SSH", format!("root@{host}"));
                 using_ssh = true;
             }
@@ -174,15 +170,20 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
     // Skip create/add if cluster is already deleting / gone.
     if matches!(
         kind.as_str(),
-        "create_cluster" | "add_node" | "upgrade_cluster" | "upgrade_os" | "update_config" | "remove_node"
-            | "resize_node" | "reboot_node"
+        "create_cluster"
+            | "add_node"
+            | "upgrade_cluster"
+            | "upgrade_os"
+            | "update_config"
+            | "remove_node"
+            | "resize_node"
+            | "reboot_node"
     ) {
         if let Some(cid) = &cluster_id {
-            let st: Option<String> =
-                sqlx::query_scalar("SELECT status FROM clusters WHERE id = ?")
-                    .bind(cid)
-                    .fetch_optional(state.pool())
-                    .await?;
+            let st: Option<String> = sqlx::query_scalar("SELECT status FROM clusters WHERE id = ?")
+                .bind(cid)
+                .fetch_optional(state.pool())
+                .await?;
             if st.as_deref() == Some("deleting") || st.is_none() {
                 let now = db::now_rfc3339();
                 sqlx::query(
@@ -390,11 +391,9 @@ async fn run_create_cluster(
 
     let secret = crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?;
 
-    let cp_vmid = cluster.cp_vmid.unwrap_or(
-        p.get("cp_vmid")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(210) as i64,
-    );
+    let cp_vmid = cluster
+        .cp_vmid
+        .unwrap_or(p.get("cp_vmid").and_then(|v| v.as_i64()).unwrap_or(210) as i64);
 
     let kc_dir = state.cfg().kubeconfigs_dir();
     std::fs::create_dir_all(&kc_dir)?;
@@ -644,10 +643,7 @@ async fn run_create_cluster(
         )?;
         seed_stub_nodes(state, &cluster, "ready").await?;
         let now = db::now_rfc3339();
-        let endpoint = cluster
-            .vip
-            .clone()
-            .unwrap_or_else(|| "127.0.0.1".into());
+        let endpoint = cluster.vip.clone().unwrap_or_else(|| "127.0.0.1".into());
         let kc = cluster_out.join("admin.conf");
         std::fs::write(&kc, "# stub kubeconfig\n")?;
         let stub_msg = format!(
@@ -685,7 +681,8 @@ async fn run_create_cluster(
             let mut lines = BufReader::new(out).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let _ = append_log(&log_path_out, &format!("{line}\n"));
-                let _ = apply_create_log_progress(&pool_out, &cid_out, &cluster_name_out, &line).await;
+                let _ =
+                    apply_create_log_progress(&pool_out, &cid_out, &cluster_name_out, &line).await;
             }
         }
     });
@@ -694,7 +691,8 @@ async fn run_create_cluster(
             let mut lines = BufReader::new(err).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let _ = append_log(&log_path_err, &format!("{line}\n"));
-                let _ = apply_create_log_progress(&pool_err, &cid_err, &cluster_name_err, &line).await;
+                let _ =
+                    apply_create_log_progress(&pool_err, &cid_err, &cluster_name_err, &line).await;
             }
         }
     });
@@ -733,13 +731,9 @@ async fn run_create_cluster(
 
     // Mark all planned nodes ready, then sync IPs / versions from kubectl.
     seed_stub_nodes(state, &cluster, "ready").await?;
-    let _ = crate::node_sync::sync_cluster_nodes(
-        state.pool(),
-        cid,
-        Some(kc.as_path()),
-        Some(log_path),
-    )
-    .await;
+    let _ =
+        crate::node_sync::sync_cluster_nodes(state.pool(), cid, Some(kc.as_path()), Some(log_path))
+            .await;
     Ok(())
 }
 
@@ -805,12 +799,7 @@ fn endpoint_from_kubeconfig(path: &std::path::Path) -> Option<String> {
                 .trim_start_matches("https://")
                 .trim_start_matches("http://");
             if let Some(rest) = hostport.strip_prefix('[') {
-                return Some(
-                    rest.split(']')
-                        .next()
-                        .unwrap_or(rest)
-                        .to_string(),
-                );
+                return Some(rest.split(']').next().unwrap_or(rest).to_string());
             }
             let host = hostport.split(':').next().unwrap_or(hostport);
             if !host.is_empty() {
@@ -898,15 +887,13 @@ async fn mark_nodes_status(
     to: &str,
 ) -> anyhow::Result<()> {
     let now = db::now_rfc3339();
-    sqlx::query(
-        "UPDATE nodes SET status = ?, updated_at = ? WHERE cluster_id = ? AND status = ?",
-    )
-    .bind(to)
-    .bind(&now)
-    .bind(cluster_id)
-    .bind(from)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE nodes SET status = ?, updated_at = ? WHERE cluster_id = ? AND status = ?")
+        .bind(to)
+        .bind(&now)
+        .bind(cluster_id)
+        .bind(from)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -932,8 +919,17 @@ async fn apply_create_log_progress(
     {
         if let (Some(vmid), Some(name)) = (extract_kv(rest, "VMID"), extract_kv(rest, "name")) {
             if let Ok(vmid_n) = vmid.parse::<i64>() {
-                touch_node_progress(pool, cluster_id, &name, role, Some(vmid_n), None, "provisioning", &now)
-                    .await?;
+                touch_node_progress(
+                    pool,
+                    cluster_id,
+                    &name,
+                    role,
+                    Some(vmid_n),
+                    None,
+                    "provisioning",
+                    &now,
+                )
+                .await?;
             }
         }
         return Ok(());
@@ -984,8 +980,17 @@ async fn apply_create_log_progress(
             } else {
                 "worker"
             };
-            touch_node_progress(pool, cluster_id, name, role, None, None, "provisioning", &now)
-                .await?;
+            touch_node_progress(
+                pool,
+                cluster_id,
+                name,
+                role,
+                None,
+                None,
+                "provisioning",
+                &now,
+            )
+            .await?;
         }
         return Ok(());
     }
@@ -1122,9 +1127,7 @@ fn extract_kv<'a>(s: &'a str, key: &str) -> Option<&'a str> {
     let needle = format!("{key}=");
     let start = s.find(&needle)? + needle.len();
     let rest = &s[start..];
-    let end = rest
-        .find(char::is_whitespace)
-        .unwrap_or(rest.len());
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
     let v = rest[..end].trim();
     if v.is_empty() {
         None
@@ -1470,10 +1473,7 @@ async fn run_add_node(
             cluster.worker_disk_gb,
         )
     };
-    let memory = p
-        .get("memory")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(def_mem);
+    let memory = p.get("memory").and_then(|v| v.as_i64()).unwrap_or(def_mem);
     let cores = p.get("cores").and_then(|v| v.as_i64()).unwrap_or(def_cores);
     let disk_gb = p
         .get("disk_gb")
@@ -1527,7 +1527,10 @@ async fn run_add_node(
                 )?;
             }
             let name = format!("{}-cp-{new_cps}", cluster.name);
-            let vmid = cluster.cp_vmid.map(|b| b + new_cps - 1).unwrap_or(210 + new_cps - 1);
+            let vmid = cluster
+                .cp_vmid
+                .map(|b| b + new_cps - 1)
+                .unwrap_or(210 + new_cps - 1);
             sqlx::query("UPDATE clusters SET controlplanes = ?, updated_at = ? WHERE id = ?")
                 .bind(new_cps)
                 .bind(&now)
@@ -1706,9 +1709,7 @@ async fn run_add_node(
                     log_path,
                     &format!(
                         "ready {name}{}\n",
-                        ip.as_ref()
-                            .map(|i| format!(" @ {i}"))
-                            .unwrap_or_default()
+                        ip.as_ref().map(|i| format!(" @ {i}")).unwrap_or_default()
                     ),
                 )?;
             }
@@ -1717,13 +1718,12 @@ async fn run_add_node(
                 // Keep the optimistic workers/CP bump + error node row so Remove
                 // can delete the orphaned Proxmox VM; a count rollback would reuse
                 // the same vmid while the guest still exists.
-                let _ = sqlx::query(
-                    "UPDATE nodes SET status = 'error', updated_at = ? WHERE id = ?",
-                )
-                .bind(&now)
-                .bind(&node_id)
-                .execute(state.pool())
-                .await;
+                let _ =
+                    sqlx::query("UPDATE nodes SET status = 'error', updated_at = ? WHERE id = ?")
+                        .bind(&now)
+                        .bind(&node_id)
+                        .execute(state.pool())
+                        .await;
                 let _ = sqlx::query(
                     "UPDATE clusters SET status = 'ready', error = ?, updated_at = ? WHERE id = ?",
                 )
@@ -1756,13 +1756,9 @@ async fn run_add_node(
             .await
             {
                 Ok(snap) => {
-                    let _ = crate::node_sync::persist_snapshot_by_name(
-                        state.pool(),
-                        cid,
-                        name,
-                        &snap,
-                    )
-                    .await;
+                    let _ =
+                        crate::node_sync::persist_snapshot_by_name(state.pool(), cid, name, &snap)
+                            .await;
                     append_log(
                         log_path,
                         &format!(
@@ -1777,23 +1773,16 @@ async fn run_add_node(
                 }
             }
         }
-        let _ = crate::node_sync::sync_cluster_nodes(
-            state.pool(),
-            cid,
-            Some(&kc),
-            Some(log_path),
-        )
-        .await;
+        let _ = crate::node_sync::sync_cluster_nodes(state.pool(), cid, Some(&kc), Some(log_path))
+            .await;
     }
 
     let now = db::now_rfc3339();
-    sqlx::query(
-        "UPDATE clusters SET status = 'ready', error = NULL, updated_at = ? WHERE id = ?",
-    )
-    .bind(&now)
-    .bind(cid)
-    .execute(state.pool())
-    .await?;
+    sqlx::query("UPDATE clusters SET status = 'ready', error = NULL, updated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(cid)
+        .execute(state.pool())
+        .await?;
     append_log(log_path, "add-node complete\n")?;
     Ok(())
 }
@@ -1822,11 +1811,7 @@ fn add_node_script_path(state: &AppState, kind: &str) -> PathBuf {
 }
 
 fn adopt_node_script_path(state: &AppState) -> PathBuf {
-    let beside = state
-        .cfg()
-        .lab_up
-        .parent()
-        .map(|p| p.join("adopt-node.sh"));
+    let beside = state.cfg().lab_up.parent().map(|p| p.join("adopt-node.sh"));
     if let Some(p) = beside {
         if p.exists() {
             return p;
@@ -1906,11 +1891,10 @@ async fn run_adopt_node(
 
     let now = db::now_rfc3339();
     let (name, cp_index) = if role == "controlplane" {
-        let (cps_now,): (i64,) =
-            sqlx::query_as("SELECT controlplanes FROM clusters WHERE id = ?")
-                .bind(cid)
-                .fetch_one(state.pool())
-                .await?;
+        let (cps_now,): (i64,) = sqlx::query_as("SELECT controlplanes FROM clusters WHERE id = ?")
+            .bind(cid)
+            .fetch_one(state.pool())
+            .await?;
         let new_cps = cps_now + 1;
         if new_cps % 2 == 0 {
             append_log(
@@ -1953,7 +1937,7 @@ async fn run_adopt_node(
             .bind(&name)
             .fetch_optional(state.pool())
             .await?;
-        if clash.is_some() {
+    if clash.is_some() {
         // Roll back count bump
         if role == "controlplane" {
             let _ = sqlx::query(
@@ -2043,14 +2027,12 @@ async fn run_adopt_node(
     match stream_command(&mut cmd, log_path).await {
         Ok(_output) => {
             let now = db::now_rfc3339();
-            sqlx::query(
-                "UPDATE nodes SET status = 'ready', ip = ?, updated_at = ? WHERE id = ?",
-            )
-            .bind(&node_ip)
-            .bind(&now)
-            .bind(&node_id)
-            .execute(state.pool())
-            .await?;
+            sqlx::query("UPDATE nodes SET status = 'ready', ip = ?, updated_at = ? WHERE id = ?")
+                .bind(&node_ip)
+                .bind(&now)
+                .bind(&node_id)
+                .execute(state.pool())
+                .await?;
             append_log(log_path, &format!("ready {name} @ {node_ip}\n"))?;
         }
         Err(e) => {
@@ -2090,8 +2072,8 @@ async fn run_adopt_node(
         .await
         {
             Ok(snap) => {
-                let _ = crate::node_sync::persist_snapshot_by_id(state.pool(), &node_id, &snap)
-                    .await;
+                let _ =
+                    crate::node_sync::persist_snapshot_by_id(state.pool(), &node_id, &snap).await;
                 append_log(
                     log_path,
                     &format!(
@@ -2105,23 +2087,16 @@ async fn run_adopt_node(
                 append_log(log_path, &format!("warn: wait addresses {name}: {e}\n"))?;
             }
         }
-        let _ = crate::node_sync::sync_cluster_nodes(
-            state.pool(),
-            cid,
-            Some(&kc),
-            Some(log_path),
-        )
-        .await;
+        let _ = crate::node_sync::sync_cluster_nodes(state.pool(), cid, Some(&kc), Some(log_path))
+            .await;
     }
 
     let now = db::now_rfc3339();
-    sqlx::query(
-        "UPDATE clusters SET status = 'ready', error = NULL, updated_at = ? WHERE id = ?",
-    )
-    .bind(&now)
-    .bind(cid)
-    .execute(state.pool())
-    .await?;
+    sqlx::query("UPDATE clusters SET status = 'ready', error = NULL, updated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(cid)
+        .execute(state.pool())
+        .await?;
     append_log(log_path, "adopt-node complete\n")?;
     Ok(())
 }
@@ -2143,16 +2118,11 @@ async fn resolve_cp_ip(
     if let Some(vip) = cluster.vip.as_ref().filter(|v| !v.is_empty()) {
         return Ok(vip.clone());
     }
-    anyhow::bail!(
-        "no control-plane IP found — wait until CP nodes have IPs before adding nodes"
-    )
+    anyhow::bail!("no control-plane IP found — wait until CP nodes have IPs before adding nodes")
 }
 
 async fn stream_command(cmd: &mut Command, log_path: &str) -> anyhow::Result<String> {
-    append_log(
-        log_path,
-        &format!("$ {:?}\n", cmd.as_std().get_program()),
-    )?;
+    append_log(log_path, &format!("$ {:?}\n", cmd.as_std().get_program()))?;
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -2328,8 +2298,7 @@ async fn remove_one_node(
 
     if let Some(vmid) = node.2 {
         if let Ok(provider) = provider_row_for_cluster(state, cid).await {
-            if let Ok(secret) =
-                crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)
+            if let Ok(secret) = crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)
             {
                 let cluster_name: String =
                     sqlx::query_scalar("SELECT name FROM clusters WHERE id = ?")
@@ -2349,8 +2318,7 @@ async fn remove_one_node(
                         append_log(log_path, &format!("warn: delete {}: {e}\n", node.0))?;
                     }
                     // Legacy inventory name {cluster}-{vmid}
-                    let legacy =
-                        crate::vsphere::VsphereClient::vm_name(Some(&cluster_name), vmid);
+                    let legacy = crate::vsphere::VsphereClient::vm_name(Some(&cluster_name), vmid);
                     if legacy != node.0 {
                         let _ = client.delete_vm(Some(&cluster_name), vmid).await;
                     }
@@ -2365,16 +2333,12 @@ async fn remove_one_node(
                     if let Err(e) = client.delete_vm_by_name(&node.0).await {
                         append_log(log_path, &format!("warn: delete {}: {e}\n", node.0))?;
                     }
-                    let legacy =
-                        crate::nutanix::NutanixClient::vm_name(Some(&cluster_name), vmid);
+                    let legacy = crate::nutanix::NutanixClient::vm_name(Some(&cluster_name), vmid);
                     if legacy != node.0 {
                         let _ = client.delete_vm(Some(&cluster_name), vmid).await;
                     }
                 } else {
-                    append_log(
-                        log_path,
-                        &format!("deleting VM {vmid} ({})\n", node.0),
-                    )?;
+                    append_log(log_path, &format!("deleting VM {vmid} ({})\n", node.0))?;
                     let client = crate::proxmox::ProxmoxClient {
                         url: provider.url,
                         token_id: provider.token_id,
@@ -2485,10 +2449,7 @@ async fn run_resize_node(
                     .grow_vm_disk(&vm_name, want)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
-                append_log(
-                    log_path,
-                    &format!("grew ESXi disk {actual} → {want} GiB\n"),
-                )?;
+                append_log(log_path, &format!("grew ESXi disk {actual} → {want} GiB\n"))?;
                 disk_grew_hypervisor = true;
             } else if disk_requested {
                 append_log(
@@ -2624,10 +2585,16 @@ async fn run_resize_node(
                 )?;
                 guest_ok = wait_and_grow_guest_disk(state, ip, log_path).await?;
             } else {
-                append_log(log_path, "pertiskctl missing — cannot grow guest EPHEMERAL via API\n")?;
+                append_log(
+                    log_path,
+                    "pertiskctl missing — cannot grow guest EPHEMERAL via API\n",
+                )?;
             }
         } else {
-            append_log(log_path, "node has no IP — cannot grow guest EPHEMERAL via API\n")?;
+            append_log(
+                log_path,
+                "node has no IP — cannot grow guest EPHEMERAL via API\n",
+            )?;
         }
         if !guest_ok {
             append_log(
@@ -2664,8 +2631,7 @@ async fn run_resize_node(
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             } else {
-                let secret =
-                    crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?;
+                let secret = crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?;
                 let client = crate::proxmox::ProxmoxClient {
                     url: provider.url.clone(),
                     token_id: provider.token_id.clone(),
@@ -2687,16 +2653,14 @@ async fn run_resize_node(
     }
 
     let now = db::now_rfc3339();
-    sqlx::query(
-        "UPDATE nodes SET memory = ?, cores = ?, disk_gb = ?, updated_at = ? WHERE id = ?",
-    )
-    .bind(want_mem)
-    .bind(want_cores)
-    .bind(apply_disk)
-    .bind(&now)
-    .bind(node_id)
-    .execute(state.pool())
-    .await?;
+    sqlx::query("UPDATE nodes SET memory = ?, cores = ?, disk_gb = ?, updated_at = ? WHERE id = ?")
+        .bind(want_mem)
+        .bind(want_cores)
+        .bind(apply_disk)
+        .bind(&now)
+        .bind(node_id)
+        .execute(state.pool())
+        .await?;
     append_log(log_path, &format!("hardware updated for {name}\n"))?;
     Ok(())
 }
@@ -2810,7 +2774,10 @@ async fn wait_and_grow_guest_disk(
             } else {
                 append_log(
                     log_path,
-                    &format!("grow-disk failed (exit {}) — older image may lack GrowDisk RPC\n", o.status),
+                    &format!(
+                        "grow-disk failed (exit {}) — older image may lack GrowDisk RPC\n",
+                        o.status
+                    ),
                 )?;
                 Ok(false)
             }
@@ -2980,9 +2947,7 @@ async fn run_upgrade(
     let zero_downtime = controlplanes >= 3;
     append_log(
         log_path,
-        &format!(
-            "rolling upgrade → {version} (kubeadm-shaped: CP one-by-one, then workers)\n"
-        ),
+        &format!("rolling upgrade → {version} (kubeadm-shaped: CP one-by-one, then workers)\n"),
     )?;
     if zero_downtime {
         append_log(
@@ -3233,11 +3198,7 @@ async fn run_upgrade_os(
     for (i, (id, name, role, ip)) in cps.iter().enumerate() {
         append_log(
             log_path,
-            &format!(
-                "==> CP {}/{} {name} (os {verified})\n",
-                i + 1,
-                cps.len()
-            ),
+            &format!("==> CP {}/{} {name} (os {verified})\n", i + 1, cps.len()),
         )?;
         upgrade_os_node(
             state,
@@ -3296,7 +3257,10 @@ async fn upgrade_os_node(
     }
 
     wait_api_ready(kubeconfig, log_path).await?;
-    append_log(log_path, &format!("stage OS bundle on {name} via hostPath\n"))?;
+    append_log(
+        log_path,
+        &format!("stage OS bundle on {name} via hostPath\n"),
+    )?;
     stage_os_bundle_via_pod(kubeconfig, name, bundle_dir, log_path).await?;
 
     if do_drain {
@@ -3346,7 +3310,10 @@ async fn upgrade_os_node(
     }
 
     if reboot {
-        append_log(log_path, &format!("wait Machine API {ip}:50000 after OS reboot\n"))?;
+        append_log(
+            log_path,
+            &format!("wait Machine API {ip}:50000 after OS reboot\n"),
+        )?;
         wait_guest_api(ip, log_path, 150).await?;
     }
 
@@ -3367,10 +3334,7 @@ async fn upgrade_os_node(
             }
             Err(e) => append_log(log_path, &format!("mark-boot-good: {e}\n"))?,
         }
-        append_log(
-            log_path,
-            &format!("mark-boot-good retry {attempt}/8\n"),
-        )?;
+        append_log(log_path, &format!("mark-boot-good retry {attempt}/8\n"))?;
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
     if !marked {
@@ -3413,14 +3377,12 @@ async fn upgrade_os_node(
     }
 
     let now = db::now_rfc3339();
-    sqlx::query(
-        "UPDATE nodes SET status = 'ready', os_version = ?, updated_at = ? WHERE id = ?",
-    )
-    .bind(&got_ver)
-    .bind(&now)
-    .bind(id)
-    .execute(state.pool())
-    .await?;
+    sqlx::query("UPDATE nodes SET status = 'ready', os_version = ?, updated_at = ? WHERE id = ?")
+        .bind(&got_ver)
+        .bind(&now)
+        .bind(id)
+        .execute(state.pool())
+        .await?;
     let _ = crate::node_sync::sync_cluster_nodes(
         state.pool(),
         cluster_id,
@@ -3550,7 +3512,10 @@ spec:
         .stdout(Stdio::piped())
         .spawn()
         .context("spawn tar")?;
-    let stdout = tar.stdout.take().ok_or_else(|| anyhow::anyhow!("tar stdout"))?;
+    let stdout = tar
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("tar stdout"))?;
     let copy = Command::new("kubectl")
         .args([
             "--kubeconfig",
@@ -3671,7 +3636,10 @@ async fn wait_guest_api(ip: &str, log_path: &str, attempts: u32) -> anyhow::Resu
             .and_then(|r| r.ok())
             .is_some()
         {
-            append_log(log_path, &format!("guest API up ({addr}) after ~{}s\n", i * 2))?;
+            append_log(
+                log_path,
+                &format!("guest API up ({addr}) after ~{}s\n", i * 2),
+            )?;
             sleep(Duration::from_secs(3)).await;
             return Ok(());
         }
@@ -3734,10 +3702,11 @@ async fn upgrade_node_zero_downtime(
             if let Some(cfg_path) = resolve_node_machine_config(state, cluster_name, name) {
                 let yaml = std::fs::read_to_string(&cfg_path)?;
                 let patched = patch_kubernetes_version(&yaml, &want);
-                let tmp = state
-                    .cfg()
-                    .data_dir
-                    .join(format!("upgrade-{}-{}.yaml", id, Uuid::new_v4()));
+                let tmp =
+                    state
+                        .cfg()
+                        .data_dir
+                        .join(format!("upgrade-{}-{}.yaml", id, Uuid::new_v4()));
                 std::fs::write(&tmp, &patched)?;
                 let _ = std::fs::write(&cfg_path, &patched);
                 append_log(
@@ -3851,14 +3820,12 @@ async fn upgrade_node_zero_downtime(
     }
 
     let now = db::now_rfc3339();
-    sqlx::query(
-        "UPDATE nodes SET status = 'ready', k8s_version = ?, updated_at = ? WHERE id = ?",
-    )
-    .bind(&want)
-    .bind(&now)
-    .bind(id)
-    .execute(state.pool())
-    .await?;
+    sqlx::query("UPDATE nodes SET status = 'ready', k8s_version = ?, updated_at = ? WHERE id = ?")
+        .bind(&want)
+        .bind(&now)
+        .bind(id)
+        .execute(state.pool())
+        .await?;
     Ok(())
 }
 
@@ -4000,20 +3967,14 @@ spec:
         );
         append_log(
             log_path,
-            &format!(
-                "upgrade agent apply attempt {attempt}/8 failed; retrying after API wait\n"
-            ),
+            &format!("upgrade agent apply attempt {attempt}/8 failed; retrying after API wait\n"),
         )?;
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
     let _ = std::fs::remove_file(&tmp);
     if !applied {
         // Config reload may have already bumped the node; treat as soft failure.
-        if node_kubelet_version(kubeconfig, node_name)
-            .await
-            .as_deref()
-            == Some(version)
-        {
+        if node_kubelet_version(kubeconfig, node_name).await.as_deref() == Some(version) {
             append_log(
                 log_path,
                 &format!(
@@ -4022,9 +3983,7 @@ spec:
             )?;
             return Ok(());
         }
-        anyhow::bail!(
-            "failed to create upgrade agent pod on {node_name}: {last_err}"
-        );
+        anyhow::bail!("failed to create upgrade agent pod on {node_name}: {last_err}");
     }
 
     // Wait for Succeeded/Failed, or for the node kubelet version to already match
@@ -4032,11 +3991,7 @@ spec:
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
     let mut phase = String::new();
     while std::time::Instant::now() < deadline {
-        if node_kubelet_version(kubeconfig, node_name)
-            .await
-            .as_deref()
-            == Some(version)
-        {
+        if node_kubelet_version(kubeconfig, node_name).await.as_deref() == Some(version) {
             append_log(
                 log_path,
                 &format!("upgrade agent on {node_name}: kubelet already {version}\n"),
@@ -4111,7 +4066,10 @@ spec:
             ),
         )?;
     } else {
-        append_log(log_path, &format!("upgrade agent on {node_name} succeeded\n"))?;
+        append_log(
+            log_path,
+            &format!("upgrade agent on {node_name} succeeded\n"),
+        )?;
     }
     Ok(())
 }
@@ -4244,9 +4202,7 @@ async fn wait_api_ready(kubeconfig: &str, log_path: &str) -> anyhow::Result<()> 
             };
             append_log(
                 log_path,
-                &format!(
-                    "wait API (VIP may be settling after CP upgrade)… {detail}\n"
-                ),
+                &format!("wait API (VIP may be settling after CP upgrade)… {detail}\n"),
             )?;
             logged = true;
         }
@@ -4323,25 +4279,23 @@ async fn run_update_config(
 ) -> anyhow::Result<()> {
     let cid = cluster_id.ok_or_else(|| anyhow::anyhow!("cluster_id required"))?;
     let p: serde_json::Value = serde_json::from_str(payload)?;
-    let config_yaml = p
-        .get("config_yaml")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let config_yaml = p.get("config_yaml").and_then(|v| v.as_str()).unwrap_or("");
     let node_id = p.get("node_id").and_then(|v| v.as_str());
 
     if !config_yaml.contains("version:") {
-        anyhow::bail!("config_yaml missing version (expected v1alpha1); partial dashboard-only YAML is OK");
+        anyhow::bail!(
+            "config_yaml missing version (expected v1alpha1); partial dashboard-only YAML is OK"
+        );
     }
 
     let public_url = state.cfg().public_url.trim();
-    let config_yaml = if !public_url.is_empty()
-        && !crate::config::public_url_host_unusable(public_url)
-    {
-        pertisk_config::ensure_dashboard_mgmt_url(config_yaml, public_url)
-            .map_err(|e| anyhow::anyhow!("inject dashboard.mgmt_url: {e}"))?
-    } else {
-        config_yaml.to_string()
-    };
+    let config_yaml =
+        if !public_url.is_empty() && !crate::config::public_url_host_unusable(public_url) {
+            pertisk_config::ensure_dashboard_mgmt_url(config_yaml, public_url)
+                .map_err(|e| anyhow::anyhow!("inject dashboard.mgmt_url: {e}"))?
+        } else {
+            config_yaml.to_string()
+        };
     let config_yaml = config_yaml.as_str();
 
     let nodes = if let Some(nid) = node_id {

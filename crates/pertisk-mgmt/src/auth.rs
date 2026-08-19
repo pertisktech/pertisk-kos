@@ -227,7 +227,17 @@ pub async fn get_user(pool: &SqlitePool, id: &str) -> ApiResult<Option<UserRecor
     .fetch_optional(pool)
     .await?;
     Ok(row.map(
-        |(id, username, email, role, password_hash, auth0_sub, disabled, created_at, updated_at)| {
+        |(
+            id,
+            username,
+            email,
+            role,
+            password_hash,
+            auth0_sub,
+            disabled,
+            created_at,
+            updated_at,
+        )| {
             UserRecord {
                 id,
                 username,
@@ -263,7 +273,17 @@ pub async fn list_users(pool: &SqlitePool) -> ApiResult<Vec<UserRecord>> {
     Ok(rows
         .into_iter()
         .map(
-            |(id, username, email, role, password_hash, auth0_sub, disabled, created_at, updated_at)| {
+            |(
+                id,
+                username,
+                email,
+                role,
+                password_hash,
+                auth0_sub,
+                disabled,
+                created_at,
+                updated_at,
+            )| {
                 UserRecord {
                     id,
                     username,
@@ -587,20 +607,30 @@ mod tests {
     #[tokio::test]
     async fn auth0_only_source() {
         let pool = test_pool().await;
-        let (user, created) =
-            find_or_create_auth0_user(&pool, "auth0|1", "sso@ex.com", Some("sso@ex.com"), Role::Viewer)
-                .await
-                .unwrap();
+        let (user, created) = find_or_create_auth0_user(
+            &pool,
+            "auth0|1",
+            "sso@ex.com",
+            Some("sso@ex.com"),
+            Role::Viewer,
+        )
+        .await
+        .unwrap();
         assert!(created);
         let rec = get_user(&pool, &user.id).await.unwrap().unwrap();
         assert_eq!(rec.source(), "auth0");
         assert!(rec.is_auth0_only());
         assert!(!rec.is_local());
 
-        let (_, created2) =
-            find_or_create_auth0_user(&pool, "auth0|1", "sso@ex.com", Some("sso@ex.com"), Role::Admin)
-                .await
-                .unwrap();
+        let (_, created2) = find_or_create_auth0_user(
+            &pool,
+            "auth0|1",
+            "sso@ex.com",
+            Some("sso@ex.com"),
+            Role::Admin,
+        )
+        .await
+        .unwrap();
         assert!(!created2);
     }
 }

@@ -24,8 +24,8 @@ use pertisk_proto::{
     MarkBootGoodRequest, MarkBootGoodResponse, NetInspectRequest, NetInspectResponse, NetInterface,
     PcrValue, QuoteRequest, QuoteResponse, RebootRequest, RebootResponse, ResetRequest,
     ResetResponse, ServiceListRequest, ServiceListResponse, ServiceStatus, ShutdownRequest,
-    ShutdownResponse, UpgradeRequest, UpgradeResponse, UpgradeStatusRequest,
-    UpgradeStatusResponse, ValidateConfigurationResponse, VersionRequest, VersionResponse,
+    ShutdownResponse, UpgradeRequest, UpgradeResponse, UpgradeStatusRequest, UpgradeStatusResponse,
+    ValidateConfigurationResponse, VersionRequest, VersionResponse,
 };
 use pertisk_update::{apply_bundle, mark_boot_good, BootMeta, SlotLayout};
 use tokio_stream::wrappers::ReceiverStream;
@@ -514,12 +514,7 @@ impl MachineService for MachineSvc {
         let cfg =
             MachineConfig::from_yaml(&yaml).map_err(|e| Status::invalid_argument(e.to_string()))?;
         let cluster_name = if req.cluster_name.is_empty() {
-            let host = cfg
-                .machine
-                .network
-                .hostname
-                .as_deref()
-                .unwrap_or("pertisk");
+            let host = cfg.machine.network.hostname.as_deref().unwrap_or("pertisk");
             strip_cp_suffix(host)
         } else {
             req.cluster_name.clone()
@@ -840,10 +835,7 @@ impl MachineService for MachineSvc {
             .map_err(|e| Status::internal(format!("reset task: {e}")))?
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let mut message = format!(
-            "soft reset cleared {} path(s)",
-            result.cleared.len()
-        );
+        let mut message = format!("soft reset cleared {} path(s)", result.cleared.len());
         if !result.warnings.is_empty() {
             message.push_str(&format!("; {} warning(s)", result.warnings.len()));
         }

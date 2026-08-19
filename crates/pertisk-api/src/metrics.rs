@@ -308,8 +308,11 @@ mod tests {
             .distinguished_name
             .push(rcgen::DnType::CommonName, "pertisk-test-ca");
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
-        let issuer = Issuer::from_ca_cert_pem(&ca_cert.pem(), KeyPair::from_pem(&ca_key.serialize_pem()).unwrap())
-            .unwrap();
+        let issuer = Issuer::from_ca_cert_pem(
+            &ca_cert.pem(),
+            KeyPair::from_pem(&ca_key.serialize_pem()).unwrap(),
+        )
+        .unwrap();
 
         let server_key = KeyPair::generate().unwrap();
         let mut server_params = CertificateParams::new(vec!["localhost".into()]).unwrap();

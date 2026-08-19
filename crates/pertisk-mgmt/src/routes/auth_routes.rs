@@ -7,8 +7,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::auth::{
-    audit, find_or_create_auth0_user, find_user_by_username, issue_token, verify_password, AuthUser,
-    Role,
+    audit, find_or_create_auth0_user, find_user_by_username, issue_token, verify_password,
+    AuthUser, Role,
 };
 use crate::error::{ApiResult, AppError};
 use crate::mail::{self, auth0_new_user_email};
@@ -65,11 +65,15 @@ struct TokenResp {
     provider: String,
 }
 
-async fn login(State(state): State<AppState>, Json(body): Json<LoginReq>) -> ApiResult<Json<TokenResp>> {
+async fn login(
+    State(state): State<AppState>,
+    Json(body): Json<LoginReq>,
+) -> ApiResult<Json<TokenResp>> {
     if !state.cfg().auth_mode.allows_local() {
         return Err(AppError::bad("local auth disabled"));
     }
-    let Some((id, hash, role, disabled)) = find_user_by_username(state.pool(), &body.username).await?
+    let Some((id, hash, role, disabled)) =
+        find_user_by_username(state.pool(), &body.username).await?
     else {
         return Err(AppError::Unauthorized);
     };
@@ -143,7 +147,10 @@ async fn oidc_start(State(state): State<AppState>) -> ApiResult<impl IntoRespons
     }
     let domain = state.cfg().auth0_domain.as_ref().unwrap();
     let client_id = state.cfg().auth0_client_id.as_ref().unwrap();
-    let redirect = format!("{}/api/auth/oidc/callback", state.cfg().public_url.trim_end_matches('/'));
+    let redirect = format!(
+        "{}/api/auth/oidc/callback",
+        state.cfg().public_url.trim_end_matches('/')
+    );
     let state_nonce = Uuid::new_v4().to_string();
     // prompt=login forces Auth0 to show the login / account UI instead of
     // silently reusing an existing SSO cookie.
@@ -175,7 +182,10 @@ async fn oidc_callback(
     let domain = cfg.auth0_domain.as_ref().unwrap();
     let client_id = cfg.auth0_client_id.as_ref().unwrap();
     let client_secret = cfg.auth0_client_secret.as_ref().unwrap();
-    let redirect = format!("{}/api/auth/oidc/callback", cfg.public_url.trim_end_matches('/'));
+    let redirect = format!(
+        "{}/api/auth/oidc/callback",
+        cfg.public_url.trim_end_matches('/')
+    );
 
     let token_url = format!("https://{domain}/oauth/token");
     let resp = state

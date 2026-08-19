@@ -37,9 +37,10 @@ for raw in "${PLATFORMS[@]}"; do
   plat="$(echo "${raw}" | xargs)"
   [[ -n "${plat}" ]] || continue
   echo "==> build pertisk-mgmt packages VERSION=${VERSION} PLATFORM=${plat} → ${OUT_DIR}"
+  # bash 3.2 + set -u: empty "${arr[@]}" is unbound (macOS). Only expand when set.
   if [[ "${HAS_BUILDX}" -eq 1 ]]; then
     docker buildx build \
-      "${NET_ARGS[@]}" \
+      ${NET_ARGS[@]+"${NET_ARGS[@]}"} \
       --platform "${plat}" \
       --build-arg "VERSION=${VERSION}" \
       -f "${DOCKERFILE}" \
@@ -49,7 +50,7 @@ for raw in "${PLATFORMS[@]}"; do
   else
     tag="pertisk-mgmt-pkg:${VERSION}-$(echo "${plat}" | tr '/' '-')"
     docker build \
-      "${NET_ARGS[@]}" \
+      ${NET_ARGS[@]+"${NET_ARGS[@]}"} \
       --platform "${plat}" \
       --build-arg "VERSION=${VERSION}" \
       -f "${DOCKERFILE}" \

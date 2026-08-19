@@ -1,5 +1,5 @@
-mod auth_routes;
 mod audit;
+mod auth_routes;
 mod clusters;
 mod dashboard;
 mod events;

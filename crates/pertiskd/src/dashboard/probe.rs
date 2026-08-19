@@ -238,15 +238,15 @@ fn paint_target_winsize() -> Option<(u16, u16, &'static str)> {
             true,
         ));
     }
-    paths.push((
-        std::path::PathBuf::from("/dev/ttyS0"),
-        "ioctl-ttyS0",
-        true,
-    ));
+    paths.push((std::path::PathBuf::from("/dev/ttyS0"), "ioctl-ttyS0", true));
     // Deliberately omit /dev/console and /dev/tty0.
 
     for (path, src, serial_like) in paths {
-        let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(&path) else {
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+        else {
             continue;
         };
         use std::os::unix::io::AsRawFd;
@@ -280,10 +280,7 @@ fn clamp_to_paint_target(caps: &mut ConsoleCaps) {
     apply_paint_target_clamp(caps, paint_target_winsize());
 }
 
-fn apply_paint_target_clamp(
-    caps: &mut ConsoleCaps,
-    target: Option<(u16, u16, &'static str)>,
-) {
+fn apply_paint_target_clamp(caps: &mut ConsoleCaps, target: Option<(u16, u16, &'static str)>) {
     let Some((rows, cols, src)) = target else {
         return;
     };
@@ -319,7 +316,11 @@ fn best_winsize() -> Option<(u16, u16, &'static str)> {
     ];
     let mut best: Option<(u16, u16, u32, &'static str)> = None;
     for &(path, src) in candidates {
-        let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(path) else {
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+        else {
             continue;
         };
         use std::os::unix::io::AsRawFd;

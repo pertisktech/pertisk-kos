@@ -108,10 +108,7 @@ fn normalize_console(raw: &str) -> Option<String> {
     if !name.starts_with("tty") {
         return None;
     }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return None;
     }
     Some(name.to_string())
@@ -148,10 +145,8 @@ mod tests {
 
     #[test]
     fn parses_console_tty() {
-        let d = resolve_from_cmdline_and_env(
-            "pertisk.dashboard.console=ttyS0 console=tty0",
-            |_| None,
-        );
+        let d =
+            resolve_from_cmdline_and_env("pertisk.dashboard.console=ttyS0 console=tty0", |_| None);
         assert_eq!(d.console.as_deref(), Some("ttyS0"));
     }
 
@@ -163,8 +158,7 @@ mod tests {
 
     #[test]
     fn accepts_dev_prefix() {
-        let d =
-            resolve_from_cmdline_and_env("pertisk.dashboard.console=/dev/ttyAMA0", |_| None);
+        let d = resolve_from_cmdline_and_env("pertisk.dashboard.console=/dev/ttyAMA0", |_| None);
         assert_eq!(d.console.as_deref(), Some("ttyAMA0"));
     }
 

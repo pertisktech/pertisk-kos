@@ -28,8 +28,7 @@ impl AppState {
             .build()
             .expect("http client");
         let metrics_http = if cfg.metrics_tls.is_some() {
-            build_metrics_http_client(cfg.metrics_tls.as_ref())
-                .expect("metrics mTLS HTTP client")
+            build_metrics_http_client(cfg.metrics_tls.as_ref()).expect("metrics mTLS HTTP client")
         } else {
             reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(60))
@@ -67,9 +66,7 @@ impl AppState {
         job_kind: Option<&str>,
         status: &str,
     ) {
-        self.inner
-            .events
-            .job(cluster_id, job_id, job_kind, status);
+        self.inner.events.job(cluster_id, job_id, job_kind, status);
     }
 
     pub fn emit_cluster(&self, cluster_id: &str, status: &str) {

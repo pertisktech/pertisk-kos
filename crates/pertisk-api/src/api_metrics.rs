@@ -28,10 +28,7 @@ pub fn record(method: &str, elapsed: Duration) {
 
 /// Snapshot for Prometheus text rendering.
 pub fn snapshot() -> ApiMetricsSnapshot {
-    let by_method = BY_METHOD
-        .lock()
-        .map(|m| m.clone())
-        .unwrap_or_default();
+    let by_method = BY_METHOD.lock().map(|m| m.clone()).unwrap_or_default();
     ApiMetricsSnapshot {
         by_method,
         duration_sum_seconds: DURATION_SUM_NS.load(Ordering::Relaxed) as f64 / 1e9,

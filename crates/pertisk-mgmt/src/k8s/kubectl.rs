@@ -52,12 +52,11 @@ pub async fn resolve_cluster_kubeconfig(
     state: &AppState,
     cluster_id: &str,
 ) -> ApiResult<(PathBuf, String)> {
-    let row: Option<(Option<String>, String, String)> = sqlx::query_as(
-        "SELECT kubeconfig_path, name, status FROM clusters WHERE id = ?",
-    )
-    .bind(cluster_id)
-    .fetch_optional(state.pool())
-    .await?;
+    let row: Option<(Option<String>, String, String)> =
+        sqlx::query_as("SELECT kubeconfig_path, name, status FROM clusters WHERE id = ?")
+            .bind(cluster_id)
+            .fetch_optional(state.pool())
+            .await?;
     let Some((path, name, _status)) = row else {
         return Err(AppError::NotFound);
     };
@@ -65,13 +64,7 @@ pub async fn resolve_cluster_kubeconfig(
     if let Some(p) = path.filter(|s| !s.is_empty()) {
         candidates.push(PathBuf::from(p));
     }
-    candidates.push(
-        state
-            .cfg()
-            .kubeconfigs_dir()
-            .join(&name)
-            .join("admin.conf"),
-    );
+    candidates.push(state.cfg().kubeconfigs_dir().join(&name).join("admin.conf"));
     candidates.push(PathBuf::from("out/cluster/admin.conf"));
     for c in candidates {
         if c.is_file() {
@@ -86,12 +79,11 @@ pub async fn resolve_ready_kubeconfig(
     state: &AppState,
     cluster_id: &str,
 ) -> ApiResult<(PathBuf, String)> {
-    let row: Option<(Option<String>, String, String)> = sqlx::query_as(
-        "SELECT kubeconfig_path, name, status FROM clusters WHERE id = ?",
-    )
-    .bind(cluster_id)
-    .fetch_optional(state.pool())
-    .await?;
+    let row: Option<(Option<String>, String, String)> =
+        sqlx::query_as("SELECT kubeconfig_path, name, status FROM clusters WHERE id = ?")
+            .bind(cluster_id)
+            .fetch_optional(state.pool())
+            .await?;
     let Some((path, name, status)) = row else {
         return Err(AppError::NotFound);
     };
@@ -104,13 +96,7 @@ pub async fn resolve_ready_kubeconfig(
     if let Some(p) = path.filter(|s| !s.is_empty()) {
         candidates.push(PathBuf::from(p));
     }
-    candidates.push(
-        state
-            .cfg()
-            .kubeconfigs_dir()
-            .join(&name)
-            .join("admin.conf"),
-    );
+    candidates.push(state.cfg().kubeconfigs_dir().join(&name).join("admin.conf"));
     for c in candidates {
         if c.is_file() {
             return Ok((c, name));
@@ -136,9 +122,8 @@ pub async fn kubectl_json(kubeconfig: &Path, args: &[&str]) -> ApiResult<serde_j
         }));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    serde_json::from_str(stdout.trim()).map_err(|e| {
-        AppError::bad(format!("kubectl json parse: {e}"))
-    })
+    serde_json::from_str(stdout.trim())
+        .map_err(|e| AppError::bad(format!("kubectl json parse: {e}")))
 }
 
 pub async fn kubectl_ok(kubeconfig: &Path, args: &[&str]) -> ApiResult<()> {

@@ -136,27 +136,38 @@ mod unix_impl {
             refresh_state(services, &state);
 
             // Keep trying DHCP if we came up before the NIC/carrier/server was ready.
+            // First boot has no machine config yet (apply needs :50000) — still retry
+            // default DHCP so AHV IPAM / slow virtio can bind an address.
             if !dhcp_ok && std::time::Instant::now() >= dhcp_retry_at {
-                if let Some(ref cfg) = cfg {
-                    match pertisk_net::apply_network(&cfg.machine.network) {
-                        Ok(()) => {
-                            dhcp_ok = iface_has_address(Some(cfg));
-                            if dhcp_ok {
-                                info!("DHCP retry succeeded");
-                            } else {
-                                warn!("DHCP retry produced no address; will try again");
-                                dhcp_retry_at =
-                                    std::time::Instant::now() + std::time::Duration::from_secs(15);
+                let mut ok = false;
+                match pertisk_net::apply_provider_netcfg() {
+                    Ok(true) => ok = true,
+                    other => {
+                        if let Err(err) = other {
+                            warn!(error = %err, "provider netcfg retry failed");
+                        }
+                        let net = cfg
+                            .as_ref()
+                            .map(|c| c.machine.network.clone())
+                            .unwrap_or_else(pertisk_config::Network::dhcp_default);
+                        match pertisk_net::apply_network(&net) {
+                            Ok(()) => ok = true,
+                            Err(err) => {
+                                warn!(error = %err, "DHCP retry failed");
                             }
                         }
-                        Err(err) => {
-                            warn!(error = %err, "DHCP retry failed");
-                            dhcp_retry_at =
-                                std::time::Instant::now() + std::time::Duration::from_secs(15);
-                        }
                     }
-                } else {
-                    dhcp_retry_at = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                }
+                if ok {
+                    dhcp_ok = iface_has_address(cfg.as_ref());
+                    if dhcp_ok {
+                        info!("network retry succeeded");
+                    } else {
+                        warn!("network retry produced no address; will try again");
+                    }
+                }
+                if !dhcp_ok {
+                    dhcp_retry_at = std::time::Instant::now() + std::time::Duration::from_secs(15);
                 }
             }
 

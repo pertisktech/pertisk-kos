@@ -153,11 +153,7 @@ fn run_ctr(ctr: &str, sub: &[&str]) -> Result<String, String> {
         .map_err(|e| format!("spawn {ctr}: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        return Err(format!(
-            "{ctr} {} failed: {}",
-            sub.join(" "),
-            err.trim()
-        ));
+        return Err(format!("{ctr} {} failed: {}", sub.join(" "), err.trim()));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

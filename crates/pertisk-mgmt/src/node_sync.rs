@@ -129,12 +129,11 @@ pub async fn sync_os_versions_from_machine_api(
     if !pertiskctl.is_file() {
         return Ok(0);
     }
-    let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT id, ip, os_version FROM nodes WHERE cluster_id = ?",
-    )
-    .bind(cluster_id)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(String, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT id, ip, os_version FROM nodes WHERE cluster_id = ?")
+            .bind(cluster_id)
+            .fetch_all(pool)
+            .await?;
 
     let mut futs = Vec::new();
     for (id, ip, current) in rows {
@@ -219,10 +218,7 @@ async fn fetch_from_kubectl(kubeconfig: &Path) -> anyhow::Result<Vec<(String, No
         .await?;
 
     if !out.status.success() {
-        anyhow::bail!(
-            "kubectl failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        anyhow::bail!("kubectl failed: {}", String::from_utf8_lossy(&out.stderr));
     }
 
     let body: Value = serde_json::from_slice(&out.stdout)?;
@@ -275,7 +271,10 @@ async fn fetch_from_kubectl(kubeconfig: &Path) -> anyhow::Result<Vec<(String, No
             .and_then(|v| v.as_str())
             .and_then(parse_container_runtime);
 
-        if let Some(cond) = item.pointer("/status/conditions").and_then(|v| v.as_array()) {
+        if let Some(cond) = item
+            .pointer("/status/conditions")
+            .and_then(|v| v.as_array())
+        {
             for c in cond {
                 if c.get("type").and_then(|v| v.as_str()) == Some("Ready") {
                     let st = c.get("status").and_then(|v| v.as_str()).unwrap_or("");
@@ -451,8 +450,12 @@ lab-ha-wk-1   Ready    <none>          42s   v1.36.2   10.1.1.134    <none>
 
     #[test]
     fn parses_pertiskctl_node_version() {
-        let out = "pertiskctl 0.1.0\nnode 0.2.89 hostname=lab-ha-285h-cp-3 (api v1alpha1 / linux)\n";
-        assert_eq!(parse_pertiskctl_node_version(out).as_deref(), Some("0.2.89"));
+        let out =
+            "pertiskctl 0.1.0\nnode 0.2.89 hostname=lab-ha-285h-cp-3 (api v1alpha1 / linux)\n";
+        assert_eq!(
+            parse_pertiskctl_node_version(out).as_deref(),
+            Some("0.2.89")
+        );
         assert_eq!(
             parse_pertiskctl_node_version("pertiskctl 0.1.0\nnode: unreachable (timeout)\n")
                 .as_deref(),
@@ -464,16 +467,28 @@ lab-ha-wk-1   Ready    <none>          42s   v1.36.2   10.1.1.134    <none>
 
     #[test]
     fn parses_os_image() {
-        assert_eq!(parse_os_image("pertisk-kos 0.2.87").as_deref(), Some("0.2.87"));
+        assert_eq!(
+            parse_os_image("pertisk-kos 0.2.87").as_deref(),
+            Some("0.2.87")
+        );
         assert_eq!(parse_os_image("pertisk-kos").as_deref(), None);
         assert_eq!(parse_os_image("  ").as_deref(), None);
-        assert_eq!(parse_os_image("Alpine Linux v3.20").as_deref(), Some("Alpine Linux v3.20"));
+        assert_eq!(
+            parse_os_image("Alpine Linux v3.20").as_deref(),
+            Some("Alpine Linux v3.20")
+        );
     }
 
     #[test]
     fn parses_containerd_runtime() {
-        assert_eq!(parse_container_runtime("containerd://2.3.4").as_deref(), Some("2.3.4"));
-        assert_eq!(parse_container_runtime("cri-o://1.32.0").as_deref(), Some("cri-o://1.32.0"));
+        assert_eq!(
+            parse_container_runtime("containerd://2.3.4").as_deref(),
+            Some("2.3.4")
+        );
+        assert_eq!(
+            parse_container_runtime("cri-o://1.32.0").as_deref(),
+            Some("cri-o://1.32.0")
+        );
         assert_eq!(parse_container_runtime("").as_deref(), None);
     }
 }

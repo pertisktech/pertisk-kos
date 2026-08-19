@@ -110,10 +110,15 @@ impl VsphereClient {
         }
         let resp = req.send().await.map_err(|e| self.map_req_err(e))?;
         // Capture session cookie from Set-Cookie if present.
-        if let Some(sc) = resp.headers().get_all(reqwest::header::SET_COOKIE).iter().find_map(|v| {
-            let s = v.to_str().ok()?;
-            extract_soap_session(s)
-        }) {
+        if let Some(sc) = resp
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .find_map(|v| {
+                let s = v.to_str().ok()?;
+                extract_soap_session(s)
+            })
+        {
             *self.session.lock().await = Some(sc);
         }
         let status = resp.status();
@@ -201,18 +206,12 @@ impl VsphereClient {
                 "HostSystem" => {
                     host_moref = moref.clone();
                     hosts.push(ProxmoxNode {
-                        node: props
-                            .get("name")
-                            .cloned()
-                            .unwrap_or_else(|| moref.clone()),
+                        node: props.get("name").cloned().unwrap_or_else(|| moref.clone()),
                         status: props.get("runtime.connectionState").cloned(),
                     });
                 }
                 "Datastore" => {
-                    let name = props
-                        .get("name")
-                        .cloned()
-                        .unwrap_or_else(|| moref.clone());
+                    let name = props.get("name").cloned().unwrap_or_else(|| moref.clone());
                     let accessible = props
                         .get("summary.accessible")
                         .map(|s| s == "true")
@@ -223,12 +222,8 @@ impl VsphereClient {
                         content: Some("images".into()),
                         active: Some(if accessible { 1 } else { 0 }),
                         enabled: Some(1),
-                        avail: props
-                            .get("summary.freeSpace")
-                            .and_then(|s| s.parse().ok()),
-                        total: props
-                            .get("summary.capacity")
-                            .and_then(|s| s.parse().ok()),
+                        avail: props.get("summary.freeSpace").and_then(|s| s.parse().ok()),
+                        total: props.get("summary.capacity").and_then(|s| s.parse().ok()),
                     });
                 }
                 "Network" | "OpaqueNetwork" => {
@@ -239,10 +234,7 @@ impl VsphereClient {
                 "VirtualMachine" => {
                     vms.push(VsphereVm {
                         moref: moref.clone(),
-                        name: props
-                            .get("name")
-                            .cloned()
-                            .unwrap_or_else(|| moref.clone()),
+                        name: props.get("name").cloned().unwrap_or_else(|| moref.clone()),
                         power_state: props.get("runtime.powerState").cloned(),
                         num_cpu: props
                             .get("config.hardware.numCPU")
@@ -262,7 +254,9 @@ impl VsphereClient {
                     }
                 }
                 "ResourcePool" => {
-                    if moref.contains("root") || props.get("name").map(|n| n == "Resources").unwrap_or(false) {
+                    if moref.contains("root")
+                        || props.get("name").map(|n| n == "Resources").unwrap_or(false)
+                    {
                         resource_pool = moref.clone();
                     }
                 }
@@ -392,9 +386,11 @@ impl VsphereClient {
     ) -> ApiResult<Option<VsphereVm>> {
         let want = Self::vm_name(prefix, vmid);
         let suffix = format!("-{vmid}");
-        Ok(self.list_vms().await?.into_iter().find(|v| {
-            v.name == want || v.name == vmid.to_string() || v.name.ends_with(&suffix)
-        }))
+        Ok(self
+            .list_vms()
+            .await?
+            .into_iter()
+            .find(|v| v.name == want || v.name == vmid.to_string() || v.name.ends_with(&suffix)))
     }
 
     pub async fn check_vmids(
@@ -433,9 +429,10 @@ impl VsphereClient {
         for vmid in start..=end {
             let want = Self::vm_name(prefix, vmid);
             let suffix = format!("-{vmid}");
-            if let Some(vm) = existing.iter().find(|v| {
-                v.name == want || v.name.ends_with(&suffix) || v.name == vmid.to_string()
-            }) {
+            if let Some(vm) = existing
+                .iter()
+                .find(|v| v.name == want || v.name.ends_with(&suffix) || v.name == vmid.to_string())
+            {
                 conflicts.push(VmIdConflict {
                     vmid,
                     name: Some(vm.name.clone()),
@@ -447,17 +444,14 @@ impl VsphereClient {
         }
         let ok = conflicts.is_empty();
         let message = if ok {
-            format!("VM names {start}–{end} free on ESXi (prefix={})", prefix.unwrap_or(""))
+            format!(
+                "VM names {start}–{end} free on ESXi (prefix={})",
+                prefix.unwrap_or("")
+            )
         } else {
             let detail = conflicts
                 .iter()
-                .map(|c| {
-                    format!(
-                        "{} ({})",
-                        c.vmid,
-                        c.name.as_deref().unwrap_or("unnamed")
-                    )
-                })
+                .map(|c| format!("{} ({})", c.vmid, c.name.as_deref().unwrap_or("unnamed")))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("VM names already in use on ESXi: {detail}")
@@ -532,9 +526,8 @@ impl VsphereClient {
                 if node_message.is_empty() {
                     node_message = format!("network `{net}` not found — available: {avail}");
                 } else {
-                    node_message = format!(
-                        "{node_message}; network `{net}` not found — available: {avail}"
-                    );
+                    node_message =
+                        format!("{node_message}; network `{net}` not found — available: {avail}");
                 }
             }
         }
@@ -617,7 +610,9 @@ impl VsphereClient {
             xml_escape(&vm.moref)
         );
         let resp = self.soap("urn:vim25/8.0.3.0", &body).await?;
-        if let Some(task) = xml_attr_moref(&resp, "returnval").or_else(|| xml_text(&resp, "returnval")) {
+        if let Some(task) =
+            xml_attr_moref(&resp, "returnval").or_else(|| xml_text(&resp, "returnval"))
+        {
             self.wait_task(&task).await?;
         }
         Ok(())
@@ -638,7 +633,9 @@ impl VsphereClient {
             xml_escape(&vm.moref)
         );
         let resp = self.soap("urn:vim25/8.0.3.0", &body).await?;
-        if let Some(task) = xml_attr_moref(&resp, "returnval").or_else(|| xml_text(&resp, "returnval")) {
+        if let Some(task) =
+            xml_attr_moref(&resp, "returnval").or_else(|| xml_text(&resp, "returnval"))
+        {
             self.wait_task(&task).await?;
         }
         Ok(())
@@ -687,7 +684,9 @@ impl VsphereClient {
             xml_escape(&vm.moref)
         );
         let resp = self.soap("urn:vim25/8.0.3.0", &body).await?;
-        if let Some(task) = xml_attr_moref(&resp, "returnval").or_else(|| xml_text(&resp, "returnval")) {
+        if let Some(task) =
+            xml_attr_moref(&resp, "returnval").or_else(|| xml_text(&resp, "returnval"))
+        {
             self.wait_task(&task).await?;
         }
         Ok(())
@@ -839,7 +838,9 @@ impl VsphereClient {
             xml_escape(&vm.moref)
         );
         let resp = self.soap("urn:vim25/8.0.3.0", &reconfig).await?;
-        if let Some(task) = xml_attr_moref(&resp, "returnval").or_else(|| xml_text(&resp, "returnval")) {
+        if let Some(task) =
+            xml_attr_moref(&resp, "returnval").or_else(|| xml_text(&resp, "returnval"))
+        {
             self.wait_task(&task).await?;
         }
         Ok(())
@@ -984,7 +985,9 @@ fn obj_props(obj: &str) -> std::collections::HashMap<String, String> {
     let mut rest = obj;
     while let Some(i) = rest.find("<name>") {
         rest = &rest[i + 6..];
-        let Some(ne) = rest.find("</name>") else { break };
+        let Some(ne) = rest.find("</name>") else {
+            break;
+        };
         let name = rest[..ne].trim().to_string();
         rest = &rest[ne + 7..];
         if let Some(vi) = rest.find("<val") {

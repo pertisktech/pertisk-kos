@@ -162,7 +162,9 @@ fn rescan_parent_disk(part_dev: &Path) {
         }
         std::thread::sleep(Duration::from_millis(300));
     }
-    let _ = Command::new(disk_tool("partprobe")).arg(&disk_path).status();
+    let _ = Command::new(disk_tool("partprobe"))
+        .arg(&disk_path)
+        .status();
 }
 
 /// Expand EPHEMERAL GPT partition to the end of a resized disk. Returns true when grown.
@@ -216,7 +218,10 @@ fn grow_ephemeral_partition(part_dev: &Path) -> bool {
         warn!("sgdisk -e failed (backup GPT relocate)");
         return false;
     }
-    if !run_ok(&sgdisk, &["-d", &part_num.to_string(), &disk_path.to_string_lossy()]) {
+    if !run_ok(
+        &sgdisk,
+        &["-d", &part_num.to_string(), &disk_path.to_string_lossy()],
+    ) {
         warn!(partition = part_num, "sgdisk -d failed");
         return false;
     }

@@ -123,7 +123,8 @@ fn run_tui_inner(
             );
         }
         let snap = StatusSnapshot::collect(cfg.as_ref(), &state, &state_root);
-        let log_rows = panels::log_inner_height_for(height, skin.mgmt_url.is_some()).max(2) as usize;
+        let log_rows =
+            panels::log_inner_height_for(height, skin.mgmt_url.is_some()).max(2) as usize;
         let recent = logs.tail(panels::log_tail_count(log_rows));
         terminal
             .draw(|frame| panels::render_themed(frame, &snap, &recent, &skin))
@@ -181,7 +182,8 @@ fn run_tui_inner(
         }
 
         let snap = StatusSnapshot::collect(cfg.as_ref(), &state, &state_root);
-        let log_rows = panels::log_inner_height_for(height, skin.mgmt_url.is_some()).max(2) as usize;
+        let log_rows =
+            panels::log_inner_height_for(height, skin.mgmt_url.is_some()).max(2) as usize;
         let recent = logs.tail(panels::log_tail_count(log_rows));
         terminal
             .draw(|frame| panels::render_themed(frame, &snap, &recent, &skin))
@@ -465,7 +467,8 @@ fn rgb_to_xterm256(red: u8, green: u8, blue: u8) -> u8 {
                 let distance = color_distance(red, green, blue, cube_red, cube_green, cube_blue);
                 if distance < best_distance {
                     best_distance = distance;
-                    best_index = 16 + 36 * red_index as u8 + 6 * green_index as u8 + blue_index as u8;
+                    best_index =
+                        16 + 36 * red_index as u8 + 6 * green_index as u8 + blue_index as u8;
                 }
             }
         }
@@ -483,7 +486,14 @@ fn rgb_to_xterm256(red: u8, green: u8, blue: u8) -> u8 {
     best_index
 }
 
-fn color_distance(red: u8, green: u8, blue: u8, other_red: u8, other_green: u8, other_blue: u8) -> u32 {
+fn color_distance(
+    red: u8,
+    green: u8,
+    blue: u8,
+    other_red: u8,
+    other_green: u8,
+    other_blue: u8,
+) -> u32 {
     let red_delta = i32::from(red) - i32::from(other_red);
     let green_delta = i32::from(green) - i32::from(other_green);
     let blue_delta = i32::from(blue) - i32::from(other_blue);
@@ -573,12 +583,10 @@ fn preview_snapshot() -> crate::dashboard::snapshot::StatusSnapshot {
             used_bytes: 9 * 1024 * 1024 * 1024,
         }],
         net_rows: vec![
-            "eth0 UP 192.168.1.50/24 fd00:a:1:1::32 2405:9800:b901:194c:be24:11ff:fe91:e066"
-                .into(),
+            "eth0 UP 192.168.1.50/24 fd00:a:1:1::32 2405:9800:b901:194c:be24:11ff:fe91:e066".into(),
         ],
         node_iface: "eth0".into(),
-        node_ip: "192.168.1.50/24 2405:9800:b901:194c:be24:11ff:fe91:e066 fd00:a:1:1::32"
-            .into(),
+        node_ip: "192.168.1.50/24 2405:9800:b901:194c:be24:11ff:fe91:e066 fd00:a:1:1::32".into(),
         machine_type: "controlplane".into(),
         cluster_endpoint: "https://10.0.0.1:6443".into(),
         cni: "flannel".into(),
@@ -688,7 +696,12 @@ mod tests {
             assert_eq!(rows.len(), 24);
             for (i, row) in rows.iter().enumerate() {
                 let cols = strip_escapes(row).chars().count();
-                assert_eq!(cols, width.saturating_sub(1) as usize, "{} row {i} is {cols} columns", chrome.name);
+                assert_eq!(
+                    cols,
+                    width.saturating_sub(1) as usize,
+                    "{} row {i} is {cols} columns",
+                    chrome.name
+                );
             }
         }
     }
@@ -726,10 +739,22 @@ mod tests {
             .map(|row| strip_escapes(&row))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("eth0 192.168.1.50/24"), "node IP hidden: {rendered}");
-        assert!(rendered.contains("https://10.0.0.1:6443"), "endpoint clipped: {rendered}");
-        assert!(rendered.contains("10.244.0.0/16"), "pod subnet hidden: {rendered}");
-        assert!(rendered.contains("10.96.0.0/12"), "service subnet hidden: {rendered}");
+        assert!(
+            rendered.contains("eth0 192.168.1.50/24"),
+            "node IP hidden: {rendered}"
+        );
+        assert!(
+            rendered.contains("https://10.0.0.1:6443"),
+            "endpoint clipped: {rendered}"
+        );
+        assert!(
+            rendered.contains("10.244.0.0/16"),
+            "pod subnet hidden: {rendered}"
+        );
+        assert!(
+            rendered.contains("10.96.0.0/12"),
+            "service subnet hidden: {rendered}"
+        );
         assert!(
             rendered.contains(" SYSTEM ") && rendered.contains('-'),
             "missing SYSTEM line border: {rendered}"
@@ -743,15 +768,24 @@ mod tests {
             .map(|row| strip_escapes(&row))
             .collect();
 
-        assert!(rows[0].starts_with(" PERTISK pertisk-node-01  v0.1.0"), "header: {:?}", rows[0]);
-        assert!(rows[0].contains("| READY | CPU 37% RAM 62% LOAD 0.42"), "header: {:?}", rows[0]);
+        assert!(
+            rows[0].starts_with(" PERTISK pertisk-node-01  v0.1.0"),
+            "header: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[0].contains("| READY | CPU 37% RAM 62% LOAD 0.42"),
+            "header: {:?}",
+            rows[0]
+        );
         assert!(
             rows[1].contains(" SYSTEM ") && rows[1].contains('-') && !rows[1].contains('+'),
             "system border: {:?}",
             rows[1]
         );
         assert!(
-            rows.iter().any(|r| r.contains("BOOT") && r.contains("slot A")),
+            rows.iter()
+                .any(|r| r.contains("BOOT") && r.contains("slot A")),
             "boot row missing: {rows:?}"
         );
         assert!(
@@ -759,7 +793,9 @@ mod tests {
             "log border missing: {rows:?}"
         );
         assert!(
-            rows[23].contains("pertisk-node-01") && !rows[23].contains("[ END LOGS ]") && !rows[23].contains("refresh"),
+            rows[23].contains("pertisk-node-01")
+                && !rows[23].contains("[ END LOGS ]")
+                && !rows[23].contains("refresh"),
             "footer: {:?}",
             rows[23]
         );
@@ -771,10 +807,20 @@ mod tests {
             .into_iter()
             .map(|row| strip_escapes(&row))
             .collect();
-        assert!(rows[1].contains(" SYSTEM ") || rows[1].contains('-'), "system: {:?}", rows[1]);
+        assert!(
+            rows[1].contains(" SYSTEM ") || rows[1].contains('-'),
+            "system: {:?}",
+            rows[1]
+        );
         // Summary is only 3 rows (bordered) at h=8 — body may be a single TYPE line.
-        assert!(rows[1..4].iter().any(|r| r.contains('-') || r.contains('|')));
-        assert!(rows[4].contains(" logs ") || rows[4].contains('-'), "logs top: {:?}", rows[4]);
+        assert!(rows[1..4]
+            .iter()
+            .any(|r| r.contains('-') || r.contains('|')));
+        assert!(
+            rows[4].contains(" logs ") || rows[4].contains('-'),
+            "logs top: {:?}",
+            rows[4]
+        );
         assert!(
             rows[7].contains("pertisk-node-01") && !rows[7].contains("[ END LOGS ]"),
             "footer: {:?}",
@@ -804,10 +850,7 @@ mod tests {
             .map(|r| strip_escapes(r))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(
-            body.contains(" NETWORK "),
-            "NETWORK band missing: {body}"
-        );
+        assert!(body.contains(" NETWORK "), "NETWORK band missing: {body}");
         assert!(
             body.contains("https://10.0.0.1:6443"),
             "ENDPOINT truncated: {body}"
@@ -854,12 +897,27 @@ mod tests {
             out.contains(" PERTISK ") && out.contains(" KUBERNETES ") && out.contains(" NETWORK "),
             "summary panel titles missing: {out:?}"
         );
-        assert!(out.contains(" logs "), "log start boundary missing: {out:?}");
-        assert!(!out.contains("[ END LOGS ]"), "obsolete END LOGS still present: {out:?}");
-        assert!(!out.contains("refresh 5s"), "obsolete refresh footer still present: {out:?}");
-        assert!(!out.contains("F1:SUMMARY"), "obsolete footer action present: {out:?}");
+        assert!(
+            out.contains(" logs "),
+            "log start boundary missing: {out:?}"
+        );
+        assert!(
+            !out.contains("[ END LOGS ]"),
+            "obsolete END LOGS still present: {out:?}"
+        );
+        assert!(
+            !out.contains("refresh 5s"),
+            "obsolete refresh footer still present: {out:?}"
+        );
+        assert!(
+            !out.contains("F1:SUMMARY"),
+            "obsolete footer action present: {out:?}"
+        );
         // Line chrome: continuous `-` rules, no `+` corners.
-        assert!(out.contains("---"), "missing continuous line border: {out:?}");
+        assert!(
+            out.contains("---"),
+            "missing continuous line border: {out:?}"
+        );
         assert!(!out.contains('+'), "legacy + corner still present: {out:?}");
     }
 
@@ -883,7 +941,10 @@ mod tests {
             out.contains("48;5;234m"),
             "missing nearest indexed color for #1E1E2E: {out:?}"
         );
-        assert!(!out.contains("48;2;30;30;46m"), "unsafe truecolor sequence: {out:?}");
+        assert!(
+            !out.contains("48;2;30;30;46m"),
+            "unsafe truecolor sequence: {out:?}"
+        );
     }
 
     #[test]

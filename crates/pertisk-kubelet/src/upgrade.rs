@@ -84,7 +84,10 @@ fn host_arch() -> &'static str {
         "x86_64" => "amd64",
         "aarch64" => "arm64",
         other => {
-            warn!(arch = other, "unknown arch; defaulting kubelet download to amd64");
+            warn!(
+                arch = other,
+                "unknown arch; defaulting kubelet download to amd64"
+            );
             "amd64"
         }
     }
@@ -99,8 +102,7 @@ fn download_to(url: &str, dest: &Path) -> Result<()> {
         bail!("GET {url} → HTTP {}", resp.status());
     }
     let mut reader = resp.into_reader();
-    let mut file = fs::File::create(dest)
-        .with_context(|| format!("create {}", dest.display()))?;
+    let mut file = fs::File::create(dest).with_context(|| format!("create {}", dest.display()))?;
     let mut buf = [0u8; 64 * 1024];
     loop {
         let n = reader.read(&mut buf).context("read download body")?;

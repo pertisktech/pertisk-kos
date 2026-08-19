@@ -220,7 +220,10 @@ mod linux_impl {
                     None::<&str>,
                     "/proc",
                     None::<&str>,
-                    MsFlags::MS_REMOUNT | MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC | MsFlags::MS_NODEV,
+                    MsFlags::MS_REMOUNT
+                        | MsFlags::MS_NOSUID
+                        | MsFlags::MS_NOEXEC
+                        | MsFlags::MS_NODEV,
                     None::<&str>,
                 );
             }
@@ -433,12 +436,7 @@ mod linux_impl {
         // The 8250 driver still creates /dev/ttyS0, so preferring ttyS0 sends all
         // eprintln!/panic output to a dead UART while Proxmox Serial stays silent.
         #[cfg(target_arch = "aarch64")]
-        const CANDIDATES: &[&str] = &[
-            "/dev/ttyAMA0",
-            "/dev/console",
-            "/dev/ttyS0",
-            "/dev/tty0",
-        ];
+        const CANDIDATES: &[&str] = &["/dev/ttyAMA0", "/dev/console", "/dev/ttyS0", "/dev/tty0"];
         #[cfg(not(target_arch = "aarch64"))]
         const CANDIDATES: &[&str] = &["/dev/ttyS0", "/dev/console", "/dev/tty0"];
 

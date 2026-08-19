@@ -120,7 +120,9 @@ impl NodeServices {
                         ver,
                     ) {
                         Ok(0) => {}
-                        Ok(n) => info!(files = n, version = %ver, "bumped control-plane static pod images"),
+                        Ok(n) => {
+                            info!(files = n, version = %ver, "bumped control-plane static pod images")
+                        }
                         Err(err) => warn!(error = %err, "static pod image bump failed"),
                     }
                 }

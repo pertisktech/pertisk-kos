@@ -61,17 +61,16 @@ struct NodeCap {
 
 /// Summaries for every cluster (live metrics when ready + kubeconfig present).
 pub async fn gather_all(state: &AppState) -> Vec<ClusterResourceSummary> {
-    let clusters: Vec<ClusterRow> =
-        match sqlx::query_as(
-            "SELECT id, name, status, k8s_version, controlplanes, vip, vip6 \
+    let clusters: Vec<ClusterRow> = match sqlx::query_as(
+        "SELECT id, name, status, k8s_version, controlplanes, vip, vip6 \
              FROM clusters ORDER BY created_at DESC",
-        )
-        .fetch_all(state.pool())
-        .await
-        {
-            Ok(rows) => rows,
-            Err(_) => return vec![],
-        };
+    )
+    .fetch_all(state.pool())
+    .await
+    {
+        Ok(rows) => rows,
+        Err(_) => return vec![],
+    };
 
     let futs: Vec<_> = clusters
         .into_iter()
@@ -131,7 +130,11 @@ fn capacity_metrics(nodes: &[NodeCap]) -> (ResourceMetric, ResourceMetric, Resou
 
     let cpu = ResourceMetric {
         used: None,
-        total: if cap_cores > 0.0 { Some(cap_cores) } else { None },
+        total: if cap_cores > 0.0 {
+            Some(cap_cores)
+        } else {
+            None
+        },
         percent: None,
         unit: "cores".into(),
         display_used: None,
@@ -235,8 +238,7 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
 
     // After reboot, kube-vip can lag while apiserver is already up on a CP.
     // Prefer kubeconfig server; on connect failure, fall back to CP node IPs.
-    let (server_override, mut soft_err) =
-        resolve_api_server(&kc, &nodes, &cluster).await;
+    let (server_override, mut soft_err) = resolve_api_server(&kc, &nodes, &cluster).await;
 
     // Cluster VMs powered off / VIP dead — skip kubectl top & stats (would just timeout).
     if soft_err.is_some() && server_override.is_none() {
@@ -455,11 +457,7 @@ fn server_host(server: &str) -> String {
         .trim_start_matches("http://");
     // [ipv6]:port or host:port
     if let Some(rest) = s.strip_prefix('[') {
-        return rest
-            .split(']')
-            .next()
-            .unwrap_or(rest)
-            .to_string();
+        return rest.split(']').next().unwrap_or(rest).to_string();
     }
     s.split(':').next().unwrap_or(s).to_string()
 }
@@ -491,10 +489,7 @@ struct TopRow {
     memory_percent: Option<f64>,
 }
 
-async fn fetch_kubectl_top_all(
-    kc: &Path,
-    server: Option<&str>,
-) -> Result<Vec<TopRow>, String> {
+async fn fetch_kubectl_top_all(kc: &Path, server: Option<&str>) -> Result<Vec<TopRow>, String> {
     let mut cmd = Command::new("kubectl");
     cmd.arg("--kubeconfig").arg(kc);
     if let Some(s) = server {
@@ -684,10 +679,7 @@ async fn kubectl_json_server(
         cmd.arg("--server").arg(s);
     }
     cmd.args(args);
-    let out = cmd
-        .output()
-        .await
-        .map_err(|e| format!("kubectl: {e}"))?;
+    let out = cmd.output().await.map_err(|e| format!("kubectl: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let msg = stderr.trim();

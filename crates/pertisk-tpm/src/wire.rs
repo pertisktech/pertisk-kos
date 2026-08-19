@@ -48,7 +48,9 @@ pub struct Writer {
 
 impl Writer {
     pub fn new() -> Self {
-        Self { buf: Vec::with_capacity(512) }
+        Self {
+            buf: Vec::with_capacity(512),
+        }
     }
 
     pub fn into_vec(self) -> Vec<u8> {
@@ -233,14 +235,14 @@ pub fn marshal_ecc_storage_public() -> Vec<u8> {
     pub_area.u16(TPM_ALG_SHA256);
     pub_area.u32(ATTR_STORAGE);
     pub_area.tpm2b(&[]); // authPolicy
-    // TPMS_ECC_PARMS
+                         // TPMS_ECC_PARMS
     pub_area.u16(TPM_ALG_AES);
     pub_area.u16(128);
     pub_area.u16(TPM_ALG_CFB);
     pub_area.u16(TPM_ALG_NULL); // scheme
     pub_area.u16(TPM_ECC_NIST_P256);
     pub_area.u16(TPM_ALG_NULL); // kdf
-    // unique TPM2B_ECC_POINT empty
+                                // unique TPM2B_ECC_POINT empty
     pub_area.tpm2b(&[]); // x
     pub_area.tpm2b(&[]); // y
 
@@ -257,7 +259,7 @@ pub fn marshal_ecc_ak_public() -> Vec<u8> {
     pub_area.u16(TPM_ALG_SHA256);
     pub_area.u32(ATTR_AK);
     pub_area.tpm2b(&[]); // authPolicy
-    // TPMS_ECC_PARMS
+                         // TPMS_ECC_PARMS
     pub_area.u16(TPM_ALG_NULL); // symmetric
     pub_area.u16(TPM_ALG_ECDSA);
     pub_area.u16(TPM_ALG_SHA256);

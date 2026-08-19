@@ -29,9 +29,7 @@ pub fn apply_yaml_documents(client: &KubeClient, yaml: &str) -> Result<()> {
             .pointer("/metadata/name")
             .and_then(|n| n.as_str())
             .context("manifest missing metadata.name")?;
-        let ns = json
-            .pointer("/metadata/namespace")
-            .and_then(|n| n.as_str());
+        let ns = json.pointer("/metadata/namespace").and_then(|n| n.as_str());
         let path = collection_path(kind, ns)?;
         ensure_created(client, path, &json.to_string(), name)?;
     }
@@ -40,14 +38,10 @@ pub fn apply_yaml_documents(client: &KubeClient, yaml: &str) -> Result<()> {
 
 fn collection_path(kind: &str, namespace: Option<&str>) -> Result<&'static str> {
     Ok(match (kind, namespace) {
-        ("ServiceAccount", Some("kube-system")) => {
-            "/api/v1/namespaces/kube-system/serviceaccounts"
-        }
+        ("ServiceAccount", Some("kube-system")) => "/api/v1/namespaces/kube-system/serviceaccounts",
         ("ConfigMap", Some("kube-system")) => "/api/v1/namespaces/kube-system/configmaps",
         ("Service", Some("kube-system")) => "/api/v1/namespaces/kube-system/services",
-        ("Deployment", Some("kube-system")) => {
-            "/apis/apps/v1/namespaces/kube-system/deployments"
-        }
+        ("Deployment", Some("kube-system")) => "/apis/apps/v1/namespaces/kube-system/deployments",
         ("RoleBinding", Some("kube-system")) => {
             "/apis/rbac.authorization.k8s.io/v1/namespaces/kube-system/rolebindings"
         }

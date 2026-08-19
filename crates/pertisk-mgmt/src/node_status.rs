@@ -320,10 +320,7 @@ async fn fetch_resources(state: &AppState, cluster_id: &str, node_name: &str) ->
     }
 }
 
-async fn resolve_cluster_kubeconfig(
-    state: &AppState,
-    cluster_id: &str,
-) -> Result<PathBuf, String> {
+async fn resolve_cluster_kubeconfig(state: &AppState, cluster_id: &str) -> Result<PathBuf, String> {
     let row: Option<(Option<String>, String)> =
         sqlx::query_as("SELECT kubeconfig_path, name FROM clusters WHERE id = ?")
             .bind(cluster_id)
@@ -337,13 +334,7 @@ async fn resolve_cluster_kubeconfig(
     if let Some(p) = path.filter(|s| !s.is_empty()) {
         candidates.push(PathBuf::from(p));
     }
-    candidates.push(
-        state
-            .cfg()
-            .kubeconfigs_dir()
-            .join(&name)
-            .join("admin.conf"),
-    );
+    candidates.push(state.cfg().kubeconfigs_dir().join(&name).join("admin.conf"));
     for c in candidates {
         if c.is_file() {
             return Ok(c);
@@ -387,12 +378,7 @@ pub struct NodeLogsOut {
 const ALLOWED_LOG_SERVICES: &[&str] = &["pertiskd", "containerd", "kubelet", "dmesg"];
 
 /// Tail guest logs via `pertiskctl logs`.
-pub async fn fetch_logs(
-    state: &AppState,
-    node: &NodeOut,
-    service: &str,
-    tail: u32,
-) -> NodeLogsOut {
+pub async fn fetch_logs(state: &AppState, node: &NodeOut, service: &str, tail: u32) -> NodeLogsOut {
     let service = service.trim().to_ascii_lowercase();
     if !ALLOWED_LOG_SERVICES.contains(&service.as_str()) {
         return NodeLogsOut {
@@ -457,20 +443,18 @@ pub async fn fetch_logs(
                 };
             }
             // stderr has "# service from source"; stdout is the lines.
-            let source = stderr
-                .lines()
-                .find_map(|l| {
-                    let t = l.trim().trim_start_matches('#').trim();
-                    t.strip_prefix(&format!("{service} from "))
-                        .map(|s| s.trim().to_string())
-                        .or_else(|| {
-                            if t.contains(" from ") {
-                                Some(t.to_string())
-                            } else {
-                                None
-                            }
-                        })
-                });
+            let source = stderr.lines().find_map(|l| {
+                let t = l.trim().trim_start_matches('#').trim();
+                t.strip_prefix(&format!("{service} from "))
+                    .map(|s| s.trim().to_string())
+                    .or_else(|| {
+                        if t.contains(" from ") {
+                            Some(t.to_string())
+                        } else {
+                            None
+                        }
+                    })
+            });
             let lines: Vec<String> = stdout
                 .lines()
                 .map(|l| l.to_string())

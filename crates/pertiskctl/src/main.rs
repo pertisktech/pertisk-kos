@@ -21,10 +21,7 @@ use pertisk_proto::{
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 #[derive(Parser)]
-#[command(
-    name = "pertiskctl",
-    about = "Pertisk KOS management CLI"
-)]
+#[command(name = "pertiskctl", about = "Pertisk KOS management CLI")]
 struct Cli {
     /// gRPC endpoint (host:port).
     #[arg(
@@ -344,11 +341,7 @@ async fn main() -> Result<()> {
                     "ID", "KIND", "POD", "NAME", "NS", "STATE", "IMAGE"
                 );
                 for c in resp.containers {
-                    let id = if c.id.len() > 12 {
-                        &c.id[..12]
-                    } else {
-                        &c.id
-                    };
+                    let id = if c.id.len() > 12 { &c.id[..12] } else { &c.id };
                     let pod = if c.pod_name.is_empty() {
                         "—"
                     } else {
@@ -413,7 +406,11 @@ async fn main() -> Result<()> {
                         if v.mounted { "yes" } else { "no" },
                         human_bytes(v.used_bytes),
                         human_bytes(v.total_bytes),
-                        if v.device.is_empty() { "—" } else { &v.device }
+                        if v.device.is_empty() {
+                            "—"
+                        } else {
+                            &v.device
+                        }
                     );
                 }
             }
@@ -670,12 +667,12 @@ async fn main() -> Result<()> {
         } => {
             let net = GenNetworkOpts {
                 dual_stack,
-                pod_cidr_ipv6: pod_cidr_ipv6.clone().or_else(|| {
-                    dual_stack.then(|| Cluster::DEFAULT_POD_CIDR_IPV6.into())
-                }),
-                service_cidr_ipv6: service_cidr_ipv6.clone().or_else(|| {
-                    dual_stack.then(|| Cluster::DEFAULT_SERVICE_CIDR_IPV6.into())
-                }),
+                pod_cidr_ipv6: pod_cidr_ipv6
+                    .clone()
+                    .or_else(|| dual_stack.then(|| Cluster::DEFAULT_POD_CIDR_IPV6.into())),
+                service_cidr_ipv6: service_cidr_ipv6
+                    .clone()
+                    .or_else(|| dual_stack.then(|| Cluster::DEFAULT_SERVICE_CIDR_IPV6.into())),
                 vip6: vip6.clone(),
                 max_pods,
                 mgmt_url: mgmt_url
@@ -1024,8 +1021,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
     (0..s.len())
         .step_by(2)
         .map(|i| {
-            u8::from_str_radix(&s[i..i + 2], 16)
-                .map_err(|e| anyhow::anyhow!("hex digit: {e}"))
+            u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| anyhow::anyhow!("hex digit: {e}"))
         })
         .collect()
 }

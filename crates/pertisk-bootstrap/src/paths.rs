@@ -121,7 +121,10 @@ impl BootstrapPaths {
                 self.kubeconfig_dir().join("controller-manager.conf"),
                 "controller-manager.conf",
             ),
-            (self.kubeconfig_dir().join("scheduler.conf"), "scheduler.conf"),
+            (
+                self.kubeconfig_dir().join("scheduler.conf"),
+                "scheduler.conf",
+            ),
             (self.kubeconfig_dir().join("kubelet.conf"), "kubelet.conf"),
         ] {
             if !src.is_file() {

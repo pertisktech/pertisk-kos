@@ -23,6 +23,7 @@ WITH_SSH=0
 CP_GB="${CP_GB:-50}"
 WORKER_GB="${WORKER_GB:-75}"
 LAB_SUBNET="${LAB_SUBNET:-10.1.1.0/24}"
+LAB_GATEWAY="${LAB_GATEWAY:-}"
 
 usage() {
   sed -n '2,12p' "$0"
@@ -142,12 +143,13 @@ if [[ "$SKIP_IMAGES" != "1" ]]; then
       "${ROOT}/out/pertisk-cloud-${ARCH}-${CP_GB}g.qcow2" \
       "${ROOT}/out/pertisk-cloud-${ARCH}-${WORKER_GB}g.qcow2" \
       "${MGMT_HOST}:/tmp/"
-  ssh "$MGMT_HOST" "sudo bash -c '
-    mkdir -p /var/lib/pertisk-mgmt/images
-    mv /tmp/pertisk-cloud-${ARCH}*.qcow2 /var/lib/pertisk-mgmt/images/
-    chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images
-    ls -lh /var/lib/pertisk-mgmt/images
-  '"
+  ssh "$MGMT_HOST" "sudo env ARCH=${ARCH} bash -s" <<'EOF'
+set -euo pipefail
+mkdir -p /var/lib/pertisk-mgmt/images
+mv /tmp/pertisk-cloud-"${ARCH}"*.qcow2 /var/lib/pertisk-mgmt/images/
+chown -R pertisk-mgmt:pertisk-mgmt /var/lib/pertisk-mgmt/images
+ls -lh /var/lib/pertisk-mgmt/images
+EOF
 fi
 
 # --- env: API-only by default (like Omni infra provider) ---
@@ -184,6 +186,9 @@ set_kv PERTISK_IMAGES_DIR /var/lib/pertisk-mgmt/images
 set_kv PROXMOX_NO_SSH 1
 set_kv PROXMOX_UPLOAD_STORAGE local
 set_kv LAB_SUBNET ${LAB_SUBNET}
+if [[ -n "${LAB_GATEWAY}" ]]; then
+  set_kv LAB_GATEWAY ${LAB_GATEWAY}
+fi
 existing_public="\$(grep -E "^MGMT_PUBLIC_URL=" "\$ENV" 2>/dev/null | head -1 | cut -d= -f2- || true)"
 if [[ "${PUBLIC_URL_MODE}" == "explicit" ]]; then
   set_kv MGMT_PUBLIC_URL ${MGMT_PUBLIC_URL}

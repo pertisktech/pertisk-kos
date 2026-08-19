@@ -202,7 +202,9 @@ fn prepare_kubelet(
             // Kubelet --kubeconfig must exist even when bootstrapping.
             fs::copy(&paths.bootstrap_kubeconfig, &paths.kubeconfig)?;
         }
-        warn!("control-plane starting without /etc/kubernetes/kubelet.conf; restore may be missing");
+        warn!(
+            "control-plane starting without /etc/kubernetes/kubelet.conf; restore may be missing"
+        );
     }
     let pod_cidr = cluster.pod_cidr.as_deref().unwrap_or(DEFAULT_POD_CIDR);
     ensure_cni_mode(paths, cluster.cni, pod_cidr)?;

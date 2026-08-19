@@ -38,13 +38,14 @@ fn dashboard_heights(frame_h: u16) -> (u16, u16, u16, u16) {
     let footer = FOOTER_HEIGHT.min(frame_h.saturating_sub(header));
     let available = frame_h.saturating_sub(header + footer);
     let min_logs = MIN_LOG_HEIGHT.min(available);
-    let summary = SUMMARY_HEIGHT
-        .min(available.saturating_sub(min_logs))
-        .max(if available > min_logs {
-            3.min(available.saturating_sub(min_logs))
-        } else {
-            0
-        });
+    let summary =
+        SUMMARY_HEIGHT
+            .min(available.saturating_sub(min_logs))
+            .max(if available > min_logs {
+                3.min(available.saturating_sub(min_logs))
+            } else {
+                0
+            });
     let logs = available.saturating_sub(summary);
     (header, summary, logs, footer)
 }
@@ -221,12 +222,7 @@ fn panel<'a>(title: &'a str, skin: &Skin, borders: Borders) -> Block<'a> {
 }
 
 fn rule_glyph(skin: &Skin) -> char {
-    skin.chrome
-        .set
-        .horizontal_top
-        .chars()
-        .next()
-        .unwrap_or('=')
+    skin.chrome.set.horizontal_top.chars().next().unwrap_or('=')
 }
 
 fn render_block(frame: &mut Frame, area: Rect, block: Block<'_>, lines: Vec<Line<'static>>) {
@@ -263,7 +259,10 @@ fn draw_node(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) 
     let theme = &skin.theme;
     let ready = if snap.ready { "true" } else { "false" };
     let lines = vec![
-        Line::from(vec![label("TYPE       ", theme), value(snap.machine_type.clone(), theme)]),
+        Line::from(vec![
+            label("TYPE       ", theme),
+            value(snap.machine_type.clone(), theme),
+        ]),
         Line::from(vec![
             label("READY      ", theme),
             Span::styled(ready, theme.ready_style(snap.ready)),
@@ -279,11 +278,23 @@ fn draw_kubernetes(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &
     let theme = &skin.theme;
     // Short labels leave room for full CIDRs / endpoint on an 80-col console.
     let lines = vec![
-        Line::from(vec![label("VER  ", theme), value(snap.kubernetes_version.clone(), theme)]),
-        Line::from(vec![label("EP   ", theme), value(snap.cluster_endpoint.clone(), theme)]),
+        Line::from(vec![
+            label("VER  ", theme),
+            value(snap.kubernetes_version.clone(), theme),
+        ]),
+        Line::from(vec![
+            label("EP   ", theme),
+            value(snap.cluster_endpoint.clone(), theme),
+        ]),
         Line::from(vec![label("CNI  ", theme), value(snap.cni.clone(), theme)]),
-        Line::from(vec![label("POD  ", theme), value(snap.pod_cidr.clone(), theme)]),
-        Line::from(vec![label("SVC  ", theme), value(snap.service_subnet.clone(), theme)]),
+        Line::from(vec![
+            label("POD  ", theme),
+            value(snap.pod_cidr.clone(), theme),
+        ]),
+        Line::from(vec![
+            label("SVC  ", theme),
+            value(snap.service_subnet.clone(), theme),
+        ]),
     ];
     render_into(frame, area, "KUBERNETES", lines, skin, Borders::TOP);
 }
@@ -358,9 +369,7 @@ fn looks_like_ipv6(ip: &str) -> bool {
 
 fn is_ipv6_ula_or_ll(ip: &str) -> bool {
     let ip = ip.to_ascii_lowercase();
-    ip.starts_with("fe80:")
-        || ip.starts_with("fc")
-        || ip.starts_with("fd")
+    ip.starts_with("fe80:") || ip.starts_with("fc") || ip.starts_with("fd")
 }
 
 /// Hard-wrap address lines so a 39-char IPv6 GUA is not clipped with `~`.
@@ -498,12 +507,25 @@ fn draw_compact_summary(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, sk
         ]),
         Line::from(vec![
             label("SERVICES   containerd ", theme),
-            Span::styled(format!("[{}]", snap.containerd), theme.status_style(&snap.containerd)),
+            Span::styled(
+                format!("[{}]", snap.containerd),
+                theme.status_style(&snap.containerd),
+            ),
             label("  kubelet ", theme),
-            Span::styled(format!("[{}]", snap.kubelet), theme.status_style(&snap.kubelet)),
+            Span::styled(
+                format!("[{}]", snap.kubelet),
+                theme.status_style(&snap.kubelet),
+            ),
         ]),
     ];
-    render_into(frame, area, "SYSTEM", lines, skin, Borders::TOP | Borders::BOTTOM);
+    render_into(
+        frame,
+        area,
+        "SYSTEM",
+        lines,
+        skin,
+        Borders::TOP | Borders::BOTTOM,
+    );
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
@@ -516,7 +538,10 @@ fn draw_header(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin
         label(" | ", theme),
         Span::styled(ready, theme.ready_style(snap.ready)),
         label(" | CPU ", theme),
-        Span::styled(format!("{}%", snap.cpu_usage_pct), theme.meter_style(snap.cpu_usage_pct)),
+        Span::styled(
+            format!("{}%", snap.cpu_usage_pct),
+            theme.meter_style(snap.cpu_usage_pct),
+        ),
         label(" RAM ", theme),
         Span::styled(format!("{mem_pct}%"), theme.meter_style(mem_pct)),
         label(" LOAD ", theme),
@@ -524,7 +549,10 @@ fn draw_header(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin
         label(" | UP ", theme),
         value(format_uptime(snap.uptime_secs), theme),
     ]);
-    frame.render_widget(Paragraph::new(truncate_line(line, area.width as usize)), area);
+    frame.render_widget(
+        Paragraph::new(truncate_line(line, area.width as usize)),
+        area,
+    );
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
@@ -538,15 +566,18 @@ fn draw_footer(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin
         Some(url) => format!(" {url} "),
         None => String::new(),
     };
-    let fill = rule_glyph(skin).to_string().repeat(
-        (area.width as usize).saturating_sub(left.chars().count() + right.chars().count()),
-    );
+    let fill = rule_glyph(skin)
+        .to_string()
+        .repeat((area.width as usize).saturating_sub(left.chars().count() + right.chars().count()));
     let line = Line::from(vec![
         Span::styled(left, theme.title_style()),
         Span::styled(fill, theme.border_style()),
         Span::styled(right, theme.value_style()),
     ]);
-    frame.render_widget(Paragraph::new(truncate_line(line, area.width as usize)), area);
+    frame.render_widget(
+        Paragraph::new(truncate_line(line, area.width as usize)),
+        area,
+    );
 }
 
 /// Manual ASCII logs frame — top rule only (footer hostname closes the pane).
@@ -791,10 +822,7 @@ mod tests {
         assert_eq!(gua.chars().count(), 39);
         let wrapped = wrap_addr_block(vec![format!("eth0 {gua}")], 40);
         let joined: String = wrapped.concat();
-        assert!(
-            joined.contains(gua),
-            "GUA must not be clipped: {wrapped:?}"
-        );
+        assert!(joined.contains(gua), "GUA must not be clipped: {wrapped:?}");
         let wrapped_narrow = wrap_addr_block(vec![gua.to_string()], 20);
         assert!(wrapped_narrow.len() >= 2);
         assert_eq!(wrapped_narrow.concat(), gua);
