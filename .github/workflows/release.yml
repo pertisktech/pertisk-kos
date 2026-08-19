@@ -272,3 +272,11 @@ jobs:
           set -euo pipefail
           chmod +x scripts/ci-publish-release.sh
           ./scripts/ci-publish-release.sh
+
+      - name: Prune Docker build images
+        if: always()
+        run: |
+          set -euo pipefail
+          docker system prune -af
+          docker builder prune -af
+          docker system df
