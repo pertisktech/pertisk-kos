@@ -136,7 +136,7 @@ docker run --rm \
   -v "${ROOT}/image/cloud/populate-disk.sh:/work/populate-disk.sh:ro" \
   ${APK_RETRY[@]+"${APK_RETRY[@]}"} \
   alpine:3.20 \
-  sh -c 'sh /apk-retry.sh sgdisk e2fsprogs dosfstools mtools && sh /work/populate-disk.sh'
+  sh -c 'sh /apk-retry.sh sgdisk e2fsprogs e2fsprogs-extra dosfstools mtools && sh /work/populate-disk.sh'
 
 echo "==> converting qcow2 (${BUILD_GB}G)"
 RAW_BASE="$(basename "${RAW}")"

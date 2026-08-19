@@ -106,10 +106,19 @@ make_ext4() {
   mkfs.ext4 -F -q -L "${label}" -E nodiscard "${img}"
 }
 
+DEBUGFS="$(command -v debugfs || true)"
+if [[ -z "${DEBUGFS}" && -x /usr/sbin/debugfs ]]; then
+  DEBUGFS=/usr/sbin/debugfs
+fi
+if [[ -z "${DEBUGFS}" ]]; then
+  echo "debugfs not found (install Alpine e2fsprogs-extra)" >&2
+  exit 1
+fi
+
 debugfs_apply() {
   local img="$1" cmds="${STAGING}/debugfs.cmd"
   cat >"${cmds}"
-  if ! debugfs -w -f "${cmds}" "${img}"; then
+  if ! "${DEBUGFS}" -w -f "${cmds}" "${img}"; then
     echo "debugfs failed on ${img}:" >&2
     cat "${cmds}" >&2
     exit 1
