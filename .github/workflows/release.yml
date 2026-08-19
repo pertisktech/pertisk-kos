@@ -128,7 +128,9 @@ jobs:
           cd out/pkg
           shopt -s nullglob
           files=( pertisk-mgmt-*.rpm pertisk-mgmt_*.deb pertiskctl-*.rpm pertiskctl_*.deb pertiskctl-linux-* \
-                  pertisk-cloud-*.qcow2 os-bundle-*.zip os-trust.pk )
+                  pertisk-cloud-*.qcow2 os-bundle-*.zip )
+          # Literal name — not a glob; only include when OS bundles were signed.
+          [[ -f os-trust.pk ]] && files+=( os-trust.pk )
           test "${#files[@]}" -ge 12
           sha256sum "${files[@]}" | sort > SHA256SUMS.txt
           cat SHA256SUMS.txt
