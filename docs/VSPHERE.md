@@ -111,3 +111,16 @@ Same as Proxmox without SSH: mgmt must share **L2** with guests (`LAB_SUBNET=10.
 - Scale-out via UI / Terraform `pertisk_node` (`mode=create`) uses `vsphere-add-node.sh` (upload + join, same as Proxmox / Nutanix).
 - Hardware resize (CPU/memory) **powers the VM off**, applies `ReconfigVM`, then powers on. ESXi rejects live `numCPUs` changes unless CPU hot-plug is enabled for the guest OS; Pertisk VMs use `otherLinux64Guest`, which typically does not. Disk grow is online when the VM stays powered on.
 - Do not commit live passwords; use the Providers UI or env vars.
+
+## Stable guest IPs
+
+Proxmox pins `net0` MAC from VMID so the LAN DHCP server keeps the same lease across stop/start. ESXi used to create NICs with `addressType=generated` (VMware `00:0c:29:…`), which can change when the BIOS UUID is regenerated on power-on.
+
+`vsphere-upload-vm.sh` now:
+
+- Sets a **manual** MAC in the VMware range `00:50:56:00:00:00`–`00:50:56:3F:FF:FF`, derived from VMID + `VSPHERE_URL` (override with `VSPHERE_MAC_SALT`).
+- Sets VMX `uuid.action=keep` so a later Host Client power-off/on does not mint a new UUID/MAC.
+
+**Existing VMs** (created before this change): recreate the guest, or power the VM off in Host Client, then start it once from Pertisk mgmt (node reboot / hardware apply) so `uuid.action=keep` is written. Recreate is required to switch to the pinned `00:50:56:…` MAC.
+
+For a hard guarantee, add **Static Leases** on the DHCP server for each MAC (same as Proxmox). Do not reserve the HA kube-vip.

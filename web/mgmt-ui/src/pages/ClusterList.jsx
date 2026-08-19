@@ -7,15 +7,18 @@ import { formatProviderKind, normalizeProviderKind } from '../components/Cluster
 import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import ClusterWizard from '../components/ClusterWizard'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
+import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
 const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 const AVAIL_POLL_MS = 15000
 /** Slow fallback while busy if SSE drops; primary updates come from events. */
 const BUSY_FALLBACK_MS = 8000
+const CACHE_CLUSTERS = 'pertisk_dash_clusters'
 
 export default function Clusters() {
   const nav = useNavigate()
-  const [list, setList] = useState([])
+  const [list, setList] = useState(() => readSessionJson(CACHE_CLUSTERS, []))
+  const [loaded, setLoaded] = useState(() => Array.isArray(readSessionJson(CACHE_CLUSTERS, null)))
   const [error, setError] = useState('')
   const [search, setSearch] = useSearchParams()
   const expectDelete = search.get('deleting')
@@ -33,13 +36,19 @@ export default function Clusters() {
   const load = useCallback(() => {
     api('/clusters')
       .then((rows) => {
-        setList(rows)
+        const next = Array.isArray(rows) ? rows : []
+        setList(next)
+        writeSessionJson(CACHE_CLUSTERS, next)
+        setLoaded(true)
         // Drop ?deleting= once that cluster is gone from the API.
-        if (expectDelete && !rows.some((c) => c.id === expectDelete)) {
+        if (expectDelete && !next.some((c) => c.id === expectDelete)) {
           setSearch({}, { replace: true })
         }
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        setError(e.message)
+        setLoaded(true)
+      })
   }, [expectDelete, setSearch])
 
   useEffect(() => {
@@ -160,7 +169,7 @@ export default function Clusters() {
           </tbody>
         </table>
         {list.length === 0 && (
-          <p className="muted">No clusters. Create with M control planes (+ VIP if M&gt;1) and N workers.</p>
+          <p className="muted">{loaded ? 'No clusters. Create with M control planes (+ VIP if M&gt;1) and N workers.' : 'Loading clusters…'}</p>
         )}
       </div>
 

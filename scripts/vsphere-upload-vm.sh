@@ -78,6 +78,22 @@ COOKIE_JAR="$(mktemp)"
 WORKDIR="$(mktemp -d "${VSPHERE_TMPDIR:-/var/tmp}/pertisk-vsphere.XXXXXX")"
 trap 'rm -f "${COOKIE_JAR}"; rm -rf "${WORKDIR}"' EXIT
 
+# Stable MAC in the VMware *manual* range 00:50:56:00:00:00–00:50:56:3F:FF:FF.
+# Generated (00:0c:29) addresses can change across power-off/on when uuid.action
+# is not "keep". Same idea as Proxmox net0 MAC-from-VMID so DHCP keeps the lease.
+mac_for_vmid() {
+  local id="$1"
+  local salt_src="${VSPHERE_MAC_SALT:-${VSPHERE_URL:-vsphere}}"
+  local salt
+  salt=$(( $(printf '%s' "$salt_src" | cksum | awk '{print $1}') % 64 ))
+  printf '00:50:56:%02X:%02X:%02X' \
+    "$salt" \
+    $(( ((id >> 8) ^ (id >> 16)) & 255 )) \
+    $(( id & 255 ))
+}
+NET0_MAC="$(mac_for_vmid "${VMID}")"
+echo "==> nic mac=${NET0_MAC} (manual, pinned from VMID)"
+
 CURL=(curl -sS)
 [[ "${VSPHERE_INSECURE:-0}" == "1" ]] && CURL+=(-k)
 CURL+=(-b "${COOKIE_JAR}" -c "${COOKIE_JAR}")
@@ -480,7 +496,8 @@ CREATE_BODY="<CreateVM_Task xmlns=\"urn:vim25\">
           <allowGuestControl>true</allowGuestControl>
           <connected>true</connected>
         </connectable>
-        <addressType>generated</addressType>
+        <addressType>manual</addressType>
+        <macAddress>$(xml_escape "$NET0_MAC")</macAddress>
       </device>
     </deviceChange>
     <deviceChange>
@@ -599,6 +616,29 @@ VM_MOREF="$(find_vm_moref "$NAME")"
   echo "created VM but could not resolve MoRef" >&2
   exit 1
 }
+
+# After create: uuid.action=keep (OptionValue.value is xsd:anyType — must be typed).
+# Not inlined into CreateVM: unescaped quotes there broke the SOAP body.
+keep_uuid() {
+  local moref="$1" resp task
+  resp="$(soap "urn:vim25/8.0.3.0" "<ReconfigVM_Task xmlns=\"urn:vim25\">
+  <_this type=\"VirtualMachine\">$(xml_escape "$moref")</_this>
+  <spec>
+    <extraConfig xsi:type=\"OptionValue\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">
+      <key>uuid.action</key>
+      <value xsi:type=\"xsd:string\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">keep</value>
+    </extraConfig>
+  </spec>
+</ReconfigVM_Task>")"
+  task="$(echo "$resp" | task_moref)"
+  if [[ -z "$task" ]]; then
+    echo "warn: uuid.action=keep reconfig failed: $resp" >&2
+    return 1
+  fi
+  wait_task "$task" "uuid.action" || true
+}
+
+keep_uuid "$VM_MOREF" || true
 # Soft-fail: create-cluster later syncs the full Autostart list.
 enable_vm_autostart "$VM_MOREF" || echo "warn: continuing without per-VM autostart (will sync at cluster end)" >&2
 
@@ -609,6 +649,7 @@ if [[ "$START" == "1" ]]; then
 fi
 
 echo "==> done: ${NAME}"
+echo "    NIC MAC ${NET0_MAC} (manual) — DHCP should keep the same IPv4 across power-off/on."
 echo "    Autostart: enabled (powers on after ESXi host reboot)."
 echo "    Host Client often stays on 'EFI stub: Loaded initrd...' until vmwgfx/simpledrm load — that alone is not failure."
 echo "    Serial (if ESXi firewall allows): telnet <esxi-ip> $((${SERIAL_PORT:-$((23000 + VMID))}))"

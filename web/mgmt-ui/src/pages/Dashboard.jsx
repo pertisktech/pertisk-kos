@@ -6,10 +6,15 @@ import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 import { ClusterMetaBadges } from '../components/ClusterMetaBadges'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
+import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
 const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
 const RESOURCES_POLL_MS = 15000
 const BUSY_FALLBACK_MS = 8000
+const LIST_POLL_MS = 15000
+const CACHE_CLUSTERS = 'pertisk_dash_clusters'
+const CACHE_PROVIDERS = 'pertisk_dash_providers'
+const CACHE_RESOURCES = 'pertisk_dash_resources'
 
 const GAUGE_BASE = {
   cpu: 'var(--accent)',
@@ -172,9 +177,13 @@ function placeholderSummary(c) {
 
 export default function Dashboard() {
   const nav = useNavigate()
-  const [clusters, setClusters] = useState([])
-  const [providers, setProviders] = useState([])
-  const [resources, setResources] = useState([])
+  const [clusters, setClusters] = useState(() => readSessionJson(CACHE_CLUSTERS, []))
+  const [providers, setProviders] = useState(() => readSessionJson(CACHE_PROVIDERS, []))
+  const [resources, setResources] = useState(() => readSessionJson(CACHE_RESOURCES, []))
+  const [listLoading, setListLoading] = useState(() => {
+    const cached = readSessionJson(CACHE_CLUSTERS, null)
+    return !Array.isArray(cached)
+  })
   const [resourcesErr, setResourcesErr] = useState('')
   const [resourcesLoading, setResourcesLoading] = useState(false)
 
@@ -183,8 +192,13 @@ export default function Dashboard() {
       api('/clusters').catch(() => []),
       api('/providers').catch(() => []),
     ]).then(([c, p]) => {
-      setClusters(c)
-      setProviders(p)
+      const clusters = Array.isArray(c) ? c : []
+      const providers = Array.isArray(p) ? p : []
+      setClusters(clusters)
+      setProviders(providers)
+      writeSessionJson(CACHE_CLUSTERS, clusters)
+      writeSessionJson(CACHE_PROVIDERS, providers)
+      setListLoading(false)
     })
   }, [])
 
@@ -192,11 +206,9 @@ export default function Dashboard() {
     setResourcesLoading(true)
     api('/dashboard/resources')
       .then((rows) => {
-        // Soft-fail: keep prior cards if the response is empty unexpectedly.
-        if (Array.isArray(rows) && rows.length > 0) {
+        if (Array.isArray(rows)) {
           setResources(rows)
-        } else if (Array.isArray(rows)) {
-          setResources(rows)
+          writeSessionJson(CACHE_RESOURCES, rows)
         }
         setResourcesErr('')
       })
@@ -230,15 +242,32 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (clusters.length === 0) return undefined
-    const t = setInterval(loadResources, RESOURCES_POLL_MS)
+    const busy = clusters.some((c) => BUSY.has(c.status))
+    if (busy) return undefined
+    const t = setInterval(load, LIST_POLL_MS)
     return () => clearInterval(t)
-  }, [clusters.length, loadResources])
+  }, [clusters, load])
+
+  const awaitingLiveMetrics = resources.length === 0
+    || resources.some((r) => r.cpu?.percent == null && r.memory?.percent == null && r.status === 'ready' && r.availability !== 'offline')
+
+  useEffect(() => {
+    if (clusters.length === 0) return undefined
+    let n = 0
+    let timer
+    const tick = () => {
+      n += 1
+      loadResources()
+      timer = setTimeout(tick, n < 4 && awaitingLiveMetrics ? 2500 : RESOURCES_POLL_MS)
+    }
+    timer = setTimeout(tick, awaitingLiveMetrics ? 2500 : RESOURCES_POLL_MS)
+    return () => clearTimeout(timer)
+  }, [clusters.length, awaitingLiveMetrics, loadResources])
 
   const displayResources = useMemo(() => {
-    if (resources.length > 0) return resources
-    // While live metrics load, show skeleton cards from the cluster list.
-    if (clusters.length > 0) return clusters.map(placeholderSummary)
-    return []
+    if (clusters.length === 0) return resources
+    const byId = new Map(resources.map((r) => [r.cluster_id, r]))
+    return clusters.map((c) => byId.get(c.id) || placeholderSummary(c))
   }, [resources, clusters])
 
   const ready = clusters.filter((c) => c.status === 'ready').length
@@ -258,13 +287,13 @@ export default function Dashboard() {
       </div>
 
       <div className="grid-stats">
-        <div className="stat"><div className="label">Clusters</div><div className="value">{clusters.length}</div></div>
-        <div className="stat"><div className="label">Ready</div><div className="value">{ready}</div></div>
-        <div className="stat"><div className="label">Control planes</div><div className="value">{cps}</div></div>
-        <div className="stat"><div className="label">Workers</div><div className="value">{wks}</div></div>
+        <div className="stat"><div className="label">Clusters</div><div className="value">{listLoading && clusters.length === 0 ? '—' : clusters.length}</div></div>
+        <div className="stat"><div className="label">Ready</div><div className="value">{listLoading && clusters.length === 0 ? '—' : ready}</div></div>
+        <div className="stat"><div className="label">Control planes</div><div className="value">{listLoading && clusters.length === 0 ? '—' : cps}</div></div>
+        <div className="stat"><div className="label">Workers</div><div className="value">{listLoading && clusters.length === 0 ? '—' : wks}</div></div>
         <div className="stat">
           <div className="label">Providers</div>
-          <div className="value">{providers.length}</div>
+          <div className="value">{listLoading && providers.length === 0 ? '—' : providers.length}</div>
           {providers.length > 0 && (
             <div className="muted" style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {providersOnline > 0 && <span className="badge online">{providersOnline} online</span>}
@@ -281,7 +310,7 @@ export default function Dashboard() {
           </h2>
           <p className="muted dash-section-sub">
             Live CPU, memory, and disk · updates every {RESOURCES_POLL_MS / 1000}s
-            {resourcesLoading && resources.length === 0 ? ' · loading metrics…' : ''}
+            {resourcesLoading && (resources.length === 0 || awaitingLiveMetrics) ? ' · loading metrics…' : ''}
           </p>
         </div>
         <div className="dash-resources-actions">
@@ -296,7 +325,21 @@ export default function Dashboard() {
 
       {resourcesErr && <div className="error">{resourcesErr}</div>}
 
-      {clusters.length === 0 ? (
+      {listLoading && clusters.length === 0 ? (
+        <div className="cluster-resource-grid">
+          {[0, 1].map((i) => (
+            <div key={i} className="card cluster-resource-card cluster-resource-skeleton" aria-hidden>
+              <div className="skeleton-line w-40" />
+              <div className="skeleton-line w-80" />
+              <div className="resource-gauge-row">
+                <div className="skeleton-line" />
+                <div className="skeleton-line" />
+                <div className="skeleton-line" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : clusters.length === 0 ? (
         <div className="card dash-empty">
           <p className="muted" style={{ margin: 0 }}>
             No clusters yet. Add a provider, then create control planes and workers.

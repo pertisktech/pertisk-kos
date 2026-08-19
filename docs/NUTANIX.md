@@ -99,6 +99,23 @@ AHV **VGA** freezes on `EFI stub: Loaded initrd…` — that is **expected**. Pe
 3. Put guest NICs on an **unmanaged** AHV network (same virtual switch / VLAN as mgmt). This lab has `vlan.0` (vs0, VLAN 0, no IPAM) next to `homelab-subnet` (vs0, VLAN 0, **managed IPAM**). Managed IPAM shows an address in Prism immediately but does **not** lease it to the guest and usually **does not flood DHCP** onto the wire — Serial stays `(no ipv4)`, mgmt `nc` is `No route to host`, and a DHCP helper on mgmt `:67` sees no DISCOVER. Set the provider **Network / bridge** to `vlan.0` (OpenWrt DHCP on 10.1.1.0/24), or Edit `homelab-subnet` and **enable DHCP** (expand the pool if “Free IPs in Pool” is tiny). Netcfg-disk inject is a fallback when you must stay on IPAM; pin UEFI boot via v3 to pci:0.
 4. Quick check from mgmt: `nc -zv <ip> 50000`. Recreate VMs after changing the network (omit `--skip-vms`). Guest image rebuild is needed only for netcfg/`sr_mod`/DHCP padding inside pertiskd.
 
+## Stable guest IPs
+
+Proxmox keeps the same IPv4 across stop/start because `net0` MAC is pinned from VMID and the LAN DHCP server binds that MAC.
+
+On AHV:
+
+- Upload now pins a **deterministic MAC** (`52:54:…` from VMID + `NUTANIX_URL`) and writes it back if create omitted it.
+- On a **managed IPAM** subnet, Prism often **releases** the address when the VM is powered off, then assigns a new one on the next power-on. Upload now sets `requested_ip_address` / `ip_endpoint_list` to that first address **before** power-off, so the reservation sticks. The IPAM netcfg disk and mgmt `:67` helper still inject/serve that same address to the guest.
+
+**Existing VMs:** recreate, or repair in place (pins MAC + requested IP, re-attaches netcfg):
+
+```bash
+./scripts/nutanix-upload-vm.sh --repair-name lab-ha-cp-1 --vmid 210
+```
+
+Prefer an unmanaged VLAN + router DHCP static leases (same as Proxmox) when you can.
+
 Recreate VMs after updating scripts. Guest image rebuild is needed for DHCP-before-STATE / partprobe timeout fixes inside `pertiskd`.
 
 ## Limits

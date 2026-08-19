@@ -217,32 +217,96 @@ FROM clusters c
 LEFT JOIN providers p ON p.id = c.provider_id
 "#;
 
-async fn fill_provider_availability(state: &AppState, rows: &mut [ClusterOut]) {
-    let mut ids: Vec<String> = Vec::new();
-    for c in rows.iter() {
-        if !c.provider_id.is_empty() && !ids.iter().any(|x| x == &c.provider_id) {
-            ids.push(c.provider_id.clone());
+fn apply_cached_availability(state: &AppState, rows: &mut [ClusterOut]) {
+    let mut provider_ids: Vec<String> = Vec::new();
+    for c in rows.iter_mut() {
+        c.availability = crate::cluster_availability::cached_or(&c.id, &c.status);
+        crate::cluster_availability::spawn_refresh(state.clone(), c.id.clone(), c.status.clone());
+        c.provider_availability = crate::provider_availability::cached_or(&c.provider_id);
+        if !c.provider_id.is_empty() && !provider_ids.iter().any(|x| x == &c.provider_id) {
+            provider_ids.push(c.provider_id.clone());
         }
     }
-    let futs: Vec<_> = ids
-        .iter()
-        .map(|id| {
-            let state = state.clone();
-            let id = id.clone();
-            async move {
-                let avail = crate::provider_availability::probe(&state, &id).await;
-                (id, avail)
-            }
-        })
-        .collect();
-    let avails = futures::future::join_all(futs).await;
-    for c in rows.iter_mut() {
-        c.provider_availability = avails
-            .iter()
-            .find(|(id, _)| id == &c.provider_id)
-            .map(|(_, a)| a.clone())
-            .unwrap_or_else(|| "unknown".into());
+    for id in provider_ids {
+        crate::provider_availability::spawn_refresh(state.clone(), id);
     }
+}
+
+fn spawn_cluster_node_sync(state: &AppState, cluster_id: &str, network_mode: &str) {
+    let state = state.clone();
+    let cluster_id = cluster_id.to_string();
+    let network_mode = network_mode.to_string();
+    tokio::spawn(async move {
+        let upgrading: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM jobs WHERE cluster_id = ? AND kind IN ('upgrade_cluster', 'upgrade_os') AND status = 'running'",
+        )
+        .bind(&cluster_id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap_or(0);
+        let missing_ip: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM nodes WHERE cluster_id = ? AND (ip IS NULL OR ip = '')",
+        )
+        .bind(&cluster_id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap_or(0);
+        let mode = network_mode.to_ascii_lowercase();
+        let wants_ip6 = mode == "dual-stack" || mode == "ipv6";
+        let missing_ip6: i64 = if wants_ip6 {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM nodes WHERE cluster_id = ? AND (ip6 IS NULL OR ip6 = '')",
+            )
+            .bind(&cluster_id)
+            .fetch_one(state.pool())
+            .await
+            .unwrap_or(0)
+        } else {
+            0
+        };
+        let missing_versions: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM nodes WHERE cluster_id = ? AND (
+                 kernel_version IS NULL OR kernel_version = ''
+                 OR container_runtime IS NULL OR container_runtime = ''
+               )"#,
+        )
+        .bind(&cluster_id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap_or(0);
+        if upgrading > 0 || missing_ip > 0 || missing_ip6 > 0 || missing_versions > 0 {
+            let kc: Option<String> =
+                sqlx::query_scalar("SELECT kubeconfig_path FROM clusters WHERE id = ?")
+                    .bind(&cluster_id)
+                    .fetch_optional(state.pool())
+                    .await
+                    .ok()
+                    .flatten();
+            if let Some(kc) = kc.filter(|s| !s.is_empty()) {
+                let log_path: Option<String> = sqlx::query_scalar(
+                    "SELECT log_path FROM jobs WHERE cluster_id = ? AND kind IN ('create_cluster', 'upgrade_cluster', 'upgrade_os') ORDER BY updated_at DESC LIMIT 1",
+                )
+                .bind(&cluster_id)
+                .fetch_optional(state.pool())
+                .await
+                .ok()
+                .flatten();
+                let _ = crate::node_sync::sync_cluster_nodes(
+                    state.pool(),
+                    &cluster_id,
+                    Some(std::path::Path::new(&kc)),
+                    log_path.as_deref(),
+                )
+                .await;
+            }
+        }
+        let _ = crate::node_sync::sync_os_versions_from_machine_api(
+            state.pool(),
+            &cluster_id,
+            &state.cfg().pertiskctl,
+        )
+        .await;
+    });
 }
 
 async fn list(
@@ -253,21 +317,7 @@ async fn list(
         sqlx::query_as::<_, ClusterOut>(&format!("{CLUSTER_SELECT} ORDER BY c.created_at DESC"))
             .fetch_all(state.pool())
             .await?;
-
-    let futs: Vec<_> = rows
-        .iter()
-        .map(|c| {
-            let state = state.clone();
-            let id = c.id.clone();
-            let status = c.status.clone();
-            async move { crate::cluster_availability::probe(&state, &id, &status).await }
-        })
-        .collect();
-    let avails = futures::future::join_all(futs).await;
-    for (c, a) in rows.iter_mut().zip(avails) {
-        c.availability = a;
-    }
-    fill_provider_availability(&state, &mut rows).await;
+    apply_cached_availability(&state, &mut rows);
     Ok(Json(rows))
 }
 
@@ -308,73 +358,9 @@ async fn get_one(
         cluster.error = None;
     }
 
-    // Refresh node IP / K8s version when ready (missing IPs or active upgrade).
+    // Node IP / version sync talks to the cluster — do not block the first paint.
     if cluster.status == "ready" {
-        let upgrading: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM jobs WHERE cluster_id = ? AND kind IN ('upgrade_cluster', 'upgrade_os') AND status = 'running'",
-        )
-        .bind(&id)
-        .fetch_one(state.pool())
-        .await
-        .unwrap_or(0);
-        let missing_ip: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM nodes WHERE cluster_id = ? AND (ip IS NULL OR ip = '')",
-        )
-        .bind(&id)
-        .fetch_one(state.pool())
-        .await
-        .unwrap_or(0);
-        let mode = cluster.network_mode.to_ascii_lowercase();
-        let wants_ip6 = mode == "dual-stack" || mode == "ipv6";
-        let missing_ip6: i64 = if wants_ip6 {
-            sqlx::query_scalar(
-                "SELECT COUNT(*) FROM nodes WHERE cluster_id = ? AND (ip6 IS NULL OR ip6 = '')",
-            )
-            .bind(&id)
-            .fetch_one(state.pool())
-            .await
-            .unwrap_or(0)
-        } else {
-            0
-        };
-        let missing_versions: i64 = sqlx::query_scalar(
-            r#"SELECT COUNT(*) FROM nodes WHERE cluster_id = ? AND (
-                 kernel_version IS NULL OR kernel_version = ''
-                 OR container_runtime IS NULL OR container_runtime = ''
-               )"#,
-        )
-        .bind(&id)
-        .fetch_one(state.pool())
-        .await
-        .unwrap_or(0);
-        if upgrading > 0 || missing_ip > 0 || missing_ip6 > 0 || missing_versions > 0 {
-            let kc: Option<String> =
-                sqlx::query_scalar("SELECT kubeconfig_path FROM clusters WHERE id = ?")
-                    .bind(&id)
-                    .fetch_optional(state.pool())
-                    .await?;
-            if let Some(kc) = kc.filter(|s| !s.is_empty()) {
-                let log_path: Option<String> = sqlx::query_scalar(
-                    "SELECT log_path FROM jobs WHERE cluster_id = ? AND kind IN ('create_cluster', 'upgrade_cluster', 'upgrade_os') ORDER BY updated_at DESC LIMIT 1",
-                )
-                .bind(&id)
-                .fetch_optional(state.pool())
-                .await?;
-                let _ = crate::node_sync::sync_cluster_nodes(
-                    state.pool(),
-                    &id,
-                    Some(std::path::Path::new(&kc)),
-                    log_path.as_deref(),
-                )
-                .await;
-            }
-        }
-        let _ = crate::node_sync::sync_os_versions_from_machine_api(
-            state.pool(),
-            &id,
-            &state.cfg().pertiskctl,
-        )
-        .await;
+        spawn_cluster_node_sync(&state, &id, &cluster.network_mode);
     }
 
     let mut nodes = sqlx::query_as::<_, crate::routes::nodes::NodeOut>(&format!(
@@ -387,9 +373,10 @@ async fn get_one(
 
     crate::node_availability::fill(&mut nodes).await;
 
-    cluster.availability = crate::cluster_availability::probe(&state, &id, &cluster.status).await;
-    cluster.provider_availability =
-        crate::provider_availability::probe(&state, &cluster.provider_id).await;
+    cluster.availability = crate::cluster_availability::cached_or(&id, &cluster.status);
+    crate::cluster_availability::spawn_refresh(state.clone(), id.clone(), cluster.status.clone());
+    cluster.provider_availability = crate::provider_availability::cached_or(&cluster.provider_id);
+    crate::provider_availability::spawn_refresh(state.clone(), cluster.provider_id.clone());
 
     let versions = cluster_versions(state.pool(), &cluster, &nodes).await;
 

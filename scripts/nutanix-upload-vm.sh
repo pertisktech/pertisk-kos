@@ -654,7 +654,8 @@ VM_UUID="$(resolve_create_uuid "$CREATE_VM" vm "$NAME")" || {
     echo "VM create failed: $CREATE_VM" >&2
     exit 1
   }
-  NET0_MAC=""
+  # Keep the VMID-derived MAC even if create omitted it — pin_nic applies it next.
+  NET0_MAC="$(mac_for_vmid "${VMID}")"
   DISK_BUS="scsi"
 }
 echo "==> created VM uuid=${VM_UUID}"
@@ -789,6 +790,72 @@ fetch_ipam_ips() {
       | (.ip_addresses // [])[]?, .ip_address?, .requested_ip_address?, .endpoint_address?
     ] | map(select(. != null and . != "" and (contains(".") ))) | unique | .[]
   ' 2>/dev/null || true
+}
+
+# Pin NIC MAC (DHCP identity) and, on managed IPAM, requested_ip_address so Prism
+# does not hand out a new IPv4 every power-off/on. Proxmox does this via net0 MAC.
+pin_nic() {
+  local uuid="$1" mac="${2:-}" ip="${3:-}"
+  local det net nic body resp tu api3 get3 put3
+  [[ -n "$uuid" ]] || return 0
+  det="$(api_get "vms/${uuid}?include_vm_nic_config=true" 2>/dev/null || api_get "vms/${uuid}" || true)"
+  net="$(echo "${det:-}" | jq -r '
+    (.vm_nics // .nic_list // [])[0].network_uuid
+    // (.vm_nics // .nic_list // [])[0].network_uuid
+    // empty
+  ')"
+  [[ -n "$net" && "$net" != "null" ]] || net="${NETWORK_UUID:-}"
+  [[ -n "$mac" ]] || mac="$(echo "${det:-}" | jq -r '
+    (.vm_nics // .nic_list // [])[0].mac_address
+    // (.vm_nics // .nic_list // [])[0].mac_addr
+    // empty
+  ')"
+  [[ -n "$ip" ]] || ip="$(fetch_ipam_ips "$uuid" | head -1 || true)"
+  if [[ -z "$net" || -z "$mac" ]]; then
+    echo "==> pin_nic: skip (net=${net:-none} mac=${mac:-none})" >&2
+    return 0
+  fi
+  echo "==> pin NIC mac=${mac}${ip:+ ip=${ip}} (sticky across power-off)" >&2
+  nic="$(jq -n --arg net "$net" --arg mac "$mac" --arg ip "$ip" '{
+      network_uuid: $net,
+      is_connected: true,
+      mac_address: $mac
+    } + (if $ip != "" then {requested_ip_address: $ip} else {} end)')"
+  if echo "${det:-}" | jq -e 'type=="object"' >/dev/null 2>&1; then
+    body="$(echo "$det" | jq --argjson nic "$nic" '
+      del(.vm_disk_info, .stats, .usage_stats, .host_uuid, .host_name)
+      | .vm_nics = [$nic]
+    ')"
+  else
+    body="$(jq -n --argjson nic "$nic" '{vm_nics: [$nic]}')"
+  fi
+  resp="$(api_json PUT "vms/${uuid}" "$body" 2>/dev/null || true)"
+  tu="$(echo "${resp:-}" | jq -r '.task_uuid // empty')"
+  if [[ -n "$tu" ]]; then
+    wait_task "$tu" "nic" >/dev/null || true
+    return 0
+  fi
+  api3="${BASE}/api/nutanix/v3"
+  get3="$("${CURL[@]}" "${api3}/vms/${uuid}" 2>/dev/null || true)"
+  if echo "${get3:-}" | jq -e '.spec.resources' >/dev/null 2>&1; then
+    put3="$(echo "$get3" | jq --arg mac "$mac" --arg ip "$ip" --arg net "$net" '
+      del(.status)
+      | .spec.resources.power_state = ((.spec.resources.power_state) // "OFF")
+      | .spec.resources.nic_list = (if ((.spec.resources.nic_list // []) | length) > 0
+          then .spec.resources.nic_list
+          else [{ nic_type: "NORMAL_NIC", subnet_reference: { kind: "subnet", uuid: $net } }]
+          end)
+      | .spec.resources.nic_list[0].mac_address = $mac
+      | .spec.resources.nic_list[0].subnet_reference = (.spec.resources.nic_list[0].subnet_reference // { kind: "subnet", uuid: $net })
+      | if $ip != "" then
+          .spec.resources.nic_list[0].ip_endpoint_list = [{ ip: $ip }]
+        else . end
+    ')"
+    resp="$("${CURL[@]}" -X PUT -H 'Content-Type: application/json' -d "$put3" \
+      "${api3}/vms/${uuid}" 2>/dev/null || true)"
+    tu="$(echo "${resp:-}" | jq -r '.status.execution_context.task_uuid // .task_uuid // empty')"
+    [[ -n "$tu" ]] && wait_v3_task "$tu" || true
+  fi
 }
 
 netcfg_gateway_for() {
@@ -991,12 +1058,17 @@ learn_ipam_ip() {
   local uuid="$1" ip
   ip="$(wait_ipam_ip "$uuid" 12 || true)"
   if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    pin_nic "$uuid" "${NET0_MAC:-}" "$ip"
     echo "$ip"
     return 0
   fi
   echo "==> IPAM empty while powered off — brief power-on to learn address" >&2
   set_power "$uuid" ON || true
   ip="$(wait_ipam_ip "$uuid" 45 || true)"
+  if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    # Lock the address *before* power-off or IPAM returns it to the pool.
+    pin_nic "$uuid" "${NET0_MAC:-}" "$ip"
+  fi
   set_power "$uuid" OFF || true
   sleep 2
   if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -1145,6 +1217,7 @@ attach_ipam_netcfg() {
   gw="$(netcfg_gateway_for "$ip")"
   echo "==> IPAM ${ip}/${prefix} gw=${gw} → guest netcfg" >&2
   mac="${NET0_MAC:-}"
+  pin_nic "$uuid" "$mac" "$ip"
   ensure_ipam_dhcp_helper "$mac" "$ip" "$gw" "$prefix" || true
   raw="$(mktemp /var/tmp/pertisk-netcfg.XXXXXX.raw)"
   python3 - "$raw" "${ip}/${prefix}" "$gw" <<'PY'
@@ -1172,6 +1245,10 @@ if [[ -n "$REPAIR_NAME" ]]; then
   set_power "$VM_UUID" OFF || true
   sleep 2
 fi
+if [[ -z "${NET0_MAC:-}" ]]; then
+  NET0_MAC="$(mac_for_vmid "${VMID}")"
+fi
+pin_nic "$VM_UUID" "${NET0_MAC}" ""
 attach_ipam_netcfg "$VM_UUID"
 
 if [[ -n "$REPAIR_NAME" ]]; then

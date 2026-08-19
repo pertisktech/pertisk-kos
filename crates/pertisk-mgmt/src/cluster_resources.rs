@@ -1,7 +1,9 @@
 //! Cluster-level CPU / memory / disk summaries for the management Dashboard.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tokio::process::Command;
@@ -11,7 +13,9 @@ use crate::cluster_availability;
 use crate::k8s::{kubectl_json, resolve_cluster_kubeconfig};
 use crate::state::AppState;
 
-#[derive(Debug, Serialize)]
+const LIVE_TTL: Duration = Duration::from_secs(20);
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ClusterResourceSummary {
     pub cluster_id: String,
     pub cluster_name: String,
@@ -27,7 +31,7 @@ pub struct ClusterResourceSummary {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResourceMetric {
     pub used: Option<f64>,
     pub total: Option<f64>,
@@ -59,7 +63,62 @@ struct NodeCap {
     disk_gb: Option<i64>,
 }
 
-/// Summaries for every cluster (live metrics when ready + kubeconfig present).
+type LiveCache = HashMap<String, (Instant, ClusterResourceSummary)>;
+
+fn live_cache() -> &'static Mutex<LiveCache> {
+    static C: OnceLock<Mutex<LiveCache>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn inflight() -> &'static Mutex<HashSet<String>> {
+    static C: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn remember(summary: &ClusterResourceSummary) {
+    if let Ok(mut c) = live_cache().lock() {
+        c.insert(
+            summary.cluster_id.clone(),
+            (Instant::now(), summary.clone()),
+        );
+    }
+}
+
+fn cached_live(id: &str, max_age: Option<Duration>) -> Option<ClusterResourceSummary> {
+    let c = live_cache().lock().ok()?;
+    let (at, s) = c.get(id)?;
+    if max_age.is_none_or(|ttl| at.elapsed() <= ttl) {
+        Some(s.clone())
+    } else {
+        None
+    }
+}
+
+fn spawn_live(state: AppState, cluster: ClusterRow) {
+    let id = cluster.id.clone();
+    {
+        let Ok(mut g) = inflight().lock() else {
+            return;
+        };
+        if !g.insert(id.clone()) {
+            return;
+        }
+    }
+    tokio::spawn(async move {
+        let summary =
+            match timeout(Duration::from_secs(5), gather_one(&state, cluster.clone())).await {
+                Ok(summary) => summary,
+                Err(_) => timeout_summary_with_capacity(&state, &cluster).await,
+            };
+        remember(&summary);
+        if let Ok(mut g) = inflight().lock() {
+            g.remove(&id);
+        }
+    });
+}
+
+/// Summaries for every cluster. DB capacity returns immediately; kubectl usage
+/// is refreshed in the background and served from cache on the next poll.
 pub async fn gather_all(state: &AppState) -> Vec<ClusterResourceSummary> {
     let clusters: Vec<ClusterRow> = match sqlx::query_as(
         "SELECT id, name, status, k8s_version, controlplanes, vip, vip6 \
@@ -77,16 +136,46 @@ pub async fn gather_all(state: &AppState) -> Vec<ClusterResourceSummary> {
         .map(|c| {
             let state = state.clone();
             async move {
-                // Cap per-cluster work so a down VIP cannot stall the dashboard.
-                // Offline probes finish in ~1s; keep DB capacity if we still time out.
-                match timeout(Duration::from_secs(5), gather_one(&state, c.clone())).await {
-                    Ok(summary) => summary,
-                    Err(_) => timeout_summary_with_capacity(&state, &c).await,
+                if let Some(s) = cached_live(&c.id, Some(LIVE_TTL)) {
+                    if s.status != c.status {
+                        spawn_live(state, c);
+                    }
+                    return s;
                 }
+                spawn_live(state.clone(), c.clone());
+                if let Some(s) = cached_live(&c.id, None).filter(|s| s.status == c.status) {
+                    return s;
+                }
+                capacity_now(&state, &c).await
             }
         })
         .collect();
     futures::future::join_all(futs).await
+}
+
+async fn capacity_now(state: &AppState, cluster: &ClusterRow) -> ClusterResourceSummary {
+    let nodes: Vec<NodeCap> = sqlx::query_as(
+        "SELECT name, role, ip, cores, memory, disk_gb \
+         FROM nodes WHERE cluster_id = ? ORDER BY role, name",
+    )
+    .bind(&cluster.id)
+    .fetch_all(state.pool())
+    .await
+    .unwrap_or_default();
+
+    let (cpu, memory, disk) = capacity_metrics(&nodes);
+    ClusterResourceSummary {
+        cluster_id: cluster.id.clone(),
+        cluster_name: cluster.name.clone(),
+        status: cluster.status.clone(),
+        availability: cluster_availability::cached_or(&cluster.id, &cluster.status),
+        k8s_version: cluster.k8s_version.clone(),
+        node_count: nodes.len() as i64,
+        cpu,
+        memory,
+        disk,
+        error: None,
+    }
 }
 
 /// Like gather_one capacity path, used when the live probe hits the outer deadline.

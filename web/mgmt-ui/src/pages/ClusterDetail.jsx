@@ -16,6 +16,7 @@ import OsBundlePicker, { osBundleReady } from '../components/OsBundlePicker'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import K8sTab from './cluster-k8s/K8sTab'
 import ShellTab from './cluster-k8s/ShellTab'
+import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
 const YamlEditor = lazy(() => import('../components/YamlEditor'))
 
@@ -296,12 +297,16 @@ function dismissErrorBanner(key) {
   }
 }
 
+function clusterCacheKey(id) {
+  return `pertisk_cluster_${id}`
+}
+
 export default function ClusterDetail() {
   const { id } = useParams()
   const [search, setSearch] = useSearchParams()
   const nav = useNavigate()
   const confirm = useConfirm()
-  const [data, setData] = useState(null)
+  const [data, setData] = useState(() => readSessionJson(clusterCacheKey(id), null))
   const [jobs, setJobs] = useState([])
   const [log, setLog] = useState('')
   const [selectedJob, setSelectedJob] = useState(null)
@@ -342,6 +347,13 @@ export default function ClusterDetail() {
   const [busy, setBusy] = useState(false)
   const [errorDismissedKey, setErrorDismissedKey] = useState('')
   const selectedJobRef = useRef(null)
+  const dataIdRef = useRef(id)
+  if (dataIdRef.current !== id) {
+    dataIdRef.current = id
+    setData(readSessionJson(clusterCacheKey(id), null))
+    setJobs([])
+    setLog('')
+  }
 
   const tab = TABS.some((t) => t.id === search.get('tab'))
     ? search.get('tab')
@@ -353,8 +365,12 @@ export default function ClusterDetail() {
 
   const load = useCallback(async () => {
     try {
-      const d = await api(`/clusters/${id}`)
+      const [d, j] = await Promise.all([
+        api(`/clusters/${id}`),
+        api(`/clusters/${id}/jobs`).catch(() => []),
+      ])
       setData(d)
+      writeSessionJson(clusterCacheKey(id), d)
       setUpgradeVer((prev) => prev || d?.cluster?.k8s_version || '')
       setSelectedNodes((prev) => {
         const ids = new Set((d?.nodes || []).map((n) => n.id))
@@ -362,16 +378,12 @@ export default function ClusterDetail() {
         for (const x of prev) if (ids.has(x)) next.add(x)
         return next
       })
-    } catch (e) {
-      setError(e.message)
-    }
 
-    try {
-      const j = await api(`/clusters/${id}/jobs`)
-      setJobs(j)
+      const jobs = Array.isArray(j) ? j : []
+      setJobs(jobs)
       const prev = selectedJobRef.current
       const jobId =
-        (prev && j.some((x) => x.id === prev) ? prev : null) || j[0]?.id || null
+        (prev && jobs.some((x) => x.id === prev) ? prev : null) || jobs[0]?.id || null
       if (jobId !== prev) {
         selectedJobRef.current = jobId
         setSelectedJob(jobId)
@@ -382,8 +394,8 @@ export default function ClusterDetail() {
       } else {
         setLog('')
       }
-    } catch {
-      /* jobs optional while cluster loads */
+    } catch (e) {
+      setError(e.message)
     }
   }, [id])
 
@@ -443,10 +455,12 @@ export default function ClusterDetail() {
       status === 'pending' ||
       status === 'upgrading' ||
       status === 'deleting'
-    // While busy, poll logs (SSE covers status; logs still need a slow tick).
-    const t = setInterval(load, busy ? 3000 : 20000)
+    const availUnknown =
+      status === 'ready' &&
+      (!data?.cluster?.availability || data.cluster.availability === 'unknown')
+    const t = setInterval(load, busy ? 3000 : availUnknown ? 2500 : 20000)
     return () => clearInterval(t)
-  }, [load, data?.cluster?.status])
+  }, [load, data?.cluster?.status, data?.cluster?.availability])
 
   async function loadJobLog(jobId, { follow = true } = {}) {
     selectedJobRef.current = jobId

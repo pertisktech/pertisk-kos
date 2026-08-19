@@ -1,6 +1,6 @@
 //! Live cluster reachability (apiserver /readyz) — separate from lifecycle `status`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -12,14 +12,69 @@ use crate::k8s::resolve_cluster_kubeconfig;
 use crate::state::AppState;
 
 const READYZ_TIMEOUT: Duration = Duration::from_secs(1);
-/// Skip re-probing offline clusters briefly (dashboard / list poll).
-const OFFLINE_CACHE_TTL: Duration = Duration::from_secs(30);
+/// Serve this without re-probing (list/dashboard poll interval is 15s).
+const FRESH_TTL: Duration = Duration::from_secs(15);
+/// Last-known value is good enough to paint the UI while a refresh runs.
+const STALE_TTL: Duration = Duration::from_secs(120);
 
 type AvailCache = HashMap<String, (Instant, String)>;
 
 fn avail_cache() -> &'static Mutex<AvailCache> {
     static CACHE: OnceLock<Mutex<AvailCache>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn inflight() -> &'static Mutex<HashSet<String>> {
+    static C: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn store(cluster_id: &str, avail: String) {
+    if let Ok(mut cache) = avail_cache().lock() {
+        cache.insert(cluster_id.to_string(), (Instant::now(), avail));
+    }
+}
+
+fn lookup(cluster_id: &str, max_age: Duration) -> Option<String> {
+    let cache = avail_cache().lock().ok()?;
+    let (at, avail) = cache.get(cluster_id)?;
+    if at.elapsed() <= max_age {
+        Some(avail.clone())
+    } else {
+        None
+    }
+}
+
+/// Last-known reachability for a ready cluster (`unknown` if none / not ready).
+pub fn cached_or(cluster_id: &str, lifecycle_status: &str) -> String {
+    if lifecycle_status != "ready" {
+        return "unknown".into();
+    }
+    lookup(cluster_id, STALE_TTL).unwrap_or_else(|| "unknown".into())
+}
+
+/// Refresh in the background unless a probe is already fresh or in flight.
+pub fn spawn_refresh(state: AppState, cluster_id: String, lifecycle_status: String) {
+    if lifecycle_status != "ready" {
+        return;
+    }
+    if lookup(&cluster_id, FRESH_TTL).is_some() {
+        return;
+    }
+    {
+        let Ok(mut g) = inflight().lock() else {
+            return;
+        };
+        if !g.insert(cluster_id.clone()) {
+            return;
+        }
+    }
+    tokio::spawn(async move {
+        let _ = probe(&state, &cluster_id, &lifecycle_status).await;
+        if let Ok(mut g) = inflight().lock() {
+            g.remove(&cluster_id);
+        }
+    });
 }
 
 /// `online` — apiserver answered /readyz  
@@ -30,24 +85,12 @@ pub async fn probe(state: &AppState, cluster_id: &str, lifecycle_status: &str) -
         return "unknown".into();
     }
 
-    if let Ok(cache) = avail_cache().lock() {
-        if let Some((at, avail)) = cache.get(cluster_id) {
-            if avail == "offline" && at.elapsed() < OFFLINE_CACHE_TTL {
-                return avail.clone();
-            }
-        }
+    if let Some(avail) = lookup(cluster_id, FRESH_TTL) {
+        return avail;
     }
 
     let result = probe_uncached(state, cluster_id).await;
-
-    if result == "offline" {
-        if let Ok(mut cache) = avail_cache().lock() {
-            cache.insert(cluster_id.to_string(), (Instant::now(), result.clone()));
-        }
-    } else if let Ok(mut cache) = avail_cache().lock() {
-        cache.remove(cluster_id);
-    }
-
+    store(cluster_id, result.clone());
     result
 }
 

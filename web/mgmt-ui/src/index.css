@@ -2205,6 +2205,10 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
 }
 .skeleton-line.w-40 { width: 40%; }
 .skeleton-line.w-80 { width: 80%; }
+.cluster-resource-skeleton {
+  pointer-events: none;
+  min-height: 11rem;
+}
 
 /* K8s version dropdown */
 .k8s-select {

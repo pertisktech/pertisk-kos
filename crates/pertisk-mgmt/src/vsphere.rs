@@ -626,11 +626,37 @@ impl VsphereClient {
         if vm.power_state.as_deref() == Some("poweredOn") {
             return Ok(());
         }
+        // Keep BIOS UUID so a generated NIC MAC is not recomputed on power-on.
+        let _ = self.ensure_uuid_keep(&vm.moref).await;
         let body = format!(
             r#"<PowerOnVM_Task xmlns="urn:vim25">
   <_this type="VirtualMachine">{}</_this>
 </PowerOnVM_Task>"#,
             xml_escape(&vm.moref)
+        );
+        let resp = self.soap("urn:vim25/8.0.3.0", &body).await?;
+        if let Some(task) =
+            xml_attr_moref(&resp, "returnval").or_else(|| xml_text(&resp, "returnval"))
+        {
+            self.wait_task(&task).await?;
+        }
+        Ok(())
+    }
+
+    /// Persist `uuid.action=keep` so ESXi does not mint a new BIOS UUID (and
+    /// therefore a new generated MAC / DHCP address) on each power-on.
+    async fn ensure_uuid_keep(&self, moref: &str) -> ApiResult<()> {
+        let body = format!(
+            r#"<ReconfigVM_Task xmlns="urn:vim25">
+  <_this type="VirtualMachine">{}</_this>
+  <spec>
+    <extraConfig xsi:type="OptionValue" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <key>uuid.action</key>
+      <value xsi:type="xsd:string" xmlns:xsd="http://www.w3.org/2001/XMLSchema">keep</value>
+    </extraConfig>
+  </spec>
+</ReconfigVM_Task>"#,
+            xml_escape(moref)
         );
         let resp = self.soap("urn:vim25/8.0.3.0", &body).await?;
         if let Some(task) =

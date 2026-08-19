@@ -1,6 +1,6 @@
 //! Live hypervisor reachability — separate from stored provider rows.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -11,13 +11,67 @@ use crate::routes::providers::ProviderOut;
 use crate::state::AppState;
 use crate::vsphere::VsphereClient;
 
-const OFFLINE_CACHE_TTL: Duration = Duration::from_secs(20);
+const FRESH_TTL: Duration = Duration::from_secs(15);
+const STALE_TTL: Duration = Duration::from_secs(120);
 
 type Cache = HashMap<String, (Instant, String)>;
 
 fn cache() -> &'static Mutex<Cache> {
     static C: OnceLock<Mutex<Cache>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn inflight() -> &'static Mutex<HashSet<String>> {
+    static C: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn store(provider_id: &str, avail: String) {
+    if let Ok(mut c) = cache().lock() {
+        c.insert(provider_id.to_string(), (Instant::now(), avail));
+    }
+}
+
+fn lookup(provider_id: &str, max_age: Duration) -> Option<String> {
+    let c = cache().lock().ok()?;
+    let (at, avail) = c.get(provider_id)?;
+    if at.elapsed() <= max_age {
+        Some(avail.clone())
+    } else {
+        None
+    }
+}
+
+/// Last-known hypervisor reachability (`unknown` if never probed).
+pub fn cached_or(provider_id: &str) -> String {
+    if provider_id.trim().is_empty() {
+        return "unknown".into();
+    }
+    lookup(provider_id, STALE_TTL).unwrap_or_else(|| "unknown".into())
+}
+
+/// Refresh in the background unless a probe is already fresh or in flight.
+pub fn spawn_refresh(state: AppState, provider_id: String) {
+    if provider_id.trim().is_empty() {
+        return;
+    }
+    if lookup(&provider_id, FRESH_TTL).is_some() {
+        return;
+    }
+    {
+        let Ok(mut g) = inflight().lock() else {
+            return;
+        };
+        if !g.insert(provider_id.clone()) {
+            return;
+        }
+    }
+    tokio::spawn(async move {
+        let _ = probe(&state, &provider_id).await;
+        if let Ok(mut g) = inflight().lock() {
+            g.remove(&provider_id);
+        }
+    });
 }
 
 /// `online` — hypervisor API accepted stored credentials  
@@ -27,24 +81,12 @@ pub async fn probe(state: &AppState, provider_id: &str) -> String {
     if provider_id.trim().is_empty() {
         return "unknown".into();
     }
-    if let Ok(cache) = cache().lock() {
-        if let Some((at, avail)) = cache.get(provider_id) {
-            if avail == "offline" && at.elapsed() < OFFLINE_CACHE_TTL {
-                return avail.clone();
-            }
-        }
+    if let Some(avail) = lookup(provider_id, FRESH_TTL) {
+        return avail;
     }
 
     let result = probe_uncached(state, provider_id).await;
-
-    if result == "offline" {
-        if let Ok(mut c) = cache().lock() {
-            c.insert(provider_id.to_string(), (Instant::now(), result.clone()));
-        }
-    } else if let Ok(mut c) = cache().lock() {
-        c.remove(provider_id);
-    }
-
+    store(provider_id, result.clone());
     result
 }
 
@@ -94,16 +136,11 @@ async fn probe_uncached(state: &AppState, provider_id: &str) -> String {
 }
 
 pub async fn fill(state: &AppState, providers: &mut [ProviderOut]) {
-    let futs: Vec<_> = providers
-        .iter()
-        .map(|p| {
-            let state = state.clone();
-            let id = p.id.clone();
-            async move { probe(&state, &id).await }
-        })
-        .collect();
-    let avails = futures::future::join_all(futs).await;
-    for (p, a) in providers.iter_mut().zip(avails) {
-        p.availability = a;
+    let mut seen: HashSet<String> = HashSet::new();
+    for p in providers.iter_mut() {
+        p.availability = cached_or(&p.id);
+        if seen.insert(p.id.clone()) {
+            spawn_refresh(state.clone(), p.id.clone());
+        }
     }
 }
