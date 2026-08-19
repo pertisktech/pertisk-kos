@@ -24,7 +24,7 @@ mkdir -p "${UKI_OUT}"
 case "${ARCH}" in
   amd64 | x86_64)
     ARCH=amd64
-    PLATFORM=linux/amd64
+    DEB_ARCH=amd64
     KERNEL="${PERTISK_KERNEL:-${OUT}/bzImage}"
     INITRD="${PERTISK_INITRAMFS:-${OUT}/initramfs-amd64.cpio.gz}"
     [[ -f "${INITRD}" ]] || INITRD="${OUT}/initramfs.cpio.gz"
@@ -32,7 +32,7 @@ case "${ARCH}" in
     ;;
   arm64 | aarch64)
     ARCH=arm64
-    PLATFORM=linux/arm64
+    DEB_ARCH=arm64
     KERNEL="${PERTISK_KERNEL:-${OUT}/vmlinuz-arm64}"
     INITRD="${PERTISK_INITRAMFS:-${OUT}/initramfs-arm64.cpio.gz}"
     STUB_NAME=linuxaa64.efi.stub
@@ -80,7 +80,15 @@ echo "    kernel=${KERNEL}"
 echo "    initrd=${INITRD}"
 echo "    cmdline=${CMDLINE}"
 
-docker run --rm --platform "${PLATFORM}" \
+# ukify is Python; the EFI stub is data. Run the host-arch container and
+# cross-install systemd-boot-efi:${DEB_ARCH} when targeting arm64.
+case "$(uname -m)" in
+  x86_64 | amd64) HOST_PLATFORM=linux/amd64 ;;
+  aarch64 | arm64) HOST_PLATFORM=linux/arm64 ;;
+  *) HOST_PLATFORM=linux/amd64 ;;
+esac
+
+docker run --rm --platform "${HOST_PLATFORM}" \
   ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   "${DOCKER_VOLS[@]}" \
   -v "${ROOT}/image/apt-retry.sh:/apt-retry.sh:ro" \
@@ -88,12 +96,19 @@ docker run --rm --platform "${PLATFORM}" \
   -e "CMDLINE=${CMDLINE}" \
   -e "VERSION=${VERSION}" \
   -e "ARCH=${ARCH}" \
+  -e "DEB_ARCH=${DEB_ARCH}" \
   -e "SIGN_FLAG=${SIGN_FLAG}" \
   ubuntu:24.04 \
   bash -c '
     set -euo pipefail
     export DEBIAN_FRONTEND=noninteractive
-    sh /apt-retry.sh systemd-ukify systemd-boot-efi binutils sbsigntool
+    HOST_DEB="$(dpkg --print-architecture)"
+    if [ "${DEB_ARCH}" = "${HOST_DEB}" ]; then
+      sh /apt-retry.sh systemd-ukify systemd-boot-efi binutils sbsigntool
+    else
+      dpkg --add-architecture "${DEB_ARCH}"
+      sh /apt-retry.sh systemd-ukify binutils sbsigntool "systemd-boot-efi:${DEB_ARCH}"
+    fi
     STUB="/usr/lib/systemd/boot/efi/${STUB_NAME}"
     test -f "${STUB}"
     UKIFY_ARGS=(

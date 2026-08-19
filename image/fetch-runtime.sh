@@ -134,7 +134,13 @@ if [[ "$(uname -s)" == Linux ]]; then
 fi
 # Always run amd64 container. For arm64, cross-install libc6:arm64 and copy the
 # foreign-arch libs without ever executing aarch64 code (QEMU binfmt unavailable).
+case "$(uname -m)" in
+  x86_64 | amd64) HOST_PLATFORM=linux/amd64 ;;
+  aarch64 | arm64) HOST_PLATFORM=linux/arm64 ;;
+  *) HOST_PLATFORM=linux/amd64 ;;
+esac
 docker run --rm \
+  --platform "${HOST_PLATFORM}" \
   ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   -v "${OUT}:/out" \
   -v "${ROOT}/image/apt-retry.sh:/apt-retry.sh:ro" \

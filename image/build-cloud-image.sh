@@ -73,14 +73,12 @@ APK_RETRY=( -v "${ROOT}/image/apk-retry.sh:/apk-retry.sh:ro" )
 
 case "${ARCH}" in
   amd64)
-    PLATFORM=linux/amd64
     EFI_NAME=BOOTX64.EFI
     KERNEL_SRC="${OUT}/bzImage"
     INITRD_SRC="${OUT}/initramfs.cpio.gz"
     [[ -f "${INITRD_SRC}" ]] || INITRD_SRC="${OUT}/initramfs-amd64.cpio.gz"
     ;;
   arm64)
-    PLATFORM=linux/arm64
     EFI_NAME=BOOTAA64.EFI
     KERNEL_SRC="${OUT}/vmlinuz-arm64"
     INITRD_SRC="${OUT}/initramfs-arm64.cpio.gz"
@@ -89,6 +87,14 @@ case "${ARCH}" in
     echo "unsupported PERTISK_ARCH=${ARCH}" >&2
     exit 1
     ;;
+esac
+
+# Populate/qemu-img never execute guest binaries. Always use the host CPU so
+# we do not depend on QEMU binfmt (broken on the self-hosted runner).
+case "$(uname -m)" in
+  x86_64 | amd64) HOST_PLATFORM=linux/amd64 ;;
+  aarch64 | arm64) HOST_PLATFORM=linux/arm64 ;;
+  *) HOST_PLATFORM=linux/amd64 ;;
 esac
 
 echo "==> assembling boot assets"
@@ -122,7 +128,7 @@ echo "==> populating GPT / ESP / STATE (no loop devices), hostname=${HOSTNAME_SE
 # Bind the whole out/ dir. Populate writes partition images next to the raw disk
 # and dd's them in — losetup is unavailable in Docker on this runner (no udev).
 docker run --rm \
-  --platform "${PLATFORM}" \
+  --platform "${HOST_PLATFORM}" \
   ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   -e PERTISK_DISK="/work/out/$(basename "${RAW}")" \
   -e PERTISK_BOOT_ASSETS=/work/boot \
@@ -146,6 +152,7 @@ if command -v qemu-img >/dev/null 2>&1; then
   qemu-img convert -p -f raw -O qcow2 "${RAW}" "${QCOW}"
 else
   docker run --rm \
+    --platform "${HOST_PLATFORM}" \
     ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
     -v "${OUT}:/out" \
     ${APK_RETRY[@]+"${APK_RETRY[@]}"} \
@@ -164,6 +171,7 @@ if [[ "$TARGET_GB" -gt "$BUILD_GB" ]]; then
     qemu-img info "${QCOW}"
   else
     docker run --rm \
+      --platform "${HOST_PLATFORM}" \
       ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
       -v "${OUT}:/out" \
       ${APK_RETRY[@]+"${APK_RETRY[@]}"} \

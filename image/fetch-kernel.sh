@@ -19,12 +19,10 @@ fi
 ARCH="${PERTISK_ARCH:-amd64}"
 case "${ARCH}" in
   amd64)
-    PLATFORM=linux/amd64
     KERNEL_OUT="${OUT}/bzImage"
     MODULES_OUT="${OUT}/modules-amd64"
     ;;
   arm64)
-    PLATFORM=linux/arm64
     KERNEL_OUT="${OUT}/vmlinuz-arm64"
     MODULES_OUT="${OUT}/modules-arm64"
     ;;
@@ -71,7 +69,13 @@ echo "==> extracting linux-virt kernel/modules via alpine (${ARCH})"
 # Run in an amd64 container even for arm64 — we only extract files from the
 # foreign APK, never execute arm64 binaries (QEMU binfmt is unavailable on
 # the self-hosted runner).
+case "$(uname -m)" in
+  x86_64 | amd64) HOST_PLATFORM=linux/amd64 ;;
+  aarch64 | arm64) HOST_PLATFORM=linux/arm64 ;;
+  *) HOST_PLATFORM=linux/amd64 ;;
+esac
 docker run --rm \
+  --platform "${HOST_PLATFORM}" \
   ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   -v "${OUT}:/out" \
   -v "${ROOT}/image/apk-retry.sh:/apk-retry.sh:ro" \

@@ -12,13 +12,11 @@ mkdir -p "${OUT}"
 ARCH="${PERTISK_ARCH:-amd64}"
 case "${ARCH}" in
   amd64)
-    PLATFORM=linux/amd64
     EFI_NAME=BOOTX64.EFI
     SRC_GLOB='systemd-bootx64.efi'
     DEB_ARCH=amd64
     ;;
   arm64)
-    PLATFORM=linux/arm64
     EFI_NAME=BOOTAA64.EFI
     SRC_GLOB='systemd-bootaa64.efi'
     DEB_ARCH=arm64
@@ -44,7 +42,13 @@ fi
 # Run in amd64 container even for arm64: download the foreign-arch .deb and
 # extract the EFI binary without executing any arm64 code.
 echo "==> extracting systemd-boot EFI via Debian (${ARCH})"
+case "$(uname -m)" in
+  x86_64 | amd64) HOST_PLATFORM=linux/amd64 ;;
+  aarch64 | arm64) HOST_PLATFORM=linux/arm64 ;;
+  *) HOST_PLATFORM=linux/amd64 ;;
+esac
 docker run --rm \
+  --platform "${HOST_PLATFORM}" \
   ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   -v "${OUT}:/out" \
   -v "${ROOT}/image/apt-retry.sh:/apt-retry.sh:ro" \

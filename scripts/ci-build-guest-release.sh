@@ -9,8 +9,8 @@
 #   os-bundle-{arch}-v{VERSION}.zip   (when out/secrets/.os-bundle-ready exists)
 #   os-trust.pk                       (when signing)
 #
-# Needs Docker. Arm64 on an amd64 runner needs qemu-user / binfmt
-# (CI: docker/setup-qemu-action). Privileged containers for disk populate.
+# Needs Docker. Guest arm64 artifacts are produced without executing aarch64
+# code (QEMU binfmt is not reliable on the self-hosted runner).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,12 +27,6 @@ chown_out() {
   "${ROOT}/scripts/ci-chown-path.sh" "${ROOT}/out" || true
 }
 trap chown_out EXIT
-
-preflight_platform() {
-  local plat="$1"
-  echo "==> docker platform check ${plat} (pull only — no exec)"
-  docker pull --platform "$plat" alpine:3.20
-}
 
 stage_qcow() {
   local arch="$1"
@@ -67,10 +61,6 @@ for raw in "${LIST[@]}"; do
       exit 1
       ;;
   esac
-
-  if [[ "$arch" == "arm64" ]]; then
-    preflight_platform linux/arm64
-  fi
 
   echo "==> guest cloud VERSION=${VERSION} ARCH=${arch}"
   make -C "$ROOT" cloud VERSION="$VERSION" ARCH="$arch"
