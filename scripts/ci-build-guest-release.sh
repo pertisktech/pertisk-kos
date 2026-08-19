@@ -30,8 +30,8 @@ trap chown_out EXIT
 
 preflight_platform() {
   local plat="$1"
-  echo "==> docker platform check ${plat}"
-  docker run --rm --platform "$plat" alpine:3.20 uname -m
+  echo "==> docker platform check ${plat} (pull only — no exec)"
+  docker pull --platform "$plat" alpine:3.20
 }
 
 stage_qcow() {

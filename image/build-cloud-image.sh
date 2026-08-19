@@ -141,10 +141,11 @@ docker run --rm \
 echo "==> converting qcow2 (${BUILD_GB}G)"
 RAW_BASE="$(basename "${RAW}")"
 QCOW_BASE="$(basename "${QCOW}")"
+# qemu-img is arch-independent for convert/resize — always run in amd64 container.
 if command -v qemu-img >/dev/null 2>&1; then
   qemu-img convert -p -f raw -O qcow2 "${RAW}" "${QCOW}"
 else
-  docker run --rm --platform "${PLATFORM}" \
+  docker run --rm \
     ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
     -v "${OUT}:/out" \
     ${APK_RETRY[@]+"${APK_RETRY[@]}"} \
@@ -162,7 +163,7 @@ if [[ "$TARGET_GB" -gt "$BUILD_GB" ]]; then
     qemu-img resize "${QCOW}" "${TARGET_GB}G"
     qemu-img info "${QCOW}"
   else
-    docker run --rm --platform "${PLATFORM}" \
+    docker run --rm \
       ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
       -v "${OUT}:/out" \
       ${APK_RETRY[@]+"${APK_RETRY[@]}"} \

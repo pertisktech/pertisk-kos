@@ -132,66 +132,77 @@ DOCKER_NET=()
 if [[ "$(uname -s)" == Linux ]]; then
   DOCKER_NET+=(--network host)
 fi
-docker run --rm --platform "${PLATFORM}" \
+# Always run amd64 container. For arm64, cross-install libc6:arm64 and copy the
+# foreign-arch libs without ever executing aarch64 code (QEMU binfmt unavailable).
+docker run --rm \
   ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   -v "${OUT}:/out" \
   -v "${ROOT}/image/apt-retry.sh:/apt-retry.sh:ro" \
+  -e "TARGET_ARCH=${ARCH}" \
   debian:bookworm-slim \
   bash -c '
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-sh /apt-retry.sh libc6
-mkdir -p /out/lib64 /out/lib/x86_64-linux-gnu /out/lib/aarch64-linux-gnu
-
-copy_deps() {
-  local bin="$1"
-  # Static binaries: ldd exits non-zero / says "not a dynamic executable".
-  if ! ldd "$bin" >/tmp/ldd.out 2>/dev/null; then
-    return 0
-  fi
-  while read -r line; do
-    # "libfoo.so.1 => /lib/.../libfoo.so.1 (0x...)" or "/lib64/ld-linux-... (0x...)"
-    lib=""
-    if [[ "$line" == *" => /"* ]]; then
-      lib="${line#* => }"
-      lib="${lib%% *}"
-    elif [[ "$line" == /* ]]; then
-      lib="${line%% *}"
-    fi
-    [[ -n "$lib" && -e "$lib" ]] || continue
-    case "$lib" in
-      /lib64/*)
-        mkdir -p /out/lib64
-        cp -aL "$lib" "/out/lib64/$(basename "$lib")"
-        ;;
-      /lib/x86_64-linux-gnu/*|/usr/lib/x86_64-linux-gnu/*)
-        mkdir -p /out/lib/x86_64-linux-gnu
-        cp -aL "$lib" "/out/lib/x86_64-linux-gnu/$(basename "$lib")"
-        ;;
-      /lib/aarch64-linux-gnu/*|/usr/lib/aarch64-linux-gnu/*)
-        mkdir -p /out/lib/aarch64-linux-gnu
-        cp -aL "$lib" "/out/lib/aarch64-linux-gnu/$(basename "$lib")"
-        ;;
-      /lib/*)
-        # e.g. /lib/ld-linux-aarch64.so.1
-        mkdir -p /out/lib
-        cp -aL "$lib" "/out/lib/$(basename "$lib")"
-        ;;
-    esac
-  done < /tmp/ldd.out
-}
-
-for b in containerd kubelet ctr containerd-shim-runc-v2; do
-  copy_deps "/out/usr/local/bin/$b"
-done
-# Ensure interpreter path exists even if ldd formatting differs.
-if [[ -e /lib64/ld-linux-x86-64.so.2 ]]; then
-  mkdir -p /out/lib64
-  cp -aL /lib64/ld-linux-x86-64.so.2 /out/lib64/
+TARGET_ARCH="${TARGET_ARCH}"
+if [ "${TARGET_ARCH}" = "amd64" ]; then
+  sh /apt-retry.sh libc6
+else
+  dpkg --add-architecture arm64
+  sh /apt-retry.sh libc6:arm64
 fi
-if [[ -e /lib/ld-linux-aarch64.so.1 ]]; then
-  mkdir -p /out/lib
-  cp -aL /lib/ld-linux-aarch64.so.1 /out/lib/
+mkdir -p /out/lib64 /out/lib/x86_64-linux-gnu /out/lib/aarch64-linux-gnu /out/lib
+
+if [ "${TARGET_ARCH}" = "amd64" ]; then
+  # Native: use ldd to find deps.
+  copy_deps() {
+    local bin="$1"
+    if ! ldd "$bin" >/tmp/ldd.out 2>/dev/null; then
+      return 0
+    fi
+    while read -r line; do
+      lib=""
+      if [[ "$line" == *" => /"* ]]; then
+        lib="${line#* => }"
+        lib="${lib%% *}"
+      elif [[ "$line" == /* ]]; then
+        lib="${line%% *}"
+      fi
+      [[ -n "$lib" && -e "$lib" ]] || continue
+      case "$lib" in
+        /lib64/*)
+          mkdir -p /out/lib64
+          cp -aL "$lib" "/out/lib64/$(basename "$lib")"
+          ;;
+        /lib/x86_64-linux-gnu/*|/usr/lib/x86_64-linux-gnu/*)
+          mkdir -p /out/lib/x86_64-linux-gnu
+          cp -aL "$lib" "/out/lib/x86_64-linux-gnu/$(basename "$lib")"
+          ;;
+        /lib/*)
+          mkdir -p /out/lib
+          cp -aL "$lib" "/out/lib/$(basename "$lib")"
+          ;;
+      esac
+    done < /tmp/ldd.out
+  }
+  for b in containerd kubelet ctr containerd-shim-runc-v2; do
+    copy_deps "/out/usr/local/bin/$b"
+  done
+  if [[ -e /lib64/ld-linux-x86-64.so.2 ]]; then
+    mkdir -p /out/lib64
+    cp -aL /lib64/ld-linux-x86-64.so.2 /out/lib64/
+  fi
+else
+  # arm64: cannot ldd the foreign binaries. Copy all glibc libs from the
+  # cross-installed libc6:arm64 package.
+  for lib in /lib/aarch64-linux-gnu/lib*.so* /usr/lib/aarch64-linux-gnu/lib*.so*; do
+    [ -e "$lib" ] || continue
+    mkdir -p /out/lib/aarch64-linux-gnu
+    cp -aL "$lib" "/out/lib/aarch64-linux-gnu/$(basename "$lib")" 2>/dev/null || true
+  done
+  if [ -e /lib/ld-linux-aarch64.so.1 ]; then
+    mkdir -p /out/lib
+    cp -aL /lib/ld-linux-aarch64.so.1 /out/lib/
+  fi
 fi
 '
 

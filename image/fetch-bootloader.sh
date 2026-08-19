@@ -41,16 +41,27 @@ if [[ "$(uname -s)" == Linux ]]; then
   DOCKER_NET+=(--network host)
 fi
 
+# Run in amd64 container even for arm64: download the foreign-arch .deb and
+# extract the EFI binary without executing any arm64 code.
 echo "==> extracting systemd-boot EFI via Debian (${ARCH})"
-docker run --rm --platform "${PLATFORM}" \
+docker run --rm \
   ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   -v "${OUT}:/out" \
   -v "${ROOT}/image/apt-retry.sh:/apt-retry.sh:ro" \
   -e "SRC_GLOB=${SRC_GLOB}" \
   -e "EFI_NAME=${EFI_NAME}" \
+  -e "DEB_ARCH=${DEB_ARCH}" \
   debian:bookworm-slim bash -c '
   set -euo pipefail
-  sh /apt-retry.sh systemd-boot-efi
+  export DEBIAN_FRONTEND=noninteractive
+  if [ "$(dpkg --print-architecture)" = "${DEB_ARCH}" ]; then
+    # Native arch — install normally.
+    sh /apt-retry.sh systemd-boot-efi
+  else
+    # Cross-arch: add foreign dpkg arch then install the :arch package.
+    dpkg --add-architecture "${DEB_ARCH}"
+    sh /apt-retry.sh "systemd-boot-efi:${DEB_ARCH}"
+  fi
   src=$(find /usr -name "${SRC_GLOB}" | head -1)
   if [ -z "${src}" ]; then
     echo "systemd-boot EFI not found" >&2

@@ -61,8 +61,17 @@ if [[ "${NEED_KERNEL}" == "0" && "${NEED_MODULES}" == "0" ]]; then
   exit 0
 fi
 
+# Map ARCH to Alpine APK architecture name.
+case "${ARCH}" in
+  amd64) APK_ARCH=x86_64 ;;
+  arm64) APK_ARCH=aarch64 ;;
+esac
+
 echo "==> extracting linux-virt kernel/modules via alpine (${ARCH})"
-docker run --rm --platform "${PLATFORM}" \
+# Run in an amd64 container even for arm64 — we only extract files from the
+# foreign APK, never execute arm64 binaries (QEMU binfmt is unavailable on
+# the self-hosted runner).
+docker run --rm \
   ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   -v "${OUT}:/out" \
   -v "${ROOT}/image/apk-retry.sh:/apk-retry.sh:ro" \
@@ -70,14 +79,60 @@ docker run --rm --platform "${PLATFORM}" \
   -e "NEED_MODULES=${NEED_MODULES}" \
   -e "KERNEL_NAME=$(basename "${KERNEL_OUT}")" \
   -e "MODULES_NAME=$(basename "${MODULES_OUT}")" \
+  -e "APK_ARCH=${APK_ARCH}" \
   alpine:3.20 sh -c '
   set -e
-  sh /apk-retry.sh linux-virt gzip
-  KVER=$(ls /lib/modules | head -1)
+  # Install gzip (for .ko.gz) plus apk tools; then fetch the foreign-arch linux-virt.
+  sh /apk-retry.sh gzip
+  # Fetch linux-virt for the target arch into a staging root (no exec).
+  STAGING=/tmp/alpine-root
+  mkdir -p "${STAGING}/etc/apk"
+  cp /etc/apk/repositories "${STAGING}/etc/apk/"
+  apk fetch --root "${STAGING}" --arch "${APK_ARCH}" --no-cache -o /tmp linux-virt 2>/dev/null || true
+  # Fallback: direct fetch if apk fetch does not support --arch.
+  if ! ls /tmp/linux-virt-*.apk >/dev/null 2>&1; then
+    . /etc/os-release
+    ver=$(echo "$VERSION_ID" | cut -d. -f1,2)
+    url="https://dl-cdn.alpinelinux.org/alpine/v${ver}/main/${APK_ARCH}"
+    idx=$(wget -qO- "${url}/APKINDEX.tar.gz" | tar -tzf - 2>/dev/null | head -1 || true)
+    # Just download the package directly.
+    pkg=$(wget -qO- "${url}/" 2>/dev/null | sed -n "s/.*href=\"\\(linux-virt-[^\"]*\\.apk\\)\".*/\\1/p" | head -1 || true)
+    if [ -n "$pkg" ]; then
+      wget -q "${url}/${pkg}" -O "/tmp/${pkg}"
+    else
+      # Use apk with --root to a fake sysroot.
+      apk add --root "${STAGING}" --arch "${APK_ARCH}" --no-cache --no-scripts --initdb linux-virt 2>/dev/null || {
+        echo "Could not fetch linux-virt for ${APK_ARCH}" >&2
+        exit 1
+      }
+    fi
+  fi
+
+  # Extract: APK is a gzipped tar.
+  EXTRACT=/tmp/extract
+  mkdir -p "${EXTRACT}"
+  if ls /tmp/linux-virt-*.apk >/dev/null 2>&1; then
+    for f in /tmp/linux-virt-*.apk; do
+      tar -xzf "$f" -C "${EXTRACT}" 2>/dev/null || true
+    done
+  fi
+  # Also check apk --root install path.
+  if [ -d "${STAGING}/lib/modules" ]; then
+    cp -a "${STAGING}/." "${EXTRACT}/"
+  fi
+
+  KVER=$(ls "${EXTRACT}/lib/modules" 2>/dev/null | head -1)
+  if [ -z "${KVER}" ]; then
+    echo "ERROR: no kernel modules found after extraction" >&2
+    find "${EXTRACT}" -maxdepth 3 >&2 || true
+    exit 1
+  fi
   echo "KVER=$KVER"
 
   if [ "${NEED_KERNEL}" = "1" ]; then
-    img=$(ls /boot/vmlinuz* | head -1)
+    img=$(ls "${EXTRACT}"/boot/vmlinuz* 2>/dev/null | head -1)
+    [ -n "$img" ] || img=$(find "${EXTRACT}" -name "vmlinuz*" -o -name "bzImage" | head -1)
+    [ -n "$img" ] || { echo "kernel image not found" >&2; exit 1; }
     cp "$img" "/out/${KERNEL_NAME}"
     echo "copied kernel $img"
   fi
@@ -93,7 +148,7 @@ docker run --rm --platform "${PLATFORM}" \
       if [ -f "$dest" ]; then
         return 0
       fi
-      src=$(find "/lib/modules/${KVER}" \( -name "${name}.ko.gz" -o -name "${name}.ko" \) | head -1)
+      src=$(find "${EXTRACT}/lib/modules/${KVER}" \( -name "${name}.ko.gz" -o -name "${name}.ko" \) | head -1)
       if [ -z "$src" ]; then
         echo "WARNING: module ${name} not found" >&2
         return 0
@@ -109,20 +164,6 @@ docker run --rm --platform "${PLATFORM}" \
       done
     }
 
-    # Roots: NIC + SCSI/blk disk (Proxmox virtio-scsi / QEMU virtio-blk;
-    # ESXi LSI Logic Parallel via mptspi + e1000e/vmxnet3)
-    # + ext4/vfat (STATE/EPHEMERAL/EFI mounts; linux-virt builds these as modules)
-    # + overlay (containerd)
-    # + Flannel/Calico/CNI bridge (llc/stp/bridge/br_netfilter/veth)
-    # + Calico IPIP + ipset (iptables dataplane)
-    # + kube-proxy iptables (xt_tcpudp/xt_nat/xt_statistic/…)
-    # + Cilium datapath (vxlan, nft/iptables, xt_socket, xfrm_user for NETLINK_XFRM,
-    #   inet_diag for socket LB, cls_bpf/sch_fq for tc)
-    # + af_packet: kube-vip IPv4 gratuitous ARP (without it: "failed to get raw socket:
-    #   address family not supported by protocol" and VIP never reachable off-node)
-    # + NFS client: kubernetes.io/nfs + nfs-subdir-external-provisioner
-    #   (mount fails with "No such device" without nfs.ko / sunrpc)
-    # + ESXi/QEMU VGA: simpledrm + vmwgfx (CONFIG_FB=m; Host Client past EFI stub)
     for name in failover net_failover virtio_net \
                 scsi_common scsi_mod virtio_scsi virtio_blk sd_mod \
                 cdrom sr_mod isofs ata_piix ahci \

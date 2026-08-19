@@ -83,62 +83,21 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
          fi; \
        done
 
-FROM alpine:3.20 AS tools
+# Tools stage: always run on the build host (amd64). For arm64 targets, install
+# foreign-arch packages via apk --root --arch so we never execute aarch64 code.
+# This avoids QEMU binfmt which is broken on the self-hosted runner.
+FROM --platform=$BUILDPLATFORM alpine:3.20 AS tools
 ARG TARGETARCH
+ARG BUILDPLATFORM
 COPY image/apk-retry.sh /apk-retry.sh
-# cpio/gzip here so the pack stage can inherit this image (one Alpine index fetch).
-RUN sh /apk-retry.sh sgdisk e2fsprogs e2fsprogs-extra dosfstools busybox parted util-linux ca-certificates \
-    iptables iptables-legacy \
-    nfs-utils \
-    qemu-guest-agent \
-    iproute2 \
-    cpio gzip \
-    && mkdir -p /tools/bin /tools/lib /tools/certs /tools/xtables \
-    && cp /usr/bin/sgdisk /usr/sbin/partprobe /sbin/mkfs.ext4 /sbin/mkfs.vfat /usr/sbin/resize2fs /usr/sbin/tune2fs /sbin/blkid /bin/busybox /tools/bin/ \
-    && cp /usr/bin/qemu-ga /tools/bin/ \
-    && cp /etc/ssl/certs/ca-certificates.crt /tools/certs/ \
-    # util-linux mount/umount (kubelet volumes) — not BusyBox applets.
-    && cp /bin/mount /bin/umount /tools/bin/ \
-    # iproute2 `ip` for net helpers / dashboard fallback.
-    && cp /sbin/ip /tools/bin/ \
-    # NFS client helpers (mount -t nfs looks for /sbin/mount.nfs).
-    && cp /sbin/mount.nfs /sbin/mount.nfs4 /sbin/umount.nfs /sbin/umount.nfs4 /tools/bin/ \
-    # Host iptables for Flannel/Calico CNI + kube-proxy (legacy; nft is incomplete on linux-virt).
-    && (cp -a /sbin/xtables-legacy-multi /tools/bin/ 2>/dev/null \
-        || cp -a /usr/sbin/xtables-legacy-multi /tools/bin/) \
-    && ln -sf xtables-legacy-multi /tools/bin/iptables \
-    && ln -sf xtables-legacy-multi /tools/bin/iptables-legacy \
-    && ln -sf xtables-legacy-multi /tools/bin/iptables-save \
-    && ln -sf xtables-legacy-multi /tools/bin/iptables-restore \
-    && ln -sf xtables-legacy-multi /tools/bin/ip6tables \
-    && ln -sf xtables-legacy-multi /tools/bin/ip6tables-legacy \
-    && cp -a /usr/lib/xtables/. /tools/xtables/ \
-    && for bin in /tools/bin/sgdisk /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/resize2fs /tools/bin/tune2fs /tools/bin/blkid /tools/bin/partprobe /tools/bin/xtables-legacy-multi /tools/bin/mount /tools/bin/umount /tools/bin/ip /tools/bin/mount.nfs /tools/bin/mount.nfs4 /tools/bin/umount.nfs /tools/bin/umount.nfs4 /tools/bin/qemu-ga; do \
-         [ -f "$bin" ] || continue; \
-         ldd "$bin" 2>/dev/null | awk '{print $3}' | grep -E '^/' | while read -r lib; do cp -n "$lib" /tools/lib/; done; \
-       done \
-    # nfs-utils / util-linux also need libtirpc / libmount / libblkid (ldd can miss some dlopen paths).
-    && for lib in /usr/lib/libtirpc.so.3* /lib/libtirpc.so.3* /usr/lib/libmount.so.1* /lib/libmount.so.1* \
-                  /usr/lib/libblkid.so.1* /lib/libblkid.so.1* /usr/lib/libuuid.so.1* /lib/libuuid.so.1* \
-                  /usr/lib/libsmartcols.so.1* /lib/libsmartcols.so.1* /usr/lib/libcap.so.2* /lib/libcap.so.2* \
-                  /usr/lib/libelf.so.1* /lib/libelf.so.1* /usr/lib/libmnl.so.0* /lib/libmnl.so.0* \
-                  /usr/lib/libbsd.so.0* /lib/libbsd.so.0* /usr/lib/libmd.so.0* /lib/libmd.so.0*; do \
-         [ -e "$lib" ] || continue; \
-         cp -an "$lib" /tools/lib/ 2>/dev/null || cp -n "$lib" /tools/lib/; \
-       done \
-    # qemu-ga nested deps (glib → pcre2/intl already via ldd; keep globs for so names).
-    && for lib in /usr/lib/libnuma.so.1* /usr/lib/liburing.so.2* /usr/lib/libglib-2.0.so.0* \
-                  /usr/lib/libgmodule-2.0.so.0* /usr/lib/libintl.so.8* /usr/lib/libpcre2-8.so.0*; do \
-         [ -e "$lib" ] || continue; \
-         cp -an "$lib" /tools/lib/ 2>/dev/null || cp -n "$lib" /tools/lib/; \
-       done \
-    && case "${TARGETARCH}" in \
-         amd64) cp /lib/ld-musl-x86_64.so.1 /tools/lib/ ;; \
-         arm64) cp /lib/ld-musl-aarch64.so.1 /tools/lib/ ;; \
-       esac
+# Host tools we always need (cpio/gzip for pack, plus apk itself).
+RUN apk add --no-cache cpio gzip
+COPY image/tools-extract.sh /tools-extract.sh
+RUN chmod +x /tools-extract.sh && TARGETARCH="${TARGETARCH}" sh /tools-extract.sh
 
-# Pack on the tools image so we do not hit Alpine CDN a second time.
-FROM tools AS pack
+# Pack on the build host — operates on data files only (COPY, ln, cpio, gzip).
+FROM --platform=$BUILDPLATFORM alpine:3.20 AS pack
+RUN apk add --no-cache cpio gzip
 ARG IMAGE_PROFILE=production
 WORKDIR /rootfs
 COPY image/rootfs/ ./
