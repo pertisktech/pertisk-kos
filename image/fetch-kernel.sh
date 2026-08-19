@@ -10,6 +10,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${ROOT}/out"
 mkdir -p "${OUT}"
 
+DOCKER_NET=()
+if [[ "$(uname -s)" == Linux ]]; then
+  # Self-hosted CI: docker-bridge DNS to dl-cdn.alpinelinux.org often flakes.
+  DOCKER_NET+=(--network host)
+fi
+
 ARCH="${PERTISK_ARCH:-amd64}"
 case "${ARCH}" in
   amd64)
@@ -57,14 +63,16 @@ fi
 
 echo "==> extracting linux-virt kernel/modules via alpine (${ARCH})"
 docker run --rm --platform "${PLATFORM}" \
+  ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   -v "${OUT}:/out" \
+  -v "${ROOT}/image/apk-retry.sh:/apk-retry.sh:ro" \
   -e "NEED_KERNEL=${NEED_KERNEL}" \
   -e "NEED_MODULES=${NEED_MODULES}" \
   -e "KERNEL_NAME=$(basename "${KERNEL_OUT}")" \
   -e "MODULES_NAME=$(basename "${MODULES_OUT}")" \
   alpine:3.20 sh -c '
   set -e
-  apk add --no-cache linux-virt gzip >/dev/null
+  sh /apk-retry.sh linux-virt gzip
   KVER=$(ls /lib/modules | head -1)
   echo "KVER=$KVER"
 

@@ -65,6 +65,12 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+DOCKER_NET=()
+if [[ "$(uname -s)" == Linux ]]; then
+  DOCKER_NET+=(--network host)
+fi
+APK_RETRY=( -v "${ROOT}/image/apk-retry.sh:/apk-retry.sh:ro" )
+
 case "${ARCH}" in
   amd64)
     PLATFORM=linux/amd64
@@ -114,6 +120,7 @@ dd if=/dev/zero of="${RAW}" bs=1m count=0 seek=$((BUILD_GB * 1024)) status=none
 echo "==> populating GPT / ESP / STATE (Docker privileged), hostname=${HOSTNAME_SEED}"
 docker run --rm --privileged \
   --platform "${PLATFORM}" \
+  ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   -e PERTISK_DISK=/work/disk.raw \
   -e PERTISK_BOOT_ASSETS=/work/boot \
   -e PERTISK_SEED_CONFIG=/work/config.yaml \
@@ -124,8 +131,9 @@ docker run --rm --privileged \
   -v "${ASSETS}:/work/boot:ro" \
   -v "${SEED}:/work/config.yaml:ro" \
   -v "${ROOT}/image/cloud/populate-disk.sh:/work/populate-disk.sh:ro" \
+  ${APK_RETRY[@]+"${APK_RETRY[@]}"} \
   alpine:3.20 \
-  sh -c 'apk add --no-cache sgdisk e2fsprogs dosfstools util-linux multipath-tools parted >/dev/null && sh /work/populate-disk.sh'
+  sh -c 'sh /apk-retry.sh sgdisk e2fsprogs dosfstools util-linux multipath-tools parted && sh /work/populate-disk.sh'
 
 echo "==> converting qcow2 (${BUILD_GB}G)"
 RAW_BASE="$(basename "${RAW}")"
@@ -134,9 +142,11 @@ if command -v qemu-img >/dev/null 2>&1; then
   qemu-img convert -p -f raw -O qcow2 "${RAW}" "${QCOW}"
 else
   docker run --rm --platform "${PLATFORM}" \
+    ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
     -v "${OUT}:/out" \
+    ${APK_RETRY[@]+"${APK_RETRY[@]}"} \
     alpine:3.20 \
-    sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img convert -p -f raw -O qcow2 /out/${RAW_BASE} /out/${QCOW_BASE}"
+    sh -c "sh /apk-retry.sh qemu-img && qemu-img convert -p -f raw -O qcow2 /out/${RAW_BASE} /out/${QCOW_BASE}"
 fi
 if [[ "${PERTISK_KEEP_RAW:-0}" != "1" ]]; then
   rm -f "${RAW}"
@@ -150,9 +160,11 @@ if [[ "$TARGET_GB" -gt "$BUILD_GB" ]]; then
     qemu-img info "${QCOW}"
   else
     docker run --rm --platform "${PLATFORM}" \
+      ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
       -v "${OUT}:/out" \
+      ${APK_RETRY[@]+"${APK_RETRY[@]}"} \
       alpine:3.20 \
-      sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img resize /out/${QCOW_BASE} ${TARGET_GB}G && qemu-img info /out/${QCOW_BASE}"
+      sh -c "sh /apk-retry.sh qemu-img && qemu-img resize /out/${QCOW_BASE} ${TARGET_GB}G && qemu-img info /out/${QCOW_BASE}"
   fi
 else
   if command -v qemu-img >/dev/null 2>&1; then
