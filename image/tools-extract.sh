@@ -64,9 +64,17 @@ for src in \
   [ -f "$(r "$src")" ] && cp "$(r "$src")" /tools/bin/ || echo "WARN: missing $(r "$src")" >&2
 done
 
-# CA certs.
-[ -f "$(r /etc/ssl/certs/ca-certificates.crt)" ] && \
+# CA certs — arch-independent. With --no-scripts the cross-install sysroot won't
+# have the bundle (update-ca-certificates never ran). Use the host copy instead.
+if [ -f "$(r /etc/ssl/certs/ca-certificates.crt)" ]; then
   cp "$(r /etc/ssl/certs/ca-certificates.crt)" /tools/certs/
+elif [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+  cp /etc/ssl/certs/ca-certificates.crt /tools/certs/
+else
+  # Install ca-certificates on the host and generate the bundle.
+  apk add --no-cache ca-certificates
+  cp /etc/ssl/certs/ca-certificates.crt /tools/certs/
+fi
 
 # iptables.
 for src in /sbin/xtables-legacy-multi /usr/sbin/xtables-legacy-multi; do
@@ -103,6 +111,19 @@ case "${TARGETARCH}" in
     ;;
 esac
 
+# Verify critical files exist (COPY in Dockerfile will fail otherwise).
+fail=0
+for f in /tools/bin/sgdisk /tools/bin/busybox /tools/bin/qemu-ga \
+         /tools/bin/mount /tools/bin/umount /tools/bin/ip \
+         /tools/bin/xtables-legacy-multi \
+         /tools/certs/ca-certificates.crt; do
+  if [ ! -e "$f" ]; then
+    echo "ERROR: missing $f" >&2
+    fail=1
+  fi
+done
+[ "$fail" = "0" ] || exit 1
+
 echo "==> tools extracted"
-ls /tools/bin/ | head -20
-ls /tools/lib/ | head -10
+ls /tools/bin/
+ls /tools/lib/ | head -20
