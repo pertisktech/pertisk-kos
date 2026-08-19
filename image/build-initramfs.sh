@@ -112,7 +112,13 @@ fi
 echo "==> building initramfs (version=${VERSION} platform=${PLATFORM} profile=${IMAGE_PROFILE})"
 # BuildKit required for Dockerfile cache mounts (cargo registry/target).
 export DOCKER_BUILDKIT=1
+DOCKER_NET=()
+if [[ "$(uname -s)" == Linux ]]; then
+  # Self-hosted CI: docker-bridge DNS to Alpine/Debian CDNs often flakes.
+  DOCKER_NET+=(--network host)
+fi
 docker build \
+  ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   --platform "${PLATFORM}" \
   --build-arg "VERSION=${VERSION}" \
   --build-arg "IMAGE_PROFILE=${IMAGE_PROFILE}" \

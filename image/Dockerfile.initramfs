@@ -14,13 +14,8 @@ ARG ZIG_VERSION=0.13.0
 ARG VERSION=0.1.0
 ENV PERTISK_BUILD_VERSION=${VERSION}
 WORKDIR /src
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    xz-utils \
-    protobuf-compiler \
-    file \
-    ca-certificates \
+COPY image/apt-retry.sh /apt-retry.sh
+RUN sh /apt-retry.sh curl xz-utils protobuf-compiler file ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Zig cross linker for the builder CPU (not the target).
@@ -90,11 +85,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 FROM alpine:3.20 AS tools
 ARG TARGETARCH
-RUN apk add --no-cache sgdisk e2fsprogs e2fsprogs-extra dosfstools busybox parted util-linux ca-certificates \
+COPY image/apk-retry.sh /apk-retry.sh
+# cpio/gzip here so the pack stage can inherit this image (one Alpine index fetch).
+RUN sh /apk-retry.sh sgdisk e2fsprogs e2fsprogs-extra dosfstools busybox parted util-linux ca-certificates \
     iptables iptables-legacy \
     nfs-utils \
     qemu-guest-agent \
     iproute2 \
+    cpio gzip \
     && mkdir -p /tools/bin /tools/lib /tools/certs /tools/xtables \
     && cp /usr/bin/sgdisk /usr/sbin/partprobe /sbin/mkfs.ext4 /sbin/mkfs.vfat /usr/sbin/resize2fs /usr/sbin/tune2fs /sbin/blkid /bin/busybox /tools/bin/ \
     && cp /usr/bin/qemu-ga /tools/bin/ \
@@ -139,11 +137,9 @@ RUN apk add --no-cache sgdisk e2fsprogs e2fsprogs-extra dosfstools busybox parte
          arm64) cp /lib/ld-musl-aarch64.so.1 /tools/lib/ ;; \
        esac
 
-# Pack on Alpine (same as tools) — only needs cpio/gzip. Avoids flaky
-# deb.debian.org fetches that only install those two packages.
-FROM alpine:3.20 AS pack
+# Pack on the tools image so we do not hit Alpine CDN a second time.
+FROM tools AS pack
 ARG IMAGE_PROFILE=production
-RUN apk add --no-cache cpio gzip
 WORKDIR /rootfs
 COPY image/rootfs/ ./
 COPY image/boot-overlay/ ./
