@@ -128,14 +128,19 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "docker is required to vendor glibc for runtime binaries" >&2
   exit 1
 fi
+DOCKER_NET=()
+if [[ "$(uname -s)" == Linux ]]; then
+  DOCKER_NET+=(--network host)
+fi
 docker run --rm --platform "${PLATFORM}" \
+  ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   -v "${OUT}:/out" \
+  -v "${ROOT}/image/apt-retry.sh:/apt-retry.sh:ro" \
   debian:bookworm-slim \
   bash -c '
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq libc6 >/dev/null
+sh /apt-retry.sh libc6
 mkdir -p /out/lib64 /out/lib/x86_64-linux-gnu /out/lib/aarch64-linux-gnu
 
 copy_deps() {

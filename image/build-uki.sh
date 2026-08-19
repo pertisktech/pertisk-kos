@@ -70,13 +70,20 @@ if [[ -n "${PERTISK_SB_KEY:-}" && -n "${PERTISK_SB_CERT:-}" ]]; then
   echo "==> Secure Boot signing enabled"
 fi
 
+DOCKER_NET=()
+if [[ "$(uname -s)" == Linux ]]; then
+  DOCKER_NET+=(--network host)
+fi
+
 echo "==> building UKI (${ARCH}) version=${VERSION}"
 echo "    kernel=${KERNEL}"
 echo "    initrd=${INITRD}"
 echo "    cmdline=${CMDLINE}"
 
 docker run --rm --platform "${PLATFORM}" \
+  ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
   "${DOCKER_VOLS[@]}" \
+  -v "${ROOT}/image/apt-retry.sh:/apt-retry.sh:ro" \
   -e "STUB_NAME=${STUB_NAME}" \
   -e "CMDLINE=${CMDLINE}" \
   -e "VERSION=${VERSION}" \
@@ -86,8 +93,7 @@ docker run --rm --platform "${PLATFORM}" \
   bash -c '
     set -euo pipefail
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq systemd-ukify systemd-boot-efi binutils sbsigntool >/dev/null
+    sh /apt-retry.sh systemd-ukify systemd-boot-efi binutils sbsigntool
     STUB="/usr/lib/systemd/boot/efi/${STUB_NAME}"
     test -f "${STUB}"
     UKIFY_ARGS=(
