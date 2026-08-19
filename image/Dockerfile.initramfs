@@ -104,31 +104,15 @@ COPY image/rootfs/ ./
 COPY image/boot-overlay/ ./
 COPY --from=build /pertiskd ./init
 COPY --from=build /pertisk-power ./usr/sbin/pertisk-power
-# Disk/net helpers (required). Production ships no BusyBox at all.
-# mount/umount = util-linux; ip = iproute2. DHCPv4 is in-process only.
-# Debug profile copies BusyBox to /bin/busybox for ash recovery.
-COPY --from=tools /tools/bin/sgdisk /tools/bin/partprobe /tools/bin/mkfs.ext4 /tools/bin/mkfs.vfat /tools/bin/resize2fs /tools/bin/tune2fs /tools/bin/blkid ./usr/sbin/
-COPY --from=tools /tools/bin/busybox ./usr/lib/pertisk/.busybox-debug
-COPY --from=tools /tools/bin/qemu-ga ./usr/bin/qemu-ga
-# util-linux mount/umount for kubelet projected volumes / subPath.
-COPY --from=tools /tools/bin/mount /tools/bin/umount ./bin/
-# iproute2
-COPY --from=tools /tools/bin/ip ./sbin/ip
-# NFS client (storage extension) — mount -t nfs → /sbin/mount.nfs
-COPY --from=tools /tools/bin/mount.nfs /tools/bin/mount.nfs4 /tools/bin/umount.nfs /tools/bin/umount.nfs4 ./sbin/
-# iptables-legacy for Flannel/Calico CNI + kube-proxy (host-path lookups).
-COPY --from=tools /tools/bin/xtables-legacy-multi ./usr/sbin/xtables-legacy-multi
-COPY --from=tools /tools/xtables/ ./usr/lib/xtables/
-# Musl deps for disk tools first; glibc for containerd/kubelet overlays on top.
-COPY --from=tools /tools/lib/ ./lib/
+# tools-extract.sh builds /tools/rootfs/ with the final layout: usr/sbin/,
+# bin/, sbin/, lib/, usr/lib/xtables/, usr/bin/, etc/ssl/certs/, and
+# usr/lib/pertisk/.busybox-debug.
+COPY --from=tools /tools/rootfs/ ./
 COPY image/runtime-overlay/ ./
-# System CA bundle for containerd/kubelet image pulls (registry.k8s.io TLS).
-RUN mkdir -p ./etc/ssl/certs
-COPY --from=tools /tools/certs/ca-certificates.crt ./etc/ssl/certs/ca-certificates.crt
 RUN mkdir -p proc sys dev run tmp var system/state etc/pertisk sbin \
        usr/local/bin usr/bin opt/cni/bin etc/cni/net.d etc/kubernetes/manifests boot/efi \
-       usr/lib/pertisk/boot bin usr/lib/xtables \
-    && chmod +x ./usr/sbin/xtables-legacy-multi \
+       usr/lib/pertisk/boot bin usr/lib/xtables etc/ssl/certs \
+    && chmod +x ./usr/sbin/xtables-legacy-multi 2>/dev/null || true \
     && ln -sf xtables-legacy-multi ./usr/sbin/iptables \
     && ln -sf xtables-legacy-multi ./usr/sbin/iptables-legacy \
     && ln -sf xtables-legacy-multi ./usr/sbin/iptables-save \
@@ -137,9 +121,10 @@ RUN mkdir -p proc sys dev run tmp var system/state etc/pertisk sbin \
     && ln -sf xtables-legacy-multi ./usr/sbin/ip6tables-legacy \
     && ln -sf /usr/sbin/iptables ./sbin/iptables \
     && ln -sf /usr/sbin/iptables-legacy ./sbin/iptables-legacy
-RUN chmod +x ./init ./usr/sbin/* ./usr/bin/qemu-ga \
-    && chmod +x ./bin/mount ./bin/umount ./sbin/ip \
-    && chmod +x ./sbin/mount.nfs ./sbin/mount.nfs4 ./sbin/umount.nfs ./sbin/umount.nfs4 \
+RUN chmod +x ./init ./usr/sbin/* ./usr/bin/qemu-ga 2>/dev/null || true \
+    && chmod +x ./bin/mount ./bin/umount 2>/dev/null || true \
+    && chmod +x ./sbin/ip 2>/dev/null || true \
+    && chmod +x ./sbin/mount.nfs ./sbin/mount.nfs4 ./sbin/umount.nfs ./sbin/umount.nfs4 2>/dev/null || true \
     && ln -sf /usr/sbin/sgdisk ./sbin/sgdisk \
     && ln -sf /usr/sbin/mkfs.ext4 ./sbin/mkfs.ext4 \
     && ln -sf /usr/sbin/mkfs.vfat ./sbin/mkfs.vfat \
@@ -150,8 +135,6 @@ RUN chmod +x ./init ./usr/sbin/* ./usr/bin/qemu-ga \
     && ln -sf /bin/mount ./sbin/mount \
     && ln -sf /bin/umount ./sbin/umount \
     && ln -sf /sbin/ip ./usr/sbin/ip \
-    # qemu-ga guest-shutdown: Alpine tries /sbin/shutdown then /sbin/poweroff.
-    # Do NOT use BusyBox poweroff here — without -f it waits on PID 1/init.
     && ln -sf /usr/sbin/pertisk-power ./sbin/poweroff \
     && ln -sf /usr/sbin/pertisk-power ./sbin/reboot \
     && ln -sf /usr/sbin/pertisk-power ./sbin/halt \
@@ -169,7 +152,6 @@ RUN chmod +x ./init ./usr/sbin/* ./usr/bin/qemu-ga \
          && chmod +x ./bin/busybox \
          && echo "debug profile: BusyBox ash enabled"; \
        else \
-         # Production: no BusyBox / udhcpc / interactive shell.
          rm -f ./usr/lib/pertisk/.busybox-debug ./bin/busybox ./bin/sh ./bin/ash ./bin/bash \
          && echo "production profile: no BusyBox; util-linux mount/umount + iproute2 ip; builtin DHCP"; \
        fi \
