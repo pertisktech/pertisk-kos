@@ -13,6 +13,7 @@ import Templates from './pages/Templates'
 import Audit from './pages/Audit'
 import Settings from './pages/Settings'
 import OsPackages from './pages/OsPackages'
+import Images from './pages/Images'
 import Users from './pages/Users'
 
 export default function App() {
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="/clusters/:id/nodes/:nid" element={<NodeDetail />} />
             <Route path="/machines" element={<Machines />} />
             <Route path="/os-packages" element={<OsPackages />} />
+            <Route path="/images" element={<Images />} />
             <Route path="/templates" element={<Templates />} />
             <Route path="/providers" element={<Providers />} />
             <Route path="/users" element={<Users />} />

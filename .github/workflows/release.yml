@@ -1,5 +1,9 @@
-# Release on push tag X.Y.Z (e.g. 0.1.10) — pertisk-mgmt DEB+RPM (amd64/arm64) and GitHub Release.
+# Release on push tag X.Y.Z (e.g. 0.1.10) — pertisk-mgmt DEB+RPM, guest qcow2,
+# optional signed OS A/B bundles (amd64/arm64), and GitHub Release.
 # Terraform provider releases use terraform-provider-pertisk/v* (separate workflow).
+#
+# Signed OS bundles need repo secrets OS_TRUST_SK and OS_TRUST_PK (hex from
+# `make os-trust`). If unset, qcow2 still ships and bundles are skipped.
 
 name: Release
 
@@ -14,11 +18,13 @@ permissions:
 env:
   CARGO_BUILD_JOBS: "14"
   CARGO_INCREMENTAL: "0"
+  GUEST_ARCHES: "amd64,arm64"
 
 jobs:
   release:
-    name: Packages + GitHub Release
+    name: Packages + guests + GitHub Release
     runs-on: [self-hosted, linux]
+    timeout-minutes: 360
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,11 +44,17 @@ jobs:
           echo '{"credsStore":""}' > "$RUNNER_TEMP/.docker/config.json"
           echo "DOCKER_CONFIG=$RUNNER_TEMP/.docker" >> "$GITHUB_ENV"
 
+      - name: Set up QEMU (arm64 guest image)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           # docker-container driver isolates network/clock; apt GPG fails on some runners.
-          # Arm64 packages are cross-compiled (cargo-zigbuild) on the host; no QEMU.
+          # Arm64 mgmt packages are cross-compiled (cargo-zigbuild) on the host.
+          # Guest arm64 still needs QEMU for alpine fetch-kernel / disk populate.
           driver: docker
 
       - name: Build DEB + RPM (amd64, arm64)
@@ -50,6 +62,22 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
           PKG_PLATFORMS: linux/amd64,linux/arm64
         run: make release VERSION="$VERSION"
+
+      - name: OS trust keys
+        env:
+          OS_TRUST_SK: ${{ secrets.OS_TRUST_SK }}
+          OS_TRUST_PK: ${{ secrets.OS_TRUST_PK }}
+        run: |
+          chmod +x scripts/ci-setup-os-trust.sh
+          ./scripts/ci-setup-os-trust.sh
+
+      - name: Guest qcow2 + OS bundles
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          GUEST_ARCHES: ${{ env.GUEST_ARCHES }}
+        run: |
+          chmod +x scripts/ci-build-guest-release.sh
+          make guest-release VERSION="$VERSION"
 
       - name: Verify packages
         env:
@@ -69,19 +97,31 @@ jobs:
           test "${#ctl_rpms[@]}" -ge 2
           test "${#ctl_debs[@]}" -ge 2
           test "${#ctl_bins[@]}" -ge 2
+          clouds=( out/pkg/pertisk-cloud-*-v${VERSION}.qcow2 )
+          test "${#clouds[@]}" -ge 2
           echo "mgmt RPMs: ${rpms[*]}"
           echo "mgmt DEBs: ${debs[*]}"
           echo "ctl RPMs: ${ctl_rpms[*]}"
           echo "ctl DEBs: ${ctl_debs[*]}"
           echo "ctl bins: ${ctl_bins[*]}"
+          echo "cloud: ${clouds[*]}"
+          if [[ -f out/secrets/.os-bundle-ready ]]; then
+            zips=( out/pkg/os-bundle-*-v${VERSION}.zip )
+            test "${#zips[@]}" -ge 2
+            test -f out/pkg/os-trust.pk
+            echo "os-bundles: ${zips[*]}"
+          else
+            echo "os-bundles: skipped (OS_TRUST_SK/PK secrets unset)"
+          fi
 
       - name: Checksums
         run: |
           set -euo pipefail
           cd out/pkg
           shopt -s nullglob
-          files=( pertisk-mgmt-*.rpm pertisk-mgmt_*.deb pertiskctl-*.rpm pertiskctl_*.deb pertiskctl-linux-* )
-          test "${#files[@]}" -ge 10
+          files=( pertisk-mgmt-*.rpm pertisk-mgmt_*.deb pertiskctl-*.rpm pertiskctl_*.deb pertiskctl-linux-* \
+                  pertisk-cloud-*.qcow2 os-bundle-*.zip os-trust.pk )
+          test "${#files[@]}" -ge 12
           sha256sum "${files[@]}" | sort > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
@@ -111,6 +151,50 @@ jobs:
               echo "| ${fmt} | ${arch} | \`${base}\` |"
             done
             echo
+            echo "## Guest cloud images"
+            echo
+            echo "Upload on mgmt **Images** (or copy to \`/var/lib/pertisk-mgmt/images/\`)."
+            echo "Cluster create needs \`pertisk-cloud-{amd64,arm64}*.qcow2\`. arm64 guests are Proxmox only."
+            echo
+            echo "| Architecture | File |"
+            echo "|--------------|------|"
+            for f in out/pkg/pertisk-cloud-*-v${VERSION}.qcow2; do
+              [[ -f "$f" ]] || continue
+              base="$(basename "$f")"
+              case "$base" in
+                *amd64*) arch=amd64 ;;
+                *arm64*) arch=arm64 ;;
+                *) arch=? ;;
+              esac
+              echo "| ${arch} | \`${base}\` |"
+            done
+            echo
+            if [[ -f out/pkg/os-trust.pk ]]; then
+              echo "## OS A/B upgrade bundles"
+              echo
+              echo "Upload on mgmt **OS packages**. Kubernetes is not changed. Signed with the release \`os-trust.pk\`."
+              echo
+              echo "| Architecture | File |"
+              echo "|--------------|------|"
+              for f in out/pkg/os-bundle-*-v${VERSION}.zip; do
+                [[ -f "$f" ]] || continue
+                base="$(basename "$f")"
+                case "$base" in
+                  *amd64*) arch=amd64 ;;
+                  *arm64*) arch=arm64 ;;
+                  *) arch=? ;;
+                esac
+                echo "| ${arch} | \`${base}\` |"
+              done
+              echo
+              echo "Public key: \`os-trust.pk\` (also inside each zip)."
+              echo
+            else
+              echo "## OS A/B upgrade bundles"
+              echo
+              echo "Not attached — set repository secrets \`OS_TRUST_SK\` and \`OS_TRUST_PK\` (hex from \`make os-trust\`) and re-run the tag."
+              echo
+            fi
             echo "## pertiskctl (CLI)"
             echo
             echo "Standalone node CLI for laptops/CI. Skip this if you already installed **pertisk-mgmt** (it includes \`pertiskctl\`)."
@@ -149,13 +233,21 @@ jobs:
             echo "# CLI only: sudo apt-get install -y ./pertiskctl_${VERSION}-1_\${arch}.deb"
             echo '```'
             echo
+            echo "### Guest image + OS bundle (from this release)"
+            echo
+            echo '```bash'
+            echo "gh release download ${VERSION} -p 'pertisk-cloud-amd64-*.qcow2' -p 'os-bundle-amd64-*.zip'"
+            echo "# UI → Images → upload the qcow2"
+            echo "# UI → OS packages → upload the zip"
+            echo '```'
+            echo
             echo "### pertiskctl binary"
             echo
             echo '```bash'
             echo "install -m 0755 pertiskctl-linux-\$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') /usr/local/bin/pertiskctl"
             echo '```'
             echo
-            echo "See [docs/MGMT.md](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/docs/MGMT.md) for env, images, and Proxmox."
+            echo "See [docs/DEPLOY.md](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/docs/DEPLOY.md) and [docs/MGMT.md](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/docs/MGMT.md)."
           } > out/pkg/RELEASE_BODY.md
           cat out/pkg/RELEASE_BODY.md
 

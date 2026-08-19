@@ -4,6 +4,7 @@ mod clusters;
 mod dashboard;
 mod events;
 mod health;
+pub(crate) mod images;
 mod join_tokens;
 pub(crate) mod k8s;
 mod machines;
@@ -43,6 +44,7 @@ pub fn router(state: AppState) -> Router {
         .merge(machines::routes())
         .merge(templates::routes())
         .merge(os_packages::routes())
+        .merge(images::routes())
         .merge(join_tokens::routes())
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 

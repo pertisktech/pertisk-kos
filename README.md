@@ -254,9 +254,9 @@ make pertiskctl                         # → out/bin/pertiskctl
 make mgmt / make mgmt-pkg               # UI+API binary / DEB+RPM + pertiskctl (amd64+arm64)
 ```
 
-Artifacts: `out/initramfs-<arch>.cpio.gz` (or `-debug`), versioned copies, `out/uki/`, `out/pkg/` (mgmt + pertiskctl DEB/RPM/binaries), `out/os-bundle-<arch>-v<VERSION>.zip`.
+Artifacts: `out/initramfs-<arch>.cpio.gz` (or `-debug`), versioned copies, `out/uki/`, `out/pkg/` (mgmt + pertiskctl DEB/RPM/binaries, release qcow2 + os-bundle), `out/os-bundle-<arch>-v<VERSION>.zip`. GitHub Releases on tag `X.Y.Z` attach those guest files when CI is configured.
 
-`make os-bundle` is the in-place OS A/B path (kernel + initramfs, Kubernetes unchanged). Upload the zip on Cluster → Upgrade → OS A/B upgrade. `os-trust.pk` must already be on STATE; recreating VMs from a new qcow2 is a reinstall, not this path.
+`make os-bundle` is the in-place OS A/B path (kernel + initramfs, Kubernetes unchanged). Upload the zip on **OS packages**. Recreating VMs from a new qcow2 is a reinstall: upload `pertisk-cloud-{amd64,arm64}.qcow2` on **Images**, then Create Cluster. pertisk-mgmt does not compile guest images.
 
 ### 5. Preview Serial dashboard locally
 

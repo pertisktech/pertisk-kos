@@ -46,7 +46,7 @@ endif
 
 .PHONY: help build build-host build-all initramfs pertiskctl cloud uki enroll-ovmf \
 	fetch-runtime fetch-kernel test fmt clippy check check-hardening clean version lab-up \
-	mgmt mgmt-ui mgmt-pkg mgmt-rpm rpm release os-trust os-bundle \
+	mgmt mgmt-ui mgmt-pkg mgmt-rpm rpm release guest-release os-trust os-bundle \
 	create-tag delete-tag retag clean-tag
 
 help:
@@ -62,6 +62,7 @@ help:
 	@echo "  make mgmt-rpm [VERSION=...]            # linux/amd64 DEB+RPM (lab) → out/pkg/"
 	@echo "  make rpm                               # alias for mgmt-rpm"
 	@echo "  make release [VERSION=...]             # DEB+RPM amd64/arm64 for GitHub Release"
+	@echo "  make guest-release [VERSION=...] [GUEST_ARCHES=amd64,arm64]  # qcow2 + os-bundle → out/pkg/"
 	@echo "  make create-tag TAG=0.1.10             # push tag (triggers .github/workflows/release.yml)"
 	@echo "  make cloud [VERSION=...] [ARCH=...]"
 	@echo "  make os-trust                         # Ed25519 os-trust.{sk,pk} → out/secrets/"
@@ -137,6 +138,7 @@ mgmt: mgmt-ui
 
 ## linux packages (DEB + RPM). Override: make mgmt-pkg PKG_PLATFORMS=linux/amd64
 PKG_PLATFORMS ?= linux/amd64,linux/arm64
+GUEST_ARCHES ?= amd64,arm64
 mgmt-pkg:
 	PKG_PLATFORMS="$(PKG_PLATFORMS)" VERSION="$(VERSION)" "$(ROOT)/scripts/build-mgmt-pkg.sh"
 
@@ -159,6 +161,15 @@ release: mgmt-pkg
 	  ls -lh "$(ROOT)/out/pkg"/pertisk-mgmt*.rpm "$(ROOT)/out/pkg"/pertisk-mgmt*.deb \
 	         "$(ROOT)/out/pkg"/pertiskctl*.rpm "$(ROOT)/out/pkg"/pertiskctl*.deb \
 	         "$(ROOT)/out/pkg"/pertiskctl-linux-*
+
+## Guest qcow2 + optional signed OS bundles → out/pkg/ (CI after make release).
+## Signing: GitHub secrets OS_TRUST_SK/PK (CI), or local out/secrets from make os-trust.
+guest-release:
+	@if [[ -z "${GITHUB_ACTIONS:-}" ]]; then \
+	  VERSION="$(VERSION)" "$(ROOT)/scripts/ci-setup-os-trust.sh"; \
+	fi
+	VERSION="$(VERSION)" GUEST_ARCHES="$(GUEST_ARCHES)" \
+	  "$(ROOT)/scripts/ci-build-guest-release.sh"
 
 ## Cloud golden disk (kernel + systemd-boot + containerd/kubelet in initramfs).
 cloud:

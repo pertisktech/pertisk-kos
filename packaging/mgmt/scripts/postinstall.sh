@@ -8,5 +8,5 @@ chmod 0640 /etc/pertisk-mgmt/pertisk-mgmt.env 2>/dev/null || true
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload || true
   echo "Enable/start: systemctl enable --now pertisk-mgmt"
-  echo "Copy cloud qcow2 to /var/lib/pertisk-mgmt/images/ before Create Cluster (skip-build)."
+  echo "Upload cloud qcow2 in the UI (Images) or copy to /var/lib/pertisk-mgmt/images/ before Create Cluster."
 fi

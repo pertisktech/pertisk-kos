@@ -19,9 +19,18 @@ Related: [MGMT.md](./MGMT.md) (packages / env), [PROXMOX.md](./PROXMOX.md), [NUT
 
 ---
 
-## 0. Build artifacts (once)
+## 0. Artifacts (once)
 
-On a machine with Docker + Rust toolchain:
+**Preferred:** download the GitHub Release (tag `X.Y.Z`). CI attaches mgmt packages, `pertisk-cloud-{amd64,arm64}-vX.Y.Z.qcow2`, and (when signing secrets are set) `os-bundle-*-vX.Y.Z.zip`.
+
+```bash
+VER=0.3.0
+gh release download "$VER" -p "pertisk-mgmt-*-1.$(uname -m).rpm" \
+  -p "pertisk-cloud-amd64-*.qcow2" -p "os-bundle-amd64-*.zip"
+# arm64 guests (Proxmox): also -p 'pertisk-cloud-arm64-*.qcow2' -p 'os-bundle-arm64-*.zip'
+```
+
+**Or** build on a machine with Docker + Rust:
 
 ```bash
 make cloud ARCH=amd64 VERSION=0.3.0          # → out/pertisk-cloud-amd64*.qcow2
@@ -31,6 +40,25 @@ make mgmt-rpm VERSION=0.3.0                  # amd64 DEB+RPM → out/pkg/
 ```
 
 Keep `VERSION` in sync on image and RPM.
+
+Stage disks on mgmt (**Images** in the UI, or copy into `/var/lib/pertisk-mgmt/images/`):
+
+```text
+pertisk-cloud-amd64.qcow2           # or pertisk-cloud-amd64-vX.Y.Z.qcow2
+pertisk-cloud-arm64.qcow2           # arm64 / Proxmox only
+```
+
+Mgmt does not compile these. Create Cluster fails if the matching file is missing.
+
+**OS A/B signing (CI):** generate once, pin as GitHub Actions secrets so every tag signs with the same key:
+
+```bash
+make os-trust
+# Settings → Secrets → Actions:
+#   OS_TRUST_SK = contents of out/secrets/os-trust.sk   (64 hex chars)
+#   OS_TRUST_PK = contents of out/secrets/os-trust.pk
+# Keep .sk offline; never commit it. The public key ships in each zip.
+```
 
 ---
 

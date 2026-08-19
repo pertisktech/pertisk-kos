@@ -11,7 +11,7 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 | No SSH / interactive shell in production image | pass | Default `IMAGE_PROFILE=production`: no `/bin/sh`, no BusyBox/`udhcpc`; DHCPv4 in-process only; util-linux `mount`/`umount` + iproute2 `ip`. Debug profile adds ash (`PROFILE=debug`) |
 | Immutable root FS | partial | Initramfs root; STATE/EPHEMERAL writable; full SquashFS/EROFS root still Phase 4/5 |
 | Management API mTLS | pass | `PERTISK_TLS_*` + `scripts/gen-mtls-certs.sh` |
-| Signed A/B OS upgrades | pass | Ed25519 trust key on STATE; unsigned rejected |
+| Signed A/B OS upgrades | pass | Ed25519 trust key on STATE; unsigned rejected. CI: pin `OS_TRUST_SK` / `OS_TRUST_PK` so every GitHub Release signs with the same key |
 | Metrics endpoint auth | pass | mTLS when `PERTISK_TLS_*` set (same PEMs as API); optional bearer: `--metrics-token` / `PERTISK_METRICS_TOKEN` / STATE `secrets/metrics.token` |
 | STATE `secrets/` mode `0700` | pass | Set in `StateVolume::ensure_layout` |
 | Kernel sysctls before kubelet | pass | `pertiskd` `sysctl::apply_hardening_sysctls` |

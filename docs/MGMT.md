@@ -186,11 +186,32 @@ OS upgrade upload: the four signed files (`kernel`, `initramfs`, `manifest.json`
 ```bash
 make os-trust                              # once → out/secrets/os-trust.{sk,pk}
 make os-bundle VERSION=0.2.86 ARCH=amd64   # → out/os-bundle-amd64-v0.2.86.zip (includes os-trust.pk)
+make os-bundle VERSION=0.2.86 ARCH=arm64
 ```
 
 Job `upgrade_os` stages the bundle onto each guest via a privileged hostPath pod (`/var/lib/pertisk-os-upgrade`), installs `os-trust.pk` on STATE if missing, then `pertiskctl upgrade --bundle … --reboot` and `mark-boot-good`. Order: workers first, then control planes. Requires `kubectl` + `pertiskctl` on the mgmt host.
 
 Recreating VMs from a new qcow2 is a reinstall, not this path.
+
+## Images (install disks)
+
+**Images** is the qcow2 catalog for **cluster create**. Mgmt does **not** compile the OS — build on a Docker host, then upload (or `scp` into `PERTISK_IMAGES_DIR`, default `/var/lib/pertisk-mgmt/images/`).
+
+| API | Notes |
+|-----|--------|
+| `GET /api/images` | `{ dir, images: [{ name, arch, size_bytes, role, is_default }], ready: { amd64, arm64 } }` |
+| `POST /api/images` | Multipart `image` + optional `arch`. Streams to disk. Max 8 GiB. Replaces same filename |
+| `DELETE /api/images/{name}` | Remove file (blocked while create/add-node is running) |
+
+Need `pertisk-cloud-amd64*.qcow2` and/or `pertisk-cloud-arm64*.qcow2`. Create Cluster fails fast if the matching arch is missing. **arm64** guests are Proxmox only; vSphere and Nutanix stay **amd64**.
+
+Prefer GitHub Release assets (`pertisk-cloud-{arch}-v{VERSION}.qcow2`). Local build is optional:
+
+```bash
+gh release download 0.3.0 -p 'pertisk-cloud-amd64-*.qcow2' -p 'pertisk-cloud-arm64-*.qcow2'
+# or: make cloud VERSION=0.3.0 ARCH=amd64
+# UI → Images → Upload (versioned names like pertisk-cloud-amd64-v0.3.0.qcow2 are fine)
+```
 
 ## Proxmox provider
 
@@ -243,7 +264,7 @@ docker run -p 8080:8080 -e MGMT_ADMIN_PASSWORD=admin -e MGMT_SECRET_KEY=dev \
 
 Same idea as [Omni’s Proxmox infra provider](https://github.com/siderolabs/omni-infra-provider-proxmox): talk to Proxmox over the **API token only**. Images live on the **mgmt** host; create uploads them with `content=import` + `scsi0 … import-from=` (no `scp` / SSH to PVE).
 
-GitHub Releases ship **DEB + RPM** for **amd64** and **arm64** (`out/pkg/`). Lab `make rpm` builds amd64 only.
+GitHub Releases ship **DEB + RPM**, **guest qcow2**, and (when `OS_TRUST_*` secrets are set) **OS A/B zips** for **amd64** and **arm64**. Lab `make rpm` builds amd64 packages only.
 
 ```text
 [laptop]  stage-images + packages
@@ -321,8 +342,8 @@ Or `./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --with-ssh --pve p
 
 | Role | Capabilities |
 |------|----------------|
-| `viewer` | Read clusters/providers/machines/templates/os-packages/audit |
-| `operator` | Create/update/delete clusters, providers, nodes, upgrades, templates, OS packages |
+| `viewer` | Read clusters/providers/machines/templates/os-packages/images/audit |
+| `operator` | Create/update/delete clusters, providers, nodes, upgrades, templates, OS packages, images |
 | `admin` | Operator + delete providers |
 
 ## Phase D — fleet views
@@ -332,6 +353,7 @@ Or `./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --with-ssh --pve p
 | **Machines** | `GET /api/machines` | Cross-cluster node inventory with live **online** / **offline** (Machine API `:50000`); opens node detail |
 | **Providers** | `GET /api/providers` | Hypervisor inventory with live **online** / **offline** (Proxmox / ESXi / Prism API) |
 | **OS packages** | `GET/POST /api/os-packages`, `DELETE /api/os-packages/{id}`, `POST /api/os-packages/{id}/apply` | Signed A/B OS bundles by version + arch; apply to matching clusters |
+| **Images** | `GET/POST /api/images`, `DELETE /api/images/{name}` | Cloud qcow2 catalog for cluster create (`pertisk-cloud-{arch}.qcow2`); mgmt does not build |
 | **Templates** | `GET/POST /api/templates`, `GET/PUT/DELETE /api/templates/{id}` | Machine-config YAML blueprints; load into cluster Config tab |
 | **Audit** | `GET /api/audit?limit=&offset=&action=&resource=` | Management action log (`audit_log` table) |
 

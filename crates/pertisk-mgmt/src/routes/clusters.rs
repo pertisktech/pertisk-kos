@@ -561,12 +561,12 @@ async fn create(
     };
 
     // Ensure provider exists (+ default guest arch).
-    let provider: Option<(String, String)> =
-        sqlx::query_as("SELECT id, COALESCE(arch, 'amd64') FROM providers WHERE id = ?")
+    let provider: Option<(String, String, String)> =
+        sqlx::query_as("SELECT id, COALESCE(arch, 'amd64'), kind FROM providers WHERE id = ?")
             .bind(&body.provider_id)
             .fetch_optional(state.pool())
             .await?;
-    let Some((_, provider_arch)) = provider else {
+    let Some((_, provider_arch, provider_kind)) = provider else {
         return Err(AppError::bad("provider not found"));
     };
     let arch = match body
@@ -585,6 +585,15 @@ async fn create(
             _ => "amd64".to_string(),
         },
     };
+    let kind = provider_kind.to_ascii_lowercase();
+    if arch == "arm64" && matches!(kind.as_str(), "vsphere" | "nutanix") {
+        return Err(AppError::bad(
+            "arm64 guests are supported on Proxmox; vSphere and Nutanix use amd64",
+        ));
+    }
+    if crate::cloud_images::find_for_arch(&state.cfg().images_dir, &arch).is_none() {
+        return Err(AppError::bad(crate::cloud_images::missing_message(&arch)));
+    }
 
     // Reject if any planned VMIDs already exist on the provider node.
     let vm_count = body.controlplanes + body.workers;

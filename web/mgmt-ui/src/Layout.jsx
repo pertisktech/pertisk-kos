@@ -12,6 +12,7 @@ const NAV = [
   { to: '/', label: 'Dashboard', icon: 'dashboard', end: true },
   { to: '/clusters', label: 'Clusters', icon: 'clusters' },
   { to: '/os-packages', label: 'OS packages', icon: 'packages' },
+  { to: '/images', label: 'Images', icon: 'disk' },
   { to: '/machines', label: 'Machines', icon: 'machines' },
   { to: '/templates', label: 'Templates', icon: 'templates' },
   { to: '/providers', label: 'Providers', icon: 'providers' },

@@ -230,7 +230,9 @@ export default function OsPackages() {
         </table>
         {list.length === 0 && (
           <p className="muted">
-            No packages yet. Upload a zip from <span className="mono-inline">make os-bundle</span>.
+            No packages yet. Upload a zip from the GitHub Release (
+            <span className="mono-inline">os-bundle-*-v*.zip</span>
+            ) or <span className="mono-inline">make os-bundle</span>.
           </p>
         )}
       </div>

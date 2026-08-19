@@ -3,6 +3,7 @@
 export function formatProviderKind(kind) {
   const k = String(kind || '').toLowerCase()
   if (k === 'vsphere' || k === 'esxi' || k === 'vmware') return 'vSphere'
+  if (k === 'nutanix' || k === 'ahv') return 'Nutanix'
   if (k === 'proxmox' || k === '') return 'Proxmox'
   return kind
 }

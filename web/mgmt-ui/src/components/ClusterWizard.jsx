@@ -1,9 +1,15 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from './Icons'
 import K8sVersionSelect from './K8sVersionSelect'
 import WizardModal from './WizardModal'
+import { normalizeProviderKind } from './ClusterMetaBadges'
+
+function guestArchAllowed(kind, arch) {
+  if (arch !== 'arm64') return true
+  return normalizeProviderKind(kind) === 'proxmox'
+}
 
 function VerifyRow({ state, label, message }) {
   let icon = null
@@ -68,6 +74,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
   const [vmidChecking, setVmidChecking] = useState(false)
   const [vipCheck, setVipCheck] = useState(null)
   const [vipChecking, setVipChecking] = useState(false)
+  const [images, setImages] = useState(null)
   const [form, setForm] = useState({ ...defaultForm })
 
   useEffect(() => {
@@ -78,14 +85,23 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
     setSaving(false)
     setVmidCheck(null)
     setVipCheck(null)
+    setImages(null)
     setForm({ ...defaultForm })
+    api('/images')
+      .then((c) => {
+        if (!cancelled) setImages(c)
+      })
+      .catch(() => {
+        if (!cancelled) setImages({ ready: {} })
+      })
     api('/providers')
       .then(async (p) => {
         if (cancelled) return
         setProviders(p)
         if (!p[0]) return
         const first = p[0]
-        const arch = first.arch === 'arm64' ? 'arm64' : 'amd64'
+        let arch = first.arch === 'arm64' ? 'arm64' : 'amd64'
+        if (!guestArchAllowed(first.kind, arch)) arch = 'amd64'
         // Apply first provider immediately so a slow suggest-vmid cannot later
         // stomp a provider the user already chose.
         setForm((f) => {
@@ -221,6 +237,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
       if (k === 'provider_id') {
         const p = providers.find((x) => x.id === v)
         if (p?.arch === 'arm64' || p?.arch === 'amd64') next.arch = p.arch
+        if (!guestArchAllowed(p?.kind, next.arch)) next.arch = 'amd64'
       }
       return next
     })
@@ -247,8 +264,11 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
   const mode = form.network_mode
   const vmidBlocked = vmidCheck && !vmidCheck.ok
   const vipBlocked = ha && vipCheck && !vipCheck.ok
-  const verifying = vmidChecking || (ha && vipChecking)
+  const verifying = vmidChecking || (ha && vipChecking) || !images
   const selectedProvider = providers.find((p) => p.id === form.provider_id)
+  const armAllowed = guestArchAllowed(selectedProvider?.kind, 'arm64')
+  const imageReady = !!images?.ready?.[form.arch]
+  const imageBlocked = !!images && !imageReady
 
   const providerVerify = !form.provider_id
     ? { state: 'idle', message: 'Select a provider' }
@@ -262,6 +282,21 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
   const k8sVerify = !String(form.k8s_version || '').trim()
     ? { state: 'idle', message: 'Select a Kubernetes version' }
     : { state: 'ok', message: form.k8s_version }
+
+  let imageVerify = { state: 'idle', message: 'Checking images directory…' }
+  if (!images) {
+    imageVerify = { state: 'loading', message: 'Checking images directory…' }
+  } else if (imageReady) {
+    imageVerify = {
+      state: 'ok',
+      message: `pertisk-cloud-${form.arch}.qcow2 on mgmt`,
+    }
+  } else {
+    imageVerify = {
+      state: 'error',
+      message: `Upload pertisk-cloud-${form.arch}.qcow2 on Images first`,
+    }
+  }
 
   let vmidVerify = { state: 'idle', message: 'Waiting for provider / base VMID' }
   if (!form.provider_id) {
@@ -315,6 +350,13 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
       if (!form.name.trim()) return 'Name is required'
       if (!form.provider_id) return 'Select a provider'
       if (!String(form.k8s_version || '').trim()) return 'Select a Kubernetes version'
+      if (!armAllowed && form.arch === 'arm64') {
+        return 'arm64 guests are supported on Proxmox; vSphere and Nutanix use amd64'
+      }
+      if (!images) return 'Still checking cloud images…'
+      if (imageBlocked) {
+        return `Upload pertisk-cloud-${form.arch}.qcow2 on Images first`
+      }
       if (vmidBlocked) return vmidCheck.message || 'Selected VMID range is already in use'
     }
     if (i === 1) {
@@ -361,6 +403,10 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
         setStep(i)
         return
       }
+    }
+    if (imageBlocked) {
+      setError(`Upload pertisk-cloud-${form.arch}.qcow2 on Images first`)
+      return
     }
     if (vmidBlocked) {
       setError(vmidCheck.message || 'Selected VMID range is already in use')
@@ -414,7 +460,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
     }
   }
 
-  const createDisabled = saving || verifying || vmidBlocked || vipBlocked
+  const createDisabled = saving || verifying || vmidBlocked || vipBlocked || imageBlocked
   let createLabel = 'Create cluster'
   let createIcon = <Icon name="play" size={16} />
   if (saving) {
@@ -444,7 +490,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
           </button>
           <div className="wizard-footer-right">
             {step < STEPS.length - 1 ? (
-              <button type="button" onClick={next} disabled={saving || (step === 0 && vmidBlocked) || (step === 1 && vipBlocked)}>
+              <button type="button" onClick={next} disabled={saving || (step === 0 && (vmidBlocked || imageBlocked || !images)) || (step === 1 && vipBlocked)}>
                 Next
               </button>
             ) : (
@@ -491,9 +537,20 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
               <label>Guest arch</label>
               <select value={form.arch} onChange={(e) => set('arch', e.target.value)}>
                 <option value="amd64">amd64 (x86_64)</option>
-                <option value="arm64">arm64 (aarch64)</option>
+                <option value="arm64" disabled={!armAllowed}>
+                  arm64 (aarch64){!armAllowed ? ' — Proxmox only' : ''}
+                </option>
               </select>
-              <p className="hint muted">Defaults from the provider; override per cluster if needed.</p>
+              <p className="hint muted">
+                Needs a matching qcow2 on{' '}
+                <Link to="/images">Images</Link>
+                {!armAllowed ? '. vSphere and Nutanix are amd64 only.' : '.'}
+              </p>
+              {imageBlocked && (
+                <p className="hint" style={{ color: 'var(--danger, #b91c1c)' }}>
+                  Missing pertisk-cloud-{form.arch}.qcow2
+                </p>
+              )}
             </div>
             <div className="field">
               <label>CNI</label>
@@ -682,6 +739,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
           <p className="wizard-section-title">Verification</p>
           <ul className="verify-list">
             <VerifyRow state={providerVerify.state} label="Provider" message={providerVerify.message} />
+            <VerifyRow state={imageVerify.state} label="Cloud image" message={imageVerify.message} />
             <VerifyRow state={k8sVerify.state} label="K8s version" message={k8sVerify.message} />
             <VerifyRow state={vmidVerify.state} label="VMID range" message={vmidVerify.message} />
             <VerifyRow state={vipVerify.state} label="VIP" message={vipVerify.message} />
