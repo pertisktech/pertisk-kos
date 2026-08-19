@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Populate a raw disk image with Pertisk GPT layout, systemd-boot ESP, and STATE.
-# Intended to run as root inside a Linux container (see build-cloud-image.sh).
+# Runs in Docker without loop devices (mtools + debugfs + dd). See build-cloud-image.sh.
 set -euo pipefail
 
 DISK="${PERTISK_DISK:?PERTISK_DISK required}"
@@ -54,81 +54,100 @@ if [ "${NEED_BYTES}" -gt "${ESP_BYTES}" ]; then
   exit 1
 fi
 
-# Map partitions via loop + partx (partition nodes are not always auto-created).
-LOOP="$(losetup --find --show -P "${DISK}")"
-cleanup() {
-  sync || true
-  for d in /mnt/pertisk-efi /mnt/pertisk-state /mnt/pertisk-boot-a /mnt/pertisk-meta; do
-    umount "$d" 2>/dev/null || true
-  done
-  # Detach any kpartx mappings first.
-  kpartx -d "${LOOP}" 2>/dev/null || true
-  losetup -d "${LOOP}" 2>/dev/null || true
-}
+# Do not use losetup. Docker on self-hosted runners often has /dev/loop-control
+# but no udev, so LOOP_CTL_GET_FREE allocates loop0 and then fails with
+# "device node /dev/loop0 (7:0) is lost". Format partition-sized files, fill
+# them with mtools/debugfs, and dd them into the GPT image.
+STAGING="$(dirname "${DISK}")/.populate-$$"
+mkdir -p "${STAGING}"
+cleanup() { rm -rf "${STAGING}"; }
 trap cleanup EXIT
 
-partprobe "${LOOP}" 2>/dev/null || true
-partx -u "${LOOP}" 2>/dev/null || true
-kpartx -av "${LOOP}" 2>/dev/null || true
+part_first() {
+  sgdisk -i "$1" "${DISK}" | sed -n 's/^First sector: \([0-9][0-9]*\).*/\1/p' | head -1
+}
 
-# Resolve partition device nodes (losetup -P vs kpartx /dev/mapper).
-part_dev() {
-  local n="$1"
-  if [[ -e "${LOOP}p${n}" ]]; then
-    echo "${LOOP}p${n}"
-  elif [[ -e "/dev/mapper/$(basename "${LOOP}")p${n}" ]]; then
-    echo "/dev/mapper/$(basename "${LOOP}")p${n}"
-  else
-    return 1
+part_last() {
+  sgdisk -i "$1" "${DISK}" | sed -n 's/^Last sector: \([0-9][0-9]*\).*/\1/p' | head -1
+}
+
+part_bytes() {
+  local first last
+  first="$(part_first "$1")"
+  last="$(part_last "$1")"
+  if [ -z "${first}" ] || [ -z "${last}" ]; then
+    echo "could not read GPT partition $1 on ${DISK}" >&2
+    sgdisk -i "$1" "${DISK}" >&2 || true
+    exit 1
+  fi
+  echo $(( (last - first + 1) * 512 ))
+}
+
+# GPT partitions are 1MiB-aligned (2048 sectors).
+burn_part() {
+  local n="$1" img="$2"
+  local first seek
+  first="$(part_first "$n")"
+  seek=$((first / 2048))
+  echo "    dd partition ${n} → ${DISK} @ ${seek}MiB"
+  dd if="${img}" of="${DISK}" bs=1048576 seek="${seek}" conv=notrunc
+  rm -f "${img}"
+}
+
+make_fat() {
+  local img="$1" label="$2" bytes="$3"
+  truncate -s "${bytes}" "${img}"
+  mkfs.vfat -F 32 -n "${label}" "${img}" >/dev/null
+}
+
+make_ext4() {
+  local img="$1" label="$2" bytes="$3"
+  truncate -s "${bytes}" "${img}"
+  mkfs.ext4 -F -q -L "${label}" -E nodiscard "${img}"
+}
+
+debugfs_apply() {
+  local img="$1" cmds="${STAGING}/debugfs.cmd"
+  cat >"${cmds}"
+  if ! debugfs -w -f "${cmds}" "${img}"; then
+    echo "debugfs failed on ${img}:" >&2
+    cat "${cmds}" >&2
+    exit 1
   fi
 }
 
-for i in $(seq 1 50); do
-  part_dev 1 >/dev/null 2>&1 && break
-  sleep 0.1
-done
-P1="$(part_dev 1)" || {
-  echo "loop partitions did not appear for ${LOOP}" >&2
-  ls -la "${LOOP}"* /dev/mapper 2>/dev/null || true
-  exit 1
-}
-P2="$(part_dev 2)"
-P3="$(part_dev 3)"
-P4="$(part_dev 4)"
-P5="$(part_dev 5)"
-P6="$(part_dev 6)"
+export MTOOLS_SKIP_CHECK=1
 
-echo "==> formatting"
-# Small partitions: quiet + nodiscard (avoids thrashing sparse bind-mounts on Docker Desktop).
-mkfs.vfat -F 32 -n EFI "${P1}"
-mkfs.ext4 -F -q -L BOOT_A -E nodiscard "${P2}"
-mkfs.ext4 -F -q -L BOOT_B -E nodiscard "${P3}"
-mkfs.ext4 -F -q -L META -E nodiscard "${P4}"
-mkfs.ext4 -F -q -L STATE -E nodiscard "${P5}"
-# Leave EPHEMERAL unformatted. Fast cloud builds populate a small disk then
-# `qemu-img resize`; first guest boot grows GPT and mkfs.ext4 at final size
-# (resize2fs after largefile4 keeps too few inodes → ENOSPC on image pulls).
+echo "==> formatting partitions (no loop devices)"
+ESP_IMG="${STAGING}/esp.img"
+BOOTA_IMG="${STAGING}/boot-a.img"
+BOOTB_IMG="${STAGING}/boot-b.img"
+META_IMG="${STAGING}/meta.img"
+STATE_IMG="${STAGING}/state.img"
+make_fat "${ESP_IMG}" EFI "$(part_bytes 1)"
+make_ext4 "${BOOTA_IMG}" BOOT_A "$(part_bytes 2)"
+make_ext4 "${BOOTB_IMG}" BOOT_B "$(part_bytes 3)"
+make_ext4 "${META_IMG}" META "$(part_bytes 4)"
+make_ext4 "${STATE_IMG}" STATE "$(part_bytes 5)"
 echo "    EPHEMERAL (unformatted; mkfs on first boot after grow)"
 
-mkdir -p /mnt/pertisk-efi /mnt/pertisk-state /mnt/pertisk-boot-a /mnt/pertisk-meta
-mount "${P1}" /mnt/pertisk-efi
-mount "${P5}" /mnt/pertisk-state
-mount "${P2}" /mnt/pertisk-boot-a
-mount "${P4}" /mnt/pertisk-meta
-# Do not mount EPHEMERAL during populate — nothing is seeded there.
 echo "==> ESP systemd-boot + slot A"
-mkdir -p /mnt/pertisk-efi/EFI/BOOT /mnt/pertisk-efi/EFI/systemd \
-  /mnt/pertisk-efi/loader/entries /mnt/pertisk-efi/pertisk/A
-cp "${BOOT_ASSETS}/${EFI_NAME}" "/mnt/pertisk-efi/EFI/BOOT/${EFI_NAME}"
+for d in EFI EFI/BOOT EFI/systemd loader loader/entries pertisk pertisk/A; do
+  mmd -i "${ESP_IMG}" "::${d}"
+done
+mcopy -i "${ESP_IMG}" "${BOOT_ASSETS}/${EFI_NAME}" "::EFI/BOOT/${EFI_NAME}"
 case "${ARCH}" in
-  amd64) cp "${BOOT_ASSETS}/${EFI_NAME}" /mnt/pertisk-efi/EFI/systemd/systemd-bootx64.efi ;;
-  arm64) cp "${BOOT_ASSETS}/${EFI_NAME}" /mnt/pertisk-efi/EFI/systemd/systemd-bootaa64.efi ;;
+  amd64) mcopy -i "${ESP_IMG}" "${BOOT_ASSETS}/${EFI_NAME}" ::EFI/systemd/systemd-bootx64.efi ;;
+  arm64) mcopy -i "${ESP_IMG}" "${BOOT_ASSETS}/${EFI_NAME}" ::EFI/systemd/systemd-bootaa64.efi ;;
 esac
-cp "${BOOT_ASSETS}/kernel" /mnt/pertisk-efi/pertisk/A/kernel
-cp "${BOOT_ASSETS}/initramfs" /mnt/pertisk-efi/pertisk/A/initramfs
-# Also stage on BOOT_A partition for future use.
-cp "${BOOT_ASSETS}/kernel" /mnt/pertisk-boot-a/kernel
-cp "${BOOT_ASSETS}/initramfs" /mnt/pertisk-boot-a/initramfs
+mcopy -i "${ESP_IMG}" "${BOOT_ASSETS}/kernel" ::pertisk/A/kernel
+mcopy -i "${ESP_IMG}" "${BOOT_ASSETS}/initramfs" ::pertisk/A/initramfs
+
+echo "==> BOOT_A kernel + initramfs"
+debugfs_apply "${BOOTA_IMG}" <<EOF
+write ${BOOT_ASSETS}/kernel kernel
+write ${BOOT_ASSETS}/initramfs initramfs
+EOF
 
 # Last console= becomes /dev/console for userspace.
 # amd64/Proxmox serial: ttyS0. aarch64 virt (PL011): ttyAMA0 (keep ttyS0 too for Proxmox serial0).
@@ -143,7 +162,7 @@ case "${ARCH}" in
     CMDLINE="${PERTISK_CMDLINE:-console=tty0 console=ttyS0 rdinit=/init}"
     ;;
 esac
-cat >/mnt/pertisk-efi/loader/entries/pertisk-a.conf <<EOF
+cat >"${STAGING}/pertisk-a.conf" <<EOF
 title Pertisk KOS (slot A)
 linux /pertisk/A/kernel
 initrd /pertisk/A/initramfs
@@ -151,28 +170,25 @@ options ${CMDLINE}
 EOF
 # timeout 0: skip systemd-boot menu countdown. With Proxmox vga=serial0 the
 # menu/countdown text is garbled on Serial; auto-boot is correct for cloud.
-cat >/mnt/pertisk-efi/loader/loader.conf <<EOF
+cat >"${STAGING}/loader.conf" <<EOF
 default pertisk-a.conf
 timeout 0
 console-mode keep
 editor no
 EOF
+mcopy -i "${ESP_IMG}" "${STAGING}/pertisk-a.conf" ::loader/entries/pertisk-a.conf
+mcopy -i "${ESP_IMG}" "${STAGING}/loader.conf" ::loader/loader.conf
 
 echo "==> STATE seed"
-mkdir -p /mnt/pertisk-state/machine \
-  /mnt/pertisk-state/secrets \
-  /mnt/pertisk-state/log \
-  /mnt/pertisk-state/slots
-cp "${SEED_CONFIG}" /mnt/pertisk-state/config.yaml
-# Optional: override hostname to match Proxmox VM name (PERTISK_HOSTNAME).
+cp "${SEED_CONFIG}" "${STAGING}/config.yaml"
 if [[ -n "${PERTISK_HOSTNAME:-}" ]]; then
   if command -v sed >/dev/null 2>&1; then
     sed -i "s/^\\([[:space:]]*hostname:[[:space:]]*\\).*/\\1${PERTISK_HOSTNAME}/" \
-      /mnt/pertisk-state/config.yaml
+      "${STAGING}/config.yaml"
     echo "    hostname -> ${PERTISK_HOSTNAME}"
   fi
 fi
-cat >/mnt/pertisk-state/boot-meta.json <<EOF
+cat >"${STAGING}/boot-meta.json" <<EOF
 {
   "active": "a",
   "next": "a",
@@ -183,15 +199,31 @@ cat >/mnt/pertisk-state/boot-meta.json <<EOF
   "active_version": "${VERSION}"
 }
 EOF
-
-# Cloud marker for operators.
-cat >/mnt/pertisk-state/machine/image.json <<EOF
+cat >"${STAGING}/image.json" <<EOF
 {
   "format": "pertisk-cloud",
   "arch": "${ARCH}",
   "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
+debugfs_apply "${STATE_IMG}" <<EOF
+mkdir machine
+mkdir secrets
+mkdir log
+mkdir slots
+write ${STAGING}/config.yaml config.yaml
+write ${STAGING}/boot-meta.json boot-meta.json
+cd machine
+write ${STAGING}/image.json image.json
+EOF
+
+echo "==> writing partitions into ${DISK}"
+burn_part 1 "${ESP_IMG}"
+burn_part 2 "${BOOTA_IMG}"
+burn_part 3 "${BOOTB_IMG}"
+burn_part 4 "${META_IMG}"
+burn_part 5 "${STATE_IMG}"
 
 echo "==> done"
-df -h /mnt/pertisk-efi /mnt/pertisk-state
+ls -lh "${DISK}"
+sgdisk -p "${DISK}" || true

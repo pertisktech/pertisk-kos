@@ -118,23 +118,25 @@ rm -f "${RAW}" "${QCOW}"
 # Block size as a byte count: GNU dd rejects BSD's 1m; BSD may reject GNU's 1M.
 dd if=/dev/zero of="${RAW}" bs=1048576 count=0 seek=$((BUILD_GB * 1024)) status=none
 
-echo "==> populating GPT / ESP / STATE (Docker privileged), hostname=${HOSTNAME_SEED}"
-docker run --rm --privileged \
+echo "==> populating GPT / ESP / STATE (no loop devices), hostname=${HOSTNAME_SEED}"
+# Bind the whole out/ dir. Populate writes partition images next to the raw disk
+# and dd's them in — losetup is unavailable in Docker on this runner (no udev).
+docker run --rm \
   --platform "${PLATFORM}" \
   ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
-  -e PERTISK_DISK=/work/disk.raw \
+  -e PERTISK_DISK="/work/out/$(basename "${RAW}")" \
   -e PERTISK_BOOT_ASSETS=/work/boot \
   -e PERTISK_SEED_CONFIG=/work/config.yaml \
   -e PERTISK_ARCH="${ARCH}" \
   -e PERTISK_VERSION="${VERSION}" \
   -e PERTISK_HOSTNAME="${HOSTNAME_SEED}" \
-  -v "${RAW}:/work/disk.raw" \
+  -v "${OUT}:/work/out" \
   -v "${ASSETS}:/work/boot:ro" \
   -v "${SEED}:/work/config.yaml:ro" \
   -v "${ROOT}/image/cloud/populate-disk.sh:/work/populate-disk.sh:ro" \
   ${APK_RETRY[@]+"${APK_RETRY[@]}"} \
   alpine:3.20 \
-  sh -c 'sh /apk-retry.sh sgdisk e2fsprogs dosfstools util-linux multipath-tools parted && sh /work/populate-disk.sh'
+  sh -c 'sh /apk-retry.sh sgdisk e2fsprogs dosfstools mtools && sh /work/populate-disk.sh'
 
 echo "==> converting qcow2 (${BUILD_GB}G)"
 RAW_BASE="$(basename "${RAW}")"
