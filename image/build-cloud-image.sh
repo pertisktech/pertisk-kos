@@ -115,7 +115,8 @@ cp "${OUT}/bootloader/${EFI_NAME}" "${ASSETS}/${EFI_NAME}"
 
 echo "==> creating sparse raw disk ${RAW} (${BUILD_GB}G populate; target ${TARGET_GB}G)"
 rm -f "${RAW}" "${QCOW}"
-dd if=/dev/zero of="${RAW}" bs=1m count=0 seek=$((BUILD_GB * 1024)) status=none
+# Block size as a byte count: GNU dd rejects BSD's 1m; BSD may reject GNU's 1M.
+dd if=/dev/zero of="${RAW}" bs=1048576 count=0 seek=$((BUILD_GB * 1024)) status=none
 
 echo "==> populating GPT / ESP / STATE (Docker privileged), hostname=${HOSTNAME_SEED}"
 docker run --rm --privileged \

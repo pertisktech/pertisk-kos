@@ -134,10 +134,10 @@ elif [[ ! -f "${VARS_DST}" ]]; then
     cp "${vars_src}" "${VARS_DST}"
   elif [[ "${ARCH}" == "arm64" ]]; then
     # Match Homebrew aarch64 CODE size (64MiB).
-    dd if=/dev/zero of="${VARS_DST}" bs=1m count=64 status=none
+    dd if=/dev/zero of="${VARS_DST}" bs=1048576 count=64 status=none
   else
     # Keep CODE (~3.5MiB) + VARS under q35's 8MiB firmware budget.
-    dd if=/dev/zero of="${VARS_DST}" bs=1k count=528 status=none
+    dd if=/dev/zero of="${VARS_DST}" bs=1024 count=528 status=none
   fi
 fi
 
