@@ -26,6 +26,14 @@ jobs:
     runs-on: [self-hosted, linux]
     timeout-minutes: 360
     steps:
+      - name: Reset workspace
+        run: |
+          set -euo pipefail
+          ws="${GITHUB_WORKSPACE}"
+          echo "Clearing leftover files in ${ws} (root-owned out/ from prior Docker builds)"
+          docker run --rm -v "${ws}:/w" alpine:3.20 \
+            sh -c 'find /w -mindepth 1 -maxdepth 1 -exec rm -rf {} +'
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -76,7 +84,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
           GUEST_ARCHES: ${{ env.GUEST_ARCHES }}
         run: |
-          chmod +x scripts/ci-build-guest-release.sh
+          chmod +x scripts/ci-build-guest-release.sh scripts/ci-chown-path.sh
           make guest-release VERSION="$VERSION"
 
       - name: Verify packages

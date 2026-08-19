@@ -23,6 +23,11 @@ SIGN=0
 
 mkdir -p "$PKG"
 
+chown_out() {
+  "${ROOT}/scripts/ci-chown-path.sh" "${ROOT}/out" || true
+}
+trap chown_out EXIT
+
 preflight_platform() {
   local plat="$1"
   echo "==> docker platform check ${plat}"
