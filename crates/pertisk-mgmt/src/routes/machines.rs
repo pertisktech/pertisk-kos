@@ -50,7 +50,19 @@ async fn list(
 ) -> ApiResult<Json<Vec<MachineOut>>> {
     let mut rows = sqlx::query_as::<_, MachineOut>(
         r#"SELECT n.id, n.name, n.role, n.status, n.ip, n.ip6, n.k8s_version, n.os_version, n.vmid,
-                  COALESCE(n.source, 'proxmox') AS source,
+                  CASE
+                    WHEN COALESCE(n.source, '') IN ('adopted', 'baremetal') THEN n.source
+                    ELSE COALESCE(
+                      CASE
+                        WHEN lower(p.kind) IN ('nutanix', 'ahv', 'prism') THEN 'nutanix'
+                        WHEN lower(p.kind) IN ('vsphere', 'esxi', 'vmware') THEN 'vsphere'
+                        WHEN p.kind IS NOT NULL AND trim(p.kind) != '' THEN 'proxmox'
+                        ELSE NULL
+                      END,
+                      NULLIF(n.source, ''),
+                      'proxmox'
+                    )
+                  END AS source,
                   n.cluster_id, c.name AS cluster_name, c.status AS cluster_status,
                   p.name AS provider_name,
                   CASE WHEN n.ak_public_b64 IS NOT NULL AND n.ak_public_b64 != '' THEN 1 ELSE 0 END AS ak_enrolled,

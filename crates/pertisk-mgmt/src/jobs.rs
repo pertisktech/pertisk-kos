@@ -816,19 +816,29 @@ async fn seed_stub_nodes(
     status: &str,
 ) -> anyhow::Result<()> {
     let now = db::now_rfc3339();
+    let kind: Option<String> =
+        sqlx::query_scalar("SELECT kind FROM providers WHERE id = ?")
+            .bind(&cluster.provider_id)
+            .fetch_optional(state.pool())
+            .await?;
+    let source = crate::routes::providers::hypervisor_node_source(kind.as_deref().unwrap_or(""));
     for i in 1..=cluster.controlplanes {
         let name = format!("{}-cp-{}", cluster.name, i);
         let id = Uuid::new_v4().to_string();
         let vmid = cluster.cp_vmid.map(|v| v + i - 1);
         let _ = sqlx::query(
-            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, k8s_version, memory, cores, disk_gb, status, created_at, updated_at)
-               VALUES (?, ?, ?, 'controlplane', ?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, k8s_version, memory, cores, disk_gb, source, status, created_at, updated_at)
+               VALUES (?, ?, ?, 'controlplane', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(cluster_id, name) DO UPDATE SET
                  vmid = COALESCE(excluded.vmid, nodes.vmid),
                  k8s_version = COALESCE(nodes.k8s_version, excluded.k8s_version),
                  memory = COALESCE(nodes.memory, excluded.memory),
                  cores = COALESCE(nodes.cores, excluded.cores),
                  disk_gb = COALESCE(nodes.disk_gb, excluded.disk_gb),
+                 source = CASE
+                   WHEN nodes.source IN ('adopted', 'baremetal') THEN nodes.source
+                   ELSE excluded.source
+                 END,
                  status = excluded.status,
                  updated_at = excluded.updated_at"#,
         )
@@ -840,6 +850,7 @@ async fn seed_stub_nodes(
         .bind(cluster.cp_memory)
         .bind(cluster.cp_cores)
         .bind(cluster.cp_disk_gb)
+        .bind(source)
         .bind(status)
         .bind(&now)
         .bind(&now)
@@ -852,14 +863,18 @@ async fn seed_stub_nodes(
         let id = Uuid::new_v4().to_string();
         let vmid = worker_base + i - 1;
         let _ = sqlx::query(
-            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, k8s_version, memory, cores, disk_gb, status, created_at, updated_at)
-               VALUES (?, ?, ?, 'worker', ?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, k8s_version, memory, cores, disk_gb, source, status, created_at, updated_at)
+               VALUES (?, ?, ?, 'worker', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(cluster_id, name) DO UPDATE SET
                  vmid = COALESCE(excluded.vmid, nodes.vmid),
                  k8s_version = COALESCE(nodes.k8s_version, excluded.k8s_version),
                  memory = COALESCE(nodes.memory, excluded.memory),
                  cores = COALESCE(nodes.cores, excluded.cores),
                  disk_gb = COALESCE(nodes.disk_gb, excluded.disk_gb),
+                 source = CASE
+                   WHEN nodes.source IN ('adopted', 'baremetal') THEN nodes.source
+                   ELSE excluded.source
+                 END,
                  status = excluded.status,
                  updated_at = excluded.updated_at"#,
         )
@@ -871,6 +886,7 @@ async fn seed_stub_nodes(
         .bind(cluster.worker_memory)
         .bind(cluster.worker_cores)
         .bind(cluster.worker_disk_gb)
+        .bind(source)
         .bind(status)
         .bind(&now)
         .bind(&now)
@@ -1194,13 +1210,28 @@ async fn touch_node_progress(
         }
     }
 
+    let kind: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+        r#"SELECT p.kind FROM clusters c
+           LEFT JOIN providers p ON p.id = c.provider_id
+           WHERE c.id = ?"#,
+    )
+    .bind(cluster_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    let source = crate::routes::providers::hypervisor_node_source(kind.as_deref().unwrap_or(""));
+
     let id = Uuid::new_v4().to_string();
     let _ = sqlx::query(
-        r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, ip, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, ip, source, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(cluster_id, name) DO UPDATE SET
              vmid = COALESCE(excluded.vmid, nodes.vmid),
              ip = COALESCE(excluded.ip, nodes.ip),
+             source = CASE
+               WHEN nodes.source IN ('adopted', 'baremetal') THEN nodes.source
+               ELSE excluded.source
+             END,
              status = excluded.status,
              updated_at = excluded.updated_at"#,
     )
@@ -1210,6 +1241,7 @@ async fn touch_node_progress(
     .bind(role)
     .bind(vmid)
     .bind(ip)
+    .bind(source)
     .bind(status)
     .bind(now)
     .bind(now)
@@ -1557,11 +1589,7 @@ async fn run_add_node(
             (name, vmid, None)
         };
 
-        let node_source = match provider.kind.as_str() {
-            "nutanix" | "ahv" | "prism" => "nutanix",
-            "vsphere" | "esxi" => "vsphere",
-            _ => "proxmox",
-        };
+        let node_source = crate::routes::providers::hypervisor_node_source(&provider.kind);
         let node_id = Uuid::new_v4().to_string();
         sqlx::query(
             r#"INSERT INTO nodes (id, cluster_id, name, role, vmid, memory, cores, disk_gb, k8s_version, source, status, created_at, updated_at)

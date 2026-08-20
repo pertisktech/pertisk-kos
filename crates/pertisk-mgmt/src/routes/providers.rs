@@ -115,6 +115,15 @@ fn normalize_kind(kind: &str) -> ApiResult<String> {
     }
 }
 
+/// Inventory `nodes.source` for a hypervisor VM (`adopted` / `baremetal` stay as-is).
+pub(crate) fn hypervisor_node_source(kind: &str) -> &'static str {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "nutanix" | "ahv" | "prism" => "nutanix",
+        "vsphere" | "esxi" | "vmware" => "vsphere",
+        _ => "proxmox",
+    }
+}
+
 #[derive(Deserialize)]
 struct ProviderPatch {
     name: Option<String>,
@@ -558,5 +567,21 @@ async fn storage(
         };
         let list = client.list_storage(&p.node).await?;
         Ok(Json(list))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hypervisor_node_source;
+
+    #[test]
+    fn hypervisor_node_source_maps_kind() {
+        assert_eq!(hypervisor_node_source("nutanix"), "nutanix");
+        assert_eq!(hypervisor_node_source("AHV"), "nutanix");
+        assert_eq!(hypervisor_node_source("vsphere"), "vsphere");
+        assert_eq!(hypervisor_node_source("ESXi"), "vsphere");
+        assert_eq!(hypervisor_node_source("vmware"), "vsphere");
+        assert_eq!(hypervisor_node_source("proxmox"), "proxmox");
+        assert_eq!(hypervisor_node_source(""), "proxmox");
     }
 }

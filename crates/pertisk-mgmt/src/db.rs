@@ -310,6 +310,43 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await;
 
+    // Cluster create used to omit nodes.source (DEFAULT proxmox). Fix Nutanix / vSphere rows.
+    let _ = sqlx::query(
+        r#"UPDATE nodes SET source = CASE
+             WHEN lower(p.kind) IN ('nutanix', 'ahv', 'prism') THEN 'nutanix'
+             WHEN lower(p.kind) IN ('vsphere', 'esxi', 'vmware') THEN 'vsphere'
+             ELSE nodes.source
+           END
+           FROM clusters c
+           JOIN providers p ON p.id = c.provider_id
+           WHERE nodes.cluster_id = c.id
+             AND COALESCE(nodes.source, 'proxmox') = 'proxmox'
+             AND lower(p.kind) IN ('nutanix', 'ahv', 'prism', 'vsphere', 'esxi', 'vmware')"#,
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        r#"UPDATE nodes SET source = (
+             SELECT CASE
+               WHEN lower(p.kind) IN ('nutanix', 'ahv', 'prism') THEN 'nutanix'
+               WHEN lower(p.kind) IN ('vsphere', 'esxi', 'vmware') THEN 'vsphere'
+               ELSE nodes.source
+             END
+             FROM clusters c
+             JOIN providers p ON p.id = c.provider_id
+             WHERE c.id = nodes.cluster_id
+           )
+           WHERE COALESCE(source, 'proxmox') = 'proxmox'
+             AND EXISTS (
+               SELECT 1 FROM clusters c
+               JOIN providers p ON p.id = c.provider_id
+               WHERE c.id = nodes.cluster_id
+                 AND lower(p.kind) IN ('nutanix', 'ahv', 'prism', 'vsphere', 'esxi', 'vmware')
+             )"#,
+    )
+    .execute(pool)
+    .await;
+
     Ok(())
 }
 

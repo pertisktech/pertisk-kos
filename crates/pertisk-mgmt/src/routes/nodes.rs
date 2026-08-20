@@ -79,7 +79,21 @@ fn default_availability() -> String {
 pub const NODE_SELECT: &str = r#"SELECT id, cluster_id, name, role, vmid, ip, ip6, k8s_version,
        os_version, kernel_version, container_runtime, memory, cores, disk_gb,
        ak_public_b64, ak_enrolled_at,
-       COALESCE(source, 'proxmox') AS source, status, created_at, updated_at
+       CASE
+         WHEN COALESCE(source, '') IN ('adopted', 'baremetal') THEN source
+         ELSE COALESCE(
+           (SELECT CASE
+              WHEN lower(p.kind) IN ('nutanix', 'ahv', 'prism') THEN 'nutanix'
+              WHEN lower(p.kind) IN ('vsphere', 'esxi', 'vmware') THEN 'vsphere'
+              ELSE 'proxmox'
+            END
+            FROM clusters c
+            JOIN providers p ON p.id = c.provider_id
+            WHERE c.id = nodes.cluster_id),
+           NULLIF(source, ''),
+           'proxmox'
+         )
+       END AS source, status, created_at, updated_at
        FROM nodes"#;
 
 #[derive(Deserialize)]
