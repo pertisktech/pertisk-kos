@@ -162,6 +162,16 @@ api_get() {
   "${CURL[@]}" -H "${AUTH}" "${BASE}$1"
 }
 
+# PVE host arch (kernel). API tokens cannot set a *non-default* guest arch.
+PVE_HOST_ARCH=amd64
+PVE_HOST_MACH="$(api_get "/nodes/${NODE}/status" 2>/dev/null | jq -r '.data["current-kernel"].machine // empty' 2>/dev/null || true)"
+case "${PVE_HOST_MACH}" in
+  aarch64|arm64) PVE_HOST_ARCH=arm64 ;;
+esac
+pve_arm64_is_native() {
+  [[ "$ARCH" == "arm64" && "$PVE_HOST_ARCH" == "arm64" ]]
+}
+
 # arm64 guest CPU: native aarch64 PVE → host (KVM); amd64 PVE → max (TCG).
 # cortex-a53/a57 often fail kvm_arch_init_vcpu on newer hosts (e.g. Cortex-A720).
 resolve_arm64_cpu() {
@@ -169,17 +179,16 @@ resolve_arm64_cpu() {
     echo "${PROXMOX_CPU}"
     return
   fi
-  local host_mach
-  host_mach="$(api_get "/nodes/${NODE}/status" 2>/dev/null | jq -r '.data["current-kernel"].machine // empty' 2>/dev/null || true)"
-  case "${host_mach}" in
-    aarch64|arm64) echo host ;;
-    *) echo max ;;
-  esac
+  if [[ "${PVE_HOST_ARCH}" == "arm64" ]]; then
+    echo host
+  else
+    echo max
+  fi
 }
 ARM64_CPU=""
 if [[ "$ARCH" == "arm64" ]]; then
   ARM64_CPU="$(resolve_arm64_cpu)"
-  echo "==> arm64 guest cpu=${ARM64_CPU} (override with PROXMOX_CPU=)"
+  echo "==> arm64 guest cpu=${ARM64_CPU} (PVE host=${PVE_HOST_ARCH}; override with PROXMOX_CPU=)"
 fi
 
 api_post_form() {
@@ -291,10 +300,9 @@ detach_scsi0() {
 
 echo "==> Proxmox ${PROXMOX_URL} node=${NODE} storage=${STORAGE} vmid=${VMID} arch=${ARCH} (${PVE_ARCH}/${PVE_MACHINE})"
 
-# arm64 guest arch is root-only on Proxmox — API tokens cannot set arch=aarch64
-# (same restriction as Terraform/Ansible). Paths:
-#   1) PROXMOX_ARM64_TEMPLATE=<vmid>  → API clone template (no SSH; like amd64)
-#   2) PROXMOX_SSH=root@pve           → qm create with --arch (needs key auth)
+# Tokens cannot set a *non-default* arch. Native aarch64 PVE already defaults to
+# aarch64, so API create (omit arch=) works like amd64-on-amd64. Cross-arch
+# (x86 PVE + aarch64 guest) still needs a template clone or root SSH.
 ARM64_TEMPLATE="${PROXMOX_ARM64_TEMPLATE:-}"
 
 ssh_ok() {
@@ -303,20 +311,57 @@ ssh_ok() {
     "${PROXMOX_SSH}" true 2>/dev/null
 }
 
+discover_arm64_template() {
+  local data vmid arch name
+  data="$(api_get "/nodes/${NODE}/qemu" 2>/dev/null || echo '{}')"
+  while IFS=$'\t' read -r vmid name; do
+    [[ -z "${vmid}" || "${vmid}" == "null" ]] && continue
+    case "$(printf '%s' "${name}" | tr '[:upper:]' '[:lower:]')" in
+      *pertisk-arm64-template*)
+        echo "${vmid}"
+        return 0
+        ;;
+    esac
+  done < <(echo "${data}" | jq -r '.data[]? | [(.vmid|tostring), (.name // "")] | @tsv' 2>/dev/null)
+  while read -r vmid; do
+    [[ -z "${vmid}" || "${vmid}" == "null" ]] && continue
+    arch="$(api_get "/nodes/${NODE}/qemu/${vmid}/config" 2>/dev/null | jq -r '.data.arch // empty')"
+    if [[ "${arch}" == "aarch64" || "${arch}" == "arm64" ]]; then
+      echo "${vmid}"
+      return 0
+    fi
+  done < <(echo "${data}" | jq -r '.data[]? | select((.template // 0) == 1) | .vmid' 2>/dev/null)
+  if echo "${data}" | jq -e '.data[]? | select(.vmid == 8900)' >/dev/null 2>&1; then
+    arch="$(api_get "/nodes/${NODE}/qemu/8900/config" 2>/dev/null | jq -r '.data.arch // empty')"
+    if [[ "${arch}" == "aarch64" || "${arch}" == "arm64" ]]; then
+      echo 8900
+      return 0
+    fi
+  fi
+  return 1
+}
+
 # Multi-PVE: keys often exist on only one host. Don't scp/qm-resize then die.
 if [[ -n "${PROXMOX_SSH:-}" ]] && ! ssh_ok; then
-  if [[ "${ARCH}" == "arm64" && -z "${ARM64_TEMPLATE:-}" ]]; then
-    echo "==> SSH ${PROXMOX_SSH} not usable (arm64 still needs SSH or PROXMOX_ARM64_TEMPLATE)"
-  else
-    echo "==> SSH ${PROXMOX_SSH} not usable — Proxmox API for disk import/resize"
-    unset PROXMOX_SSH || true
-    if [[ -z "${PROXMOX_UPLOAD_STORAGE:-}" ]]; then
-      export PROXMOX_UPLOAD_STORAGE=local
-    fi
+  echo "==> SSH ${PROXMOX_SSH} not usable (no key auth) — Proxmox API for this provider"
+  unset PROXMOX_SSH || true
+  if [[ -z "${PROXMOX_UPLOAD_STORAGE:-}" ]]; then
+    export PROXMOX_UPLOAD_STORAGE=local
+  fi
+fi
+
+if [[ "$ARCH" == "arm64" && -z "${ARM64_TEMPLATE}" ]] && ! pve_arm64_is_native; then
+  if found="$(discover_arm64_template)"; then
+    ARM64_TEMPLATE="${found}"
+    echo "==> auto PROXMOX_ARM64_TEMPLATE=${ARM64_TEMPLATE} (aarch64 template on ${NODE})"
   fi
 fi
 
 require_arm64_create_path() {
+  if pve_arm64_is_native; then
+    echo "==> arm64 on native aarch64 PVE — API create (default arch; no SSH/template)"
+    return 0
+  fi
   if [[ -n "$ARM64_TEMPLATE" ]]; then
     echo "==> arm64 via API clone of template VMID=${ARM64_TEMPLATE} (no SSH)"
     return 0
@@ -326,11 +371,12 @@ require_arm64_create_path() {
     return 0
   fi
   cat >&2 <<'EOF'
-ERROR: arm64 cannot be created with API tokens alone.
-Proxmox: only root@pam (not tokens) may set arch=aarch64 — same as amd64 API create
-cannot set a non-default arch.
+ERROR: arm64 guests on an amd64 Proxmox host cannot be created with API tokens alone.
+Proxmox: only root@pam (not tokens) may set a non-default arch=aarch64.
 
-Pick one:
+Native aarch64 PVE does not need this — default VM arch is already aarch64.
+
+On x86 PVE pick one:
 
   A) No SSH (recommended once set up) — create a template on the PVE console, then:
        # on Proxmox (root shell / Host Client):
@@ -338,7 +384,6 @@ Pick one:
        # on mgmt /etc/pertisk-mgmt/pertisk-mgmt.env:
        PROXMOX_ARM64_TEMPLATE=8900
        PROXMOX_NO_SSH=1
-       # unset PROXMOX_SSH or leave it
        sudo systemctl restart pertisk-mgmt
 
   B) SSH for each create — install pertisk-mgmt pubkey on PVE root, then:
@@ -387,13 +432,9 @@ clone_from_arm64_template() {
 
 if [[ "$ARCH" == "arm64" ]]; then
   require_arm64_create_path
-  # Template path is API-only; drop a broken/auto PROXMOX_SSH so we do not
-  # attempt scp/qm start and fail after a successful clone+import.
-  if [[ -n "$ARM64_TEMPLATE" ]] && ! ssh_ok; then
-    if [[ -n "${PROXMOX_SSH:-}" ]]; then
-      echo "==> ignoring PROXMOX_SSH=${PROXMOX_SSH} (no key auth) — API-only with template ${ARM64_TEMPLATE}"
-    fi
-    unset PROXMOX_SSH
+  # Template / native-API paths must not fall through to scp/qm when SSH is dead.
+  if { [[ -n "$ARM64_TEMPLATE" ]] || pve_arm64_is_native; } && ! ssh_ok; then
+    unset PROXMOX_SSH || true
   fi
 fi
 
@@ -405,19 +446,23 @@ if echo "${EXISTS}" | jq -e '.data != null' >/dev/null 2>&1; then
     --data-urlencode "memory=${MEMORY}" \
     --data-urlencode "cores=${CORES}" \
     --data-urlencode "net0=${NET0_SPEC}" >/dev/null 2>&1 || true
-  if [[ "$ARCH" == "arm64" && -z "$ARM64_TEMPLATE" ]]; then
+  if [[ "$ARCH" == "arm64" && -z "$ARM64_TEMPLATE" ]] && ! pve_arm64_is_native && ssh_ok; then
     echo "==> ensure arch=aarch64 machine=virt via ${PROXMOX_SSH}"
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" \
       "qm set ${VMID} --arch aarch64 --machine virt --bios ovmf" || {
       echo "ERROR: qm set --arch aarch64 failed on ${PROXMOX_SSH}" >&2
       exit 1
     }
+  elif [[ "$ARCH" == "arm64" ]]; then
+    api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+      --data-urlencode "machine=virt" \
+      --data-urlencode "bios=ovmf" >/dev/null 2>&1 || true
   fi
 else
-  if [[ "$ARCH" == "arm64" && -n "$ARM64_TEMPLATE" ]]; then
+  if [[ "$ARCH" == "arm64" && -n "$ARM64_TEMPLATE" ]] && ! pve_arm64_is_native; then
     clone_from_arm64_template "$ARM64_TEMPLATE"
-  elif [[ "$ARCH" == "arm64" ]]; then
-    # Create via qm as root so arch=aarch64 is set atomically (API tokens cannot).
+  elif [[ "$ARCH" == "arm64" ]] && ! pve_arm64_is_native; then
+    # Cross-arch: qm as root so arch=aarch64 is set atomically (API tokens cannot).
     echo "==> creating VM ${VMID} (${NAME}) via ${PROXMOX_SSH}: arch=aarch64 bios=ovmf machine=virt agent=1"
     EFI_STORAGE="${PROXMOX_EFI_STORAGE:-${STORAGE}}"
     # cpu=host on native aarch64 PVE; cpu=max when emulating aarch64 on amd64 (TCG).
@@ -443,7 +488,7 @@ else
       --data-urlencode "name=${NAME}"
       --data-urlencode "memory=${MEMORY}"
       --data-urlencode "cores=${CORES}"
-      --data-urlencode "cpu=host"
+      --data-urlencode "cpu=${ARM64_CPU:-host}"
       --data-urlencode "machine=${PVE_MACHINE}"
       --data-urlencode "bios=ovmf"
       --data-urlencode "scsihw=virtio-scsi-single"
@@ -458,7 +503,8 @@ else
       --data-urlencode "efidisk0=${EFI_STORAGE}:1,efitype=4m,pre-enrolled-keys=0"
     )
     # Do NOT send arch= via API: Proxmox returns "only root can set 'arch' config"
-    # for API tokens. amd64 defaults to x86_64.
+    # for API tokens. Default matches the PVE host (x86_64 on amd64, aarch64 on
+    # aarch64). Native arm64 guests therefore omit arch= just like amd64.
     #
     # Create returns {"data":"UPID:…"} on success (async). Never treat that as
     # failure or retry — a second create hits "VM already exists".

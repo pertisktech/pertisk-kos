@@ -10,7 +10,7 @@ Related: [MGMT.md](./MGMT.md) (packages / env), [PROXMOX.md](./PROXMOX.md), [NUT
 |-----|-----------------|-----------------|-------------|----------------|
 | **Build laptop → mgmt host** | Yes — copy DEB/RPM + qcow2 | Yes | Yes | Yes |
 | **Mgmt → hypervisor API** | Yes — token (`:8006`) | Yes — token | Yes — user/password (`:9440`) | Yes — user/password (`/sdk` SOAP) |
-| **Mgmt → hypervisor SSH** | **Not required** (`PROXMOX_NO_SSH=1`) | **Required** (`PROXMOX_SSH=root@<pve>` for `qm create --arch aarch64`) | **Not required**. Optional `NUTANIX_CVM_SSH` only to attach serial if REST fails | **Not required** (never used) |
+| **Mgmt → hypervisor SSH** | **Not required** (`PROXMOX_NO_SSH=1`) | **Not required** on native aarch64 PVE (API create, default arch). On **x86 PVE** running aarch64 guests: `PROXMOX_ARM64_TEMPLATE` or `PROXMOX_SSH=root@<pve>` | **Not required**. Optional `NUTANIX_CVM_SSH` only to attach serial if REST fails | **Not required** (never used) |
 | **Anyone → Pertisk guest** | **Never** — Machine API `:50000` / serial console | Never | Never | Never |
 
 **L2:** mgmt must share the guest VLAN (or set `LAB_SUBNET`) so MAC→IP discovery works. If mgmt is routed-only, Proxmox can fall back to SSH ARP on the PVE bridge; ESXi and AHV cannot — put mgmt on the same L2.

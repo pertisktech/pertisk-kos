@@ -123,6 +123,81 @@ fn proxmox_ssh_user(ssh: &str) -> &str {
     }
 }
 
+/// Arm64 guests on a native aarch64 PVE use API create (default arch). Cross-arch
+/// (x86 PVE + aarch64 guest) still needs `PROXMOX_ARM64_TEMPLATE` or root SSH.
+async fn apply_proxmox_arm64_create_env(
+    cmd: &mut Command,
+    log_path: &str,
+    provider: &ProviderRow,
+    secret: &str,
+) -> anyhow::Result<()> {
+    if matches!(
+        provider.kind.as_str(),
+        "nutanix" | "ahv" | "prism" | "vsphere" | "esxi"
+    ) {
+        return Ok(());
+    }
+    let client = crate::proxmox::ProxmoxClient {
+        url: provider.url.clone(),
+        token_id: provider.token_id.clone(),
+        token_secret: secret.to_string(),
+        insecure: provider.insecure != 0,
+    };
+    let native = client
+        .detect_node_arch(&provider.node)
+        .await
+        .ok()
+        .as_deref()
+        == Some("arm64");
+    if native {
+        append_log(
+            log_path,
+            "note: aarch64 PVE — arm64 guests via API (default arch; no SSH/template)\n",
+        )?;
+        return Ok(());
+    }
+    let template = std::env::var("PROXMOX_ARM64_TEMPLATE")
+        .ok()
+        .filter(|s| !s.is_empty());
+    if let Some(tmpl) = template {
+        append_log(
+            log_path,
+            &format!(
+                "note: arch=arm64 via API clone of PROXMOX_ARM64_TEMPLATE={tmpl} (no SSH required)\n"
+            ),
+        )?;
+        cmd.env("PROXMOX_ARM64_TEMPLATE", &tmpl);
+        cmd.env("PROXMOX_NO_SSH", "1");
+        cmd.env_remove("PROXMOX_SSH");
+        return Ok(());
+    }
+    append_log(
+        log_path,
+        "note: arch=arm64 on amd64 PVE — needs pertisk-cloud-arm64*.qcow2 and either PROXMOX_ARM64_TEMPLATE=<vmid> (API) or PROXMOX_SSH=root@<pve>\n",
+    )?;
+    cmd.env_remove("PROXMOX_NO_SSH");
+    let has_ssh = std::env::var("PROXMOX_SSH")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .is_some();
+    if !has_ssh {
+        if let Some(host) = pve_host_from_url(&provider.url) {
+            let ssh = format!("root@{host}");
+            append_log(
+                log_path,
+                &format!("auto PROXMOX_SSH={ssh} for cross-arch aarch64 guests\n"),
+            )?;
+            cmd.env("PROXMOX_SSH", ssh);
+        } else {
+            append_log(
+                log_path,
+                "warn: set PROXMOX_ARM64_TEMPLATE or PROXMOX_SSH=root@<pve>\n",
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// `PROXMOX_SSH` is a user + “prefer SSH” flag. The host is always this provider.
 fn rewrite_proxmox_ssh_for_provider(ssh: &str, provider_url: &str) -> Option<String> {
     let api_h = pve_host_from_url(provider_url)?;
@@ -525,47 +600,7 @@ async fn run_create_cluster(
     cmd.arg("--arch").arg(guest_arch);
     cmd.env("PERTISK_ARCH", guest_arch).env("ARCH", guest_arch);
     if guest_arch == "arm64" {
-        let template = std::env::var("PROXMOX_ARM64_TEMPLATE")
-            .ok()
-            .filter(|s| !s.is_empty());
-        if let Some(tmpl) = template {
-            append_log(
-                log_path,
-                &format!(
-                    "note: arch=arm64 via API clone of PROXMOX_ARM64_TEMPLATE={tmpl} (no SSH required)\n"
-                ),
-            )?;
-            cmd.env("PROXMOX_ARM64_TEMPLATE", &tmpl);
-            // Prefer API disk import/start like amd64.
-            cmd.env("PROXMOX_NO_SSH", "1");
-            cmd.env_remove("PROXMOX_SSH");
-        } else {
-            append_log(
-                log_path,
-                "note: arch=arm64 — needs pertisk-cloud-arm64*.qcow2 and either PROXMOX_ARM64_TEMPLATE=<vmid> (API) or PROXMOX_SSH=root@<pve>\n",
-            )?;
-            // Without a template, root SSH is required to set arch=aarch64.
-            cmd.env_remove("PROXMOX_NO_SSH");
-            let has_ssh = std::env::var("PROXMOX_SSH")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .is_some();
-            if !has_ssh {
-                if let Some(host) = pve_host_from_url(&provider.url) {
-                    let ssh = format!("root@{host}");
-                    append_log(
-                        log_path,
-                        &format!("auto PROXMOX_SSH={ssh} for arm64 guest arch\n"),
-                    )?;
-                    cmd.env("PROXMOX_SSH", ssh);
-                } else {
-                    append_log(
-                        log_path,
-                        "warn: set PROXMOX_ARM64_TEMPLATE or PROXMOX_SSH=root@<pve>\n",
-                    )?;
-                }
-            }
-        }
+        apply_proxmox_arm64_create_env(&mut cmd, log_path, &provider, &secret).await?;
     }
     // VIP / kube-vip is HA-only (controlplanes > 1). Single-CP uses the node IP.
     if cluster.controlplanes > 1 {
@@ -1691,23 +1726,8 @@ async fn run_add_node(
         };
         cmd.arg("--arch").arg(node_arch);
         cmd.env("PERTISK_ARCH", node_arch).env("ARCH", node_arch);
-        if node_arch == "arm64"
-            && provider.kind != "nutanix"
-            && provider.kind != "ahv"
-            && provider.kind != "prism"
-            && provider.kind != "vsphere"
-            && provider.kind != "esxi"
-        {
-            cmd.env_remove("PROXMOX_NO_SSH");
-            if std::env::var("PROXMOX_SSH")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .is_none()
-            {
-                if let Some(host) = pve_host_from_url(&provider.url) {
-                    cmd.env("PROXMOX_SSH", format!("root@{host}"));
-                }
-            }
+        if node_arch == "arm64" {
+            apply_proxmox_arm64_create_env(&mut cmd, log_path, &provider, &secret).await?;
         }
         // First-boot EPHEMERAL mkfs on large worker disks can exceed 7+ minutes on
         // older images; give wait_ip headroom proportional to disk size.

@@ -93,9 +93,11 @@ Manual UI alternative: upload `pertisk-cloud-amd64.qcow2` → Create VM (UEFI, q
 - Build: `make cloud ARCH=arm64` → `out/pertisk-cloud-arm64.qcow2`
 - Lab / create-cluster: `--arch arm64` or `ARCH=arm64` / `PERTISK_ARCH=arm64`
 - Mgmt jobs forward `ARCH` / `PERTISK_ARCH` from the host environment into lab-up / add-node (`--arch`)
-- **Proxmox API tokens cannot set `arch=`** (`only root can set 'arch' config`). amd64 omits it (default x86_64). For arm64 pick one:
-  - **No SSH (like amd64):** one-time root template → `PROXMOX_ARM64_TEMPLATE=8900` → API clone (`scripts/proxmox-ensure-arm64-template.sh` on the PVE node)
-  - **SSH:** `PROXMOX_SSH=root@<pve>` so upload can `qm create --arch aarch64` (unset `PROXMOX_NO_SSH` / use deploy `--with-ssh`)
+- **Proxmox API tokens cannot set a non-default `arch=`** (`only root can set 'arch' config`).
+  - **Native aarch64 PVE:** omit `arch=` (default is already aarch64) and API-create like amd64 — **no SSH, no template**.
+  - **x86 PVE + aarch64 guests:** pick one:
+    - **No SSH (like amd64):** one-time root template → `PROXMOX_ARM64_TEMPLATE=8900` → API clone (`scripts/proxmox-ensure-arm64-template.sh` on the PVE node). Upload also auto-uses a VM named `pertisk-arm64-template` if present.
+    - **SSH:** `PROXMOX_SSH=root@<pve>` so upload can `qm create --arch aarch64` (unset `PROXMOX_NO_SSH` / use deploy `--with-ssh`)
 - On **amd64** Proxmox hosts running aarch64 guests, install `pve-edk2-firmware-aarch64` and use **`cpu=max`** (not `cpu=host` — host CPU passthrough is same-arch only and causes guest kernel panic)
 
 ### Boot menu
