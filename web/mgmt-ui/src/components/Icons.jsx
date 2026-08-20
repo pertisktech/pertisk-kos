@@ -41,6 +41,7 @@ import {
   HiOutlineDocumentText,
   HiOutlineClock,
   HiOutlineTrendingUp,
+  HiOutlineCollection,
 } from 'react-icons/hi'
 
 const ICONS = {
@@ -87,6 +88,7 @@ const ICONS = {
   logs: HiOutlineDocumentText,
   clock: HiOutlineClock,
   upgrade: HiOutlineTrendingUp,
+  addons: HiOutlineCollection,
 }
 
 export function Icon({ name, size = 18, className = '' }) {

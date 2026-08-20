@@ -97,6 +97,9 @@
 # Or: ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cni cilium
 # Dual-stack: ./scripts/proxmox-lab-up.sh --dual-stack --cni cilium --vip 10.1.1.210
 #
+# LoadBalancer ELB IPs (L2 announcements): apply a pool after Cilium is up —
+# examples/addons/cilium-lb/cilium-ip.yaml or UI → Add-ons → Cilium LoadBalancer.
+#
 # Notes:
 # - Prefer `helm upgrade --install` (not bare `helm install`) so re-runs are idempotent.
 # - Do not install Flannel or Calico together with Cilium.

@@ -253,6 +253,7 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             | "remove_node"
             | "resize_node"
             | "reboot_node"
+            | "install_addon"
     ) {
         if let Some(cid) = &cluster_id {
             let st: Option<String> = sqlx::query_scalar("SELECT status FROM clusters WHERE id = ?")
@@ -324,6 +325,9 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         "upgrade_os" => run_upgrade_os(state, cluster_id.as_deref(), &payload, &log_file).await,
         "update_config" => {
             run_update_config(state, cluster_id.as_deref(), &payload, &log_file).await
+        }
+        "install_addon" => {
+            crate::addons::run_install_job(state, cluster_id.as_deref(), &payload, &log_file).await
         }
         other => Err(anyhow::anyhow!("unknown job kind: {other}")),
     };
@@ -417,11 +421,16 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
 fn is_node_maintenance_job(kind: &str) -> bool {
     matches!(
         kind,
-        "resize_node" | "remove_node" | "add_node" | "reboot_node" | "update_config"
+        "resize_node"
+            | "remove_node"
+            | "add_node"
+            | "reboot_node"
+            | "update_config"
+            | "install_addon"
     )
 }
 
-fn append_log(path: &str, line: &str) -> anyhow::Result<()> {
+pub(crate) fn append_log(path: &str, line: &str) -> anyhow::Result<()> {
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new()
         .create(true)
@@ -851,11 +860,10 @@ async fn seed_stub_nodes(
     status: &str,
 ) -> anyhow::Result<()> {
     let now = db::now_rfc3339();
-    let kind: Option<String> =
-        sqlx::query_scalar("SELECT kind FROM providers WHERE id = ?")
-            .bind(&cluster.provider_id)
-            .fetch_optional(state.pool())
-            .await?;
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM providers WHERE id = ?")
+        .bind(&cluster.provider_id)
+        .fetch_optional(state.pool())
+        .await?;
     let source = crate::routes::providers::hypervisor_node_source(kind.as_deref().unwrap_or(""));
     for i in 1..=cluster.controlplanes {
         let name = format!("{}-cp-{}", cluster.name, i);

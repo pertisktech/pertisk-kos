@@ -35,6 +35,10 @@ Firewall: allow TCP/UDP **2049** (and rpcbind **111** if needed) from the lab su
 
 ## Install provisioner
 
+From the management UI: cluster → **Add-ons** → **NFS storage** → server IP + export path → **Check config** then **Install**.
+
+Or with kubectl:
+
 ```bash
 # Until images ship boot-time NFS load (netfs→fscache→nfs), apply this first:
 kubectl apply -f examples/addons/nfs/pertisk-nfs-modules-ds.yaml

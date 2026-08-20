@@ -2469,6 +2469,63 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   display: flex;
   flex-direction: column;
 }
+
+.addons-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.addon-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+.addon-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  background: var(--bg-elevated);
+}
+.addon-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.addon-card-head h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+.addon-card-head p {
+  margin: 0;
+  font-size: 0.85rem;
+}
+.addon-card .field-help {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+}
+.addon-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+.addon-check {
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.addon-live {
+  margin: 0.5rem 0 0;
+}
+@media (min-width: 960px) {
+  .addon-grid { grid-template-columns: 1fr 1fr; }
+}
 .k8s-shell-dock-fill .xterm-shell {
   flex: 1;
   display: flex;

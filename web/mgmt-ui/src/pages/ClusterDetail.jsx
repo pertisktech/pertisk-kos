@@ -16,6 +16,7 @@ import OsBundlePicker, { osBundleReady } from '../components/OsBundlePicker'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import K8sTab from './cluster-k8s/K8sTab'
 import ShellTab from './cluster-k8s/ShellTab'
+import AddonsTab from './cluster-k8s/AddonsTab'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
 const YamlEditor = lazy(() => import('../components/YamlEditor'))
@@ -24,6 +25,7 @@ const TABS = [
   { id: 'overview', label: 'Overview', icon: 'dashboard' },
   { id: 'nodes', label: 'Nodes', icon: 'worker' },
   { id: 'k8s', label: 'K8s', icon: 'cpu' },
+  { id: 'addons', label: 'Add-ons', icon: 'addons' },
   { id: 'shell', label: 'Shell', icon: 'terminal' },
   { id: 'config', label: 'Config', icon: 'edit' },
   { id: 'upgrade', label: 'Upgrade', icon: 'upgrade' },
@@ -1484,6 +1486,18 @@ export default function ClusterDetail() {
 
           {tab === 'k8s' && (
             <K8sTab clusterId={id} ready={c.status === 'ready' && !hollowReady} />
+          )}
+
+          {tab === 'addons' && (
+            <AddonsTab
+              clusterId={id}
+              ready={c.status === 'ready' && !hollowReady}
+              onInstalled={(res) => {
+                if (res?.job_id) selectJob(res.job_id)
+                setTab('jobs')
+                load()
+              }}
+            />
           )}
 
           {tab === 'shell' && (

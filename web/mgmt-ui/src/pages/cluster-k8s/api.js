@@ -42,6 +42,24 @@ export function deleteWorkload(clusterId, kind, ns, name) {
   )
 }
 
+export function listAddons(clusterId) {
+  return api(`/clusters/${clusterId}/addons`)
+}
+
+export function checkAddon(clusterId, name, body) {
+  return api(`/clusters/${clusterId}/addons/${encodeURIComponent(name)}/check`, {
+    method: 'POST',
+    body: body || {},
+  })
+}
+
+export function installAddon(clusterId, name, body) {
+  return api(`/clusters/${clusterId}/addons/${encodeURIComponent(name)}/install`, {
+    method: 'POST',
+    body: body || {},
+  })
+}
+
 /** Host OS shell WebSocket (mgmt server) with cluster KUBECONFIG. */
 export function buildHostShellWsUrl(clusterId) {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'

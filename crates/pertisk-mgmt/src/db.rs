@@ -167,6 +167,18 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             created_at TEXT NOT NULL,
             revoked_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS cluster_addons (
+            cluster_id TEXT NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+            addon TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'not_installed',
+            config_json TEXT NOT NULL DEFAULT '{}',
+            secrets_enc TEXT,
+            error TEXT,
+            installed_at TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (cluster_id, addon)
+        );
         "#,
     )
     .execute(pool)
@@ -271,6 +283,21 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             expires_at TEXT NOT NULL,
             used_at TEXT,
             created_at TEXT NOT NULL
+        )"#,
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS cluster_addons (
+            cluster_id TEXT NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+            addon TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'not_installed',
+            config_json TEXT NOT NULL DEFAULT '{}',
+            secrets_enc TEXT,
+            error TEXT,
+            installed_at TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (cluster_id, addon)
         )"#,
     )
     .execute(pool)

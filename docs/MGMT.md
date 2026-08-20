@@ -136,6 +136,27 @@ When a cluster is **ready** (kubeconfig stored under `{data_dir}/kubeconfigs/{na
 | StatefulSets / DaemonSets / Jobs / CronJobs | list, delete |
 | Pods | list |
 
+## Cluster Add-ons tab
+
+When a cluster is **ready**, **Add-ons** checks live install state and applies optional cluster apps via `kubectl` on the management host. CoreDNS and metrics-server stay bootstrap basics (not this tab).
+
+| Add-on | Config | What install applies |
+|--------|--------|----------------------|
+| NFS storage | server IP/hostname + export path | `pertisk-nfs-modules` DaemonSet + nfs-subdir-external-provisioner (`StorageClass` `nfs-client`) |
+| cert-manager | DNS provider (`cloudflare`), ACME email, API token, production/staging | cert-manager `v1.21.1` + webhook `hostNetwork` (port 10260) + Cloudflare token Secret + `ClusterIssuer` `letsencrypt-cloudflare` |
+| Cilium LoadBalancer | ELB IPv4; IPv6 when dual-stack | `CiliumLoadBalancerIPPool` + `CiliumL2AnnouncementPolicy` (listed only when cluster CNI is `cilium`) |
+
+**Check config** validates the form (and for NFS, TCP 2049 from the mgmt host) and reports live resources. **Install** / **Update** enqueues job `install_addon` (cluster stays ready on failure). Cloudflare tokens are encrypted at rest (`MGMT_SECRET_KEY`) and never returned by the API.
+
+API (Bearer JWT; install needs **operator/admin**):
+
+- `GET /api/clusters/{id}/addons` — catalog + stored config + live status
+- `GET /api/clusters/{id}/addons/{name}` — one add-on (`nfs` \| `cert-manager` \| `cilium-lb`)
+- `POST /api/clusters/{id}/addons/{name}/check` — validate submitted config + live probe
+- `POST /api/clusters/{id}/addons/{name}/install` — persist config and enqueue `install_addon`
+
+Guest NFS client modules: [image/extensions/nfs-client](../image/extensions/nfs-client/). Manifests: [examples/addons](../examples/addons/).
+
 ## Cluster Shell tab
 
 **Shell** opens an interactive OS shell **on the management host** (not a guest pod). `KUBECONFIG` is set to this cluster’s admin.conf so you can install apps with:
@@ -342,8 +363,8 @@ Or `./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --with-ssh --pve p
 
 | Role | Capabilities |
 |------|----------------|
-| `viewer` | Read clusters/providers/machines/templates/os-packages/images/audit |
-| `operator` | Create/update/delete clusters, providers, nodes, upgrades, templates, OS packages, images |
+| `viewer` | Read clusters/providers/machines/templates/os-packages/images/audit/addons |
+| `operator` | Create/update/delete clusters, providers, nodes, upgrades, templates, OS packages, images; install cluster add-ons |
 | `admin` | Operator + delete providers |
 
 ## Phase D — fleet views

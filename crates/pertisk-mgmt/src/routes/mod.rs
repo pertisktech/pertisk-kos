@@ -1,3 +1,4 @@
+mod addons;
 mod audit;
 mod auth_routes;
 mod clusters;
@@ -40,6 +41,7 @@ pub fn router(state: AppState) -> Router {
         .merge(clusters::routes())
         .merge(nodes::routes())
         .merge(k8s::routes())
+        .merge(addons::routes())
         .merge(audit::routes())
         .merge(machines::routes())
         .merge(templates::routes())
