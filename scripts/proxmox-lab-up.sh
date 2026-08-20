@@ -56,6 +56,8 @@ CP_VMID="${CP_VMID:-210}"
 CONTROLPLANES="${CONTROLPLANES:-1}"
 VIP="${VIP:-}"
 VIP6="${VIP6:-}"
+CP_IPS=()
+WORKER_IPS=()
 DUAL_STACK="${DUAL_STACK:-0}"
 WORKERS="${WORKERS:-2}"
 if [[ -n "${NAME_PREFIX:-}" ]]; then
@@ -1650,28 +1652,10 @@ step_resolve_ips() {
   else
     API_ENDPOINT="$CP_IP"
   fi
+  ensure_vip_usable "${VIP:-}" "IPv4"
+  ensure_vip_usable "${VIP6:-}" "IPv6"
   log "CPs=${CP_IPS[*]} VIP=${VIP:-none} VIP6=${VIP6:-none} API_ENDPOINT=${API_ENDPOINT} workers=${WORKER_IPS[*]:-}"
-  assert_guest_ips_not_vip
   WORKER_HOSTS=()
-}
-
-# DHCP must not hand a guest the kube-vip address (ARP fight → join/finalize 404).
-assert_guest_ips_not_vip() {
-  local vip ip kind
-  for kind in "IPv4 VIP:${VIP:-}" "IPv6 VIP:${VIP6:-}"; do
-    vip="${kind#*:}"
-    kind="${kind%%:*}"
-    [[ -n "$vip" ]] || continue
-    for ip in "${CP_IPS[@]}" "${WORKER_IPS[@]}"; do
-      [[ -n "$ip" ]] || continue
-      if [[ "$ip" == "$vip" ]]; then
-        die "${kind} ${vip} was assigned by DHCP to a guest node.
-kube-vip and that node cannot share the same address (join/finalize will fail with node not registered).
-Pick a VIP outside your DHCP pool (and do not reserve it as a client lease), delete this cluster, and recreate.
-Guest IPs: CPs=${CP_IPS[*]} workers=${WORKER_IPS[*]:-none}"
-      fi
-    done
-  done
 }
 
 ensure_pertiskctl() {
@@ -1932,29 +1916,119 @@ ensure_api_endpoint_reachable() {
     || die "apiserver still unreachable after fallback to ${cp_ip}:6443"
 }
 
-# Before HA create: refuse a VIP that already answers ICMP / :6443.
+# Before HA create: VIP must not be a guest DHCP lease or another host on the LAN.
+# If it is, pick a free address in the same /24 (IPv4) or /64 (IPv6) and continue
+# so --skip-vms resume does not require destroy/recreate.
 require_vip_free() {
-  local vip="$1" label="${2:-VIP}"
+  ensure_vip_usable "$1" "${2:-VIP}"
+}
+
+# $1 = address (may be empty). $2 = "IPv4" | "IPv6" | label.
+ensure_vip_usable() {
+  local vip="$1" family="${2:-VIP}" reason="" cand="" used="" ip
   [[ -n "$vip" ]] || return 0
-  require_valid_ip "$vip" "$label"
-  log "checking ${label} ${vip} is free on the LAN"
-  if ping -c 1 -W 1 "$vip" >/dev/null 2>&1 \
-    || ping -c 1 -W 1 -6 "$vip" >/dev/null 2>&1; then
-    die "${label} ${vip} already responds to ping — kube-vip cannot use a busy address. Pick a free VIP outside your DHCP pool."
+  require_valid_ip "$vip" "$family VIP"
+  for ip in "${CP_IPS[@]:-}" "${WORKER_IPS[@]:-}"; do
+    [[ -n "${ip:-}" && "$ip" == "$vip" ]] && reason="guest DHCP ${ip}" && break
+  done
+  if [[ -z "$reason" ]]; then
+    if ping -c 1 -W 1 "$vip" >/dev/null 2>&1 \
+      || ping -c 1 -W 1 -6 "$vip" >/dev/null 2>&1; then
+      reason="answers ICMP on LAN"
+    fi
   fi
-  # Bracket IPv6 for URL.
-  local host="$vip"
+  if [[ -z "$reason" ]]; then
+    local host="$vip"
+    [[ "$vip" == *:* ]] && host="[${vip}]"
+    if curl -sk --connect-timeout 1 "https://${host}:6443/readyz" >/dev/null 2>&1; then
+      reason=":6443 already serves an apiserver"
+    fi
+  fi
+  if [[ -z "$reason" ]]; then
+    log "${family} VIP ${vip} looks free (still keep it outside the DHCP pool)"
+    return 0
+  fi
+  used=""
+  for ip in "${CP_IPS[@]:-}" "${WORKER_IPS[@]:-}" "$vip"; do
+    [[ -n "${ip:-}" ]] && used+="${used:+,}${ip}"
+  done
+  cand="$(pick_free_vip "$vip" "$used" || true)"
+  [[ -n "$cand" ]] || die "${family} VIP ${vip} is busy (${reason}) and no free replacement was found.
+Guest IPs: CPs=${CP_IPS[*]:-none} workers=${WORKER_IPS[*]:-none}
+Resume with --vip <free-ip> --skip-build --skip-vms --cp-vmid ${CP_VMID} --controlplanes ${CONTROLPLANES} --workers ${WORKERS}"
   if [[ "$vip" == *:* ]]; then
-    host="[${vip}]"
+    log "VIP reassigned IPv6 ${vip} -> ${cand} (${reason})"
+    VIP6="$cand"
+  else
+    log "VIP reassigned IPv4 ${vip} -> ${cand} (${reason})"
+    VIP="$cand"
   fi
-  if curl -sk --connect-timeout 1 "https://${host}:6443/readyz" >/dev/null 2>&1; then
-    die "${label} ${vip}:6443 already serves an apiserver — pick a free VIP."
+  if [[ "$CONTROLPLANES" -gt 1 ]]; then
+    API_ENDPOINT="${VIP:-$VIP6}"
   fi
-  log "${label} ${vip} looks free (still must stay outside the DHCP pool so guests are not assigned it)"
+}
+
+# Print a free address in the same IPv4 /24 or IPv6 /64 as $1, skipping $2 (csv) and ICMP-live hosts.
+pick_free_vip() {
+  local vip="$1" used_csv="${2:-}"
+  python3 - "$vip" "$used_csv" <<'PY'
+import ipaddress, subprocess, sys
+
+vip = ipaddress.ip_address(sys.argv[1])
+used = set()
+for raw in (sys.argv[2] or "").split(","):
+    raw = raw.strip()
+    if not raw:
+        continue
+    try:
+        used.add(ipaddress.ip_address(raw))
+    except ValueError:
+        pass
+
+def ping(ip):
+    cmd = ["ping", "-c", "1", "-W", "1", str(ip)]
+    if ip.version == 6:
+        cmd = ["ping", "-c", "1", "-W", "1", "-6", str(ip)]
+    return subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+
+def locals_on_box():
+    found = set()
+    try:
+        out = subprocess.check_output(["ip", "-o", "addr", "show"], text=True, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError):
+        return found
+    for line in out.splitlines():
+        parts = line.split()
+        for i, p in enumerate(parts):
+            if p in ("inet", "inet6") and i + 1 < len(parts):
+                try:
+                    found.add(ipaddress.ip_interface(parts[i + 1].split("%")[0]).ip)
+                except ValueError:
+                    pass
+    return found
+
+used |= locals_on_box()
+if vip.version == 4:
+    net = ipaddress.ip_interface(f"{vip}/24").network
+    hosts = [h for h in net.hosts() if int(h) & 0xFF != 1]
+    candidates = list(reversed(hosts))
+else:
+    net = ipaddress.ip_interface(f"{vip}/64").network
+    base = int(net.network_address)
+    candidates = [ipaddress.ip_address(base + i) for i in range(0xFE, 1, -1)]
+
+for cand in candidates:
+    if cand in used or cand == vip:
+        continue
+    if ping(cand):
+        continue
+    print(cand)
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
 }
 
 warn_if_vip_busy() {
-  # Back-compat alias — create path uses require_vip_free (hard fail).
   require_vip_free "$@"
 }
 

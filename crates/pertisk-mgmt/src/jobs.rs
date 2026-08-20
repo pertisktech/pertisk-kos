@@ -969,6 +969,36 @@ async fn apply_create_log_progress(
     }
     let now = db::now_rfc3339();
 
+    // VIP reassigned IPv4 10.1.1.250 -> 10.1.1.254 (guest DHCP or busy LAN)
+    if let Some(rest) = raw.strip_prefix("VIP reassigned IPv4 ") {
+        if let Some((_, to_rest)) = rest.split_once(" -> ") {
+            let to = to_rest.split_whitespace().next().unwrap_or("");
+            if !to.is_empty() {
+                sqlx::query("UPDATE clusters SET vip = ?, updated_at = ? WHERE id = ?")
+                    .bind(to)
+                    .bind(&now)
+                    .bind(cluster_id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        return Ok(());
+    }
+    if let Some(rest) = raw.strip_prefix("VIP reassigned IPv6 ") {
+        if let Some((_, to_rest)) = rest.split_once(" -> ") {
+            let to = to_rest.split_whitespace().next().unwrap_or("");
+            if !to.is_empty() {
+                sqlx::query("UPDATE clusters SET vip6 = ?, updated_at = ? WHERE id = ?")
+                    .bind(to)
+                    .bind(&now)
+                    .bind(cluster_id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        return Ok(());
+    }
+
     // control-plane VMID=210 name=lab-cp-1 …
     // worker VMID=213 name=lab-wk-1 …
     if let Some((role, rest)) = raw
