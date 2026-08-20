@@ -21,6 +21,8 @@ pub struct CloudImage {
     /// `base`, `50g`, … when the name is `pertisk-cloud-{arch}[-{role}].qcow2`.
     pub role: String,
     pub is_default: bool,
+    /// File birth time when the FS has it, otherwise mtime (RFC 3339).
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,7 +64,8 @@ pub fn list(dir: &Path) -> Catalog {
                 continue;
             }
             let meta = ent.metadata().ok();
-            let size = meta.map(|m| m.len()).unwrap_or(0);
+            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let created_at = meta.as_ref().and_then(file_created_at);
             let arch =
                 crate::os_upgrade::infer_arch_from_name(name).unwrap_or_else(|| "amd64".into());
             let role = role_from_name(name, &arch);
@@ -73,6 +76,7 @@ pub fn list(dir: &Path) -> Catalog {
                 size_bytes: size,
                 role,
                 is_default,
+                created_at,
             });
         }
     }
@@ -180,6 +184,11 @@ pub(crate) fn role_from_name(name: &str, arch: &str) -> String {
     "other".into()
 }
 
+pub(crate) fn file_created_at(meta: &fs::Metadata) -> Option<String> {
+    let t = meta.created().or_else(|_| meta.modified()).ok()?;
+    Some(chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +227,13 @@ mod tests {
         let found = find_for_arch(&dir, "amd64").unwrap();
         assert!(found.ends_with("pertisk-cloud-amd64.qcow2"));
         assert!(find_for_arch(&dir, "arm64").is_none());
+        let catalog = list(&dir);
+        let img = catalog
+            .images
+            .iter()
+            .find(|i| i.name == "pertisk-cloud-amd64.qcow2")
+            .unwrap();
+        assert!(img.created_at.as_deref().is_some_and(|s| s.contains('T')));
     }
 
     #[test]

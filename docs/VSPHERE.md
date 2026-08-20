@@ -123,4 +123,6 @@ Proxmox pins `net0` MAC from VMID so the LAN DHCP server keeps the same lease ac
 
 **Existing VMs** (created before this change): recreate the guest, or power the VM off in Host Client, then start it once from Pertisk mgmt (node reboot / hardware apply) so `uuid.action=keep` is written. Recreate is required to switch to the pinned `00:50:56:…` MAC.
 
+If the **ESXi host reboots** and DHCP still issues a new IPv4, the guest rebases etcd/apiserver onto the live address. Mgmt rediscovers the IP from VMware Tools when present, otherwise scans `:50000` on the node subnet and matches hostnames. For HA, add DHCP static leases so etcd peer URLs do not churn.
+
 For a hard guarantee, add **Static Leases** on the DHCP server for each MAC (same as Proxmox). Do not reserve the HA kube-vip.

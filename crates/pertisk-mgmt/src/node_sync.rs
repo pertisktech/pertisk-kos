@@ -1,14 +1,24 @@
 //! Sync node IP / K8s version from kubectl or job logs.
 
-use std::net::IpAddr;
+use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use sqlx::SqlitePool;
+use tokio::net::TcpStream;
 use tokio::process::Command;
+use tokio::time::timeout;
 
+use crate::crypto;
 use crate::db;
+use crate::kubeconfig;
+use crate::nutanix::NutanixClient;
+use crate::proxmox::ProxmoxClient;
+use crate::state::AppState;
+use crate::vsphere::VsphereClient;
 
 #[derive(Debug, Clone, Default)]
 pub struct NodeSnapshot {
@@ -200,6 +210,25 @@ pub fn parse_pertiskctl_node_version(stdout: &str) -> Option<String> {
             continue;
         }
         return Some(ver.to_string());
+    }
+    None
+}
+
+/// `node 0.2.89 hostname=lab-ha-cp-1 (api v1alpha1 / linux)`
+pub fn parse_pertiskctl_hostname(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("node ") else {
+            continue;
+        };
+        for part in rest.split_whitespace() {
+            if let Some(h) = part.strip_prefix("hostname=") {
+                let host = h.trim_matches(|c| c == '(' || c == ')');
+                if !host.is_empty() {
+                    return Some(host.to_string());
+                }
+            }
+        }
     }
     None
 }
@@ -429,6 +458,302 @@ pub async fn wait_node_addresses(
     }
 }
 
+const REDISCOVER_TTL: Duration = Duration::from_secs(60);
+
+fn rediscover_at() -> &'static Mutex<HashMap<String, Instant>> {
+    static C: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// After Nutanix/vSphere host reboot, guests often get a new DHCP/IPAM address.
+/// Refresh `nodes.ip` from the hypervisor (or a :50000 scan) and fix kubeconfig
+/// when the cluster endpoint was the old control-plane IP.
+pub async fn rediscover_cluster_ips(state: &AppState, cluster_id: &str) -> anyhow::Result<usize> {
+    {
+        let mut g = rediscover_at().lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(at) = g.get(cluster_id) {
+            if at.elapsed() < REDISCOVER_TTL {
+                return Ok(0);
+            }
+        }
+        g.insert(cluster_id.to_string(), Instant::now());
+    }
+
+    let row = sqlx::query_as::<_, (String, Option<String>, Option<String>, i64)>(
+        "SELECT provider_id, kubeconfig_path, vip, controlplanes FROM clusters WHERE id = ?",
+    )
+    .bind(cluster_id)
+    .fetch_optional(state.pool())
+    .await?;
+    let Some((provider_id, kc_path, vip, controlplanes)) = row else {
+        return Ok(0);
+    };
+    let vip = vip.filter(|s| !s.trim().is_empty());
+
+    let nodes: Vec<(String, String, String, Option<String>, Option<i64>)> =
+        sqlx::query_as("SELECT id, name, role, ip, vmid FROM nodes WHERE cluster_id = ?")
+            .bind(cluster_id)
+            .fetch_all(state.pool())
+            .await?;
+    if nodes.is_empty() {
+        return Ok(0);
+    }
+
+    let mut found: HashMap<String, String> = HashMap::new();
+    if let Ok(from_hv) = hypervisor_guest_ips(state, &provider_id, &nodes).await {
+        for (id, ip) in from_hv {
+            if vip.as_deref() == Some(ip.as_str()) {
+                continue;
+            }
+            found.insert(id, ip);
+        }
+    }
+
+    let mut scan_needed = found.len() < nodes.len();
+    for (id, _, _, ip, _) in &nodes {
+        let Some(cur) = ip.as_deref().filter(|s| !s.is_empty()) else {
+            scan_needed = true;
+            continue;
+        };
+        if found.get(id).map(String::as_str).unwrap_or(cur) == cur && !tcp_open(cur, 50000).await {
+            scan_needed = true;
+        }
+    }
+    if scan_needed {
+        if let Ok(scanned) = scan_subnet_for_hostnames(state, &nodes, vip.as_deref()).await {
+            for (id, ip) in scanned {
+                found.insert(id, ip);
+            }
+        }
+    }
+
+    let now = db::now_rfc3339();
+    let mut updated = 0usize;
+    let mut old_cp: Option<String> = None;
+    let mut new_cp: Option<String> = None;
+    for (id, _name, role, ip, _) in &nodes {
+        let Some(next) = found.get(id) else {
+            continue;
+        };
+        let prev = ip.as_deref().unwrap_or("");
+        if prev == next {
+            continue;
+        }
+        if role == "controlplane" && old_cp.is_none() {
+            old_cp = Some(prev.to_string());
+            new_cp = Some(next.clone());
+        }
+        let r = sqlx::query("UPDATE nodes SET ip = ?, updated_at = ? WHERE id = ?")
+            .bind(next)
+            .bind(&now)
+            .bind(id)
+            .execute(state.pool())
+            .await?;
+        if r.rows_affected() > 0 {
+            updated += 1;
+        }
+    }
+
+    if let (Some(new_ip), Some(kc)) = (
+        new_cp.as_deref(),
+        kc_path.as_deref().filter(|p| !p.is_empty()),
+    ) {
+        maybe_rewrite_cluster_endpoint(
+            state,
+            cluster_id,
+            Path::new(kc),
+            &vip,
+            old_cp.as_deref(),
+            new_ip,
+            controlplanes,
+        )
+        .await;
+    }
+
+    Ok(updated)
+}
+
+async fn maybe_rewrite_cluster_endpoint(
+    state: &AppState,
+    cluster_id: &str,
+    kc: &Path,
+    vip: &Option<String>,
+    old_cp: Option<&str>,
+    new_ip: &str,
+    controlplanes: i64,
+) {
+    let Ok(raw) = std::fs::read_to_string(kc) else {
+        return;
+    };
+    let host = kubeconfig::kubeconfig_server_host(&raw).unwrap_or_default();
+    let points_at_vip = vip.as_deref().is_some_and(|v| v == host);
+    let points_at_old = old_cp.is_some_and(|o| !o.is_empty() && o == host);
+    if points_at_vip && controlplanes > 1 {
+        return;
+    }
+    if !(points_at_old || (controlplanes <= 1 && !points_at_vip)) {
+        return;
+    }
+    let url = format!("https://{new_ip}:6443");
+    let next = kubeconfig::rewrite_kubeconfig_server_url(&raw, &url);
+    if next != raw {
+        let _ = std::fs::write(kc, next);
+    }
+    let _ = sqlx::query("UPDATE clusters SET endpoint = ?, updated_at = ? WHERE id = ?")
+        .bind(new_ip)
+        .bind(db::now_rfc3339())
+        .bind(cluster_id)
+        .execute(state.pool())
+        .await;
+}
+
+async fn hypervisor_guest_ips(
+    state: &AppState,
+    provider_id: &str,
+    nodes: &[(String, String, String, Option<String>, Option<i64>)],
+) -> anyhow::Result<Vec<(String, String)>> {
+    let row = sqlx::query_as::<_, (String, String, String, String, String, i64)>(
+        "SELECT kind, url, token_id, token_secret_enc, node, insecure FROM providers WHERE id = ?",
+    )
+    .bind(provider_id)
+    .fetch_optional(state.pool())
+    .await?;
+    let Some((kind, url, token_id, secret_enc, pve_node, insecure)) = row else {
+        return Ok(Vec::new());
+    };
+    let secret = crypto::decrypt(&state.cfg().secret_key, &secret_enc)?;
+    let insecure = insecure != 0;
+    let mut out = Vec::new();
+    for (id, name, _, _, vmid) in nodes {
+        let ip = match kind.as_str() {
+            "nutanix" => {
+                NutanixClient::new(url.clone(), token_id.clone(), secret.clone(), insecure)
+                    .vm_ipv4(name)
+                    .await
+                    .ok()
+                    .flatten()
+            }
+            "vsphere" => {
+                VsphereClient::new(url.clone(), token_id.clone(), secret.clone(), insecure)
+                    .vm_guest_ipv4(name)
+                    .await
+                    .ok()
+                    .flatten()
+            }
+            _ => {
+                let Some(vmid) = *vmid else {
+                    continue;
+                };
+                let client = ProxmoxClient {
+                    url: url.clone(),
+                    token_id: token_id.clone(),
+                    token_secret: secret.clone(),
+                    insecure,
+                };
+                client.vm_guest_ipv4(&pve_node, vmid).await.ok().flatten()
+            }
+        };
+        if let Some(ip) = ip.filter(|s| usable_lan_ipv4(s)) {
+            out.push((id.clone(), ip));
+        }
+    }
+    Ok(out)
+}
+
+async fn scan_subnet_for_hostnames(
+    state: &AppState,
+    nodes: &[(String, String, String, Option<String>, Option<i64>)],
+    vip: Option<&str>,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let pertiskctl = &state.cfg().pertiskctl;
+    if !pertiskctl.is_file() {
+        return Ok(Vec::new());
+    }
+    let Some(base) = subnet_base(nodes) else {
+        return Ok(Vec::new());
+    };
+    let mut skip: HashSet<String> = HashSet::new();
+    if let Some(v) = vip {
+        skip.insert(v.to_string());
+    }
+    let by_name: HashMap<String, String> = nodes
+        .iter()
+        .map(|(id, name, _, _, _)| (name.clone(), id.clone()))
+        .collect();
+
+    let mut futs = Vec::new();
+    for host in 1u8..=254 {
+        let ip = Ipv4Addr::new(base[0], base[1], base[2], host);
+        let ip_s = ip.to_string();
+        if skip.contains(&ip_s) {
+            continue;
+        }
+        let bin = pertiskctl.clone();
+        futs.push(async move {
+            if !tcp_open(&ip_s, 50000).await {
+                return None;
+            }
+            let out = timeout(
+                Duration::from_secs(3),
+                Command::new(&bin)
+                    .args(["-e", &format!("{ip_s}:50000"), "version"])
+                    .output(),
+            )
+            .await
+            .ok()?
+            .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let host = parse_pertiskctl_hostname(&stdout)?;
+            Some((host, ip_s))
+        });
+    }
+    let mut out = Vec::new();
+    for (hostname, ip) in futures::future::join_all(futs).await.into_iter().flatten() {
+        if let Some(id) = by_name.get(&hostname) {
+            out.push((id.clone(), ip));
+        }
+    }
+    Ok(out)
+}
+
+fn subnet_base(nodes: &[(String, String, String, Option<String>, Option<i64>)]) -> Option<[u8; 4]> {
+    for (_, _, _, ip, _) in nodes {
+        let Some(ip) = ip.as_deref().filter(|s| usable_lan_ipv4(s)) else {
+            continue;
+        };
+        let Ok(v4) = ip.parse::<Ipv4Addr>() else {
+            continue;
+        };
+        let o = v4.octets();
+        return Some([o[0], o[1], o[2], 0]);
+    }
+    None
+}
+
+fn usable_lan_ipv4(ip: &str) -> bool {
+    let Ok(addr) = ip.trim().parse::<Ipv4Addr>() else {
+        return false;
+    };
+    !(addr.is_loopback()
+        || addr.is_unspecified()
+        || addr.is_broadcast()
+        || addr.is_link_local()
+        || addr.is_multicast())
+}
+
+async fn tcp_open(ip: &str, port: u16) -> bool {
+    let Ok(addr) = format!("{ip}:{port}").parse::<SocketAddr>() else {
+        return false;
+    };
+    matches!(
+        timeout(Duration::from_millis(400), TcpStream::connect(addr)).await,
+        Ok(Ok(_))
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,6 +788,10 @@ lab-ha-wk-1   Ready    <none>          42s   v1.36.2   10.1.1.134    <none>
         );
         assert!(is_placeholder_os_version(Some("0.1.0")));
         assert!(!is_placeholder_os_version(Some("0.2.89")));
+        assert_eq!(
+            parse_pertiskctl_hostname(out).as_deref(),
+            Some("lab-ha-285h-cp-3")
+        );
     }
 
     #[test]

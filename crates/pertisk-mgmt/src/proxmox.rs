@@ -443,6 +443,20 @@ impl ProxmoxClient {
             .to_string())
     }
 
+    /// Guest IPv4 via qemu-ga (`network-get-interfaces`). None if the agent is down.
+    pub async fn vm_guest_ipv4(&self, node: &str, vmid: i64) -> ApiResult<Option<String>> {
+        let v = match self
+            .get_json(&format!(
+                "/nodes/{node}/qemu/{vmid}/agent/network-get-interfaces"
+            ))
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+        Ok(first_qemu_ga_ipv4(&v))
+    }
+
     /// Set CPU/memory on a QEMU VM (Proxmox `config` PUT). Values in MB / cores.
     ///
     /// Also enables `hotplug`/`numa` so increases can apply live when the guest
@@ -773,4 +787,68 @@ fn urlencoding_upid(upid: &str) -> String {
         }
     }
     out
+}
+
+pub fn first_qemu_ga_ipv4(v: &Value) -> Option<String> {
+    let ifaces = v
+        .pointer("/data/result")
+        .or_else(|| v.get("result"))
+        .and_then(|x| x.as_array())?;
+    for iface in ifaces {
+        let name = iface.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        if name == "lo" || name.starts_with("lo:") {
+            continue;
+        }
+        let addrs = iface
+            .get("ip-addresses")
+            .or_else(|| iface.get("ip_addresses"))
+            .and_then(|a| a.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for addr in addrs {
+            let ip = addr
+                .get("ip-address")
+                .or_else(|| addr.get("ip_address"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            let ty = addr
+                .get("ip-address-type")
+                .or_else(|| addr.get("ip_address_type"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            if ty == "ipv6" || ip.contains(':') || !ip.contains('.') {
+                continue;
+            }
+            let Ok(v4) = ip.parse::<std::net::Ipv4Addr>() else {
+                continue;
+            };
+            if v4.is_loopback() || v4.is_link_local() || v4.is_unspecified() {
+                continue;
+            }
+            return Some(ip.to_string());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parses_qemu_ga_ipv4() {
+        let v = json!({
+            "data": {
+                "result": [
+                    {"name": "lo", "ip-addresses": [{"ip-address": "127.0.0.1", "ip-address-type": "ipv4"}]},
+                    {"name": "eth0", "ip-addresses": [
+                        {"ip-address": "fe80::1", "ip-address-type": "ipv6"},
+                        {"ip-address": "10.1.1.40", "ip-address-type": "ipv4"}
+                    ]}
+                ]
+            }
+        });
+        assert_eq!(first_qemu_ga_ipv4(&v).as_deref(), Some("10.1.1.40"));
+    }
 }

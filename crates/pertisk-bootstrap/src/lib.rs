@@ -69,20 +69,27 @@ pub fn bootstrap_control_plane(
         if let Some(want) = expected {
             if let Some(stored) = paths.read_advertise() {
                 if stored != want {
-                    bail!(
-                        "already bootstrapped with advertise {stored}, but requested {want}. \
-Guest IP changed or STATE was reused from a previous cluster. \
-Destroy the VM (or run: pertiskctl -e {want}:50000 reset --force) and recreate"
+                    tracing::warn!(
+                        stored,
+                        want,
+                        "advertise IP changed after bootstrap; rebasing control plane"
                     );
+                    if let Err(err) = rebase_advertise_address(state_root, want) {
+                        tracing::warn!(error = %err, "rebase after IP change failed");
+                    }
                 }
             } else {
                 // Legacy STATE without advertise file — compare live detection.
                 if let Some(live) = detect_advertise_ip() {
                     if live != want {
-                        bail!(
-                            "already bootstrapped (no stored advertise); live IP is {live} but \
-lab expects {want}. Soft-reset this node and recreate: pertiskctl -e {want}:50000 reset --force"
+                        tracing::warn!(
+                            live,
+                            want,
+                            "legacy STATE advertise missing; rebasing onto requested IP"
                         );
+                        if let Err(err) = rebase_advertise_address(state_root, want) {
+                            tracing::warn!(error = %err, "rebase after IP change failed");
+                        }
                     }
                 }
                 let _ = paths.write_advertise(want);
@@ -358,6 +365,9 @@ pub fn restore_control_plane(state_root: &Path) -> Result<bool> {
     if !paths.is_bootstrapped() {
         return Ok(false);
     }
+    if let Err(err) = maybe_rebase_advertise(state_root) {
+        tracing::warn!(error = %err, "advertise rebase on restore failed");
+    }
     repair_kubeconfig_files(&paths)?;
     paths.link_live()?;
     let kubelet_conf = paths.kubeconfig_dir().join("kubelet.conf");
@@ -371,6 +381,196 @@ pub fn restore_control_plane(state_root: &Path) -> Result<bool> {
         "restored control-plane /etc/kubernetes + kubelet credentials from STATE"
     );
     Ok(true)
+}
+
+/// If DHCP/IPAM handed out a new address after reboot, rewrite static pods + serving certs.
+///
+/// Returns `true` when the advertise address was rewritten.
+pub fn maybe_rebase_advertise(state_root: &Path) -> Result<bool> {
+    let paths = BootstrapPaths::default_state(state_root);
+    if !paths.is_bootstrapped() {
+        return Ok(false);
+    }
+    let Some(detected) = detect_advertise_ip() else {
+        let _ = ensure_etcd_listen_all(&paths);
+        return Ok(false);
+    };
+    rebase_advertise_address(state_root, &detected)
+}
+
+/// Whether `detected` should replace `stored` as the node's advertise IP.
+/// Skips no-op and VIP (kube-vip on the same NIC can win `detect_advertise_ip`).
+pub fn pick_rebase_ip(stored: &str, detected: &str, vip: Option<&str>) -> Option<String> {
+    let stored = stored.trim();
+    let detected = detected.trim();
+    if detected.is_empty() || detected == stored {
+        return None;
+    }
+    if vip
+        .map(str::trim)
+        .is_some_and(|v| !v.is_empty() && v == detected)
+    {
+        return None;
+    }
+    Some(detected.to_string())
+}
+
+/// Rewrite control-plane manifests, serving certs, and kubeconfig for `new_ip`.
+pub fn rebase_advertise_address(state_root: &Path, new_ip: &str) -> Result<bool> {
+    let paths = BootstrapPaths::default_state(state_root);
+    if !paths.is_bootstrapped() {
+        return Ok(false);
+    }
+    let new_ip = new_ip.trim();
+    if new_ip.is_empty() {
+        return Ok(false);
+    }
+    let stored = paths.read_advertise().unwrap_or_default();
+    let admin_raw = fs::read_to_string(paths.admin_kubeconfig()).unwrap_or_default();
+    let server_host = kubeconfig::kubeconfig_server_host(&admin_raw);
+    let vip = server_host
+        .as_deref()
+        .filter(|h| !h.is_empty() && *h != stored.as_str());
+    if pick_rebase_ip(&stored, new_ip, vip).is_none() {
+        let changed = ensure_etcd_listen_all(&paths)?;
+        return Ok(changed);
+    }
+
+    info!(from = %stored, to = %new_ip, "rebasing control-plane advertise address");
+    rewrite_ip_in_dir(&paths.manifests(), &stored, new_ip)?;
+    let _ = ensure_etcd_listen_all(&paths);
+
+    let etcd_yaml = fs::read_to_string(paths.manifests().join("etcd.yaml")).unwrap_or_default();
+    let api_yaml =
+        fs::read_to_string(paths.manifests().join("kube-apiserver.yaml")).unwrap_or_default();
+    let hostname = flag_value(&etcd_yaml, "--name=").unwrap_or_else(|| "pertisk-cp".into());
+    let endpoint_host = server_host
+        .clone()
+        .filter(|h| h != new_ip)
+        .or_else(|| vip.map(|s| s.to_string()))
+        .unwrap_or_else(|| new_ip.to_string());
+    let svc_cidr = flag_value(&api_yaml, "--service-cluster-ip-range=")
+        .unwrap_or_else(|| DEFAULT_SERVICE_SUBNET.to_string());
+    let kubernetes_svc_ip = kubernetes_service_ip(&svc_cidr);
+    let mut extra = Vec::new();
+    if !stored.is_empty() {
+        extra.push(stored.clone());
+    }
+    pki::reissue_serving_certs(
+        &paths.pki(),
+        &paths.etcd_pki(),
+        new_ip,
+        &hostname,
+        &endpoint_host,
+        &kubernetes_svc_ip,
+        &extra,
+    )?;
+
+    if server_host.as_deref() == Some(stored.as_str()) && !stored.is_empty() {
+        let rewritten =
+            kubeconfig::rewrite_kubeconfig_server(&admin_raw, &format!("https://{new_ip}:6443"));
+        fs::write(paths.admin_kubeconfig(), rewritten)
+            .with_context(|| format!("write {}", paths.admin_kubeconfig().display()))?;
+    }
+    paths.write_advertise(new_ip)?;
+    request_kubelet_reload();
+    Ok(true)
+}
+
+/// Replace `old` with `new` only at IP token boundaries (`10.1.1.1` must not match `10.1.1.10`).
+pub fn replace_ip_token(haystack: &str, old: &str, new: &str) -> String {
+    if old.is_empty() || old == new {
+        return haystack.to_string();
+    }
+    let mut out = String::with_capacity(haystack.len());
+    let mut rest = haystack;
+    while let Some(i) = rest.find(old) {
+        let before_ok = i == 0 || !rest.as_bytes()[i - 1].is_ascii_digit();
+        let after_idx = i + old.len();
+        let after_ok = after_idx >= rest.len()
+            || !rest
+                .as_bytes()
+                .get(after_idx)
+                .is_some_and(|b| b.is_ascii_digit());
+        out.push_str(&rest[..i]);
+        if before_ok && after_ok {
+            out.push_str(new);
+        } else {
+            out.push_str(old);
+        }
+        rest = &rest[after_idx..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn rewrite_ip_in_dir(dir: &Path, old: &str, new: &str) -> Result<()> {
+    if old.is_empty() || !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let next = replace_ip_token(&raw, old, new);
+        if next != raw {
+            fs::write(&path, next).with_context(|| format!("write {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_etcd_listen_all(paths: &BootstrapPaths) -> Result<bool> {
+    let path = paths.manifests().join("etcd.yaml");
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    const WANT: &str = "--listen-client-urls=https://0.0.0.0:2379";
+    if raw.contains(WANT) && !raw.contains("--listen-client-urls=https://127.0.0.1:2379") {
+        return Ok(false);
+    }
+    let mut out = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        if line.contains("--listen-client-urls=") {
+            let pad = line.len() - line.trim_start().len();
+            let trimmed = line.trim_end();
+            let comma = if trimmed.ends_with(',') { "," } else { "" };
+            out.push_str(&" ".repeat(pad));
+            out.push_str(WANT);
+            out.push_str(comma);
+            out.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if out == raw {
+        return Ok(false);
+    }
+    fs::write(&path, out).with_context(|| format!("write {}", path.display()))?;
+    Ok(true)
+}
+
+fn flag_value(yaml: &str, flag: &str) -> Option<String> {
+    for line in yaml.lines() {
+        let Some(i) = line.find(flag) else {
+            continue;
+        };
+        let rest = line[i + flag.len()..].trim();
+        let val = rest
+            .trim_start_matches('"')
+            .trim_end_matches(['"', ',', ' ']);
+        if !val.is_empty() {
+            return Some(val.to_string());
+        }
+    }
+    None
 }
 
 pub(crate) fn endpoint_host(endpoint: &str) -> String {
@@ -897,5 +1097,72 @@ cluster:
         assert!(out.contains("dashboard"));
         assert!(out.contains("catppuccin"));
         assert!(out.contains("BEGIN CERTIFICATE"));
+    }
+
+    #[test]
+    fn replace_ip_token_avoids_prefix_matches() {
+        let s = "https://10.1.1.1:2379 https://10.1.1.10:2379";
+        let out = replace_ip_token(s, "10.1.1.1", "10.1.1.9");
+        assert_eq!(out, "https://10.1.1.9:2379 https://10.1.1.10:2379");
+    }
+
+    #[test]
+    fn pick_rebase_skips_same_and_vip() {
+        assert_eq!(pick_rebase_ip("10.1.1.10", "10.1.1.10", None), None);
+        assert_eq!(
+            pick_rebase_ip("10.1.1.10", "10.1.1.99", Some("10.1.1.99")),
+            None
+        );
+        assert_eq!(
+            pick_rebase_ip("10.1.1.10", "10.1.1.40", Some("10.1.1.99")).as_deref(),
+            Some("10.1.1.40")
+        );
+    }
+
+    #[test]
+    fn rebase_rewrites_manifests_and_kubeconfig() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path();
+        let paths = BootstrapPaths::default_state(state);
+        paths.ensure_dirs().unwrap();
+        let pki =
+            pki::generate_pki("10.1.1.10", "lab-cp-1", "10.1.1.10", "10.96.0.1", &[]).unwrap();
+        pki::write_pki(&paths.pki(), &paths.etcd_pki(), &pki).unwrap();
+        static_pods::write_static_pods(
+            &paths.manifests(),
+            &static_pods::StaticPodParams {
+                advertise_ip: "10.1.1.10",
+                hostname: "lab-cp-1",
+                kubernetes_version: DEFAULT_K8S_VERSION,
+                etcd_image: DEFAULT_ETCD_IMAGE,
+                service_cidr: DEFAULT_SERVICE_SUBNET,
+                pod_subnet: DEFAULT_POD_SUBNET,
+                pki_host_path: "/etc/kubernetes/pki",
+                etcd_initial_cluster: "lab-cp-1=https://10.1.1.10:2380",
+                etcd_initial_cluster_state: "new",
+            },
+        )
+        .unwrap();
+        let admin = kubeconfig::render_kubeconfig(
+            "https://10.1.1.10:6443",
+            &pki.ca_crt,
+            &pki.admin_crt,
+            &pki.admin_key,
+            "kubernetes-admin",
+            "lab",
+        );
+        fs::write(paths.admin_kubeconfig(), admin).unwrap();
+        fs::write(paths.marker(), "bootstrapped\n").unwrap();
+        paths.write_advertise("10.1.1.10").unwrap();
+
+        assert!(rebase_advertise_address(state, "10.1.1.40").unwrap());
+        let etcd = fs::read_to_string(paths.manifests().join("etcd.yaml")).unwrap();
+        assert!(etcd.contains("https://10.1.1.40:2380"));
+        assert!(etcd.contains("0.0.0.0:2379"));
+        assert!(!etcd.contains("https://10.1.1.10:2380"));
+        let admin = fs::read_to_string(paths.admin_kubeconfig()).unwrap();
+        assert!(admin.contains("https://10.1.1.40:6443"));
+        assert_eq!(paths.read_advertise().as_deref(), Some("10.1.1.40"));
+        assert!(paths.pki().join("apiserver.crt").is_file());
     }
 }

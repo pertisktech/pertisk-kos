@@ -113,12 +113,17 @@ async fn create(
 
         let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
         let is_default = dest_name.eq_ignore_ascii_case(&format!("pertisk-cloud-{arch}.qcow2"));
+        let created_at = std::fs::metadata(&dest)
+            .ok()
+            .as_ref()
+            .and_then(cloud_images::file_created_at);
         Ok(cloud_images::CloudImage {
             name: dest_name.clone(),
             arch: arch.clone(),
             size_bytes: size,
             role: cloud_images::role_from_name(&dest_name, &arch),
             is_default,
+            created_at,
         })
     }
     .await;

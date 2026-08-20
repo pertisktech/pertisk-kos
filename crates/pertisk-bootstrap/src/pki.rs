@@ -314,6 +314,42 @@ fn issue_client(ca: &CaIssuer, cn: &str, orgs: &[&str]) -> Result<(String, Strin
     Ok((cert.pem(), key.serialize_pem()))
 }
 
+/// Re-mint apiserver + etcd serving certs for a new advertise IP (CA/kubelet unchanged).
+pub fn reissue_serving_certs(
+    pki_dir: &Path,
+    etcd_dir: &Path,
+    advertise_ip: &str,
+    hostname: &str,
+    endpoint_host: &str,
+    kubernetes_svc_ip: &str,
+    extra_sans: &[String],
+) -> Result<()> {
+    let ca_crt = fs::read_to_string(pki_dir.join("ca.crt"))
+        .with_context(|| format!("read {}", pki_dir.join("ca.crt").display()))?;
+    let ca_key = fs::read_to_string(pki_dir.join("ca.key"))
+        .with_context(|| format!("read {}", pki_dir.join("ca.key").display()))?;
+    let ca = load_ca(&ca_crt, &ca_key)?;
+    let apiserver = issue_server(
+        &ca,
+        "kube-apiserver",
+        &apiserver_sans(
+            advertise_ip,
+            hostname,
+            endpoint_host,
+            kubernetes_svc_ip,
+            extra_sans,
+        ),
+    )?;
+    let etcd = issue_server(&ca, "etcd", &etcd_sans(advertise_ip, hostname, extra_sans))?;
+    write(pki_dir.join("apiserver.crt"), &apiserver.0)?;
+    write(pki_dir.join("apiserver.key"), &apiserver.1)?;
+    write(etcd_dir.join("server.crt"), &etcd.0)?;
+    write(etcd_dir.join("server.key"), &etcd.1)?;
+    write(etcd_dir.join("peer.crt"), &etcd.0)?;
+    write(etcd_dir.join("peer.key"), &etcd.1)?;
+    Ok(())
+}
+
 pub fn write_pki(dir: &Path, etcd_dir: &Path, pki: &ClusterPki) -> Result<()> {
     fs::create_dir_all(dir)?;
     fs::create_dir_all(etcd_dir)?;
@@ -380,5 +416,29 @@ mod tests {
         assert_eq!(first.ca_crt.trim(), join.ca_crt.trim());
         assert_eq!(first.sa_key.trim(), join.sa_key.trim());
         assert_ne!(first.apiserver_crt, join.apiserver_crt);
+    }
+
+    #[test]
+    fn reissue_serving_keeps_ca() {
+        let dir = tempfile::tempdir().unwrap();
+        let pki_dir = dir.path().join("pki");
+        let etcd_dir = pki_dir.join("etcd");
+        let first = generate_pki("10.0.0.1", "cp-1", "10.0.0.100", "10.96.0.1", &[]).unwrap();
+        write_pki(&pki_dir, &etcd_dir, &first).unwrap();
+        let old_api = fs::read_to_string(pki_dir.join("apiserver.crt")).unwrap();
+        reissue_serving_certs(
+            &pki_dir,
+            &etcd_dir,
+            "10.0.0.2",
+            "cp-1",
+            "10.0.0.100",
+            "10.96.0.1",
+            &["10.0.0.1".into()],
+        )
+        .unwrap();
+        let new_api = fs::read_to_string(pki_dir.join("apiserver.crt")).unwrap();
+        let ca = fs::read_to_string(pki_dir.join("ca.crt")).unwrap();
+        assert_ne!(old_api, new_api);
+        assert_eq!(ca.trim(), first.ca_crt.trim());
     }
 }

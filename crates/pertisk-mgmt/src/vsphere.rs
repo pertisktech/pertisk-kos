@@ -812,6 +812,34 @@ impl VsphereClient {
         Ok(extract_mac_from_devices(&xml))
     }
 
+    /// IPv4 reported by VMware Tools (`guest.ipAddress` / `guest.net`). Empty without tools.
+    pub async fn vm_guest_ipv4(&self, name: &str) -> ApiResult<Option<String>> {
+        self.ensure_login().await?;
+        let Some(vm) = self.find_vm(name).await? else {
+            return Ok(None);
+        };
+        let body = format!(
+            r#"<RetrieveProperties xmlns="urn:vim25">
+  <_this type="PropertyCollector">ha-property-collector</_this>
+  <specSet>
+    <propSet>
+      <type>VirtualMachine</type>
+      <all>false</all>
+      <pathSet>guest.ipAddress</pathSet>
+      <pathSet>guest.net</pathSet>
+    </propSet>
+    <objectSet>
+      <obj type="VirtualMachine">{}</obj>
+      <skip>false</skip>
+    </objectSet>
+  </specSet>
+</RetrieveProperties>"#,
+            xml_escape(&vm.moref)
+        );
+        let xml = self.soap("urn:vim25/8.0.3.0", &body).await?;
+        Ok(first_guest_ipv4_from_xml(&xml))
+    }
+
     pub async fn grow_vm_disk(&self, name: &str, disk_gb: i64) -> ApiResult<()> {
         if disk_gb < 1 {
             return Err(AppError::bad("disk_gb must be >= 1"));
@@ -1082,6 +1110,24 @@ fn extract_first_disk(xml: &str) -> Option<(i64, i64)> {
     None
 }
 
+/// First non-loopback IPv4 in guest.ipAddress / guest.net SOAP.
+pub fn first_guest_ipv4_from_xml(xml: &str) -> Option<String> {
+    for token in xml.split(|c: char| !c.is_ascii_digit() && c != '.') {
+        if !usable_guest_ipv4(token) {
+            continue;
+        }
+        return Some(token.to_string());
+    }
+    None
+}
+
+fn usable_guest_ipv4(ip: &str) -> bool {
+    let Ok(addr) = ip.parse::<std::net::Ipv4Addr>() else {
+        return false;
+    };
+    addr.is_private()
+}
+
 const TRAVERSAL_RETRIEVE: &str = r#"<RetrievePropertiesEx xmlns="urn:vim25">
   <_this type="PropertyCollector">ha-property-collector</_this>
   <specSet>
@@ -1189,4 +1235,24 @@ const TRAVERSAL_RETRIEVE: &str = r#"<RetrievePropertiesEx xmlns="urn:vim25">
 #[derive(Debug, Serialize)]
 pub struct VsphereProbeExtra {
     pub networks: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_guest_ip_from_soap() {
+        let xml = r#"<RetrievePropertiesResponse>
+  <returnval>
+    <propSet><name>guest.ipAddress</name><val xsi:type="xsd:string">10.1.1.40</val></propSet>
+  </returnval>
+</RetrievePropertiesResponse>"#;
+        assert_eq!(first_guest_ipv4_from_xml(xml).as_deref(), Some("10.1.1.40"));
+        let xml6 = r#"<ipAddress><string>fe80::1</string><string>10.1.1.55</string></ipAddress>"#;
+        assert_eq!(
+            first_guest_ipv4_from_xml(xml6).as_deref(),
+            Some("10.1.1.55")
+        );
+    }
 }

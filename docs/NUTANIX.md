@@ -108,6 +108,8 @@ On AHV:
 - Upload now pins a **deterministic MAC** (`52:54:…` from VMID + `NUTANIX_URL`) and writes it back if create omitted it.
 - On a **managed IPAM** subnet, Prism often **releases** the address when the VM is powered off, then assigns a new one on the next power-on. Upload now sets `requested_ip_address` / `ip_endpoint_list` to that first address **before** power-off, so the reservation sticks. The IPAM netcfg disk and mgmt `:67` helper still inject/serve that same address to the guest.
 
+If the **AHV cluster itself reboots** and DHCP/IPAM still hands out a new IPv4, the guest rebases etcd/apiserver onto the live address (certs + static pods). Mgmt rediscovers the new IP from Prism (or a `:50000` scan) and updates kubeconfig when the endpoint was the old control-plane IP. Prefer unmanaged VLAN + DHCP static leases for HA so etcd peer URLs stay stable.
+
 **Existing VMs:** recreate, or repair in place (pins MAC + requested IP, re-attaches netcfg):
 
 ```bash

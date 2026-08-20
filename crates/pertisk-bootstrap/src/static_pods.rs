@@ -136,7 +136,9 @@ fn etcd_pod(p: &StaticPodParams<'_>) -> serde_json::Value {
                     format!("--initial-advertise-peer-urls=https://{advertise_ip}:2380"),
                     format!("--initial-cluster={}", p.etcd_initial_cluster),
                     format!("--initial-cluster-state={}", p.etcd_initial_cluster_state),
-                    format!("--listen-client-urls=https://127.0.0.1:2379,https://{advertise_ip}:2379"),
+                    // Bind all addresses so a DHCP/IPAM change after hypervisor
+                    // reboot cannot fail etcd with "bind: cannot assign requested address".
+                    "--listen-client-urls=https://0.0.0.0:2379",
                     "--listen-metrics-urls=http://127.0.0.1:2381",
                     format!("--listen-peer-urls=https://0.0.0.0:2380"),
                     format!("--name={name}"),
@@ -354,6 +356,7 @@ mod tests {
         assert!(etcd.contains("https://10.1.1.10:2380"));
         assert!(etcd.contains("--initial-cluster-state=new"));
         assert!(etcd.contains("0.0.0.0:2380"));
+        assert!(etcd.contains("--listen-client-urls=https://0.0.0.0:2379"));
     }
 
     #[test]

@@ -560,6 +560,18 @@ impl NutanixClient {
         self.set_power(&vm.uuid, "ON").await
     }
 
+    /// Guest IPv4 from Prism NIC config (IPAM / learned address).
+    pub async fn vm_ipv4(&self, name: &str) -> ApiResult<Option<String>> {
+        let Some(vm) = self.find_vm(name).await? else {
+            return Ok(None);
+        };
+        let json = self
+            .get(&format!("vms/{}?include_vm_nic_config=true", vm.uuid))
+            .await
+            .unwrap_or(Value::Null);
+        Ok(first_nic_ipv4(&json))
+    }
+
     pub async fn restart_vm_by_name(&self, name: &str) -> ApiResult<()> {
         let _ = self.power_off(name).await;
         for _ in 0..60 {
@@ -770,4 +782,107 @@ fn parse_vm(vm: &Value) -> Option<NutanixVm> {
         memory_mb,
         mac,
     })
+}
+
+/// First usable IPv4 on a Prism VM (v2 nic config).
+pub fn first_nic_ipv4(vm: &Value) -> Option<String> {
+    let root = if vm.get("vm_nics").is_some() || vm.get("nic_list").is_some() {
+        vm
+    } else if let Some(inner) = vm.get("vm").or_else(|| vm.get("status")) {
+        inner
+    } else if let Some(arr) = vm.get("entities").and_then(|e| e.as_array()) {
+        arr.first()?
+    } else {
+        vm
+    };
+    let nics = root
+        .get("vm_nics")
+        .or_else(|| root.get("nic_list"))
+        .and_then(|n| n.as_array())?;
+    for nic in nics {
+        for ip in nic_ipv4s(nic) {
+            if usable_guest_ipv4(&ip) {
+                return Some(ip);
+            }
+        }
+    }
+    None
+}
+
+fn nic_ipv4s(nic: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_ip_value(nic.get("ip_addresses"), &mut out);
+    collect_ip_value(nic.get("assigned_ips"), &mut out);
+    collect_ip_value(nic.get("ip_address"), &mut out);
+    collect_ip_value(nic.get("requested_ip_address"), &mut out);
+    collect_ip_value(nic.get("endpoint_address"), &mut out);
+    if let Some(list) = nic.get("ip_endpoint_list").and_then(|v| v.as_array()) {
+        for e in list {
+            collect_ip_value(e.get("ip"), &mut out);
+            collect_ip_value(e.get("ip_address"), &mut out);
+        }
+    }
+    out
+}
+
+fn collect_ip_value(v: Option<&Value>, out: &mut Vec<String>) {
+    let Some(v) = v else {
+        return;
+    };
+    if let Some(s) = v.as_str() {
+        push_ip(s, out);
+        return;
+    }
+    if let Some(arr) = v.as_array() {
+        for item in arr {
+            if let Some(s) = item.as_str() {
+                push_ip(s, out);
+            } else if let Some(s) = item.get("ip").and_then(|x| x.as_str()) {
+                push_ip(s, out);
+            } else if let Some(s) = item.get("ip_address").and_then(|x| x.as_str()) {
+                push_ip(s, out);
+            }
+        }
+    }
+}
+
+fn push_ip(s: &str, out: &mut Vec<String>) {
+    let t = s.trim();
+    if !t.is_empty() {
+        out.push(t.to_string());
+    }
+}
+
+fn usable_guest_ipv4(ip: &str) -> bool {
+    let ip = ip.trim();
+    if ip.contains(':') || !ip.contains('.') {
+        return false;
+    }
+    let Ok(addr) = ip.parse::<std::net::Ipv4Addr>() else {
+        return false;
+    };
+    !(addr.is_loopback()
+        || addr.is_unspecified()
+        || addr.is_broadcast()
+        || addr.is_link_local()
+        || addr.is_multicast())
+        && addr.is_private()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parses_prism_nic_ipv4() {
+        let vm = json!({
+            "vm_nics": [{
+                "mac_address": "52:54:00:00:00:d2",
+                "ip_addresses": ["fe80::1", "10.1.1.40"],
+                "requested_ip_address": "10.1.1.31"
+            }]
+        });
+        assert_eq!(first_nic_ipv4(&vm).as_deref(), Some("10.1.1.40"));
+    }
 }

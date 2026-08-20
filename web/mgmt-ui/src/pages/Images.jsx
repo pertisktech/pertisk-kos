@@ -12,6 +12,13 @@ function formatBytes(n) {
   return `${(v / (1024 * 1024)).toFixed(v < 10 * 1024 * 1024 ? 1 : 0)} MB`
 }
 
+function formatWhen(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString()
+}
+
 export default function Images() {
   const confirm = useConfirm()
   const [catalog, setCatalog] = useState({ dir: '', images: [], ready: { amd64: false, arm64: false } })
@@ -113,6 +120,7 @@ export default function Images() {
               <th>Arch</th>
               <th>Role</th>
               <th>Size</th>
+              <th>Created</th>
               <th />
             </tr>
           </thead>
@@ -134,6 +142,9 @@ export default function Images() {
                 </td>
                 <td className="muted">{img.role || '—'}</td>
                 <td className="muted">{formatBytes(img.size_bytes)}</td>
+                <td className="muted" style={{ whiteSpace: 'nowrap' }}>
+                  {formatWhen(img.created_at)}
+                </td>
                 <td>
                   <div style={{ display: 'flex', gap: '0.35rem', justifyContent: 'flex-end' }}>
                     <button

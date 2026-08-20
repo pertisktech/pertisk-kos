@@ -51,6 +51,7 @@ mod unix_impl {
         info!(status = %services.status_summary(), "supervise loop entered");
 
         let mut dhcp_retry_at = std::time::Instant::now();
+        let mut last_rebase_at = std::time::Instant::now() - std::time::Duration::from_secs(30);
         let mut dhcp_ok = iface_has_address(cfg.as_ref());
 
         while !STOP.load(Ordering::SeqCst) {
@@ -138,6 +139,20 @@ mod unix_impl {
             // Keep trying DHCP if we came up before the NIC/carrier/server was ready.
             // First boot has no machine config yet (apply needs :50000) — still retry
             // default DHCP so AHV IPAM / slow virtio can bind an address.
+            if dhcp_ok && last_rebase_at.elapsed() >= std::time::Duration::from_secs(30) {
+                last_rebase_at = std::time::Instant::now();
+                let state_root = state
+                    .lock()
+                    .map(|s| s.state_root.clone())
+                    .unwrap_or_default();
+                if !state_root.as_os_str().is_empty() {
+                    match pertisk_bootstrap::maybe_rebase_advertise(&state_root) {
+                        Ok(true) => info!("control-plane rebased onto new guest IP"),
+                        Ok(false) => {}
+                        Err(err) => warn!(error = %err, "advertise rebase failed"),
+                    }
+                }
+            }
             if !dhcp_ok && std::time::Instant::now() >= dhcp_retry_at {
                 let mut ok = false;
                 match pertisk_net::apply_provider_netcfg() {
@@ -162,6 +177,8 @@ mod unix_impl {
                     dhcp_ok = iface_has_address(cfg.as_ref());
                     if dhcp_ok {
                         info!("network retry succeeded");
+                        last_rebase_at =
+                            std::time::Instant::now() - std::time::Duration::from_secs(30);
                     } else {
                         warn!("network retry produced no address; will try again");
                     }

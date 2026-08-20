@@ -127,10 +127,41 @@ async fn probe_uncached(state: &AppState, cluster_id: &str) -> String {
 
     let results = futures::future::join_all(futs).await;
     if results.into_iter().any(|ok| ok) {
-        "online".into()
-    } else {
-        "offline".into()
+        return "online".into();
     }
+
+    // Nutanix/vSphere host reboot often hands guests a new DHCP/IPAM address.
+    // Refresh node IPs, then retry /readyz against the new control-plane IPs.
+    let _ = crate::node_sync::rediscover_cluster_ips(state, cluster_id).await;
+    let cps: Vec<(Option<String>,)> = sqlx::query_as(
+        "SELECT ip FROM nodes WHERE cluster_id = ? AND role = 'controlplane' ORDER BY name",
+    )
+    .bind(cluster_id)
+    .fetch_all(state.pool())
+    .await
+    .unwrap_or_default();
+    let mut servers: Vec<Option<String>> = vec![None];
+    for (ip,) in cps {
+        let Some(ip) = ip.filter(|s| !s.trim().is_empty()) else {
+            continue;
+        };
+        servers.push(Some(format!("https://{}:6443", ip.trim())));
+    }
+    let futs: Vec<_> = servers
+        .into_iter()
+        .map(|server| {
+            let kc = kc.clone();
+            async move { probe_readyz(&kc, server.as_deref()).await }
+        })
+        .collect();
+    if futures::future::join_all(futs)
+        .await
+        .into_iter()
+        .any(|ok| ok)
+    {
+        return "online".into();
+    }
+    "offline".into()
 }
 
 pub async fn probe_readyz(kc: &Path, server: Option<&str>) -> bool {

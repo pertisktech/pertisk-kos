@@ -74,6 +74,47 @@ pub fn sanitize_kubeconfig(kc: &str) -> String {
     s
 }
 
+/// Replace the `server:` URL (indent preserved).
+pub fn rewrite_kubeconfig_server(kc: &str, url: &str) -> String {
+    let mut out = String::with_capacity(kc.len() + url.len());
+    for line in kc.lines() {
+        let t = line.trim_start();
+        if t.starts_with("server:") {
+            let pad = line.len() - t.len();
+            out.push_str(&" ".repeat(pad));
+            out.push_str("server: ");
+            out.push_str(url.trim());
+            out.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Host from a kubeconfig `server:` line (`https://10.0.0.1:6443` → `10.0.0.1`).
+pub fn kubeconfig_server_host(kc: &str) -> Option<String> {
+    for line in kc.lines() {
+        let t = line.trim_start();
+        let Some(rest) = t.strip_prefix("server:") else {
+            continue;
+        };
+        let server = rest.trim();
+        let hostport = server
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
+        if let Some(rest) = hostport.strip_prefix('[') {
+            return Some(rest.split(']').next().unwrap_or(rest).to_string());
+        }
+        let host = hostport.split(':').next().unwrap_or(hostport).trim();
+        if !host.is_empty() {
+            return Some(host.to_string());
+        }
+    }
+    None
+}
+
 /// Rewrite kubeconfig cluster/context names to `cluster_name` (for mgmt download).
 pub fn rename_kubeconfig_context(kc: &str, cluster_name: &str) -> String {
     let name = sanitize_context_name(cluster_name);
@@ -193,5 +234,13 @@ current-context: pertisk
         assert!(out.contains("    cluster: ui-cluster\n"));
         assert!(out.contains("current-context: ui-cluster\n"));
         assert!(!out.contains("pertisk"));
+    }
+
+    #[test]
+    fn rewrite_server_and_host() {
+        let src = "clusters:\n- cluster:\n    server: https://10.0.0.1:6443\n  name: lab\n";
+        let out = rewrite_kubeconfig_server(src, "https://10.0.0.9:6443");
+        assert!(out.contains("server: https://10.0.0.9:6443\n"));
+        assert_eq!(kubeconfig_server_host(&out).as_deref(), Some("10.0.0.9"));
     }
 }
