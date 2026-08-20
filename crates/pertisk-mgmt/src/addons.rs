@@ -1,18 +1,21 @@
-//! Optional cluster add-ons installed through the management UI (NFS, cert-manager).
+//! Optional cluster add-ons installed through the management UI (NFS, cert-manager, ingress).
 
 use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
+
 use crate::crypto;
 use crate::db;
 use crate::error::{ApiResult, AppError};
 use crate::k8s::{
-    kubectl_apply_url, kubectl_apply_yaml, kubectl_json, kubectl_json_optional, kubectl_ok,
-    resolve_ready_kubeconfig,
+    helm_output, kubectl_apply_url, kubectl_apply_yaml, kubectl_json, kubectl_json_optional,
+    kubectl_ok, resolve_ready_kubeconfig,
 };
 use crate::state::AppState;
 
@@ -32,6 +35,17 @@ const CERT_MANAGER_ID: &str = "cert-manager";
 const CILIUM_LB_ID: &str = "cilium-lb";
 const CILIUM_LB_POOL: &str = "default-pool";
 const CILIUM_LB_L2: &str = "default-l2-announcement-policy";
+const INGRESS_ID: &str = "ingress";
+const INGRESS_HELM_REPO: &str = "https://chart.tools.pertisk.com";
+const INGRESS_HELM_REPO_NAME: &str = "pertisk";
+const INGRESS_HELM_CHART: &str = "pertisk/pertisk-ingress";
+const INGRESS_RELEASE: &str = "pertisk-ingress";
+const INGRESS_NAMESPACE: &str = "pertisk-proxy";
+const INGRESS_DEPLOY: &str = "pertisk-proxy-ingress";
+const INGRESS_PULL_SECRET: &str = "pertisk-ingress-harbor";
+pub const INGRESS_IMAGE_REGISTRY: &str = "harbor.tools.pertisk.com";
+pub const INGRESS_IMAGE_REPO: &str = "pertisk-proxy/ingress";
+pub const INGRESS_IMAGE_TAG: &str = "v0.1.83";
 
 const ACME_PROD: &str = "https://acme-v02.api.letsencrypt.org/directory";
 const ACME_STAGING: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
@@ -140,6 +154,54 @@ const CILIUM_LB_FIELDS: &[AddonField] = &[
     },
 ];
 
+const INGRESS_FIELDS: &[AddonField] = &[
+    AddonField {
+        name: "image_tag",
+        label: "Image tag",
+        kind: "text",
+        required: true,
+        placeholder: INGRESS_IMAGE_TAG,
+        options: None,
+        help: "Multi-arch Harbor tag (e.g. v0.1.83). Install pins the cluster arch (linux/arm64 or linux/amd64) so ARM nodes do not pull amd64.",
+    },
+    AddonField {
+        name: "admin_host",
+        label: "Admin host",
+        kind: "text",
+        required: false,
+        placeholder: "admin.ingress.example.com",
+        options: None,
+        help: "Optional hostname for the viewer admin Ingress. Leave empty to skip.",
+    },
+    AddonField {
+        name: "admin_password",
+        label: "Admin password",
+        kind: "password",
+        required: false,
+        placeholder: "optional",
+        options: None,
+        help: "Management UI password (stored encrypted). Leave blank to keep the current value or chart default.",
+    },
+    AddonField {
+        name: "registry_user",
+        label: "Harbor user",
+        kind: "text",
+        required: false,
+        placeholder: "optional",
+        options: None,
+        help: "Optional. Leave empty — harbor.tools.pertisk.com/pertisk-proxy is public. Set only if you use a private project.",
+    },
+    AddonField {
+        name: "registry_password",
+        label: "Harbor password",
+        kind: "password",
+        required: false,
+        placeholder: "optional",
+        options: None,
+        help: "Optional registry credential (stored encrypted). Not needed for the public Harbor project.",
+    },
+];
+
 pub fn catalog() -> &'static [AddonCatalogEntry] {
     &[
         AddonCatalogEntry {
@@ -162,6 +224,13 @@ pub fn catalog() -> &'static [AddonCatalogEntry] {
             summary: "ELB IPs via CiliumLoadBalancerIPPool and L2 announcements (shown when CNI is Cilium).",
             fields: CILIUM_LB_FIELDS,
             requires_cni: Some("cilium"),
+        },
+        AddonCatalogEntry {
+            id: INGRESS_ID,
+            name: "Pertisk Ingress",
+            summary: "pertisk-proxy Ingress controller (Helm chart + Harbor image) with a LoadBalancer Service.",
+            fields: INGRESS_FIELDS,
+            requires_cni: None,
         },
     ]
 }
@@ -209,18 +278,40 @@ pub struct CiliumLbConfig {
     pub ipv6: String,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct IngressConfig {
+    #[serde(default)]
+    pub image_tag: String,
+    #[serde(default)]
+    pub admin_host: String,
+    #[serde(default)]
+    pub admin_password: String,
+    #[serde(default)]
+    pub registry_user: String,
+    #[serde(default)]
+    pub registry_password: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct IngressSecrets {
+    admin_password: String,
+    registry_password: String,
+}
+
 pub fn parse_addon_id(raw: &str) -> ApiResult<String> {
     match raw.trim() {
         NFS_ID => Ok(NFS_ID.into()),
         CERT_MANAGER_ID => Ok(CERT_MANAGER_ID.into()),
         CILIUM_LB_ID => Ok(CILIUM_LB_ID.into()),
+        INGRESS_ID => Ok(INGRESS_ID.into()),
         other => Err(AppError::bad(format!("unknown addon {other}"))),
     }
 }
 
-async fn cluster_net(state: &AppState, cluster_id: &str) -> ApiResult<(String, String)> {
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT LOWER(cni), LOWER(COALESCE(network_mode, 'ipv4')) FROM clusters WHERE id = ?",
+async fn cluster_net(state: &AppState, cluster_id: &str) -> ApiResult<(String, String, String)> {
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT LOWER(cni), LOWER(COALESCE(network_mode, 'ipv4')), LOWER(COALESCE(arch, 'amd64')) \
+         FROM clusters WHERE id = ?",
     )
     .bind(cluster_id)
     .fetch_optional(state.pool())
@@ -358,6 +449,385 @@ fn parse_cilium_lb_stored(v: &Value) -> CiliumLbConfig {
             .unwrap_or("")
             .to_string(),
     }
+}
+
+fn parse_ingress_stored(v: &Value) -> IngressConfig {
+    let tag = v
+        .get("image_tag")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim();
+    IngressConfig {
+        image_tag: if tag.is_empty() {
+            INGRESS_IMAGE_TAG.into()
+        } else {
+            tag.to_string()
+        },
+        admin_host: v
+            .get("admin_host")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        admin_password: v
+            .get("admin_password")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        registry_user: v
+            .get("registry_user")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        registry_password: v
+            .get("registry_password")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+    }
+}
+
+fn parse_ingress_secrets(raw: &str) -> IngressSecrets {
+    let t = raw.trim();
+    if t.starts_with('{') {
+        if let Ok(v) = serde_json::from_str::<Value>(t) {
+            return IngressSecrets {
+                admin_password: v
+                    .get("admin_password")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                registry_password: v
+                    .get("registry_password")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            };
+        }
+    }
+    IngressSecrets {
+        admin_password: raw.to_string(),
+        registry_password: String::new(),
+    }
+}
+
+fn encode_ingress_secrets(s: &IngressSecrets) -> String {
+    json!({
+        "admin_password": s.admin_password,
+        "registry_password": s.registry_password,
+    })
+    .to_string()
+}
+
+fn decrypt_ingress_secrets(state: &AppState, enc: Option<&str>) -> IngressSecrets {
+    let Some(enc) = enc.filter(|s| !s.is_empty()) else {
+        return IngressSecrets::default();
+    };
+    match crypto::decrypt(&state.cfg().secret_key, enc) {
+        Ok(raw) => parse_ingress_secrets(&raw),
+        Err(_) => IngressSecrets::default(),
+    }
+}
+
+pub fn public_ingress_config(cfg: &IngressConfig) -> Value {
+    json!({
+        "image_tag": if cfg.image_tag.trim().is_empty() {
+            INGRESS_IMAGE_TAG
+        } else {
+            cfg.image_tag.trim()
+        },
+        "admin_host": cfg.admin_host.trim(),
+        "registry_user": cfg.registry_user.trim(),
+        "image": format!(
+            "{INGRESS_IMAGE_REGISTRY}/{INGRESS_IMAGE_REPO}:{}",
+            if cfg.image_tag.trim().is_empty() {
+                INGRESS_IMAGE_TAG
+            } else {
+                cfg.image_tag.trim()
+            }
+        ),
+    })
+}
+
+fn registry_user_ok(user: &str) -> bool {
+    !user.is_empty()
+        && user.len() <= 253
+        && user
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '$' | '@'))
+}
+
+pub fn validate_ingress(cfg: &IngressConfig, require_registry: bool) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    let tag = cfg.image_tag.trim();
+    if tag.is_empty() {
+        errors.push("image tag is required".into());
+    } else if tag.len() > 128
+        || tag
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+')))
+    {
+        errors.push("image tag must be a Docker tag (letters, digits, . _ - +)".into());
+    }
+    let host = cfg.admin_host.trim();
+    if !host.is_empty() {
+        if host.len() > 253
+            || host.contains([' ', '\n', '\t', '/', '"', '\'', '$', '{', '}', '\\', ':'])
+            || !host
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+        {
+            errors.push("admin host must be a DNS hostname".into());
+        }
+    }
+    let password = cfg.admin_password.trim();
+    if !password.is_empty() {
+        if password.len() < 4 {
+            errors.push("admin password is too short".into());
+        } else if password.contains(['\n', '\r', '\0']) {
+            errors.push("admin password contains invalid characters".into());
+        }
+    }
+    let user = cfg.registry_user.trim();
+    if !user.is_empty() && !registry_user_ok(user) {
+        errors.push("Harbor user contains invalid characters".into());
+    }
+    let token = cfg.registry_password.trim();
+    if !token.is_empty() {
+        if token.len() < 4 {
+            errors.push("Harbor password looks too short".into());
+        } else if token.contains(['\n', '\r', '\0']) {
+            errors.push("Harbor password contains invalid characters".into());
+        }
+    }
+    if require_registry && token.is_empty() {
+        errors.push("Harbor password is required when a Harbor user is set".into());
+    }
+    if user.is_empty() && !token.is_empty() {
+        errors.push("Harbor user is required when a Harbor password is set".into());
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn kube_arch(raw: &str) -> String {
+    crate::os_upgrade::normalize_arch(raw).unwrap_or_else(|_| "amd64".into())
+}
+
+/// Pin a multi-arch tag to `tag@sha256:…` for `linux/{arch}`, or `tag-{arch}` when already suffixed.
+pub fn ingress_pin_tag(raw: &str, arch: &str) -> String {
+    let tag = if raw.trim().is_empty() {
+        INGRESS_IMAGE_TAG
+    } else {
+        raw.trim()
+    };
+    let arch = kube_arch(arch);
+    if tag.ends_with("-amd64") || tag.ends_with("-arm64") {
+        tag.to_string()
+    } else if tag.contains('@') {
+        tag.to_string()
+    } else {
+        format!("{tag}-{arch}")
+    }
+}
+
+fn pick_platform_digest(index: &Value, arch: &str) -> Option<String> {
+    let manifests = index.get("manifests")?.as_array()?;
+    for m in manifests {
+        let media = m.get("mediaType").and_then(|v| v.as_str()).unwrap_or("");
+        if media.contains("attestation") {
+            continue;
+        }
+        let Some(p) = m.get("platform") else {
+            continue;
+        };
+        let a = p.get("architecture").and_then(|v| v.as_str()).unwrap_or("");
+        if a.is_empty() || a == "unknown" {
+            continue;
+        }
+        let os = p.get("os").and_then(|v| v.as_str()).unwrap_or("linux");
+        if os != "linux" {
+            continue;
+        }
+        if a == arch || (arch == "arm64" && a.starts_with("arm64")) {
+            if let Some(d) = m.get("digest").and_then(|v| v.as_str()) {
+                if d.starts_with("sha256:") {
+                    return Some(d.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn index_platforms(index: &Value) -> Vec<String> {
+    index
+        .get("manifests")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    let a = m.pointer("/platform/architecture")?.as_str()?;
+                    if a == "unknown" {
+                        None
+                    } else {
+                        Some(a.to_string())
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+async fn resolve_ingress_image_tag(
+    tag: &str,
+    arch: &str,
+    user: &str,
+    password: &str,
+) -> anyhow::Result<String> {
+    let arch = kube_arch(arch);
+    let tag = if tag.trim().is_empty() {
+        INGRESS_IMAGE_TAG.to_string()
+    } else {
+        tag.trim().to_string()
+    };
+    if tag.ends_with("-amd64") || tag.ends_with("-arm64") || tag.contains('@') {
+        return Ok(tag);
+    }
+
+    let url = format!("https://{INGRESS_IMAGE_REGISTRY}/v2/{INGRESS_IMAGE_REPO}/manifests/{tag}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let mut req = client.get(&url).header(
+        "Accept",
+        "application/vnd.oci.image.index.v1+json, \
+         application/vnd.docker.distribution.manifest.list.v2+json, \
+         application/vnd.oci.image.manifest.v1+json, \
+         application/vnd.docker.distribution.manifest.v2+json",
+    );
+    if !user.trim().is_empty() && !password.is_empty() {
+        req = req.basic_auth(user.trim(), Some(password));
+    }
+    let res = req.send().await;
+
+    let Ok(res) = res else {
+        return Ok(ingress_pin_tag(&tag, &arch));
+    };
+    if !res.status().is_success() {
+        return Ok(ingress_pin_tag(&tag, &arch));
+    }
+    let body: Value = match res.json().await {
+        Ok(v) => v,
+        Err(_) => return Ok(ingress_pin_tag(&tag, &arch)),
+    };
+    if body.get("manifests").and_then(|v| v.as_array()).is_some() {
+        if let Some(digest) = pick_platform_digest(&body, &arch) {
+            return Ok(format!("{tag}@{digest}"));
+        }
+        let platforms = index_platforms(&body);
+        anyhow::bail!(
+            "image {INGRESS_IMAGE_REGISTRY}/{INGRESS_IMAGE_REPO}:{tag} has no linux/{arch} \
+             (platforms: {}). Rebuild with docker buildx --platform linux/amd64,linux/arm64",
+            if platforms.is_empty() {
+                "none".into()
+            } else {
+                platforms.join(", ")
+            }
+        );
+    }
+    Ok(ingress_pin_tag(&tag, &arch))
+}
+
+fn ingress_service_ip_policy(network_mode: &str) -> (&'static str, Vec<&'static str>) {
+    match network_mode.trim().to_ascii_lowercase().as_str() {
+        "ipv6" => ("SingleStack", vec!["IPv6"]),
+        "dual-stack" | "dualstack" => ("PreferDualStack", vec!["IPv4", "IPv6"]),
+        _ => ("SingleStack", vec!["IPv4"]),
+    }
+}
+
+pub fn ingress_helm_values(
+    cfg: &IngressConfig,
+    network_mode: &str,
+    gateway_api: bool,
+    password: Option<&str>,
+    pull_secret: bool,
+    resolved_tag: &str,
+    cluster_arch: &str,
+) -> Value {
+    let (policy, families) = ingress_service_ip_policy(network_mode);
+    let host = cfg.admin_host.trim();
+    let tag = if resolved_tag.trim().is_empty() {
+        if cfg.image_tag.trim().is_empty() {
+            INGRESS_IMAGE_TAG
+        } else {
+            cfg.image_tag.trim()
+        }
+    } else {
+        resolved_tag.trim()
+    };
+    let arch = kube_arch(cluster_arch);
+    let mut values = json!({
+        "image": {
+            "registry": INGRESS_IMAGE_REGISTRY,
+            "repository": INGRESS_IMAGE_REPO,
+            "tag": tag,
+            "pullPolicy": "Always",
+        },
+        "nodeSelector": {
+            "kubernetes.io/arch": arch,
+        },
+        "service": {
+            "type": "LoadBalancer",
+            "ipFamilyPolicy": policy,
+            "ipFamilies": families,
+        },
+        "gatewayApi": { "enabled": gateway_api },
+        "gatewayClassResource": { "enabled": gateway_api },
+        "adminIngress": {
+            "enabled": !host.is_empty(),
+            "host": host,
+            "tlsSecretName": "",
+        },
+    });
+    if pull_secret {
+        values["imagePullSecrets"] = json!([{ "name": INGRESS_PULL_SECRET }]);
+    }
+    if let Some(pw) = password.filter(|p| !p.trim().is_empty()) {
+        values["auth"] = json!({
+            "createSecret": true,
+            "password": pw.trim(),
+        });
+    }
+    values
+}
+
+pub fn harbor_pull_secret_doc(user: &str, password: &str) -> Value {
+    let auth = B64.encode(format!("{}:{password}", user.trim()));
+    let dockerconfig = json!({
+        "auths": {
+            INGRESS_IMAGE_REGISTRY: {
+                "username": user.trim(),
+                "password": password,
+                "auth": auth,
+            }
+        }
+    });
+    json!({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": INGRESS_PULL_SECRET,
+            "namespace": INGRESS_NAMESPACE,
+        },
+        "type": "kubernetes.io/dockerconfigjson",
+        "stringData": {
+            ".dockerconfigjson": dockerconfig.to_string(),
+        }
+    })
 }
 
 pub fn render_cilium_lb_pool_yaml(cfg: &CiliumLbConfig, api_version: &str) -> String {
@@ -899,6 +1369,164 @@ async fn live_cilium_lb(kc: &Path) -> Value {
     })
 }
 
+fn container_image(obj: &Value) -> Option<String> {
+    obj.pointer("/spec/template/spec/containers/0/image")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn svc_lb_addrs(obj: &Value) -> (Vec<String>, Vec<String>) {
+    let mut v4 = Vec::new();
+    let mut v6 = Vec::new();
+    let Some(arr) = obj
+        .pointer("/status/loadBalancer/ingress")
+        .and_then(|v| v.as_array())
+    else {
+        return (v4, v6);
+    };
+    for e in arr {
+        if let Some(ip) = e.get("ip").and_then(|v| v.as_str()) {
+            if ip.contains(':') {
+                v6.push(ip.to_string());
+            } else {
+                v4.push(ip.to_string());
+            }
+        }
+        if let Some(host) = e.get("hostname").and_then(|v| v.as_str()) {
+            v4.push(host.to_string());
+        }
+    }
+    (v4, v6)
+}
+
+async fn gateway_api_available(kc: &Path) -> bool {
+    kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "crd",
+            "gatewayclasses.gateway.networking.k8s.io",
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+async fn live_ingress(kc: &Path) -> Value {
+    let deploy = kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "deploy",
+            INGRESS_DEPLOY,
+            "-n",
+            INGRESS_NAMESPACE,
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten();
+    let svc = kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "svc",
+            INGRESS_DEPLOY,
+            "-n",
+            INGRESS_NAMESPACE,
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten();
+    let class = kubectl_json_optional(kc, &["get", "ingressclass", "pertisk-proxy", "-o", "json"])
+        .await
+        .ok()
+        .flatten();
+    let (lb_ipv4, lb_ipv6) = svc.as_ref().map(svc_lb_addrs).unwrap_or_default();
+    let secret = kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "secret",
+            INGRESS_PULL_SECRET,
+            "-n",
+            INGRESS_NAMESPACE,
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten();
+    let pods = kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "pods",
+            "-n",
+            INGRESS_NAMESPACE,
+            "-l",
+            "app.kubernetes.io/instance=pertisk-ingress",
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten();
+    let pull_error = pods.as_ref().and_then(first_image_pull_error);
+    json!({
+        "installed": deploy.is_some() && svc.is_some(),
+        "partial": deploy.is_some() || svc.is_some() || class.is_some(),
+        "controller_ready": deploy.as_ref().map(deploy_ready).unwrap_or(false),
+        "ingress_class": class.is_some(),
+        "image": deploy.as_ref().and_then(|d| container_image(d)),
+        "lb_ipv4": lb_ipv4.join(", "),
+        "lb_ipv6": lb_ipv6.join(", "),
+        "gateway_api": gateway_api_available(kc).await,
+        "pull_secret": secret.is_some(),
+        "pull_error": pull_error,
+    })
+}
+
+fn first_image_pull_error(list: &Value) -> Option<String> {
+    let items = list.get("items").and_then(|v| v.as_array())?;
+    for pod in items {
+        for key in ["containerStatuses", "initContainerStatuses"] {
+            let Some(arr) = pod
+                .pointer(&format!("/status/{key}"))
+                .and_then(|v| v.as_array())
+            else {
+                continue;
+            };
+            for cs in arr {
+                let waiting = cs.pointer("/state/waiting");
+                let reason = waiting
+                    .and_then(|w| w.get("reason"))
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("");
+                if reason == "ErrImagePull" || reason == "ImagePullBackOff" {
+                    let msg = waiting
+                        .and_then(|w| w.get("message"))
+                        .and_then(|m| m.as_str())
+                        .unwrap_or(reason);
+                    return Some(msg.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 async fn cilium_crd_api_version(kc: &Path, crd: &str, fallback: &str) -> String {
     let doc = kubectl_json_optional(kc, &["get", "crd", crd, "-o", "json"])
         .await
@@ -1056,7 +1684,7 @@ pub async fn summarize_one(
     probe_live: bool,
 ) -> ApiResult<Value> {
     let entry = catalog_entry(addon)?;
-    let (cluster_cni, network_mode) = cluster_net(state, cluster_id).await?;
+    let (cluster_cni, network_mode, cluster_arch) = cluster_net(state, cluster_id).await?;
     let row = load_row(state, cluster_id, addon).await?;
     let stored: Value = row
         .as_ref()
@@ -1066,6 +1694,13 @@ pub async fn summarize_one(
         .as_ref()
         .map(|r| r.secrets_enc.as_ref().is_some_and(|s| !s.is_empty()))
         .unwrap_or(false);
+    let ingress_secrets = if addon == INGRESS_ID {
+        decrypt_ingress_secrets(state, row.as_ref().and_then(|r| r.secrets_enc.as_deref()))
+    } else {
+        IngressSecrets::default()
+    };
+    let registry_set = !ingress_secrets.registry_password.trim().is_empty();
+    let admin_secret_set = !ingress_secrets.admin_password.trim().is_empty();
 
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
@@ -1122,6 +1757,30 @@ pub async fn summarize_one(
                 }
                 public_config = public_cilium_lb_config(&cfg);
             }
+            INGRESS_ID => {
+                let mut cfg = parse_ingress_stored(&body);
+                cfg.admin_password = body
+                    .get("admin_password")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                cfg.registry_password = body
+                    .get("registry_password")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let stored_secrets = decrypt_ingress_secrets(
+                    state,
+                    row.as_ref().and_then(|r| r.secrets_enc.as_deref()),
+                );
+                let need_pw = !cfg.registry_user.trim().is_empty()
+                    && cfg.registry_password.trim().is_empty()
+                    && stored_secrets.registry_password.trim().is_empty();
+                if let Err(e) = validate_ingress(&cfg, need_pw) {
+                    errors.extend(e);
+                }
+                public_config = public_ingress_config(&cfg);
+            }
             _ => {}
         }
     } else if addon == NFS_ID
@@ -1134,6 +1793,17 @@ pub async fn summarize_one(
         if let Err(e) = validate_nfs(&cfg) {
             errors.extend(e);
         }
+    }
+
+    if addon == INGRESS_ID
+        && public_config
+            .get("image_tag")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+    {
+        public_config = public_ingress_config(&parse_ingress_stored(&public_config));
     }
 
     let mut live = json!({ "available": false });
@@ -1150,6 +1820,7 @@ pub async fn summarize_one(
                         live_cert_manager(&kc, issuer).await
                     }
                     CILIUM_LB_ID => live_cilium_lb(&kc).await,
+                    INGRESS_ID => live_ingress(&kc).await,
                     _ => json!({}),
                 };
                 live["available"] = json!(true);
@@ -1260,6 +1931,44 @@ pub async fn summarize_one(
             }
         }
     }
+    if addon == INGRESS_ID && live.get("available") == Some(&json!(true)) {
+        if live_installed
+            && !live
+                .get("controller_ready")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        {
+            warnings.push("Pertisk Ingress controller is installed but not ready".into());
+        }
+        if live_installed
+            && live
+                .get("lb_ipv4")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .is_empty()
+            && live
+                .get("lb_ipv6")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .is_empty()
+        {
+            warnings.push(
+                "LoadBalancer has no address yet (install Cilium LoadBalancer or wait for an IP)"
+                    .into(),
+            );
+        }
+        if let Some(err) = live.get("pull_error").and_then(|v| v.as_str()) {
+            if !err.is_empty() {
+                warnings.push(format!("image pull failed ({err})"));
+            }
+        }
+        if live.get("gateway_api").and_then(|v| v.as_bool()) != Some(true) && !live_installed {
+            warnings.push(
+                "Gateway API CRDs are not present; install will disable Gateway API reconciliation"
+                    .into(),
+            );
+        }
+    }
 
     Ok(json!({
         "id": entry.id,
@@ -1271,7 +1980,8 @@ pub async fn summarize_one(
         "errors": errors,
         "warnings": warnings,
         "config": public_config,
-        "token_set": token_set,
+        "token_set": if addon == INGRESS_ID { admin_secret_set } else { token_set },
+        "registry_set": registry_set,
         "job_id": installing,
         "error": row.as_ref().and_then(|r| r.error.clone()),
         "installed_at": row.as_ref().and_then(|r| r.installed_at.clone()),
@@ -1279,12 +1989,26 @@ pub async fn summarize_one(
         "live": live,
         "cluster_cni": cluster_cni,
         "network_mode": network_mode,
+        "cluster_arch": cluster_arch,
         "cert_manager_version": if addon == CERT_MANAGER_ID { Some(CERT_MANAGER_VERSION) } else { None },
+        "ingress_image": if addon == INGRESS_ID {
+            public_config
+                .get("image")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    Some(format!(
+                        "{INGRESS_IMAGE_REGISTRY}/{INGRESS_IMAGE_REPO}:{INGRESS_IMAGE_TAG}"
+                    ))
+                })
+        } else {
+            None
+        },
     }))
 }
 
 pub async fn list_addons(state: &AppState, cluster_id: &str) -> ApiResult<Vec<Value>> {
-    let (cni, _) = cluster_net(state, cluster_id).await?;
+    let (cni, _, _) = cluster_net(state, cluster_id).await?;
     let mut out = Vec::new();
     for entry in catalog() {
         if let Some(need) = entry.requires_cni {
@@ -1391,7 +2115,7 @@ pub async fn upsert_install(
             Ok((NfsConfig::default(), cfg, public))
         }
         CILIUM_LB_ID => {
-            let (cni, mode) = cluster_net(state, cluster_id).await?;
+            let (cni, mode, _) = cluster_net(state, cluster_id).await?;
             require_cilium_cni(&cni)?;
             let cfg = parse_cilium_lb_stored(&body);
             if let Err(e) = validate_cilium_lb(&cfg, &mode) {
@@ -1411,6 +2135,64 @@ pub async fn upsert_install(
             .bind(cluster_id)
             .bind(addon)
             .bind(public.to_string())
+            .bind(&now)
+            .execute(state.pool())
+            .await?;
+            Ok((NfsConfig::default(), CertManagerConfig::default(), public))
+        }
+        INGRESS_ID => {
+            let row = load_row(state, cluster_id, addon).await?;
+            let mut cfg = parse_ingress_stored(&body);
+            cfg.admin_password = body
+                .get("admin_password")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            cfg.registry_password = body
+                .get("registry_password")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let mut secrets =
+                decrypt_ingress_secrets(state, row.as_ref().and_then(|r| r.secrets_enc.as_deref()));
+            let need_pw = !cfg.registry_user.trim().is_empty()
+                && cfg.registry_password.trim().is_empty()
+                && secrets.registry_password.trim().is_empty();
+            if let Err(e) = validate_ingress(&cfg, need_pw) {
+                return Err(AppError::bad(e.join("; ")));
+            }
+            if !cfg.admin_password.trim().is_empty() {
+                secrets.admin_password = cfg.admin_password.trim().to_string();
+            }
+            if !cfg.registry_password.trim().is_empty() {
+                secrets.registry_password = cfg.registry_password.trim().to_string();
+            }
+            let public = public_ingress_config(&cfg);
+            let enc = if secrets.admin_password.trim().is_empty()
+                && secrets.registry_password.trim().is_empty()
+            {
+                None
+            } else {
+                Some(
+                    crypto::encrypt(&state.cfg().secret_key, &encode_ingress_secrets(&secrets))
+                        .map_err(AppError::Anyhow)?,
+                )
+            };
+            sqlx::query(
+                r#"INSERT INTO cluster_addons
+                     (cluster_id, addon, status, config_json, secrets_enc, error, installed_at, updated_at)
+                   VALUES (?, ?, 'installing', ?, ?, NULL, NULL, ?)
+                   ON CONFLICT(cluster_id, addon) DO UPDATE SET
+                     status = 'installing',
+                     config_json = excluded.config_json,
+                     secrets_enc = excluded.secrets_enc,
+                     error = NULL,
+                     updated_at = excluded.updated_at"#,
+            )
+            .bind(cluster_id)
+            .bind(addon)
+            .bind(public.to_string())
+            .bind(enc.as_deref())
             .bind(&now)
             .execute(state.pool())
             .await?;
@@ -1498,6 +2280,15 @@ pub async fn run_install_job(
             install_cert_manager(&kc, log_path, &stored, &token).await
         }
         CILIUM_LB_ID => install_cilium_lb(state, cid, &kc, log_path, &stored).await,
+        INGRESS_ID => {
+            let secrets = match row.secrets_enc.as_deref() {
+                Some(enc) if !enc.is_empty() => {
+                    parse_ingress_secrets(&crypto::decrypt(&state.cfg().secret_key, enc)?)
+                }
+                _ => IngressSecrets::default(),
+            };
+            install_ingress(state, cid, &kc, log_path, &stored, secrets).await
+        }
         other => anyhow::bail!("unknown addon {other}"),
     };
 
@@ -1522,7 +2313,7 @@ async fn install_cilium_lb(
     log_path: &str,
     stored: &Value,
 ) -> anyhow::Result<()> {
-    let (cni, mode) = cluster_net(state, cluster_id)
+    let (cni, mode, _) = cluster_net(state, cluster_id)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     require_cilium_cni(&cni).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -1562,6 +2353,191 @@ async fn install_cilium_lb(
         .await
         .map_err(anyhow_api)?;
     crate::jobs::append_log(log_path, &out)?;
+    Ok(())
+}
+
+struct UnlinkOnDrop(PathBuf);
+
+impl Drop for UnlinkOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn write_restricted_file(path: &Path, contents: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
+async fn install_ingress(
+    state: &AppState,
+    cluster_id: &str,
+    kc: &Path,
+    log_path: &str,
+    stored: &Value,
+    secrets: IngressSecrets,
+) -> anyhow::Result<()> {
+    let (_, mode, arch) = cluster_net(state, cluster_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let cfg = parse_ingress_stored(stored);
+    validate_ingress(&cfg, false).map_err(|e| anyhow::anyhow!("{}", e.join("; ")))?;
+    let gateway_api = gateway_api_available(kc).await;
+    let use_pull_secret =
+        !cfg.registry_user.trim().is_empty() && !secrets.registry_password.trim().is_empty();
+    let resolved_tag = resolve_ingress_image_tag(
+        &cfg.image_tag,
+        &arch,
+        &cfg.registry_user,
+        secrets.registry_password.trim(),
+    )
+    .await?;
+    let admin_pw = secrets.admin_password.trim();
+    let values = ingress_helm_values(
+        &cfg,
+        &mode,
+        gateway_api,
+        if admin_pw.is_empty() {
+            None
+        } else {
+            Some(admin_pw)
+        },
+        use_pull_secret,
+        &resolved_tag,
+        &arch,
+    );
+    let mut logged = values.clone();
+    if logged.get("auth").and_then(|a| a.get("password")).is_some() {
+        logged["auth"]["password"] = json!("***");
+    }
+
+    crate::jobs::append_log(
+        log_path,
+        &format!(
+            "pertisk-ingress {INGRESS_IMAGE_REGISTRY}/{INGRESS_IMAGE_REPO}:{} (pinned {resolved_tag}) arch={arch} network_mode={mode} gateway_api={gateway_api} pull_secret={} registry_user={}\n",
+            cfg.image_tag.trim(),
+            if use_pull_secret { INGRESS_PULL_SECRET } else { "none (public Harbor)" },
+            if cfg.registry_user.trim().is_empty() { "anonymous" } else { cfg.registry_user.trim() }
+        ),
+    )?;
+
+    crate::jobs::append_log(log_path, "apply namespace pertisk-proxy\n")?;
+    let ns = json!({
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": { "name": INGRESS_NAMESPACE },
+    });
+    let out = kubectl_apply_yaml(kc, &ns.to_string())
+        .await
+        .map_err(anyhow_api)?;
+    crate::jobs::append_log(log_path, &out)?;
+
+    if use_pull_secret {
+        crate::jobs::append_log(
+            log_path,
+            &format!("apply imagePullSecret {INGRESS_PULL_SECRET}\n"),
+        )?;
+        let secret = harbor_pull_secret_doc(&cfg.registry_user, secrets.registry_password.trim());
+        let out = kubectl_apply_yaml(kc, &secret.to_string())
+            .await
+            .map_err(anyhow_api)?;
+        crate::jobs::append_log(log_path, &out)?;
+    } else {
+        crate::jobs::append_log(
+            log_path,
+            "Harbor project is public; skipping imagePullSecret\n",
+        )?;
+    }
+    crate::jobs::append_log(
+        log_path,
+        &format!("helm repo add {INGRESS_HELM_REPO_NAME} {INGRESS_HELM_REPO}\n"),
+    )?;
+    let out = helm_output(
+        None,
+        &[
+            "repo",
+            "add",
+            INGRESS_HELM_REPO_NAME,
+            INGRESS_HELM_REPO,
+            "--force-update",
+        ],
+    )
+    .await
+    .map_err(anyhow_api)?;
+    crate::jobs::append_log(log_path, &out)?;
+    crate::jobs::append_log(log_path, "helm repo update\n")?;
+    let out = helm_output(None, &["repo", "update"])
+        .await
+        .map_err(anyhow_api)?;
+    crate::jobs::append_log(log_path, &out)?;
+
+    let values_path = state
+        .cfg()
+        .jobs_dir()
+        .join(format!("{cluster_id}-ingress-values.yaml"));
+    write_restricted_file(&values_path, &serde_json::to_string_pretty(&values)?)?;
+    let _cleanup = UnlinkOnDrop(values_path.clone());
+    crate::jobs::append_log(
+        log_path,
+        &format!(
+            "helm values:\n{}\n",
+            serde_json::to_string_pretty(&logged).unwrap_or_default()
+        ),
+    )?;
+
+    let values_s = values_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("ingress values path is not utf-8"))?;
+    crate::jobs::append_log(
+        log_path,
+        &format!(
+            "helm upgrade --install {INGRESS_RELEASE} {INGRESS_HELM_CHART} -n {INGRESS_NAMESPACE}\n"
+        ),
+    )?;
+    let out = helm_output(
+        Some(kc),
+        &[
+            "upgrade",
+            "--install",
+            INGRESS_RELEASE,
+            INGRESS_HELM_CHART,
+            "--namespace",
+            INGRESS_NAMESPACE,
+            "--create-namespace",
+            "--timeout",
+            "5m",
+            "-f",
+            values_s,
+        ],
+    )
+    .await
+    .map_err(anyhow_api)?;
+    crate::jobs::append_log(log_path, &out)?;
+
+    crate::jobs::append_log(log_path, "wait for pertisk-proxy-ingress deployment\n")?;
+    kubectl_ok(
+        kc,
+        &[
+            "wait",
+            "--for=condition=Available",
+            "deploy/pertisk-proxy-ingress",
+            "-n",
+            INGRESS_NAMESPACE,
+            "--timeout=180s",
+        ],
+    )
+    .await
+    .map_err(anyhow_api)?;
     Ok(())
 }
 
@@ -1882,8 +2858,9 @@ mod tests {
     #[test]
     fn catalog_has_nfs_and_cert_manager() {
         let ids: Vec<_> = catalog().iter().map(|e| e.id).collect();
-        assert_eq!(ids, ["nfs", "cert-manager", "cilium-lb"]);
+        assert_eq!(ids, ["nfs", "cert-manager", "cilium-lb", "ingress"]);
         assert_eq!(catalog()[2].requires_cni, Some("cilium"));
+        assert_eq!(catalog()[3].id, "ingress");
     }
 
     #[test]
@@ -2024,5 +3001,181 @@ mod tests {
             r#"failed calling webhook "webhook.cert-manager.io": dial tcp 10.111.71.127:443: connect: no route to host"#
         ));
         assert!(!webhook_dial_error("ClusterIssuer.cert-manager.io created"));
+    }
+
+    #[test]
+    fn public_ingress_redacts_password_and_defaults_tag() {
+        let v = public_ingress_config(&IngressConfig {
+            image_tag: String::new(),
+            admin_host: "admin.example.com".into(),
+            admin_password: "super-secret".into(),
+            registry_user: String::new(),
+            registry_password: "harbor-secret".into(),
+        });
+        assert!(v.get("admin_password").is_none());
+        assert_eq!(v["image_tag"], INGRESS_IMAGE_TAG);
+        assert_eq!(
+            v["image"],
+            format!("{INGRESS_IMAGE_REGISTRY}/{INGRESS_IMAGE_REPO}:{INGRESS_IMAGE_TAG}")
+        );
+        assert_eq!(v["admin_host"], "admin.example.com");
+        assert_eq!(v["registry_user"], "");
+    }
+
+    #[test]
+    fn ingress_values_follow_network_mode() {
+        let cfg = IngressConfig {
+            image_tag: "v0.1.83".into(),
+            admin_host: String::new(),
+            admin_password: String::new(),
+            registry_user: "robot$pertisk-proxy+pull".into(),
+            registry_password: String::new(),
+        };
+        let v4 = ingress_helm_values(&cfg, "ipv4", false, None, true, "v0.1.83-amd64", "amd64");
+        assert_eq!(v4["image"]["registry"], INGRESS_IMAGE_REGISTRY);
+        assert_eq!(v4["image"]["repository"], INGRESS_IMAGE_REPO);
+        assert_eq!(v4["image"]["tag"], "v0.1.83-amd64");
+        assert_eq!(v4["nodeSelector"]["kubernetes.io/arch"], "amd64");
+        assert_eq!(v4["service"]["ipFamilyPolicy"], "SingleStack");
+        assert_eq!(v4["service"]["ipFamilies"][0], "IPv4");
+        assert_eq!(v4["gatewayApi"]["enabled"], false);
+        assert_eq!(v4["adminIngress"]["enabled"], false);
+        assert_eq!(v4["imagePullSecrets"][0]["name"], "pertisk-ingress-harbor");
+        assert!(v4.get("auth").is_none());
+
+        let dual = ingress_helm_values(
+            &IngressConfig {
+                image_tag: "v0.1.83".into(),
+                admin_host: "admin.example.com".into(),
+                admin_password: String::new(),
+                registry_user: "robot$pertisk-proxy+pull".into(),
+                registry_password: String::new(),
+            },
+            "dual-stack",
+            true,
+            Some("s3cret"),
+            true,
+            "v0.1.83@sha256:abc",
+            "arm64",
+        );
+        assert_eq!(dual["service"]["ipFamilyPolicy"], "PreferDualStack");
+        assert_eq!(dual["service"]["ipFamilies"][1], "IPv6");
+        assert_eq!(dual["gatewayApi"]["enabled"], true);
+        assert_eq!(dual["adminIngress"]["host"], "admin.example.com");
+        assert_eq!(dual["auth"]["password"], "s3cret");
+        assert_eq!(dual["image"]["tag"], "v0.1.83@sha256:abc");
+        assert_eq!(dual["nodeSelector"]["kubernetes.io/arch"], "arm64");
+    }
+
+    #[test]
+    fn validate_ingress_rejects_bad_tag() {
+        let ok = IngressConfig {
+            image_tag: "v0.1.83".into(),
+            registry_user: "robot$pertisk-proxy+pull".into(),
+            registry_password: "s3cret".into(),
+            ..Default::default()
+        };
+        assert!(validate_ingress(&ok, true).is_ok());
+        assert!(validate_ingress(
+            &IngressConfig {
+                image_tag: "v0.1.83;rm -rf /".into(),
+                registry_user: "robot$pertisk-proxy+pull".into(),
+                registry_password: "s3cret".into(),
+                ..Default::default()
+            },
+            true
+        )
+        .is_err());
+        assert!(validate_ingress(
+            &IngressConfig {
+                image_tag: "v0.1.83".into(),
+                ..Default::default()
+            },
+            false
+        )
+        .is_ok());
+        assert!(validate_ingress(
+            &IngressConfig {
+                image_tag: "v0.1.83".into(),
+                registry_user: "robot$pertisk-proxy+pull".into(),
+                ..Default::default()
+            },
+            true
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn harbor_pull_secret_is_dockerconfigjson() {
+        let doc = harbor_pull_secret_doc("robot$pertisk-proxy+pull", "s3cret");
+        assert_eq!(doc["kind"], "Secret");
+        assert_eq!(doc["type"], "kubernetes.io/dockerconfigjson");
+        let raw = doc["stringData"][".dockerconfigjson"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            parsed["auths"][INGRESS_IMAGE_REGISTRY]["username"],
+            "robot$pertisk-proxy+pull"
+        );
+        assert!(
+            parsed["auths"][INGRESS_IMAGE_REGISTRY]["auth"]
+                .as_str()
+                .unwrap()
+                .len()
+                > 8
+        );
+    }
+
+    #[test]
+    fn parse_ingress_secrets_accepts_legacy_plaintext() {
+        let s = parse_ingress_secrets("old-admin-password");
+        assert_eq!(s.admin_password, "old-admin-password");
+        assert!(s.registry_password.is_empty());
+        let s = parse_ingress_secrets(r#"{"admin_password":"a","registry_password":"b"}"#);
+        assert_eq!(s.admin_password, "a");
+        assert_eq!(s.registry_password, "b");
+    }
+
+    #[test]
+    fn ingress_pin_tag_appends_cluster_arch() {
+        assert_eq!(ingress_pin_tag("v0.1.83", "arm64"), "v0.1.83-arm64");
+        assert_eq!(ingress_pin_tag("v0.1.83", "aarch64"), "v0.1.83-arm64");
+        assert_eq!(ingress_pin_tag("v0.1.83", "amd64"), "v0.1.83-amd64");
+        assert_eq!(ingress_pin_tag("v0.1.83-arm64", "amd64"), "v0.1.83-arm64");
+        assert_eq!(
+            ingress_pin_tag("v0.1.83@sha256:abc", "arm64"),
+            "v0.1.83@sha256:abc"
+        );
+    }
+
+    #[test]
+    fn pick_platform_digest_skips_attestations() {
+        let index = json!({
+            "manifests": [
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": "sha256:amd",
+                    "platform": { "architecture": "amd64", "os": "linux" }
+                },
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": "sha256:arm",
+                    "platform": { "architecture": "arm64", "os": "linux" }
+                },
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": "sha256:att",
+                    "platform": { "architecture": "unknown", "os": "unknown" }
+                }
+            ]
+        });
+        assert_eq!(
+            pick_platform_digest(&index, "arm64").as_deref(),
+            Some("sha256:arm")
+        );
+        assert_eq!(
+            pick_platform_digest(&index, "amd64").as_deref(),
+            Some("sha256:amd")
+        );
+        assert!(pick_platform_digest(&index, "s390x").is_none());
     }
 }

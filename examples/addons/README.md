@@ -55,6 +55,14 @@ When cluster CNI is **cilium**, allocate L2 LoadBalancer IPs (`CiliumLoadBalance
 
 From the management UI: cluster → **Add-ons** → Cilium LoadBalancer (ELB IPv4; IPv6 when dual-stack).
 
+## Pertisk Ingress
+
+pertisk-proxy Ingress controller from Helm chart `pertisk/pertisk-ingress` (image `harbor.tools.pertisk.com/pertisk-proxy/ingress:v0.1.83`):
+
+→ [ingress/README.md](./ingress/README.md)
+
+From the management UI: cluster → **Add-ons** → Pertisk Ingress. Requires `helm` on the management host.
+
 ## Observability (host metrics)
 
 Node OS metrics (CPU, RAM, network, disk I/O) are on `pertiskd` `:50001/metrics` — not this addon. See [../observability/README.md](../observability/README.md). metrics-server stays for `kubectl top` / HPA.

@@ -141,7 +141,9 @@ function AddonCard({ clusterId, addon, onInstalled }) {
                 type={f.kind === 'password' ? 'password' : 'text'}
                 value={form[f.name] || ''}
                 placeholder={
-                  f.kind === 'password' && addon.token_set
+                  f.kind === 'password' && (
+                    f.name === 'registry_password' ? addon.registry_set : addon.token_set
+                  )
                     ? 'unchanged'
                     : f.placeholder
                 }
@@ -212,6 +214,16 @@ function AddonCard({ clusterId, addon, onInstalled }) {
               <div><dt>Live IPv6</dt><dd className="mono-inline">{live.ipv6 || '—'}</dd></div>
             </dl>
           )}
+          {addon.id === 'ingress' && live.available && (
+            <dl className="kv addon-live">
+              <div><dt>Controller</dt><dd>{live.controller_ready ? 'ready' : live.installed ? 'not ready' : 'absent'}</dd></div>
+              <div><dt>IngressClass</dt><dd>{live.ingress_class ? 'pertisk-proxy' : '—'}</dd></div>
+              <div><dt>Image</dt><dd className="mono-inline">{live.image || addon.ingress_image || '—'}</dd></div>
+              <div><dt>Pull secret</dt><dd>{live.pull_secret ? 'present' : 'absent'}</dd></div>
+              <div><dt>LB IPv4</dt><dd className="mono-inline">{live.lb_ipv4 || '—'}</dd></div>
+              <div><dt>LB IPv6</dt><dd className="mono-inline">{live.lb_ipv6 || '—'}</dd></div>
+            </dl>
+          )}
         </div>
       )}
     </article>
@@ -265,7 +277,7 @@ export default function AddonsTab({ clusterId, ready, onInstalled }) {
         <div>
           <h3 className="section-label">Add-ons</h3>
           <p className="muted">
-            Check config, then install into this cluster via kubectl on the management host.
+            Check config, then install into this cluster via kubectl or Helm on the management host.
           </p>
         </div>
         <button type="button" className="secondary btn-icon" onClick={load} disabled={loading}>

@@ -239,3 +239,30 @@ pub async fn kubectl_apply_url(kubeconfig: &Path, url: &str) -> ApiResult<String
     }
     Ok(format!("{stdout}{stderr}"))
 }
+
+/// Run `helm` with optional `--kubeconfig`. Returns combined stdout/stderr.
+pub async fn helm_output(kubeconfig: Option<&Path>, args: &[&str]) -> ApiResult<String> {
+    let mut cmd = Command::new("helm");
+    if let Some(kc) = kubeconfig {
+        cmd.arg("--kubeconfig").arg(kc);
+    }
+    cmd.args(args);
+    let out = cmd.output().await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            AppError::bad("helm not found on the management host PATH")
+        } else {
+            AppError::bad(format!("helm: {e}"))
+        }
+    })?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        let msg = stderr.trim();
+        return Err(AppError::bad(if msg.is_empty() {
+            format!("helm {:?} failed", args)
+        } else {
+            msg.to_string()
+        }));
+    }
+    Ok(format!("{stdout}{stderr}"))
+}
