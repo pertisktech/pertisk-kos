@@ -39,12 +39,46 @@ function emptyForm(addon) {
   return next
 }
 
-function fieldVisible(addon, f) {
-  if (addon.id !== 'cilium-lb') return true
-  if (f.name === 'ipv6' && addon.network_mode === 'ipv4') return false
-  if (f.name === 'ipv4' && addon.network_mode === 'ipv6') return false
+function fieldVisible(addon, f, form) {
+  if (addon.id === 'cilium-lb') {
+    if (f.name === 'ipv6' && addon.network_mode === 'ipv4') return false
+    if (f.name === 'ipv4' && addon.network_mode === 'ipv6') return false
+  }
+  if (addon.id === 'ingress' && f.name === 'tls_secret') {
+    return !!(form.admin_host || '').trim()
+  }
   return true
 }
+
+function selectOptions(f, form) {
+  const opts = [...(f.options || [])]
+  const cur = form[f.name]
+  if (cur && !opts.includes(cur)) opts.push(cur)
+  return opts
+}
+
+function optionLabel(f, opt) {
+  if (f.name === 'tls_secret' && opt === 'none') return 'none (HTTP only)'
+  return opt
+}
+
+const ADDON_SECTIONS = [
+  {
+    id: 'certificates',
+    title: 'Certificates',
+    blurb: 'Issue a wildcard TLS certificate and copy it into every namespace.',
+  },
+  {
+    id: 'ingress',
+    title: 'Ingress',
+    blurb: 'Expose services through pertisk-proxy. Pick a TLS secret when you set an admin domain.',
+  },
+  {
+    id: 'cluster',
+    title: 'Storage & network',
+    blurb: 'NFS volumes and Cilium LoadBalancer IPs.',
+  },
+]
 
 function AddonCard({ clusterId, addon, onInstalled }) {
   const confirm = useConfirm()
@@ -67,7 +101,11 @@ function AddonCard({ clusterId, addon, onInstalled }) {
   }, [savedKey])
 
   function setField(name, value) {
-    setForm((prev) => ({ ...prev, [name]: value }))
+    setForm((prev) => {
+      const next = { ...prev, [name]: value }
+      if (name === 'admin_host' && !value.trim()) next.tls_secret = 'none'
+      return next
+    })
   }
 
   async function onCheck() {
@@ -122,7 +160,7 @@ function AddonCard({ clusterId, addon, onInstalled }) {
       {error && <div className="error">{error}</div>}
 
       <div className="form-grid">
-        {(addon.fields || []).filter((f) => fieldVisible(addon, f)).map((f) => (
+        {(addon.fields || []).filter((f) => fieldVisible(addon, f, form)).map((f) => (
           <label key={f.name} className="field">
             {f.label}
             {f.kind === 'select' ? (
@@ -130,9 +168,9 @@ function AddonCard({ clusterId, addon, onInstalled }) {
                 value={form[f.name] || f.options?.[0] || ''}
                 onChange={(e) => setField(f.name, e.target.value)}
               >
-                {(f.options || []).map((opt) => (
+                {selectOptions(f, form).map((opt) => (
                   <option key={opt} value={opt}>
-                    {opt}
+                    {optionLabel(f, opt)}
                   </option>
                 ))}
               </select>
@@ -203,6 +241,9 @@ function AddonCard({ clusterId, addon, onInstalled }) {
               <div><dt>Webhook</dt><dd>{live.webhook_ready ? 'ready' : '—'}</dd></div>
               <div><dt>ClusterIssuer</dt><dd>{live.issuer_ready ? 'ready' : live.issuer ? 'not ready' : 'absent'}</dd></div>
               <div><dt>Token secret</dt><dd>{live.token_secret ? 'present' : '—'}</dd></div>
+              <div><dt>Reflector</dt><dd>{live.reflector_ready ? 'ready' : live.reflector ? 'not ready' : 'absent'}</dd></div>
+              <div><dt>Wildcard cert</dt><dd>{live.certificate_ready ? 'ready' : live.certificate ? 'not ready' : (addon.config?.domain ? 'absent' : '—')}</dd></div>
+              <div><dt>TLS secret</dt><dd className="mono-inline">{live.tls_secret || '—'}</dd></div>
               <div><dt>Version</dt><dd className="mono-inline">{live.version || addon.cert_manager_version || '—'}</dd></div>
             </dl>
           )}
@@ -220,8 +261,8 @@ function AddonCard({ clusterId, addon, onInstalled }) {
               <div><dt>IngressClass</dt><dd>{live.ingress_class ? 'pertisk-proxy' : '—'}</dd></div>
               <div><dt>Image</dt><dd className="mono-inline">{live.image || addon.ingress_image || '—'}</dd></div>
               <div><dt>Pull secret</dt><dd>{live.pull_secret ? 'present' : 'absent'}</dd></div>
-              <div><dt>LB IPv4</dt><dd className="mono-inline">{live.lb_ipv4 || '—'}</dd></div>
-              <div><dt>LB IPv6</dt><dd className="mono-inline">{live.lb_ipv6 || '—'}</dd></div>
+              <div><dt>Admin host</dt><dd className="mono-inline">{live.admin_host || '—'}</dd></div>
+              <div><dt>Admin TLS</dt><dd className="mono-inline">{live.admin_host ? (live.admin_tls_secret || (live.admin_tls ? 'yes' : 'none')) : '—'}</dd></div>
             </dl>
           )}
         </div>
@@ -287,16 +328,28 @@ export default function AddonsTab({ clusterId, ready, onInstalled }) {
 
       {error && <div className="error">{error}</div>}
 
-      <div className="addon-grid">
-        {addons.map((addon) => (
-          <AddonCard
-            key={addon.id}
-            clusterId={clusterId}
-            addon={addon}
-            onInstalled={onInstalled}
-          />
-        ))}
-      </div>
+      {ADDON_SECTIONS.map((section) => {
+        const items = addons.filter((a) => (a.section || 'cluster') === section.id)
+        if (items.length === 0) return null
+        return (
+          <section key={section.id} className="addon-section">
+            <div className="addon-section-head">
+              <h3 className="section-label">{section.title}</h3>
+              <p className="muted">{section.blurb}</p>
+            </div>
+            <div className="addon-grid">
+              {items.map((addon) => (
+                <AddonCard
+                  key={addon.id}
+                  clusterId={clusterId}
+                  addon={addon}
+                  onInstalled={onInstalled}
+                />
+              ))}
+            </div>
+          </section>
+        )
+      })}
     </div>
   )
 }

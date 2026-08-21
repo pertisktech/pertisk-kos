@@ -45,7 +45,7 @@ Let’s Encrypt certificates via cert-manager and a Cloudflare DNS-01 `ClusterIs
 
 → [cert-manager/README.md](./cert-manager/README.md)
 
-From the management UI: cluster → **Add-ons** → cert-manager (provider, ACME email, Cloudflare API token).
+From the management UI: cluster → **Add-ons** → **Certificates** → cert-manager (provider, ACME email, Cloudflare API token, optional wildcard domain).
 
 ## Cilium LoadBalancer (ELB IPs)
 
@@ -61,7 +61,7 @@ pertisk-proxy Ingress controller from Helm chart `pertisk/pertisk-ingress` (imag
 
 → [ingress/README.md](./ingress/README.md)
 
-From the management UI: cluster → **Add-ons** → Pertisk Ingress. Requires `helm` on the management host.
+From the management UI: cluster → **Add-ons** → **Ingress** → Pertisk Ingress. Requires `helm` on the management host. When an admin host is set, choose a TLS Secret from certificates issued by cert-manager (or **none** for HTTP only).
 
 ## Observability (host metrics)
 

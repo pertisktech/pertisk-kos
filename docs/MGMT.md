@@ -138,14 +138,14 @@ When a cluster is **ready** (kubeconfig stored under `{data_dir}/kubeconfigs/{na
 
 ## Cluster Add-ons tab
 
-When a cluster is **ready**, **Add-ons** checks live install state and applies optional cluster apps via `kubectl` (and Helm for Pertisk Ingress) on the management host. CoreDNS and metrics-server stay bootstrap basics (not this tab).
+When a cluster is **ready**, **Add-ons** is grouped into **Certificates**, **Ingress**, and **Storage & network**. It checks live install state and applies optional cluster apps via `kubectl` (and Helm for Pertisk Ingress) on the management host. CoreDNS and metrics-server stay bootstrap basics (not this tab).
 
 | Add-on | Config | What install applies |
 |--------|--------|----------------------|
 | NFS storage | server IP/hostname + export path | `pertisk-nfs-modules` DaemonSet + nfs-subdir-external-provisioner (`StorageClass` `nfs-client`) |
-| cert-manager | DNS provider (`cloudflare`), ACME email, API token, production/staging | cert-manager `v1.21.1` + webhook `hostNetwork` (port 10260) + Cloudflare token Secret + `ClusterIssuer` `letsencrypt-cloudflare` |
+| cert-manager | DNS provider (`cloudflare`), ACME email, API token, production/staging, optional wildcard domain | cert-manager `v1.21.1` + webhook `hostNetwork` (port 10260) + Cloudflare token Secret + `ClusterIssuer` `letsencrypt-cloudflare` + kubernetes-reflector + wildcard `Certificate` (apex + `*.domain`, Secret copied to all namespaces) |
 | Cilium LoadBalancer | ELB IPv4; IPv6 when dual-stack | `CiliumLoadBalancerIPPool` + `CiliumL2AnnouncementPolicy` (listed only when cluster CNI is `cilium`) |
-| Pertisk Ingress | image tag (default `v0.1.83`); optional admin host/password | Helm `pertisk/pertisk-ingress` in `pertisk-proxy`, public Harbor image pinned to cluster arch (`linux/arm64` or `linux/amd64`) |
+| Pertisk Ingress | image tag (default `v0.1.83`); optional admin host; TLS secret list (or HTTP only); optional admin password | Helm `pertisk/pertisk-ingress` in `pertisk-proxy`, public Harbor image pinned to cluster arch (`linux/arm64` or `linux/amd64`) |
 
 **Check config** validates the form (and for NFS, TCP 2049 from the mgmt host) and reports live resources. **Install** / **Update** enqueues job `install_addon` (cluster stays ready on failure). Cloudflare tokens and optional ingress admin/registry passwords are encrypted at rest (`MGMT_SECRET_KEY`) and never returned by the API. Ingress install needs `helm` on the mgmt host PATH (same as the Shell tab). `harbor.tools.pertisk.com/pertisk-proxy` is public (no pull secret unless you set Harbor user/password).
 

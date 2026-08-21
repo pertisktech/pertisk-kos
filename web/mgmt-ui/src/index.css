@@ -2480,6 +2480,18 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   grid-template-columns: 1fr;
   gap: 1rem;
 }
+.addon-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.addon-section-head h3 {
+  margin: 0 0 0.2rem;
+}
+.addon-section-head p {
+  margin: 0;
+  font-size: 0.85rem;
+}
 .addon-card {
   border: 1px solid var(--border);
   border-radius: var(--radius);

@@ -16,7 +16,8 @@ Cluster → **Add-ons** → **Pertisk Ingress**:
 |-------|---------|--------|
 | Image tag | `v0.1.83` | Multi-arch tag. Install pins `linux/{cluster-arch}` (digest or `v0.1.83-arm64`) so ARM nodes do not pull amd64 |
 | Harbor user / password | empty | Optional. `pertisk-proxy` on Harbor is **public** — leave blank. Set only for a private project |
-| Admin host | empty | Optional hostname for the viewer admin Ingress; skip to disable it |
+| Admin host | empty | Optional hostname for admin Ingress (`pertisk-proxy-ingress-admin`, port 9080) |
+| TLS secret | `none` | Shown when admin host is set. Pick a `kubernetes.io/tls` Secret (from cert-manager / reflector) or **none** for HTTP only |
 | Admin password | chart default | Stored encrypted; leave blank to keep the current value |
 
 Install matches cluster `network_mode` (`SingleStack` IPv4/IPv6, or `PreferDualStack`) and

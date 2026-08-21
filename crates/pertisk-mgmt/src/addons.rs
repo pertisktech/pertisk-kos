@@ -1,5 +1,6 @@
 //! Optional cluster add-ons installed through the management UI (NFS, cert-manager, ingress).
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -42,10 +43,14 @@ const INGRESS_HELM_CHART: &str = "pertisk/pertisk-ingress";
 const INGRESS_RELEASE: &str = "pertisk-ingress";
 const INGRESS_NAMESPACE: &str = "pertisk-proxy";
 const INGRESS_DEPLOY: &str = "pertisk-proxy-ingress";
+const INGRESS_ADMIN: &str = "pertisk-proxy-ingress-admin";
 const INGRESS_PULL_SECRET: &str = "pertisk-ingress-harbor";
 pub const INGRESS_IMAGE_REGISTRY: &str = "harbor.tools.pertisk.com";
 pub const INGRESS_IMAGE_REPO: &str = "pertisk-proxy/ingress";
 pub const INGRESS_IMAGE_TAG: &str = "v0.1.83";
+const CERT_NS: &str = "cert-manager";
+const REFLECTOR_MANIFEST_URL: &str =
+    "https://github.com/emberstack/kubernetes-reflector/releases/latest/download/reflector.yaml";
 
 const ACME_PROD: &str = "https://acme-v02.api.letsencrypt.org/directory";
 const ACME_STAGING: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
@@ -68,6 +73,7 @@ pub struct AddonCatalogEntry {
     pub id: &'static str,
     pub name: &'static str,
     pub summary: &'static str,
+    pub section: &'static str,
     pub fields: &'static [AddonField],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requires_cni: Option<&'static str>,
@@ -131,6 +137,15 @@ const CERT_MANAGER_FIELDS: &[AddonField] = &[
         options: Some(&["production", "staging"]),
         help: "Use staging to test issuance without Let’s Encrypt rate limits.",
     },
+    AddonField {
+        name: "domain",
+        label: "Wildcard domain",
+        kind: "text",
+        required: false,
+        placeholder: "*.vsphere.pertisk.com",
+        options: None,
+        help: "Optional. Issues a Certificate for the apex and *.domain, then reflects the TLS Secret into every namespace.",
+    },
 ];
 
 const CILIUM_LB_FIELDS: &[AddonField] = &[
@@ -171,7 +186,16 @@ const INGRESS_FIELDS: &[AddonField] = &[
         required: false,
         placeholder: "admin.ingress.example.com",
         options: None,
-        help: "Optional hostname for the viewer admin Ingress. Leave empty to skip.",
+        help: "Hostname for the viewer admin Ingress. Example: admin.vsphere.pertisk.com. Leave empty to skip.",
+    },
+    AddonField {
+        name: "tls_secret",
+        label: "TLS secret",
+        kind: "select",
+        required: false,
+        placeholder: "none",
+        options: Some(&["none"]),
+        help: "TLS Secret for the admin Ingress (from cert-manager). Choose none for HTTP only.",
     },
     AddonField {
         name: "admin_password",
@@ -208,13 +232,15 @@ pub fn catalog() -> &'static [AddonCatalogEntry] {
             id: NFS_ID,
             name: "NFS storage",
             summary: "Dynamic ReadWriteMany volumes via an external NFS export and nfs-subdir-external-provisioner.",
+            section: "cluster",
             fields: NFS_FIELDS,
             requires_cni: None,
         },
         AddonCatalogEntry {
             id: CERT_MANAGER_ID,
             name: "cert-manager",
-            summary: "TLS certificates with cert-manager and a Let’s Encrypt ClusterIssuer (Cloudflare DNS-01).",
+            summary: "Let’s Encrypt ClusterIssuer (Cloudflare DNS-01) and optional wildcard Certificate reflected to all namespaces.",
+            section: "certificates",
             fields: CERT_MANAGER_FIELDS,
             requires_cni: None,
         },
@@ -222,6 +248,7 @@ pub fn catalog() -> &'static [AddonCatalogEntry] {
             id: CILIUM_LB_ID,
             name: "Cilium LoadBalancer",
             summary: "ELB IPs via CiliumLoadBalancerIPPool and L2 announcements (shown when CNI is Cilium).",
+            section: "cluster",
             fields: CILIUM_LB_FIELDS,
             requires_cni: Some("cilium"),
         },
@@ -229,6 +256,7 @@ pub fn catalog() -> &'static [AddonCatalogEntry] {
             id: INGRESS_ID,
             name: "Pertisk Ingress",
             summary: "pertisk-proxy Ingress controller (Helm chart + Harbor image) with a LoadBalancer Service.",
+            section: "ingress",
             fields: INGRESS_FIELDS,
             requires_cni: None,
         },
@@ -240,6 +268,37 @@ pub fn catalog_entry(id: &str) -> ApiResult<&'static AddonCatalogEntry> {
         .iter()
         .find(|e| e.id == id)
         .ok_or_else(|| AppError::bad(format!("unknown addon {id}")))
+}
+
+fn catalog_fields_json(entry: &AddonCatalogEntry, live: &Value, config: &Value) -> Value {
+    let mut fields = serde_json::to_value(entry.fields).unwrap_or(json!([]));
+    if entry.id != INGRESS_ID {
+        return fields;
+    }
+    let mut opts: Vec<String> = vec!["none".into()];
+    if let Some(arr) = live.get("tls_secrets").and_then(|v| v.as_array()) {
+        for s in arr {
+            if let Some(n) = s.as_str() {
+                if n != "none" && !opts.iter().any(|o| o == n) {
+                    opts.push(n.to_string());
+                }
+            }
+        }
+    }
+    if let Some(cur) = config.get("tls_secret").and_then(|v| v.as_str()) {
+        let t = cur.trim();
+        if !t.is_empty() && t != "none" && !opts.iter().any(|o| o == t) {
+            opts.push(t.to_string());
+        }
+    }
+    if let Some(arr) = fields.as_array_mut() {
+        for f in arr {
+            if f.get("name").and_then(|n| n.as_str()) == Some("tls_secret") {
+                f["options"] = json!(opts);
+            }
+        }
+    }
+    fields
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -259,6 +318,9 @@ pub struct CertManagerConfig {
     pub acme: String,
     #[serde(default = "default_issuer")]
     pub issuer: String,
+    /// Apex or wildcard DNS name, e.g. `vsphere.pertisk.com` or `*.vsphere.pertisk.com`.
+    #[serde(default)]
+    pub domain: String,
 }
 
 fn default_provider() -> String {
@@ -269,6 +331,72 @@ fn default_acme() -> String {
 }
 fn default_issuer() -> String {
     "letsencrypt-cloudflare".into()
+}
+
+fn ingress_tls_secret(cfg: &IngressConfig) -> String {
+    let t = cfg.tls_secret.trim();
+    if t.is_empty() || t.eq_ignore_ascii_case("none") {
+        String::new()
+    } else {
+        t.to_string()
+    }
+}
+
+fn k8s_name_ok(name: &str) -> bool {
+    let t = name.trim();
+    (1..=253).contains(&t.len())
+        && t.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.'))
+        && t.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && t.chars().last().is_some_and(|c| c.is_ascii_alphanumeric())
+}
+
+/// Apex + wildcard SAN list. `vsphere.example.com` and `*.vsphere.example.com` both work.
+pub fn wildcard_dns_names(raw: &str) -> Vec<String> {
+    let t = raw.trim().trim_end_matches('.');
+    if t.is_empty() {
+        return Vec::new();
+    }
+    let apex = t.strip_prefix("*.").unwrap_or(t).trim_start_matches('.');
+    if apex.is_empty() || !apex.contains('.') {
+        return Vec::new();
+    }
+    vec![format!("*.{apex}"), apex.to_string()]
+}
+
+pub fn cert_secret_name(raw: &str) -> String {
+    let t = raw
+        .trim()
+        .trim_end_matches('.')
+        .trim_start_matches("*.")
+        .to_ascii_lowercase();
+    let mut slug = String::new();
+    for c in t.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else if matches!(c, '.' | '-') && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    let mut name = if slug.is_empty() {
+        "wildcard-tls".into()
+    } else {
+        format!("{slug}-tls")
+    };
+    if name.len() > 63 {
+        name.truncate(63);
+        name = name.trim_end_matches('-').to_string();
+    }
+    name
+}
+
+fn domain_ok(raw: &str) -> bool {
+    !wildcard_dns_names(raw).is_empty()
+        && raw
+            .trim()
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*'))
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -284,6 +412,9 @@ pub struct IngressConfig {
     pub image_tag: String,
     #[serde(default)]
     pub admin_host: String,
+    /// TLS Secret name in `pertisk-proxy`, or `none` / empty for HTTP-only.
+    #[serde(default)]
+    pub tls_secret: String,
     #[serde(default)]
     pub admin_password: String,
     #[serde(default)]
@@ -468,6 +599,11 @@ fn parse_ingress_stored(v: &Value) -> IngressConfig {
             .and_then(|x| x.as_str())
             .unwrap_or("")
             .to_string(),
+        tls_secret: v
+            .get("tls_secret")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
         admin_password: v
             .get("admin_password")
             .and_then(|x| x.as_str())
@@ -536,6 +672,7 @@ pub fn public_ingress_config(cfg: &IngressConfig) -> Value {
             cfg.image_tag.trim()
         },
         "admin_host": cfg.admin_host.trim(),
+        "tls_secret": ingress_tls_secret(cfg),
         "registry_user": cfg.registry_user.trim(),
         "image": format!(
             "{INGRESS_IMAGE_REGISTRY}/{INGRESS_IMAGE_REPO}:{}",
@@ -577,6 +714,14 @@ pub fn validate_ingress(cfg: &IngressConfig, require_registry: bool) -> Result<(
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
         {
             errors.push("admin host must be a DNS hostname".into());
+        }
+    }
+    let tls = ingress_tls_secret(cfg);
+    if !tls.is_empty() {
+        if host.is_empty() {
+            errors.push("TLS secret requires an admin host".into());
+        } else if !k8s_name_ok(&tls) {
+            errors.push("TLS secret must be a Kubernetes resource name".into());
         }
     }
     let password = cfg.admin_password.trim();
@@ -760,6 +905,7 @@ pub fn ingress_helm_values(
 ) -> Value {
     let (policy, families) = ingress_service_ip_policy(network_mode);
     let host = cfg.admin_host.trim();
+    let tls = ingress_tls_secret(cfg);
     let tag = if resolved_tag.trim().is_empty() {
         if cfg.image_tag.trim().is_empty() {
             INGRESS_IMAGE_TAG
@@ -790,8 +936,9 @@ pub fn ingress_helm_values(
         "adminIngress": {
             "enabled": !host.is_empty(),
             "host": host,
-            "tlsSecretName": "",
+            "tlsSecretName": tls,
         },
+        "ingressClassName": "pertisk-proxy",
     });
     if pull_secret {
         values["imagePullSecrets"] = json!([{ "name": INGRESS_PULL_SECRET }]);
@@ -803,6 +950,54 @@ pub fn ingress_helm_values(
         });
     }
     values
+}
+
+/// Admin Ingress. Empty `tls_secret` means HTTP only (no `spec.tls`).
+pub fn admin_ingress_doc(host: &str, tls_secret: &str) -> Value {
+    let mut doc = json!({
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "Ingress",
+        "metadata": {
+            "name": INGRESS_ADMIN,
+            "namespace": INGRESS_NAMESPACE,
+            "annotations": {
+                "meta.helm.sh/release-name": INGRESS_RELEASE,
+                "meta.helm.sh/release-namespace": INGRESS_NAMESPACE,
+                "proxy.pertisk.tech/security-exempt": "true",
+            },
+            "labels": {
+                "app.kubernetes.io/instance": INGRESS_RELEASE,
+                "app.kubernetes.io/managed-by": "Helm",
+                "app.kubernetes.io/name": "pertisk-ingress",
+            },
+        },
+        "spec": {
+            "ingressClassName": "pertisk-proxy",
+            "rules": [{
+                "host": host.trim(),
+                "http": {
+                    "paths": [{
+                        "path": "/",
+                        "pathType": "Prefix",
+                        "backend": {
+                            "service": {
+                                "name": INGRESS_DEPLOY,
+                                "port": { "number": 9080 }
+                            }
+                        }
+                    }]
+                }
+            }]
+        }
+    });
+    let tls = tls_secret.trim();
+    if !tls.is_empty() && !tls.eq_ignore_ascii_case("none") {
+        doc["spec"]["tls"] = json!([{
+            "hosts": [host.trim()],
+            "secretName": tls,
+        }]);
+    }
+    doc
 }
 
 pub fn harbor_pull_secret_doc(user: &str, password: &str) -> Value {
@@ -922,6 +1117,10 @@ pub fn validate_cert_manager(
             errors.push("Cloudflare API token contains invalid characters".into());
         }
     }
+    let domain = cfg.domain.trim();
+    if !domain.is_empty() && !domain_ok(domain) {
+        errors.push("wildcard domain must be a DNS name (e.g. vsphere.example.com or *.vsphere.example.com)".into());
+    }
     if errors.is_empty() {
         Ok(())
     } else {
@@ -977,6 +1176,51 @@ spec:
               key: api-token
 "#
     )
+}
+
+pub fn wildcard_certificate_doc(cfg: &CertManagerConfig) -> Option<Value> {
+    let names = wildcard_dns_names(&cfg.domain);
+    if names.is_empty() {
+        return None;
+    }
+    let name = cert_secret_name(&cfg.domain);
+    let issuer = if cfg.issuer.trim().is_empty() {
+        default_issuer()
+    } else {
+        cfg.issuer.trim().to_string()
+    };
+    Some(json!({
+        "apiVersion": "cert-manager.io/v1",
+        "kind": "Certificate",
+        "metadata": {
+            "name": name,
+            "namespace": CERT_NS,
+        },
+        "spec": {
+            "secretName": name,
+            "duration": "2160h",
+            "renewBefore": "360h",
+            "isCA": false,
+            "privateKey": {
+                "algorithm": "RSA",
+                "encoding": "PKCS1",
+                "size": 2048,
+            },
+            "usages": ["server auth", "client auth"],
+            "dnsNames": names,
+            "issuerRef": {
+                "name": issuer,
+                "kind": "ClusterIssuer",
+                "group": "cert-manager.io",
+            },
+            "secretTemplate": {
+                "annotations": {
+                    "reflector.v1.k8s.emberstack.com/reflection-allowed": "true",
+                    "reflector.v1.k8s.emberstack.com/reflection-auto-enabled": "true",
+                }
+            }
+        }
+    }))
 }
 
 /// Pertisk apiserver is a hostNetwork static pod. Cilium kubeProxyReplacement has no
@@ -1221,7 +1465,7 @@ async fn live_nfs(kc: &Path) -> Value {
     })
 }
 
-async fn live_cert_manager(kc: &Path, issuer: &str) -> Value {
+async fn live_cert_manager(kc: &Path, issuer: &str, domain: &str) -> Value {
     let deploy = kubectl_json_optional(
         kc,
         &[
@@ -1271,6 +1515,64 @@ async fn live_cert_manager(kc: &Path, issuer: &str) -> Value {
     .await
     .ok()
     .flatten();
+    let reflector = kubectl_get_any(
+        kc,
+        &[
+            "get",
+            "deploy",
+            "reflector",
+            "-n",
+            "reflector",
+            "-o",
+            "json",
+        ],
+        &[
+            "get",
+            "deploy",
+            "reflector",
+            "-n",
+            "kube-system",
+            "-o",
+            "json",
+        ],
+    )
+    .await;
+
+    let cert_name = if domain.trim().is_empty() {
+        String::new()
+    } else {
+        cert_secret_name(domain)
+    };
+    let certificate = if cert_name.is_empty() {
+        None
+    } else {
+        kubectl_json_optional(
+            kc,
+            &[
+                "get",
+                "certificate",
+                &cert_name,
+                "-n",
+                CERT_NS,
+                "-o",
+                "json",
+            ],
+        )
+        .await
+        .ok()
+        .flatten()
+    };
+    let tls_secret = if cert_name.is_empty() {
+        None
+    } else {
+        kubectl_json_optional(
+            kc,
+            &["get", "secret", &cert_name, "-n", CERT_NS, "-o", "json"],
+        )
+        .await
+        .ok()
+        .flatten()
+    };
 
     let version = deploy
         .as_ref()
@@ -1289,6 +1591,23 @@ async fn live_cert_manager(kc: &Path, issuer: &str) -> Value {
         "issuer_ready": issuer_obj.as_ref().map(issuer_ready).unwrap_or(false),
         "token_secret": secret.is_some(),
         "version": version,
+        "reflector": reflector.is_some(),
+        "reflector_ready": reflector.as_ref().map(deploy_ready).unwrap_or(false),
+        "certificate": certificate.is_some(),
+        "certificate_ready": certificate.as_ref().map(certificate_ready).unwrap_or(false),
+        "tls_secret": if cert_name.is_empty() { Value::Null } else { json!(cert_name) },
+        "tls_secret_present": tls_secret.is_some(),
+        "dns_names": wildcard_dns_names(domain),
+    })
+}
+
+fn certificate_ready(obj: &Value) -> bool {
+    let Some(conds) = obj.pointer("/status/conditions").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    conds.iter().any(|c| {
+        c.get("type").and_then(|t| t.as_str()) == Some("Ready")
+            && c.get("status").and_then(|s| s.as_str()) == Some("True")
     })
 }
 
@@ -1484,6 +1803,39 @@ async fn live_ingress(kc: &Path) -> Value {
     .ok()
     .flatten();
     let pull_error = pods.as_ref().and_then(first_image_pull_error);
+    let admin = kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "ingress",
+            INGRESS_ADMIN,
+            "-n",
+            INGRESS_NAMESPACE,
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten();
+    let admin_host = admin
+        .as_ref()
+        .and_then(|i| i.pointer("/spec/rules/0/host"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let admin_tls = admin
+        .as_ref()
+        .and_then(|i| i.pointer("/spec/tls"))
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| !a.is_empty());
+    let admin_tls_secret = admin
+        .as_ref()
+        .and_then(|i| i.pointer("/spec/tls/0/secretName"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let tls_secrets = list_tls_secret_names(kc).await;
     json!({
         "installed": deploy.is_some() && svc.is_some(),
         "partial": deploy.is_some() || svc.is_some() || class.is_some(),
@@ -1495,7 +1847,52 @@ async fn live_ingress(kc: &Path) -> Value {
         "gateway_api": gateway_api_available(kc).await,
         "pull_secret": secret.is_some(),
         "pull_error": pull_error,
+        "admin_host": admin_host,
+        "admin_tls": admin_tls,
+        "admin_tls_secret": admin_tls_secret,
+        "tls_secrets": tls_secrets,
     })
+}
+
+async fn list_tls_secret_names(kc: &Path) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    for ns in [INGRESS_NAMESPACE, CERT_NS] {
+        let Ok(Some(list)) =
+            kubectl_json_optional(kc, &["get", "secrets", "-n", ns, "-o", "json"]).await
+        else {
+            continue;
+        };
+        let Some(items) = list.get("items").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for s in items {
+            if s.get("type").and_then(|v| v.as_str()) != Some("kubernetes.io/tls") {
+                continue;
+            }
+            if let Some(n) = s.pointer("/metadata/name").and_then(|v| v.as_str()) {
+                if k8s_name_ok(n) {
+                    names.insert(n.to_string());
+                }
+            }
+        }
+    }
+    if let Ok(Some(list)) = kubectl_json_optional(
+        kc,
+        &["get", "certificates.cert-manager.io", "-A", "-o", "json"],
+    )
+    .await
+    {
+        if let Some(items) = list.get("items").and_then(|v| v.as_array()) {
+            for c in items {
+                if let Some(n) = c.pointer("/spec/secretName").and_then(|v| v.as_str()) {
+                    if k8s_name_ok(n) {
+                        names.insert(n.to_string());
+                    }
+                }
+            }
+        }
+    }
+    names.into_iter().collect()
 }
 
 fn first_image_pull_error(list: &Value) -> Option<String> {
@@ -1580,6 +1977,12 @@ pub fn public_cert_config(cfg: &CertManagerConfig) -> Value {
         "email": cfg.email.trim(),
         "acme": if cfg.acme.trim().is_empty() { "production" } else { cfg.acme.trim() },
         "issuer": if cfg.issuer.trim().is_empty() { default_issuer() } else { cfg.issuer.trim().to_string() },
+        "domain": cfg.domain.trim(),
+        "tls_secret": if cfg.domain.trim().is_empty() {
+            String::new()
+        } else {
+            cert_secret_name(&cfg.domain)
+        },
     })
 }
 
@@ -1620,6 +2023,11 @@ fn parse_cert_stored(v: &Value) -> CertManagerConfig {
             .get("issuer")
             .and_then(|x| x.as_str())
             .unwrap_or("letsencrypt-cloudflare")
+            .to_string(),
+        domain: v
+            .get("domain")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
             .to_string(),
     }
 }
@@ -1817,7 +2225,11 @@ pub async fn summarize_one(
                             .get("issuer")
                             .and_then(|v| v.as_str())
                             .unwrap_or("letsencrypt-cloudflare");
-                        live_cert_manager(&kc, issuer).await
+                        let domain = public_config
+                            .get("domain")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        live_cert_manager(&kc, issuer, domain).await
                     }
                     CILIUM_LB_ID => live_cilium_lb(&kc).await,
                     INGRESS_ID => live_ingress(&kc).await,
@@ -1909,6 +2321,38 @@ pub async fn summarize_one(
         {
             warnings.push("ClusterIssuer is not Ready (check Cloudflare token / ACME)".into());
         }
+        if !live
+            .get("reflector")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            warnings.push(
+                "kubernetes-reflector is not present; wildcard TLS secrets will not copy to other namespaces"
+                    .into(),
+            );
+        }
+        if !public_config
+            .get("domain")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .is_empty()
+        {
+            if !live
+                .get("certificate")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                warnings.push("wildcard Certificate is not present yet".into());
+            } else if !live
+                .get("certificate_ready")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                warnings.push(
+                    "wildcard Certificate is not Ready (check DNS-01 / Cloudflare token)".into(),
+                );
+            }
+        }
     }
     if addon == CILIUM_LB_ID {
         if cluster_cni != "cilium" {
@@ -1962,6 +2406,14 @@ pub async fn summarize_one(
                 warnings.push(format!("image pull failed ({err})"));
             }
         }
+        if live.get("admin_tls").and_then(|v| v.as_bool()) == Some(true)
+            && ingress_tls_secret(&parse_ingress_stored(&public_config)).is_empty()
+        {
+            warnings.push(
+                "admin Ingress still has TLS; choose none or Update after clearing TLS secret"
+                    .into(),
+            );
+        }
         if live.get("gateway_api").and_then(|v| v.as_bool()) != Some(true) && !live_installed {
             warnings.push(
                 "Gateway API CRDs are not present; install will disable Gateway API reconciliation"
@@ -1974,7 +2426,8 @@ pub async fn summarize_one(
         "id": entry.id,
         "name": entry.name,
         "summary": entry.summary,
-        "fields": entry.fields,
+        "section": entry.section,
+        "fields": catalog_fields_json(entry, &live, &public_config),
         "status": status,
         "ok": errors.is_empty(),
         "errors": errors,
@@ -2504,24 +2957,37 @@ async fn install_ingress(
             "helm upgrade --install {INGRESS_RELEASE} {INGRESS_HELM_CHART} -n {INGRESS_NAMESPACE}\n"
         ),
     )?;
-    let out = helm_output(
-        Some(kc),
-        &[
-            "upgrade",
-            "--install",
-            INGRESS_RELEASE,
-            INGRESS_HELM_CHART,
-            "--namespace",
-            INGRESS_NAMESPACE,
-            "--create-namespace",
-            "--timeout",
-            "5m",
-            "-f",
-            values_s,
-        ],
-    )
-    .await
-    .map_err(anyhow_api)?;
+    let host = cfg.admin_host.trim();
+    let mut helm_args: Vec<String> = vec![
+        "upgrade".into(),
+        "--install".into(),
+        INGRESS_RELEASE.into(),
+        INGRESS_HELM_CHART.into(),
+        "--namespace".into(),
+        INGRESS_NAMESPACE.into(),
+        "--create-namespace".into(),
+        "--timeout".into(),
+        "5m".into(),
+        "-f".into(),
+        values_s.to_string(),
+    ];
+    if !host.is_empty() {
+        let tls = ingress_tls_secret(&cfg);
+        helm_args.extend([
+            "--set".into(),
+            "adminIngress.enabled=true".into(),
+            "--set-string".into(),
+            format!("adminIngress.host={host}"),
+            "--set-string".into(),
+            format!("adminIngress.tlsSecretName={tls}"),
+        ]);
+    } else {
+        helm_args.extend(["--set".into(), "adminIngress.enabled=false".into()]);
+    }
+    let helm_refs: Vec<&str> = helm_args.iter().map(|s| s.as_str()).collect();
+    let out = helm_output(Some(kc), &helm_refs)
+        .await
+        .map_err(anyhow_api)?;
     crate::jobs::append_log(log_path, &out)?;
 
     crate::jobs::append_log(log_path, "wait for pertisk-proxy-ingress deployment\n")?;
@@ -2538,6 +3004,53 @@ async fn install_ingress(
     )
     .await
     .map_err(anyhow_api)?;
+
+    if !host.is_empty() {
+        let tls = ingress_tls_secret(&cfg);
+        crate::jobs::append_log(
+            log_path,
+            &format!(
+                "apply admin Ingress {INGRESS_ADMIN} host={host} tls={}\n",
+                if tls.is_empty() { "none" } else { tls.as_str() }
+            ),
+        )?;
+        apply_admin_ingress(kc, log_path, host, &tls).await?;
+    }
+    Ok(())
+}
+
+async fn apply_admin_ingress(
+    kc: &Path,
+    log_path: &str,
+    host: &str,
+    tls_secret: &str,
+) -> anyhow::Result<()> {
+    let doc = admin_ingress_doc(host, tls_secret);
+    let out = kubectl_apply_yaml(kc, &doc.to_string())
+        .await
+        .map_err(anyhow_api)?;
+    crate::jobs::append_log(log_path, &out)?;
+    if tls_secret.trim().is_empty() {
+        // Helm 3-way merge can leave spec.tls from a previous release; strip it.
+        match kubectl_ok(
+            kc,
+            &[
+                "patch",
+                "ingress",
+                INGRESS_ADMIN,
+                "-n",
+                INGRESS_NAMESPACE,
+                "--type=json",
+                "-p",
+                r#"[{"op":"remove","path":"/spec/tls"}]"#,
+            ],
+        )
+        .await
+        {
+            Ok(()) => crate::jobs::append_log(log_path, "removed spec.tls from admin Ingress\n")?,
+            Err(_) => crate::jobs::append_log(log_path, "admin Ingress has no spec.tls\n")?,
+        }
+    }
     Ok(())
 }
 
@@ -2632,6 +3145,84 @@ async fn install_cert_manager(
     crate::jobs::append_log(log_path, "apply ClusterIssuer\n")?;
     let issuer = cert_manager_issuer_yaml(&cfg);
     apply_yaml_retry(kc, log_path, &issuer, 12, Duration::from_secs(5)).await?;
+
+    crate::jobs::append_log(
+        log_path,
+        &format!("apply kubernetes-reflector {REFLECTOR_MANIFEST_URL}\n"),
+    )?;
+    match kubectl_apply_url(kc, REFLECTOR_MANIFEST_URL).await {
+        Ok(out) => crate::jobs::append_log(log_path, &out)?,
+        Err(e) => crate::jobs::append_log(
+            log_path,
+            &format!(
+                "reflector apply failed ({e}); wildcard secrets may not copy across namespaces\n"
+            ),
+        )?,
+    }
+    wait_reflector(kc, log_path).await?;
+
+    if let Some(cert) = wildcard_certificate_doc(&cfg) {
+        let name = cert
+            .pointer("/metadata/name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("wildcard-tls");
+        crate::jobs::append_log(
+            log_path,
+            &format!(
+                "apply Certificate {name} dnsNames={:?} (reflect to all namespaces)\n",
+                wildcard_dns_names(&cfg.domain)
+            ),
+        )?;
+        apply_yaml_retry(kc, log_path, &cert.to_string(), 8, Duration::from_secs(5)).await?;
+        crate::jobs::append_log(log_path, &format!("wait for Certificate {name} Ready\n"))?;
+        match kubectl_ok(
+            kc,
+            &[
+                "wait",
+                "--for=condition=Ready",
+                &format!("certificate/{name}"),
+                "-n",
+                CERT_NS,
+                "--timeout=180s",
+            ],
+        )
+        .await
+        {
+            Ok(()) => crate::jobs::append_log(log_path, "Certificate Ready\n")?,
+            Err(e) => crate::jobs::append_log(
+                log_path,
+                &format!("Certificate not Ready yet ({e}); check DNS-01 / ClusterIssuer\n"),
+            )?,
+        }
+    }
+    Ok(())
+}
+
+async fn wait_reflector(kc: &Path, log_path: &str) -> anyhow::Result<()> {
+    crate::jobs::append_log(log_path, "wait for reflector deployment\n")?;
+    for ns in ["reflector", "kube-system"] {
+        if kubectl_ok(
+            kc,
+            &[
+                "wait",
+                "--for=condition=Available",
+                "deploy/reflector",
+                "-n",
+                ns,
+                "--timeout=90s",
+            ],
+        )
+        .await
+        .is_ok()
+        {
+            crate::jobs::append_log(log_path, &format!("reflector Available in {ns}\n"))?;
+            return Ok(());
+        }
+    }
+    crate::jobs::append_log(
+        log_path,
+        "reflector deployment not ready (wildcard copy to other namespaces may lag)\n",
+    )?;
     Ok(())
 }
 
@@ -2797,6 +3388,7 @@ mod tests {
             api_token: "cf-token-123456".into(),
             acme: "staging".into(),
             issuer: String::new(),
+            domain: String::new(),
         };
         assert!(validate_cert_manager(&ok, true).is_ok());
         let mut bad = ok.clone();
@@ -2835,6 +3427,7 @@ mod tests {
             api_token: "x".into(),
             acme: "staging".into(),
             issuer: "letsencrypt-cloudflare".into(),
+            domain: String::new(),
         });
         assert!(yaml.contains("acme-staging-v02"));
         assert!(yaml.contains("ops@example.com"));
@@ -2849,18 +3442,23 @@ mod tests {
             api_token: "super-secret".into(),
             acme: "production".into(),
             issuer: String::new(),
+            domain: "vsphere.pertisk.com".into(),
         });
         assert!(v.get("api_token").is_none());
         assert_eq!(v["email"], "ops@example.com");
         assert_eq!(v["issuer"], "letsencrypt-cloudflare");
+        assert_eq!(v["domain"], "vsphere.pertisk.com");
+        assert_eq!(v["tls_secret"], "vsphere-pertisk-com-tls");
     }
 
     #[test]
     fn catalog_has_nfs_and_cert_manager() {
         let ids: Vec<_> = catalog().iter().map(|e| e.id).collect();
         assert_eq!(ids, ["nfs", "cert-manager", "cilium-lb", "ingress"]);
+        assert_eq!(catalog()[1].section, "certificates");
         assert_eq!(catalog()[2].requires_cni, Some("cilium"));
         assert_eq!(catalog()[3].id, "ingress");
+        assert_eq!(catalog()[3].section, "ingress");
     }
 
     #[test]
@@ -3008,6 +3606,7 @@ mod tests {
         let v = public_ingress_config(&IngressConfig {
             image_tag: String::new(),
             admin_host: "admin.example.com".into(),
+            tls_secret: "none".into(),
             admin_password: "super-secret".into(),
             registry_user: String::new(),
             registry_password: "harbor-secret".into(),
@@ -3027,6 +3626,7 @@ mod tests {
         let cfg = IngressConfig {
             image_tag: "v0.1.83".into(),
             admin_host: String::new(),
+            tls_secret: String::new(),
             admin_password: String::new(),
             registry_user: "robot$pertisk-proxy+pull".into(),
             registry_password: String::new(),
@@ -3047,6 +3647,7 @@ mod tests {
             &IngressConfig {
                 image_tag: "v0.1.83".into(),
                 admin_host: "admin.example.com".into(),
+                tls_secret: "vsphere-pertisk-com-tls".into(),
                 admin_password: String::new(),
                 registry_user: "robot$pertisk-proxy+pull".into(),
                 registry_password: String::new(),
@@ -3062,6 +3663,11 @@ mod tests {
         assert_eq!(dual["service"]["ipFamilies"][1], "IPv6");
         assert_eq!(dual["gatewayApi"]["enabled"], true);
         assert_eq!(dual["adminIngress"]["host"], "admin.example.com");
+        assert_eq!(dual["adminIngress"]["enabled"], true);
+        assert_eq!(
+            dual["adminIngress"]["tlsSecretName"],
+            "vsphere-pertisk-com-tls"
+        );
         assert_eq!(dual["auth"]["password"], "s3cret");
         assert_eq!(dual["image"]["tag"], "v0.1.83@sha256:abc");
         assert_eq!(dual["nodeSelector"]["kubernetes.io/arch"], "arm64");
@@ -3177,5 +3783,82 @@ mod tests {
             Some("sha256:amd")
         );
         assert!(pick_platform_digest(&index, "s390x").is_none());
+    }
+
+    #[test]
+    fn admin_ingress_is_http_only_without_tls_secret() {
+        let doc = admin_ingress_doc("admin.vsphere.pertisk.com", "");
+        assert_eq!(doc["kind"], "Ingress");
+        assert_eq!(doc["metadata"]["name"], "pertisk-proxy-ingress-admin");
+        assert_eq!(doc["spec"]["rules"][0]["host"], "admin.vsphere.pertisk.com");
+        assert_eq!(
+            doc["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"]["port"]["number"],
+            9080
+        );
+        assert_eq!(doc["spec"]["ingressClassName"], "pertisk-proxy");
+        assert_eq!(
+            doc["metadata"]["annotations"]["proxy.pertisk.tech/security-exempt"],
+            "true"
+        );
+        assert!(doc["spec"].get("tls").is_none());
+    }
+
+    #[test]
+    fn admin_ingress_attaches_selected_tls_secret() {
+        let doc = admin_ingress_doc("admin.vsphere.pertisk.com", "vsphere-pertisk-com-tls");
+        assert_eq!(
+            doc["spec"]["tls"][0]["secretName"],
+            "vsphere-pertisk-com-tls"
+        );
+        assert_eq!(
+            doc["spec"]["tls"][0]["hosts"][0],
+            "admin.vsphere.pertisk.com"
+        );
+    }
+
+    #[test]
+    fn wildcard_certificate_covers_apex_and_star() {
+        assert_eq!(
+            wildcard_dns_names("vsphere.pertisk.com"),
+            ["*.vsphere.pertisk.com", "vsphere.pertisk.com"]
+        );
+        assert_eq!(
+            wildcard_dns_names("*.vsphere.pertisk.com"),
+            ["*.vsphere.pertisk.com", "vsphere.pertisk.com"]
+        );
+        assert_eq!(
+            cert_secret_name("*.vsphere.pertisk.com"),
+            "vsphere-pertisk-com-tls"
+        );
+        let doc = wildcard_certificate_doc(&CertManagerConfig {
+            provider: "cloudflare".into(),
+            email: "ops@example.com".into(),
+            api_token: "x".into(),
+            acme: "production".into(),
+            issuer: "letsencrypt-cloudflare".into(),
+            domain: "vsphere.pertisk.com".into(),
+        })
+        .expect("certificate");
+        assert_eq!(doc["kind"], "Certificate");
+        assert_eq!(doc["metadata"]["namespace"], "cert-manager");
+        assert_eq!(doc["spec"]["secretName"], "vsphere-pertisk-com-tls");
+        assert_eq!(doc["spec"]["dnsNames"][0], "*.vsphere.pertisk.com");
+        assert_eq!(
+            doc["spec"]["secretTemplate"]["annotations"]
+                ["reflector.v1.k8s.emberstack.com/reflection-auto-enabled"],
+            "true"
+        );
+        assert!(wildcard_certificate_doc(&CertManagerConfig::default()).is_none());
+        let mut bad = CertManagerConfig {
+            provider: "cloudflare".into(),
+            email: "ops@example.com".into(),
+            api_token: "cf-token-123456".into(),
+            acme: "production".into(),
+            domain: "not a domain".into(),
+            ..Default::default()
+        };
+        assert!(validate_cert_manager(&bad, true).is_err());
+        bad.domain = "vsphere.pertisk.com".into();
+        assert!(validate_cert_manager(&bad, true).is_ok());
     }
 }

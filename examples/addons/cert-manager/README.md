@@ -15,8 +15,9 @@ Cluster → **Add-ons** → **cert-manager**:
 | ACME email | `ops@example.com` |
 | API token | Cloudflare token with **Zone:DNS:Edit** |
 | ACME environment | `production` or `staging` |
+| Wildcard domain | `vsphere.pertisk.com` or `*.vsphere.pertisk.com` (optional) |
 
-**Check config** validates the form and reports whether the controller, webhook, token Secret, and `ClusterIssuer` are present. **Install** applies the upstream manifest, patches the webhook onto the **host network** (port `10260`, so host-networked kube-apiserver / Cilium kubeProxyReplacement can reach it), waits for deployments + endpoints, then creates the Secret + issuer (`letsencrypt-cloudflare`).
+**Check config** validates the form and reports whether the controller, webhook, token Secret, `ClusterIssuer`, reflector, and wildcard Certificate are present. **Install** applies the upstream manifest, patches the webhook onto the **host network** (port `10260`, so host-networked kube-apiserver / Cilium kubeProxyReplacement can reach it), waits for deployments + endpoints, then creates the Secret + issuer (`letsencrypt-cloudflare`). If a wildcard domain is set, it also installs [kubernetes-reflector](https://github.com/emberstack/kubernetes-reflector) and a `Certificate` for the apex + `*.domain`. The TLS Secret is reflected into **every namespace**.
 
 The token is stored encrypted on the management host (`MGMT_SECRET_KEY`) and is not returned by the API. Leave the token field blank on a later update to keep the stored value.
 
@@ -38,4 +39,12 @@ kubectl apply -f examples/addons/cert-manager/clusterissuer-cloudflare.yaml
 
 Edit the email (and optionally `server` for staging) in the ClusterIssuer before applying.
 
-Issue a certificate with `issuerRef.name: letsencrypt-cloudflare` and `issuerRef.kind: ClusterIssuer`.
+Issue a wildcard (apex + `*.domain`) and reflect the Secret to all namespaces:
+
+```bash
+kubectl apply -f https://github.com/emberstack/kubernetes-reflector/releases/latest/download/reflector.yaml
+# edit dnsNames / secretName in wildcard-certificate.yaml first
+kubectl apply -f examples/addons/cert-manager/wildcard-certificate.yaml
+```
+
+Use `issuerRef.name: letsencrypt-cloudflare` and `issuerRef.kind: ClusterIssuer` on other Certificates.
