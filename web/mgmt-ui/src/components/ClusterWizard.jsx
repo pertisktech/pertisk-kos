@@ -46,8 +46,8 @@ const defaultForm = {
   workers: 2,
   network_mode: 'ipv4',
   arch: 'amd64',
-  vip: '10.1.1.250',
-  vip6: 'fd00:1::250',
+  vip: '10.1.1.254',
+  vip6: 'fd00:1::254',
   cni: 'cilium',
   k8s_version: '',
   max_pods: 250,
@@ -633,7 +633,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
                 <input
                   value={form.vip}
                   onChange={(e) => set('vip', e.target.value)}
-                  placeholder="10.1.1.250"
+                  placeholder="10.1.1.254"
                 />
               </div>
             )}
@@ -643,7 +643,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
                 <input
                   value={form.vip6}
                   onChange={(e) => set('vip6', e.target.value)}
-                  placeholder="fd00:1::200"
+                  placeholder="fd00:1::254"
                 />
               </div>
             )}
