@@ -28,6 +28,7 @@ pub struct NodeSnapshot {
     pub kernel_version: Option<String>,
     pub container_runtime: Option<String>,
     pub kubelet_status: Option<String>,
+    pub os_version: Option<String>,
 }
 
 /// Refresh node rows from kubeconfig (preferred) or job log (fallback).
@@ -75,6 +76,11 @@ pub async fn persist_snapshot_by_name(
              ip = COALESCE(?, ip),
              ip6 = COALESCE(?, ip6),
              k8s_version = COALESCE(?, k8s_version),
+             os_version = CASE
+               WHEN os_version IS NULL OR os_version = '' OR os_version IN ('0.1.0', 'v0.1.0')
+               THEN COALESCE(?, os_version)
+               ELSE os_version
+             END,
              kernel_version = COALESCE(?, kernel_version),
              container_runtime = COALESCE(?, container_runtime),
              updated_at = ?
@@ -83,6 +89,7 @@ pub async fn persist_snapshot_by_name(
     .bind(&snap.ip)
     .bind(&snap.ip6)
     .bind(&snap.k8s_version)
+    .bind(&snap.os_version)
     .bind(&snap.kernel_version)
     .bind(&snap.container_runtime)
     .bind(&now)
@@ -104,6 +111,11 @@ pub async fn persist_snapshot_by_id(
              ip = COALESCE(?, ip),
              ip6 = COALESCE(?, ip6),
              k8s_version = COALESCE(?, k8s_version),
+             os_version = CASE
+               WHEN os_version IS NULL OR os_version = '' OR os_version IN ('0.1.0', 'v0.1.0')
+               THEN COALESCE(?, os_version)
+               ELSE os_version
+             END,
              kernel_version = COALESCE(?, kernel_version),
              container_runtime = COALESCE(?, container_runtime),
              updated_at = ?
@@ -112,6 +124,7 @@ pub async fn persist_snapshot_by_id(
     .bind(&snap.ip)
     .bind(&snap.ip6)
     .bind(&snap.k8s_version)
+    .bind(&snap.os_version)
     .bind(&snap.kernel_version)
     .bind(&snap.container_runtime)
     .bind(&now)
@@ -130,7 +143,8 @@ pub fn is_placeholder_os_version(v: Option<&str>) -> bool {
     }
 }
 
-/// Guest dashboard / `pertiskctl version` — running initramfs, not kubelet osImage.
+/// Guest `pertiskctl version` — running initramfs. Refresh whenever the node answers
+/// so the dashboard matches the VM (not a leftover create-time or catalog pin).
 pub async fn sync_os_versions_from_machine_api(
     pool: &SqlitePool,
     cluster_id: &str,
@@ -150,23 +164,23 @@ pub async fn sync_os_versions_from_machine_api(
         let Some(ip) = ip.filter(|s| !s.trim().is_empty()) else {
             continue;
         };
-        if !is_placeholder_os_version(current.as_deref()) {
-            continue;
-        }
         let bin = pertiskctl.to_path_buf();
         futs.push(async move {
             let ver = fetch_node_os_version(&bin, ip.trim()).await;
-            (id, ver)
+            (id, current, ver)
         });
     }
 
     let results = futures::future::join_all(futs).await;
     let now = db::now_rfc3339();
     let mut updated = 0usize;
-    for (id, ver) in results {
+    for (id, current, ver) in results {
         let Some(ver) = ver.filter(|v| !v.is_empty()) else {
             continue;
         };
+        if current.as_deref() == Some(ver.as_str()) {
+            continue;
+        }
         let r = sqlx::query("UPDATE nodes SET os_version = ?, updated_at = ? WHERE id = ?")
             .bind(&ver)
             .bind(&now)
@@ -291,6 +305,10 @@ async fn fetch_from_kubectl(kubeconfig: &Path) -> anyhow::Result<Vec<(String, No
         {
             snap.k8s_version = nonempty(ver);
         }
+        snap.os_version = item
+            .pointer("/status/nodeInfo/osImage")
+            .and_then(|v| v.as_str())
+            .and_then(parse_os_image);
         snap.kernel_version = item
             .pointer("/status/nodeInfo/kernelVersion")
             .and_then(|v| v.as_str())

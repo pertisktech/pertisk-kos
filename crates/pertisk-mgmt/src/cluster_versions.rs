@@ -21,7 +21,7 @@ pub struct ComponentVersion {
     pub name: String,
     /// Uniform running version, `"mixed"`, or `"—"`.
     pub version: String,
-    /// Cluster spec (Kubernetes) or catalog OS package, when known.
+    /// Cluster Kubernetes spec, or last successful OS A/B upgrade for this cluster.
     pub desired: Option<String>,
     pub source: String,
     pub mixed: bool,

@@ -232,73 +232,33 @@ fn apply_cached_availability(state: &AppState, rows: &mut [ClusterOut]) {
     }
 }
 
-fn spawn_cluster_node_sync(state: &AppState, cluster_id: &str, network_mode: &str) {
+fn spawn_cluster_node_sync(state: &AppState, cluster_id: &str) {
     let state = state.clone();
     let cluster_id = cluster_id.to_string();
-    let network_mode = network_mode.to_string();
     tokio::spawn(async move {
-        let upgrading: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM jobs WHERE cluster_id = ? AND kind IN ('upgrade_cluster', 'upgrade_os') AND status = 'running'",
-        )
-        .bind(&cluster_id)
-        .fetch_one(state.pool())
-        .await
-        .unwrap_or(0);
-        let missing_ip: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM nodes WHERE cluster_id = ? AND (ip IS NULL OR ip = '')",
-        )
-        .bind(&cluster_id)
-        .fetch_one(state.pool())
-        .await
-        .unwrap_or(0);
-        let mode = network_mode.to_ascii_lowercase();
-        let wants_ip6 = mode == "dual-stack" || mode == "ipv6";
-        let missing_ip6: i64 = if wants_ip6 {
-            sqlx::query_scalar(
-                "SELECT COUNT(*) FROM nodes WHERE cluster_id = ? AND (ip6 IS NULL OR ip6 = '')",
-            )
-            .bind(&cluster_id)
-            .fetch_one(state.pool())
-            .await
-            .unwrap_or(0)
-        } else {
-            0
-        };
-        let missing_versions: i64 = sqlx::query_scalar(
-            r#"SELECT COUNT(*) FROM nodes WHERE cluster_id = ? AND (
-                 kernel_version IS NULL OR kernel_version = ''
-                 OR container_runtime IS NULL OR container_runtime = ''
-               )"#,
-        )
-        .bind(&cluster_id)
-        .fetch_one(state.pool())
-        .await
-        .unwrap_or(0);
-        if upgrading > 0 || missing_ip > 0 || missing_ip6 > 0 || missing_versions > 0 {
-            let kc: Option<String> =
-                sqlx::query_scalar("SELECT kubeconfig_path FROM clusters WHERE id = ?")
-                    .bind(&cluster_id)
-                    .fetch_optional(state.pool())
-                    .await
-                    .ok()
-                    .flatten();
-            if let Some(kc) = kc.filter(|s| !s.is_empty()) {
-                let log_path: Option<String> = sqlx::query_scalar(
-                    "SELECT log_path FROM jobs WHERE cluster_id = ? AND kind IN ('create_cluster', 'upgrade_cluster', 'upgrade_os') ORDER BY updated_at DESC LIMIT 1",
-                )
+        let kc: Option<String> =
+            sqlx::query_scalar("SELECT kubeconfig_path FROM clusters WHERE id = ?")
                 .bind(&cluster_id)
                 .fetch_optional(state.pool())
                 .await
                 .ok()
                 .flatten();
-                let _ = crate::node_sync::sync_cluster_nodes(
-                    state.pool(),
-                    &cluster_id,
-                    Some(std::path::Path::new(&kc)),
-                    log_path.as_deref(),
-                )
-                .await;
-            }
+        if let Some(kc) = kc.filter(|s| !s.is_empty()) {
+            let log_path: Option<String> = sqlx::query_scalar(
+                "SELECT log_path FROM jobs WHERE cluster_id = ? AND kind IN ('create_cluster', 'upgrade_cluster', 'upgrade_os') ORDER BY updated_at DESC LIMIT 1",
+            )
+            .bind(&cluster_id)
+            .fetch_optional(state.pool())
+            .await
+            .ok()
+            .flatten();
+            let _ = crate::node_sync::sync_cluster_nodes(
+                state.pool(),
+                &cluster_id,
+                Some(std::path::Path::new(&kc)),
+                log_path.as_deref(),
+            )
+            .await;
         }
         let _ = crate::node_sync::sync_os_versions_from_machine_api(
             state.pool(),
@@ -360,7 +320,7 @@ async fn get_one(
 
     // Node IP / version sync talks to the cluster — do not block the first paint.
     if cluster.status == "ready" {
-        spawn_cluster_node_sync(&state, &id, &cluster.network_mode);
+        spawn_cluster_node_sync(&state, &id);
     }
 
     let mut nodes = sqlx::query_as::<_, crate::routes::nodes::NodeOut>(&format!(
@@ -416,12 +376,15 @@ async fn cluster_versions(
     cluster: &ClusterOut,
     nodes: &[crate::routes::nodes::NodeOut],
 ) -> Vec<crate::cluster_versions::ComponentVersion> {
-    let arch =
-        crate::os_upgrade::normalize_arch(&cluster.arch).unwrap_or_else(|_| cluster.arch.clone());
     let catalog_os: Option<String> = sqlx::query_scalar(
-        "SELECT version FROM os_packages WHERE arch = ? ORDER BY updated_at DESC LIMIT 1",
+        r#"SELECT json_extract(payload, '$.version') FROM jobs
+           WHERE cluster_id = ? AND kind = 'upgrade_os' AND status = 'succeeded'
+             AND json_extract(payload, '$.version') IS NOT NULL
+             AND json_extract(payload, '$.version') != ''
+             AND json_extract(payload, '$.version') != 'unknown'
+           ORDER BY updated_at DESC LIMIT 1"#,
     )
-    .bind(&arch)
+    .bind(&cluster.id)
     .fetch_optional(pool)
     .await
     .ok()
