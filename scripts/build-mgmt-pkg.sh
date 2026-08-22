@@ -32,6 +32,20 @@ if docker buildx version >/dev/null 2>&1; then
   HAS_BUILDX=1
 fi
 
+# docker-container builders (multiarch, …) often use the first
+# registry-1.docker.io A record. LAN DNS sometimes returns a host whose
+# cert is *.zerovar.com, which breaks FROM pulls. The docker-driver
+# builder uses images from `docker pull` instead.
+BUILDER_ARGS=()
+if [[ "${HAS_BUILDX}" -eq 1 ]]; then
+  if [[ -z "${BUILDX_BUILDER:-}" ]] && docker buildx inspect desktop-linux >/dev/null 2>&1; then
+    BUILDX_BUILDER=desktop-linux
+  fi
+  if [[ -n "${BUILDX_BUILDER:-}" ]]; then
+    BUILDER_ARGS+=(--builder "${BUILDX_BUILDER}")
+  fi
+fi
+
 IFS=',' read -r -a PLATFORMS <<< "${PKG_PLATFORMS}"
 for raw in "${PLATFORMS[@]}"; do
   plat="$(echo "${raw}" | xargs)"
@@ -40,6 +54,7 @@ for raw in "${PLATFORMS[@]}"; do
   # bash 3.2 + set -u: empty "${arr[@]}" is unbound (macOS). Only expand when set.
   if [[ "${HAS_BUILDX}" -eq 1 ]]; then
     docker buildx build \
+      ${BUILDER_ARGS[@]+"${BUILDER_ARGS[@]}"} \
       ${NET_ARGS[@]+"${NET_ARGS[@]}"} \
       --platform "${plat}" \
       --build-arg "VERSION=${VERSION}" \

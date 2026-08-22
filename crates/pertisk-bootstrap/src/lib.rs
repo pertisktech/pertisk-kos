@@ -25,7 +25,8 @@ use pertisk_config::{MachineConfig, MachineType};
 use tracing::info;
 
 pub use etcd_backup::{
-    default_restore_identity, etcd_restore, etcd_snapshot, EtcdRestoreResult, EtcdSnapshotResult,
+    default_restore_identity, etcd_force_new_cluster, etcd_restore, etcd_snapshot,
+    EtcdRestoreResult, EtcdSnapshotResult,
 };
 pub use gen::{
     gen_config, gen_config_ha, gen_config_ha_with_network, gen_config_with_network,

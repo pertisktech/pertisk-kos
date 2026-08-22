@@ -89,7 +89,9 @@ check "mgmt Quote verify" file_has "crates/pertisk-mgmt/src/node_attestation.rs"
 # --- etcd snapshot / restore (lab) ---
 check "EtcdSnapshot RPC in proto" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'rpc EtcdSnapshot'
 check "EtcdRestore RPC in proto" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'rpc EtcdRestore'
+check "etcd force_new_cluster proto" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'bool force_new_cluster'
 check "pertiskctl etcd" file_has "crates/pertiskctl/src/main.rs" 'Commands::Etcd'
+check "pertiskctl etcd recover" file_has "crates/pertiskctl/src/main.rs" 'EtcdCommands::Recover'
 
 # --- CRI containers / sandbox labels (lab) ---
 check "Containers RPC in proto" file_has "proto/pertisk/machine/v1alpha1/machine.proto" 'rpc Containers'

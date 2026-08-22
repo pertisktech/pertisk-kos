@@ -112,6 +112,11 @@ fi
 echo "==> building initramfs (version=${VERSION} platform=${PLATFORM} profile=${IMAGE_PROFILE})"
 # BuildKit required for Dockerfile cache mounts (cargo registry/target).
 export DOCKER_BUILDKIT=1
+# Prefer docker-driver builder: docker-container instances (multiarch) can
+# hit a poisoned registry-1.docker.io A record (TLS SAN *.zerovar.com).
+if [[ -z "${BUILDX_BUILDER:-}" ]] && docker buildx inspect desktop-linux >/dev/null 2>&1; then
+  export BUILDX_BUILDER=desktop-linux
+fi
 DOCKER_NET=()
 if [[ "$(uname -s)" == Linux ]]; then
   # Self-hosted CI: docker-bridge DNS to Alpine/Debian CDNs often flakes.

@@ -1,6 +1,7 @@
 //! `pertiskctl` — node + cluster management CLI.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -19,6 +20,7 @@ use pertisk_proto::{
     ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest, VersionRequest,
 };
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
+use tonic::Request;
 
 #[derive(Parser)]
 #[command(name = "pertiskctl", about = "Pertisk KOS management CLI")]
@@ -233,6 +235,22 @@ enum EtcdCommands {
         initial_cluster: Option<String>,
         #[arg(long)]
         peer_url: Option<String>,
+        #[arg(long)]
+        advertise_address: Option<String>,
+    },
+    /// Recover a one-member cluster from the existing data dir (no snapshot).
+    ///
+    /// Use when HA etcd has no leader (DHCP reassigned CP IPs). Requires a guest
+    /// that implements `force_new_cluster` (not 0.3.10).
+    Recover {
+        /// Run etcd --force-new-cluster on /var/lib/etcd (required).
+        #[arg(long, default_value_t = false)]
+        force_new_cluster: bool,
+        /// Required — acknowledges single-member promotion / possible data loss.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+        #[arg(long)]
+        member_name: Option<String>,
         #[arg(long)]
         advertise_address: Option<String>,
     },
@@ -544,15 +562,14 @@ async fn main() -> Result<()> {
         Commands::Etcd { ref command } => match command {
             EtcdCommands::Snapshot { output } => {
                 let mut client = connect(&cli).await?;
-                let resp = client
-                    .etcd_snapshot(EtcdSnapshotRequest {
-                        output_path: output
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_default(),
-                    })
-                    .await?
-                    .into_inner();
+                let mut req = Request::new(EtcdSnapshotRequest {
+                    output_path: output
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default(),
+                });
+                req.set_timeout(Duration::from_secs(25));
+                let resp = client.etcd_snapshot(req).await?.into_inner();
                 println!(
                     "available={} path={} size={} revision={} — {}",
                     resp.available, resp.path, resp.size_bytes, resp.revision, resp.message
@@ -581,9 +598,39 @@ async fn main() -> Result<()> {
                         initial_cluster: initial_cluster.clone().unwrap_or_default(),
                         peer_url: peer_url.clone().unwrap_or_default(),
                         advertise_address: advertise_address.clone().unwrap_or_default(),
+                        force_new_cluster: false,
                     })
                     .await?
                     .into_inner();
+                println!("ok={} — {}", resp.ok, resp.message);
+                if !resp.ok {
+                    anyhow::bail!("{}", resp.message);
+                }
+            }
+            EtcdCommands::Recover {
+                force_new_cluster,
+                force,
+                member_name,
+                advertise_address,
+            } => {
+                if !force_new_cluster {
+                    anyhow::bail!("etcd recover requires --force-new-cluster");
+                }
+                if !force {
+                    anyhow::bail!("etcd recover requires --force");
+                }
+                let mut client = connect(&cli).await?;
+                let mut req = Request::new(EtcdRestoreRequest {
+                    snapshot_path: String::new(),
+                    force: *force,
+                    member_name: member_name.clone().unwrap_or_default(),
+                    initial_cluster: String::new(),
+                    peer_url: String::new(),
+                    advertise_address: advertise_address.clone().unwrap_or_default(),
+                    force_new_cluster: true,
+                });
+                req.set_timeout(Duration::from_secs(240));
+                let resp = client.etcd_restore(req).await?.into_inner();
                 println!("ok={} — {}", resp.ok, resp.message);
                 if !resp.ok {
                     anyhow::bail!("{}", resp.message);

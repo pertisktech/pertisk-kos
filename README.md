@@ -33,7 +33,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). **Production install (Proxmox
 | TPM2 Quote (`pertiskctl quote --verify`) | done (lab) |
 | EK cert + manufacturer CA chain | done (lab) — `PERTISK_TPM_EK_CAS` / `--ek-cas` |
 | Mgmt Quote trust store (AK enroll / verify) | done (lab) |
-| etcd snapshot / restore (`pertiskctl etcd …`) | done (lab) |
+| etcd snapshot / restore / recover (`pertiskctl etcd …`) | done (lab) |
 | Terraform provider (`pertisk_cluster` / `pertisk_node`) | done |
 | Observability compose (Prometheus / Grafana / Loki) | done |
 | Cluster API provider (CAPx) | planned |
@@ -292,6 +292,7 @@ curl -s --cacert out/mtls/ca.crt \
 ./out/bin/pertiskctl -e 127.0.0.1:50000 quote --verify  # TPM2 Quote + local verify
 # Optional EK manufacturer chain: --ek-cas /path/to/cas  (or PERTISK_TPM_EK_CAS on the node)
 ./out/bin/pertiskctl -e 127.0.0.1:50000 etcd snapshot
+./out/bin/pertiskctl -e 127.0.0.1:50000 etcd recover --force-new-cluster --force  # HA, no leader
 ```
 
 ## mTLS + signed upgrade smoke

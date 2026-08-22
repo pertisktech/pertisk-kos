@@ -9,8 +9,8 @@ use std::sync::{mpsc, Arc, MutexGuard};
 use std::task::{Context, Poll};
 
 use pertisk_bootstrap::{
-    bootstrap_control_plane, default_restore_identity, detect_advertise_ip, etcd_restore,
-    etcd_snapshot, get_join_config, join_control_plane, read_admin_kubeconfig,
+    bootstrap_control_plane, default_restore_identity, detect_advertise_ip, etcd_force_new_cluster,
+    etcd_restore, etcd_snapshot, get_join_config, join_control_plane, read_admin_kubeconfig,
 };
 use pertisk_config::MachineConfig;
 use pertisk_proto::machine_service_server::{MachineService, MachineServiceServer};
@@ -721,7 +721,13 @@ impl MachineService for MachineSvc {
         request: Request<EtcdRestoreRequest>,
     ) -> Result<Response<EtcdRestoreResponse>, Status> {
         let req = request.into_inner();
-        if req.snapshot_path.is_empty() {
+        if req.force_new_cluster {
+            if !req.snapshot_path.is_empty() {
+                return Err(Status::invalid_argument(
+                    "snapshot_path must be empty when force_new_cluster=true",
+                ));
+            }
+        } else if req.snapshot_path.is_empty() {
             return Err(Status::invalid_argument("snapshot_path required"));
         }
         let (state_root, config_path) = {
@@ -744,6 +750,13 @@ impl MachineService for MachineSvc {
         } else {
             req.member_name
         };
+        if req.force_new_cluster {
+            let result = etcd_force_new_cluster(&state_root, req.force, &name, &advertise).await;
+            return Ok(Response::new(EtcdRestoreResponse {
+                ok: result.ok,
+                message: result.message,
+            }));
+        }
         let initial = if req.initial_cluster.is_empty() {
             def_initial
         } else {

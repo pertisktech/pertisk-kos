@@ -59,11 +59,14 @@ async fn connect_local(state_root: &Path) -> Result<Client> {
     let ca_pem = fs::read(&ca_path).with_context(|| format!("read {}", ca_path.display()))?;
     let cert_pem = fs::read(&cert_path).with_context(|| format!("read {}", cert_path.display()))?;
     let key_pem = fs::read(&key_path).with_context(|| format!("read {}", key_path.display()))?;
-    let opts = ConnectOptions::new().with_tls(
-        etcd_client::TlsOptions::new()
-            .ca_certificate(EtcdCert::from_pem(ca_pem))
-            .identity(EtcdIdentity::from_pem(cert_pem, key_pem)),
-    );
+    let opts = ConnectOptions::new()
+        .with_timeout(Duration::from_secs(5))
+        .with_connect_timeout(Duration::from_secs(5))
+        .with_tls(
+            etcd_client::TlsOptions::new()
+                .ca_certificate(EtcdCert::from_pem(ca_pem))
+                .identity(EtcdIdentity::from_pem(cert_pem, key_pem)),
+        );
     Client::connect([LOCAL_ETCD], Some(opts))
         .await
         .context("connect local etcd https://127.0.0.1:2379")
@@ -77,13 +80,26 @@ fn default_snapshot_path() -> PathBuf {
     PathBuf::from(SNAPSHOT_DIR).join(format!("snapshot-{ts}.db"))
 }
 
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Take a live etcd snapshot and write it to `output_path` (or auto path under SNAPSHOT_DIR).
 pub async fn etcd_snapshot(state_root: &Path, output_path: Option<&Path>) -> EtcdSnapshotResult {
-    match etcd_snapshot_inner(state_root, output_path).await {
-        Ok(r) => r,
-        Err(e) => EtcdSnapshotResult {
+    match tokio::time::timeout(SNAPSHOT_TIMEOUT, etcd_snapshot_inner(state_root, output_path)).await
+    {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => EtcdSnapshotResult {
             available: false,
             message: format!("etcd snapshot failed: {e}"),
+            path: String::new(),
+            size_bytes: 0,
+            revision: 0,
+        },
+        Err(_) => EtcdSnapshotResult {
+            available: false,
+            message: format!(
+                "etcd snapshot timed out after {}s (no leader / quorum lost — try `etcd recover --force-new-cluster`)",
+                SNAPSHOT_TIMEOUT.as_secs()
+            ),
             path: String::new(),
             size_bytes: 0,
             revision: 0,
@@ -208,6 +224,202 @@ async fn etcd_restore_inner(
         "restored {} into {ETCD_DATA}; etcd static pod re-enabled",
         snapshot_path.display()
     ))
+}
+
+/// Promote the local member to a one-node cluster using the existing data dir.
+///
+/// Used when HA etcd has no leader (typical after DHCP reassigns CP IPs so peer
+/// URLs overlap the old member set). Does **not** wipe `/var/lib/etcd`. Lab-only;
+/// `force` is required.
+pub async fn etcd_force_new_cluster(
+    state_root: &Path,
+    force: bool,
+    member_name: &str,
+    advertise_ip: &str,
+) -> EtcdRestoreResult {
+    match etcd_force_new_cluster_inner(state_root, force, member_name, advertise_ip).await {
+        Ok(msg) => EtcdRestoreResult {
+            ok: true,
+            message: msg,
+        },
+        Err(e) => EtcdRestoreResult {
+            ok: false,
+            message: format!("etcd force-new-cluster failed: {e}"),
+        },
+    }
+}
+
+async fn etcd_force_new_cluster_inner(
+    state_root: &Path,
+    force: bool,
+    member_name: &str,
+    advertise_ip: &str,
+) -> Result<String> {
+    if !force {
+        bail!("EtcdRestore force_new_cluster requires force=true");
+    }
+    let advertise_ip = advertise_ip.trim();
+    if advertise_ip.is_empty() {
+        bail!("advertise address required for force-new-cluster");
+    }
+
+    let raw = read_etcd_manifest()?;
+    let name = if member_name.trim().is_empty() {
+        etcd_flag_value(&raw, "--name=").unwrap_or_else(|| "pertisk-cp-1".into())
+    } else {
+        member_name.trim().to_string()
+    };
+
+    disable_etcd_static_pod()?;
+    wait_etcd_down(Duration::from_secs(90))?;
+
+    let patched = patch_etcd_manifest_force_new_cluster(&raw, &name, advertise_ip);
+    fs::write(ETCD_MANIFEST_LIVE, patched)
+        .context("write etcd manifest with --force-new-cluster")?;
+    let _ = fs::remove_file(ETCD_MANIFEST_DISABLED);
+    info!(name = %name, advertise_ip, "etcd static pod enabled with --force-new-cluster");
+
+    wait_etcd_up(state_root, Duration::from_secs(120)).await?;
+
+    let live = fs::read_to_string(ETCD_MANIFEST_LIVE).context("re-read etcd manifest")?;
+    let finalized = finalize_etcd_manifest_after_force_new(&live, &name, advertise_ip);
+    fs::write(ETCD_MANIFEST_LIVE, finalized)
+        .context("strip --force-new-cluster from etcd manifest")?;
+    wait_etcd_up(state_root, Duration::from_secs(120)).await?;
+
+    Ok(format!(
+        "etcd --force-new-cluster as {name}=https://{advertise_ip}:2380; flag stripped after healthy"
+    ))
+}
+
+fn read_etcd_manifest() -> Result<String> {
+    for path in [ETCD_MANIFEST_LIVE, ETCD_MANIFEST_DISABLED] {
+        let p = Path::new(path);
+        if p.is_file() {
+            return fs::read_to_string(p).with_context(|| format!("read {}", p.display()));
+        }
+    }
+    bail!("etcd static pod manifest missing ({ETCD_MANIFEST_LIVE})")
+}
+
+fn etcd_flag_value(yaml: &str, flag: &str) -> Option<String> {
+    for line in yaml.lines() {
+        let Some(i) = line.find(flag) else {
+            continue;
+        };
+        let rest = line[i + flag.len()..].trim();
+        let val = rest
+            .trim_start_matches('"')
+            .trim_end_matches(['"', ',', ' ']);
+        if !val.is_empty() {
+            return Some(val.to_string());
+        }
+    }
+    None
+}
+
+fn yaml_list_prefix(line: &str) -> (String, String) {
+    let start = line.trim_start();
+    let indent = " ".repeat(line.len() - start.len());
+    if start.starts_with("- ") {
+        (indent, "- ".into())
+    } else {
+        (indent, String::new())
+    }
+}
+
+fn replace_command_flag(yaml: &str, flag: &str, value: &str) -> String {
+    let mut out = String::with_capacity(yaml.len());
+    for line in yaml.lines() {
+        if line.contains(flag) {
+            let (indent, marker) = yaml_list_prefix(line);
+            let comma = if line.trim_end().ends_with(',') {
+                ","
+            } else {
+                ""
+            };
+            out.push_str(&indent);
+            out.push_str(&marker);
+            out.push_str(flag);
+            out.push_str(value);
+            out.push_str(comma);
+            out.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn ensure_force_new_cluster_flag(yaml: &str) -> String {
+    if yaml.lines().any(|l| l.contains("--force-new-cluster")) {
+        return yaml.to_string();
+    }
+    let mut out = String::with_capacity(yaml.len() + 32);
+    let mut inserted = false;
+    for line in yaml.lines() {
+        out.push_str(line);
+        out.push('\n');
+        if !inserted && line.contains("--data-dir=") {
+            let (indent, marker) = yaml_list_prefix(line);
+            out.push_str(&indent);
+            out.push_str(&marker);
+            out.push_str("--force-new-cluster");
+            if line.trim_end().ends_with(',') {
+                out.push(',');
+            }
+            out.push('\n');
+            inserted = true;
+        }
+    }
+    if !inserted {
+        out.push_str("        - --force-new-cluster\n");
+    }
+    out
+}
+
+fn strip_force_new_cluster_flag(yaml: &str) -> String {
+    let mut out = String::with_capacity(yaml.len());
+    for line in yaml.lines() {
+        let core = line
+            .trim_start()
+            .trim_start_matches("- ")
+            .trim_start_matches('"')
+            .trim_end_matches(['"', ',', ' ']);
+        if core == "--force-new-cluster" {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Rewrite the static-pod command so this member can start alone from existing WAL.
+pub(crate) fn patch_etcd_manifest_force_new_cluster(
+    yaml: &str,
+    name: &str,
+    advertise_ip: &str,
+) -> String {
+    let peer = format!("https://{advertise_ip}:2380");
+    let mut out = replace_command_flag(yaml, "--name=", name);
+    out = replace_command_flag(
+        &out,
+        "--advertise-client-urls=",
+        &format!("https://{advertise_ip}:2379,https://127.0.0.1:2379"),
+    );
+    out = replace_command_flag(&out, "--initial-advertise-peer-urls=", &peer);
+    out = replace_command_flag(&out, "--initial-cluster=", &format!("{name}={peer}"));
+    out = replace_command_flag(&out, "--initial-cluster-state=", "new");
+    ensure_force_new_cluster_flag(&out)
+}
+
+fn finalize_etcd_manifest_after_force_new(yaml: &str, name: &str, advertise_ip: &str) -> String {
+    let peer = format!("https://{advertise_ip}:2380");
+    let mut out = strip_force_new_cluster_flag(yaml);
+    out = replace_command_flag(&out, "--initial-cluster=", &format!("{name}={peer}"));
+    replace_command_flag(&out, "--initial-cluster-state=", "existing")
 }
 
 fn disable_etcd_static_pod() -> Result<()> {
@@ -373,4 +585,44 @@ pub fn default_restore_identity(hostname: &str, advertise_ip: &str) -> (String, 
     let peer = format!("https://{advertise_ip}:2380");
     let initial = format!("{name}={peer}");
     (name, initial, peer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = "\
+command:
+- etcd
+- --advertise-client-urls=https://10.1.1.180:2379,https://127.0.0.1:2379
+- --data-dir=/var/lib/etcd
+- --initial-advertise-peer-urls=https://10.1.1.178:2380
+- --initial-cluster=lab-cp-1=https://10.1.1.178:2380,lab-cp-2=https://10.1.1.179:2380,lab-cp-3=https://10.1.1.180:2380
+- --initial-cluster-state=existing
+- --name=lab-cp-1
+";
+
+    #[test]
+    fn force_new_cluster_rewrites_peers_and_adds_flag() {
+        let patched = patch_etcd_manifest_force_new_cluster(SAMPLE, "lab-cp-1", "10.1.1.180");
+        assert!(patched.contains("--force-new-cluster"));
+        assert!(patched.contains("--initial-cluster=lab-cp-1=https://10.1.1.180:2380"));
+        assert!(!patched.contains("10.1.1.178"));
+        assert!(patched.contains("--initial-cluster-state=new"));
+        assert!(patched.contains("--initial-advertise-peer-urls=https://10.1.1.180:2380"));
+        assert_eq!(
+            patched.matches("--force-new-cluster").count(),
+            1,
+            "flag must not be duplicated"
+        );
+    }
+
+    #[test]
+    fn finalize_strips_flag_and_marks_existing() {
+        let patched = patch_etcd_manifest_force_new_cluster(SAMPLE, "lab-cp-1", "10.1.1.180");
+        let done = finalize_etcd_manifest_after_force_new(&patched, "lab-cp-1", "10.1.1.180");
+        assert!(!done.contains("--force-new-cluster"));
+        assert!(done.contains("--initial-cluster-state=existing"));
+        assert!(done.contains("--initial-cluster=lab-cp-1=https://10.1.1.180:2380"));
+    }
 }

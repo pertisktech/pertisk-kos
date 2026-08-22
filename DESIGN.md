@@ -252,7 +252,7 @@ Stored on STATE partition; applied transactionally; API `ApplyConfiguration` val
 - `Reboot` / `Shutdown`
 - `Version` / `Health` / `Attest` (sysfs PCR digests + boot slot)
 - `Quote` (TPM2 Quote via `/dev/tpmrm0`, persistent ECC AK + EK cert / CA chain status)
-- `EtcdSnapshot` / `EtcdRestore` (live snapshot; offline restore with `--force`)
+- `EtcdSnapshot` / `EtcdRestore` (live snapshot; offline restore with `--force`; `force_new_cluster` when there is no leader)
 - `Reset` (soft: clear STATE identity + EPHEMERAL runtime; keep GPT; requires `force`)
 - `Containers` (containerd `ctr` list in `k8s.io` + CRI kind/pod labels)
 - `Logs` (pertiskd, containerd, kubelet, dmesg, `container:<id>`; stream + `follow`; optional Loki push)

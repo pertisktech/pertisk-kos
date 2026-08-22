@@ -318,6 +318,9 @@ message EtcdRestoreRequest {
   string peer_url = 5;
   // Optional advertise IP used when defaults are derived.
   string advertise_address = 6;
+  // When true, skip snapshot_path and run etcd --force-new-cluster on the
+  // existing data dir (HA quorum lost after CP IP changes). Still requires force.
+  bool force_new_cluster = 7;
 }
 
 message EtcdRestoreResponse {
