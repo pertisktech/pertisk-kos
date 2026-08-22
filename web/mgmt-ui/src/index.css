@@ -2480,15 +2480,51 @@ tr.row-selected td { background: color-mix(in srgb, var(--accent) 6%, transparen
   grid-template-columns: 1fr;
   gap: 1rem;
 }
+.addon-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.addon-groups .tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--bg-elevated);
+  color: var(--text-muted, var(--muted));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.addon-groups .tab-btn.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.addon-groups .tab-count {
+  font-size: 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+  color: var(--text-muted);
+}
+.addon-groups .tab-btn.active .tab-count {
+  border-color: transparent;
+  background: var(--accent-soft-strong, color-mix(in srgb, var(--accent) 22%, transparent));
+  color: var(--accent);
+}
+.addon-group-badge {
+  font-size: 0.65rem;
+  padding: 0.05rem 0.35rem;
+}
 .addon-section {
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
+  gap: 0.75rem;
 }
-.addon-section-head h3 {
-  margin: 0 0 0.2rem;
-}
-.addon-section-head p {
+.addon-section-blurb {
   margin: 0;
   font-size: 0.85rem;
 }

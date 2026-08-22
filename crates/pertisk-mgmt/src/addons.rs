@@ -38,8 +38,7 @@ const CILIUM_LB_POOL: &str = "default-pool";
 const CILIUM_LB_L2: &str = "default-l2-announcement-policy";
 const INGRESS_ID: &str = "ingress";
 const INGRESS_HELM_REPO: &str = "https://chart.tools.pertisk.com";
-const INGRESS_HELM_REPO_NAME: &str = "pertisk";
-const INGRESS_HELM_CHART: &str = "pertisk/pertisk-ingress";
+const INGRESS_HELM_CHART: &str = "pertisk-ingress";
 const INGRESS_RELEASE: &str = "pertisk-ingress";
 const INGRESS_NAMESPACE: &str = "pertisk-proxy";
 const INGRESS_DEPLOY: &str = "pertisk-proxy-ingress";
@@ -892,6 +891,29 @@ fn ingress_service_ip_policy(network_mode: &str) -> (&'static str, Vec<&'static 
         "dual-stack" | "dualstack" => ("PreferDualStack", vec!["IPv4", "IPv6"]),
         _ => ("SingleStack", vec!["IPv4"]),
     }
+}
+
+/// Map image tag (`v0.1.85`, `v0.1.85-arm64`, `v0.1.85@sha256:…`) to chart version (`0.1.85`).
+fn ingress_chart_version(image_tag: &str) -> Option<String> {
+    let mut t = image_tag.trim();
+    if t.is_empty() {
+        t = INGRESS_IMAGE_TAG;
+    }
+    let t = t.strip_prefix('v').unwrap_or(t);
+    let t = t.split('@').next().unwrap_or(t);
+    let t = t
+        .strip_suffix("-arm64")
+        .or_else(|| t.strip_suffix("-amd64"))
+        .unwrap_or(t);
+    if t.is_empty()
+        || !t.contains('.')
+        || !t
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.')
+    {
+        return None;
+    }
+    Some(t.to_string())
 }
 
 pub fn ingress_helm_values(
@@ -2911,29 +2933,6 @@ async fn install_ingress(
             "Harbor project is public; skipping imagePullSecret\n",
         )?;
     }
-    crate::jobs::append_log(
-        log_path,
-        &format!("helm repo add {INGRESS_HELM_REPO_NAME} {INGRESS_HELM_REPO}\n"),
-    )?;
-    let out = helm_output(
-        None,
-        &[
-            "repo",
-            "add",
-            INGRESS_HELM_REPO_NAME,
-            INGRESS_HELM_REPO,
-            "--force-update",
-        ],
-    )
-    .await
-    .map_err(anyhow_api)?;
-    crate::jobs::append_log(log_path, &out)?;
-    crate::jobs::append_log(log_path, "helm repo update\n")?;
-    let out = helm_output(None, &["repo", "update"])
-        .await
-        .map_err(anyhow_api)?;
-    crate::jobs::append_log(log_path, &out)?;
-
     let values_path = state
         .cfg()
         .jobs_dir()
@@ -2951,10 +2950,17 @@ async fn install_ingress(
     let values_s = values_path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("ingress values path is not utf-8"))?;
+    // Pin --repo so a misconfigured local helm repo alias (e.g. "pertisk" → Bitnami)
+    // cannot steal chart resolution away from chart.tools.pertisk.com.
+    let chart_ver = ingress_chart_version(&cfg.image_tag);
     crate::jobs::append_log(
         log_path,
         &format!(
-            "helm upgrade --install {INGRESS_RELEASE} {INGRESS_HELM_CHART} -n {INGRESS_NAMESPACE}\n"
+            "helm upgrade --install {INGRESS_RELEASE} {INGRESS_HELM_CHART} --repo {INGRESS_HELM_REPO}{}\n",
+            chart_ver
+                .as_deref()
+                .map(|v| format!(" --version {v}"))
+                .unwrap_or_default()
         ),
     )?;
     let host = cfg.admin_host.trim();
@@ -2963,6 +2969,8 @@ async fn install_ingress(
         "--install".into(),
         INGRESS_RELEASE.into(),
         INGRESS_HELM_CHART.into(),
+        "--repo".into(),
+        INGRESS_HELM_REPO.into(),
         "--namespace".into(),
         INGRESS_NAMESPACE.into(),
         "--create-namespace".into(),
@@ -2971,6 +2979,9 @@ async fn install_ingress(
         "-f".into(),
         values_s.to_string(),
     ];
+    if let Some(ver) = chart_ver {
+        helm_args.extend(["--version".into(), ver]);
+    }
     if !host.is_empty() {
         let tls = ingress_tls_secret(&cfg);
         helm_args.extend([
@@ -3751,6 +3762,27 @@ mod tests {
             ingress_pin_tag("v0.1.83@sha256:abc", "arm64"),
             "v0.1.83@sha256:abc"
         );
+    }
+
+    #[test]
+    fn ingress_chart_version_from_image_tag() {
+        assert_eq!(
+            ingress_chart_version("v0.1.85").as_deref(),
+            Some("0.1.85")
+        );
+        assert_eq!(
+            ingress_chart_version("v0.1.85-arm64").as_deref(),
+            Some("0.1.85")
+        );
+        assert_eq!(
+            ingress_chart_version("v0.1.85@sha256:abc").as_deref(),
+            Some("0.1.85")
+        );
+        assert_eq!(
+            ingress_chart_version("").as_deref(),
+            Some(INGRESS_IMAGE_TAG.trim_start_matches('v'))
+        );
+        assert!(ingress_chart_version("latest").is_none());
     }
 
     #[test]

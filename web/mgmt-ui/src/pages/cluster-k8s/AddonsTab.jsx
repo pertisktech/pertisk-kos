@@ -271,8 +271,21 @@ function AddonCard({ clusterId, addon, onInstalled }) {
   )
 }
 
+function sectionItems(addons, sectionId) {
+  return addons.filter((a) => (a.section || 'cluster') === sectionId)
+}
+
+function sectionStatus(items) {
+  if (items.some((a) => a.status === 'installing')) return 'installing'
+  if (items.some((a) => a.status === 'error' || a.status === 'missing')) return 'error'
+  if (items.length > 0 && items.every((a) => a.status === 'installed')) return 'installed'
+  if (items.some((a) => a.status === 'installed' || a.status === 'partial')) return 'partial'
+  return ''
+}
+
 export default function AddonsTab({ clusterId, ready, onInstalled }) {
   const [addons, setAddons] = useState([])
+  const [group, setGroup] = useState('certificates')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -301,6 +314,15 @@ export default function AddonsTab({ clusterId, ready, onInstalled }) {
     return () => clearInterval(t)
   }, [addons, load])
 
+  const visibleSections = ADDON_SECTIONS.filter((s) => sectionItems(addons, s.id).length > 0)
+  const visibleIds = visibleSections.map((s) => s.id).join(',')
+
+  useEffect(() => {
+    if (!visibleIds) return
+    const ids = visibleIds.split(',')
+    if (!ids.includes(group)) setGroup(ids[0])
+  }, [group, visibleIds])
+
   if (!ready) {
     return (
       <div className="tab-body">
@@ -311,6 +333,9 @@ export default function AddonsTab({ clusterId, ready, onInstalled }) {
       </div>
     )
   }
+
+  const active = visibleSections.find((s) => s.id === group) || visibleSections[0]
+  const items = active ? sectionItems(addons, active.id) : []
 
   return (
     <div className="tab-body tab-body-fill addons-tab">
@@ -328,28 +353,48 @@ export default function AddonsTab({ clusterId, ready, onInstalled }) {
 
       {error && <div className="error">{error}</div>}
 
-      {ADDON_SECTIONS.map((section) => {
-        const items = addons.filter((a) => (a.section || 'cluster') === section.id)
-        if (items.length === 0) return null
-        return (
-          <section key={section.id} className="addon-section">
-            <div className="addon-section-head">
-              <h3 className="section-label">{section.title}</h3>
-              <p className="muted">{section.blurb}</p>
-            </div>
-            <div className="addon-grid">
-              {items.map((addon) => (
-                <AddonCard
-                  key={addon.id}
-                  clusterId={clusterId}
-                  addon={addon}
-                  onInstalled={onInstalled}
-                />
-              ))}
-            </div>
-          </section>
-        )
-      })}
+      {visibleSections.length > 0 && (
+        <div className="addon-groups" role="tablist" aria-label="Add-on groups">
+          {visibleSections.map((section) => {
+            const count = sectionItems(addons, section.id).length
+            const status = sectionStatus(sectionItems(addons, section.id))
+            return (
+              <button
+                key={section.id}
+                type="button"
+                role="tab"
+                aria-selected={active?.id === section.id}
+                className={active?.id === section.id ? 'tab-btn active' : 'tab-btn'}
+                onClick={() => setGroup(section.id)}
+              >
+                <span>{section.title}</span>
+                <span className="tab-count">{count}</span>
+                {status ? (
+                  <span className={`${badgeClass(status)} addon-group-badge`}>
+                    {statusLabel(status)}
+                  </span>
+                ) : null}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {active && (
+        <section className="addon-section" role="tabpanel">
+          <p className="muted addon-section-blurb">{active.blurb}</p>
+          <div className="addon-grid">
+            {items.map((addon) => (
+              <AddonCard
+                key={addon.id}
+                clusterId={clusterId}
+                addon={addon}
+                onInstalled={onInstalled}
+              />
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   )
 }
