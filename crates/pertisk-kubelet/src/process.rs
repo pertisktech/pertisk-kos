@@ -4,7 +4,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pertisk_config::{Cluster, MachineConfig, MachineType};
 use thiserror::Error;
@@ -80,6 +80,24 @@ pub fn start_kubelet_with_sink(
     cfg: &MachineConfig,
     log_sink: Option<LineSink>,
 ) -> Result<KubeletHandle, KubeletError> {
+    start_kubelet_inner(paths, cfg, log_sink, Duration::from_secs(20))
+}
+
+/// One spawn + liveness check. The supervise loop calls this so DHCP is not blocked.
+pub fn try_start_kubelet_with_sink(
+    paths: &KubeletPaths,
+    cfg: &MachineConfig,
+    log_sink: Option<LineSink>,
+) -> Result<KubeletHandle, KubeletError> {
+    start_kubelet_inner(paths, cfg, log_sink, Duration::ZERO)
+}
+
+fn start_kubelet_inner(
+    paths: &KubeletPaths,
+    cfg: &MachineConfig,
+    log_sink: Option<LineSink>,
+    retry_budget: Duration,
+) -> Result<KubeletHandle, KubeletError> {
     if !paths.binary.exists() {
         return Err(KubeletError::MissingBinary(
             paths.binary.display().to_string(),
@@ -97,6 +115,51 @@ pub fn start_kubelet_with_sink(
     let container_runtime_endpoint = "unix:///run/containerd/containerd.sock";
     info!(bin = %paths.binary.display(), cni = %cluster.cni.as_str(), "starting kubelet");
 
+    let mut cmd = kubelet_command(paths, cfg, cluster, container_runtime_endpoint);
+
+    // containerd publishes its socket before the CRI plugin serves Version();
+    // kubelet then exits with "server is not initialized yet" and pertiskd
+    // used to leave kubelet=absent with no retry.
+    let deadline = Instant::now() + retry_budget;
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let mut child = cmd.spawn()?;
+        if let Some(stderr) = child.stderr.take() {
+            spawn_stderr_tee(stderr, kubelet_log_path(), "kubelet", log_sink.clone());
+        }
+
+        std::thread::sleep(Duration::from_millis(400));
+
+        let mut handle = KubeletHandle {
+            paths: paths.clone(),
+            child,
+            log_sink: log_sink.clone(),
+        };
+        if handle.is_alive() {
+            info!(pid = handle.pid(), attempt, "kubelet started");
+            return Ok(handle);
+        }
+        if Instant::now() >= deadline {
+            return Err(KubeletError::Msg(
+                "kubelet exited immediately (CRI not ready)".into(),
+            ));
+        }
+        warn!(
+            attempt,
+            "kubelet exited immediately; retrying after CRI settles"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        cmd = kubelet_command(paths, cfg, cluster, container_runtime_endpoint);
+    }
+}
+
+fn kubelet_command(
+    paths: &KubeletPaths,
+    cfg: &MachineConfig,
+    cluster: &Cluster,
+    container_runtime_endpoint: &str,
+) -> Command {
     let mut cmd = Command::new(&paths.binary);
     cmd.arg(format!("--config={}", paths.config.display()))
         .arg(format!("--kubeconfig={}", paths.kubeconfig.display()))
@@ -139,25 +202,7 @@ pub fn start_kubelet_with_sink(
         let pod_cidr = cluster.pod_cidr.as_deref().unwrap_or(DEFAULT_POD_CIDR);
         cmd.arg(format!("--pod-cidr={pod_cidr}"));
     }
-
-    let mut child = cmd.spawn()?;
-    if let Some(stderr) = child.stderr.take() {
-        spawn_stderr_tee(stderr, kubelet_log_path(), "kubelet", log_sink.clone());
-    }
-
-    // Give kubelet a moment; registration is async against the API server.
-    std::thread::sleep(Duration::from_millis(200));
-
-    let mut handle = KubeletHandle {
-        paths: paths.clone(),
-        child,
-        log_sink,
-    };
-    if !handle.is_alive() {
-        return Err(KubeletError::Msg("kubelet exited immediately".into()));
-    }
-    info!(pid = handle.pid(), "kubelet started");
-    Ok(handle)
+    cmd
 }
 
 fn prepare_kubelet(
@@ -190,10 +235,13 @@ fn prepare_kubelet(
         }
         let _ = fs::remove_file(&paths.bootstrap_kubeconfig);
     } else if !is_cp {
-        // Token → CSR → node cert. Remove any stale token kubeconfig so kubelet
-        // is forced through --bootstrap-kubeconfig.
+        // Keep an already-issued client-cert kubeconfig across reboot. Deleting it
+        // forced TLS bootstrap every start; after the join token expired the Node
+        // stayed issued in the API but kubelet never became Ready.
         write_bootstrap_kubeconfig(paths, cluster)?;
-        let _ = fs::remove_file(&paths.kubeconfig);
+        if !keep_or_recover_issued_kubeconfig(paths, cluster) {
+            let _ = fs::remove_file(&paths.kubeconfig);
+        }
     } else {
         // Control-plane without restored credentials: do not delete an existing
         // kubeconfig; try bootstrap as last resort so apply-before-bootstrap works.
@@ -210,6 +258,84 @@ fn prepare_kubelet(
     ensure_cni_mode(paths, cluster.cni, pod_cidr)?;
     std::fs::create_dir_all("/etc/kubernetes/manifests").ok();
     Ok(())
+}
+
+fn kubeconfig_has_client_cert(raw: &str) -> bool {
+    let has_cert = raw.contains("client-certificate-data:") || raw.contains("client-certificate:");
+    if !has_cert {
+        return false;
+    }
+    !(raw.contains("name: kubelet-bootstrap") && raw.contains("token:"))
+}
+
+/// Reuse the issued node cert after shutdown/boot (kubeconfig and/or kubelet PKI).
+fn keep_or_recover_issued_kubeconfig(paths: &KubeletPaths, cluster: &Cluster) -> bool {
+    if paths.kubeconfig.is_file() {
+        if let Ok(raw) = fs::read_to_string(&paths.kubeconfig) {
+            if kubeconfig_has_client_cert(&raw) {
+                info!("keeping issued kubelet kubeconfig");
+                return true;
+            }
+        }
+    }
+    recover_issued_kubeconfig_from_pki(paths, cluster)
+}
+
+fn recover_issued_kubeconfig_from_pki(paths: &KubeletPaths, cluster: &Cluster) -> bool {
+    let pki = paths.root_dir.join("pki");
+    let pem = pki.join("kubelet-client-current.pem");
+    let crt = pki.join("kubelet-client.crt");
+    let key = pki.join("kubelet-client.key");
+    let (cert_path, key_path) = if pem.is_file() {
+        (pem.clone(), pem)
+    } else if crt.is_file() && key.is_file() {
+        (crt, key)
+    } else {
+        return false;
+    };
+    let endpoint = cluster.endpoint.trim();
+    if endpoint.is_empty() {
+        return false;
+    }
+    let ca_block = if paths.ca_file.is_file() {
+        format!("    certificate-authority: {}\n", paths.ca_file.display())
+    } else {
+        String::new()
+    };
+    let body = format!(
+        r#"apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+{ca_block}    server: {endpoint}
+  name: default-cluster
+users:
+- name: default-auth
+  user:
+    client-certificate: {cert}
+    client-key: {key}
+contexts:
+- context:
+    cluster: default-cluster
+    user: default-auth
+  name: default-auth
+current-context: default-auth
+"#,
+        ca_block = ca_block,
+        endpoint = endpoint,
+        cert = cert_path.display(),
+        key = key_path.display(),
+    );
+    match fs::write(&paths.kubeconfig, body) {
+        Ok(()) => {
+            info!("recovered issued kubelet kubeconfig from PKI");
+            true
+        }
+        Err(err) => {
+            warn!(error = %err, "failed to recover kubelet kubeconfig from PKI");
+            false
+        }
+    }
 }
 
 fn dual_stack_node_ip_for(cfg: &MachineConfig) -> Option<String> {
@@ -261,4 +387,72 @@ fn ensure_client_ca(paths: &KubeletPaths, cluster: &Cluster) -> Result<(), Kubel
         "kubelet client CA missing; apiserver log/exec proxy may return 401"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pertisk-kubelet-process-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn issued_kubeconfig_is_kept() {
+        assert!(kubeconfig_has_client_cert(
+            "users:\n- name: default-auth\n  user:\n    client-certificate: /var/lib/kubelet/pki/kubelet-client-current.pem\n"
+        ));
+        assert!(!kubeconfig_has_client_cert(
+            "users:\n- name: kubelet-bootstrap\n  user:\n    token: \"abc.def\"\n"
+        ));
+    }
+
+    #[test]
+    fn recover_kubeconfig_from_current_pem() {
+        let dir = temp_dir();
+        let paths = KubeletPaths::with_prefix(&dir);
+        paths.ensure_dirs().unwrap();
+        fs::create_dir_all(paths.root_dir.join("pki")).unwrap();
+        fs::write(
+            paths.root_dir.join("pki/kubelet-client-current.pem"),
+            "CERT\n",
+        )
+        .unwrap();
+        fs::write(&paths.ca_file, "CA\n").unwrap();
+        let cluster = Cluster {
+            name: Some("lab".into()),
+            endpoint: "https://10.1.1.254:6443".into(),
+            token: Some("expired.token".into()),
+            ca: None,
+            ca_key: None,
+            sa_key: None,
+            network: None,
+            pod_subnet: None,
+            service_subnet: None,
+            pod_cidr_ipv6: None,
+            service_cidr_ipv6: None,
+            network_mode: Default::default(),
+            vip6: None,
+            kubernetes_version: None,
+            pod_cidr: None,
+            cni: Default::default(),
+            cert_sans: vec![],
+        };
+        assert!(recover_issued_kubeconfig_from_pki(&paths, &cluster));
+        let kc = fs::read_to_string(&paths.kubeconfig).unwrap();
+        assert!(kubeconfig_has_client_cert(&kc));
+        assert!(kc.contains("https://10.1.1.254:6443"));
+        assert!(kc.contains("kubelet-client-current.pem"));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

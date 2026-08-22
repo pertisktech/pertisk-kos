@@ -32,6 +32,10 @@ impl BootstrapPaths {
     pub fn kubeconfig_dir(&self) -> PathBuf {
         self.root.join("kubeconfig")
     }
+    /// Worker kubelet TLS-bootstrap material (`kubeconfig` + `pki/`), persisted on STATE.
+    pub fn kubelet_runtime(&self) -> PathBuf {
+        self.root.join("kubelet")
+    }
     pub fn admin_kubeconfig(&self) -> PathBuf {
         self.kubeconfig_dir().join("admin.conf")
     }

@@ -93,6 +93,16 @@ pub fn rewrite_kubeconfig_server(kc: &str, url: &str) -> String {
     out
 }
 
+/// True when kubeconfig holds a node client cert (TLS bootstrap already issued).
+/// Token-only bootstrap kubeconfigs must not match.
+pub fn kubeconfig_has_client_cert(kc: &str) -> bool {
+    let has_cert = kc.contains("client-certificate-data:") || kc.contains("client-certificate:");
+    if !has_cert {
+        return false;
+    }
+    !(kc.contains("name: kubelet-bootstrap") && kc.contains("token:"))
+}
+
 /// Host from a kubeconfig `server:` line (`https://10.0.0.1:6443` → `10.0.0.1`).
 pub fn kubeconfig_server_host(kc: &str) -> Option<String> {
     for line in kc.lines() {
@@ -201,6 +211,19 @@ mod tests {
         assert!(!kc.contains("name: pertisk"));
         assert!(!kc.trim_end().ends_with('"'));
         assert!(kc.ends_with('\n'));
+    }
+
+    #[test]
+    fn issued_kubeconfig_detected() {
+        assert!(kubeconfig_has_client_cert(
+            "users:\n- name: default-auth\n  user:\n    client-certificate: /var/lib/kubelet/pki/kubelet-client-current.pem\n"
+        ));
+        assert!(kubeconfig_has_client_cert(
+            "user:\n    client-certificate-data: QQ==\n    client-key-data: QQ==\n"
+        ));
+        assert!(!kubeconfig_has_client_cert(
+            "users:\n- name: kubelet-bootstrap\n  user:\n    token: \"abc.def\"\n"
+        ));
     }
 
     #[test]

@@ -108,7 +108,26 @@ On AHV:
 - Upload now pins a **deterministic MAC** (`52:54:…` from VMID + `NUTANIX_URL`) and writes it back if create omitted it.
 - On a **managed IPAM** subnet, Prism often **releases** the address when the VM is powered off, then assigns a new one on the next power-on. Upload now sets `requested_ip_address` / `ip_endpoint_list` to that first address **before** power-off, so the reservation sticks. The IPAM netcfg disk and mgmt `:67` helper still inject/serve that same address to the guest.
 
-If the **AHV cluster itself reboots** and DHCP/IPAM still hands out a new IPv4, the guest rebases etcd/apiserver onto the live address (certs + static pods). Mgmt rediscovers the new IP from Prism (or a `:50000` scan) and updates kubeconfig when the endpoint was the old control-plane IP. Prefer unmanaged VLAN + DHCP static leases for HA so etcd peer URLs stay stable.
+If the **AHV cluster itself reboots** and DHCP/IPAM still hands out a new IPv4, the guest rebases etcd/apiserver onto the live address (certs + static pods). Workers keep the **issued** kubelet client cert across reboot (STATE snapshot) instead of re-bootstrapping with an expired join token. After power-on, kubelet retries until containerd’s CRI plugin is actually serving (the socket file appearing first used to leave `kubelet=absent` and the Node **NotReady**). Mgmt rediscovers the new IP from Prism (or a `:50000` scan) and updates kubeconfig when the endpoint was the old control-plane IP. Prefer unmanaged VLAN + DHCP static leases for HA so etcd peer URLs stay stable.
+
+## Nodes NotReady after VM shutdown
+
+Guests still on **0.3.9** do not retry kubelet after the containerd CRI race. Power-off → power-on leaves the Node **issued** in the API and **NotReady**. Control planes often recover (bootstrap is slower than CRI init); workers do not.
+
+That is fixed in `pertiskd` (keep issued kubelet certs, snapshot to STATE, retry kubelet until CRI is up). It is **not** on the VM until you ship a new initramfs:
+
+```bash
+make os-trust                              # once
+make os-bundle VERSION=0.3.10 ARCH=amd64   # kernel + initramfs with the new pertiskd
+```
+
+Then **Cluster → Upgrade → OS A/B upgrade** (workers first). Recreating VMs from `make cloud` also works; that is a reinstall.
+
+Until the new guest is rolling, either open the cluster in mgmt (it re-applies machine config when `kubelet=absent`) or:
+
+```bash
+./scripts/recover-not-ready-nodes.sh ~/.kube/ptkos/lab-ha-nutanix.yaml
+```
 
 **Existing VMs:** recreate, or repair in place (pins MAC + requested IP, re-attaches netcfg):
 

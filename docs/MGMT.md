@@ -213,6 +213,8 @@ make os-bundle VERSION=0.2.86 ARCH=arm64
 
 Job `upgrade_os` stages the bundle onto each guest via a privileged hostPath pod (`/var/lib/pertisk-os-upgrade`), installs `os-trust.pk` on STATE if missing, then `pertiskctl upgrade --bundle … --reboot` and `mark-boot-good`. Order: workers first, then control planes. Requires `kubectl` + `pertiskctl` on the mgmt host.
 
+**0.3.9 guests** stay **NotReady** after VM power-off/on (`kubelet=absent` after a containerd CRI race). Ship a new OS bundle with the kubelet retry fix, or wait for mgmt to re-apply machine config (cluster list/detail probe). Lab: `./scripts/recover-not-ready-nodes.sh <kubeconfig>`.
+
 Recreating VMs from a new qcow2 is a reinstall, not this path.
 
 ## Images (install disks)

@@ -33,7 +33,7 @@ pub use gen::{
     GenConfigHaOutput, GenConfigOutput, GenNetworkOpts,
 };
 pub use join::{get_join_config, join_control_plane, JoinConfigResult, JoinControlPlaneResult};
-pub use kubeconfig::{rename_kubeconfig_context, sanitize_kubeconfig};
+pub use kubeconfig::{kubeconfig_has_client_cert, rename_kubeconfig_context, sanitize_kubeconfig};
 pub use paths::BootstrapPaths;
 pub use token::generate_bootstrap_token;
 
@@ -379,6 +379,90 @@ pub fn restore_control_plane(state_root: &Path) -> Result<bool> {
     info!(
         state = %paths.root.display(),
         "restored control-plane /etc/kubernetes + kubelet credentials from STATE"
+    );
+    Ok(true)
+}
+
+const LIVE_KUBELET_DIR: &str = "/var/lib/kubelet";
+
+/// Copy issued worker kubelet credentials onto STATE so a reboot can restore them.
+///
+/// `/var/lib/kubelet` is on EPHEMERAL (or tmpfs). After shutdown/boot the Node
+/// object is still issued, but kubelet used to wipe kubeconfig and fail TLS
+/// bootstrap once the join token expired.
+pub fn snapshot_worker_kubelet(state_root: &Path) -> Result<bool> {
+    snapshot_worker_kubelet_from(state_root, Path::new(LIVE_KUBELET_DIR))
+}
+
+pub fn snapshot_worker_kubelet_from(state_root: &Path, live: &Path) -> Result<bool> {
+    let paths = BootstrapPaths::default_state(state_root);
+    if paths.is_bootstrapped() {
+        return Ok(false);
+    }
+    let live_kc = live.join("kubeconfig");
+    let Ok(raw) = fs::read_to_string(&live_kc) else {
+        return Ok(false);
+    };
+    if !kubeconfig::kubeconfig_has_client_cert(&raw) {
+        return Ok(false);
+    }
+    let dest = paths.kubelet_runtime();
+    fs::create_dir_all(&dest)?;
+    fs::copy(&live_kc, dest.join("kubeconfig"))
+        .with_context(|| format!("snapshot {}", live_kc.display()))?;
+    let live_ca = live.join("ca.crt");
+    if live_ca.is_file() {
+        let _ = fs::copy(&live_ca, dest.join("ca.crt"));
+    }
+    let live_pki = live.join("pki");
+    if live_pki.is_dir() {
+        copy_dir(&live_pki, &dest.join("pki"))?;
+    }
+    Ok(true)
+}
+
+/// Restore worker kubelet client certs from STATE before kubelet starts.
+pub fn restore_worker_kubelet(state_root: &Path) -> Result<bool> {
+    restore_worker_kubelet_into(state_root, Path::new(LIVE_KUBELET_DIR))
+}
+
+pub fn restore_worker_kubelet_into(state_root: &Path, live: &Path) -> Result<bool> {
+    let paths = BootstrapPaths::default_state(state_root);
+    if paths.is_bootstrapped() {
+        return Ok(false);
+    }
+    let src = paths.kubelet_runtime();
+    let src_kc = src.join("kubeconfig");
+    if !src_kc.is_file() {
+        return Ok(false);
+    }
+    let Ok(raw) = fs::read_to_string(&src_kc) else {
+        return Ok(false);
+    };
+    if !kubeconfig::kubeconfig_has_client_cert(&raw) {
+        return Ok(false);
+    }
+    fs::create_dir_all(live)?;
+    let live_kc = live.join("kubeconfig");
+    if live_kc.is_file() {
+        if let Ok(existing) = fs::read_to_string(&live_kc) {
+            if kubeconfig::kubeconfig_has_client_cert(&existing) {
+                return Ok(false);
+            }
+        }
+    }
+    fs::copy(&src_kc, &live_kc).with_context(|| format!("restore {}", live_kc.display()))?;
+    let src_ca = src.join("ca.crt");
+    if src_ca.is_file() {
+        let _ = fs::copy(&src_ca, live.join("ca.crt"));
+    }
+    let src_pki = src.join("pki");
+    if src_pki.is_dir() {
+        copy_dir(&src_pki, &live.join("pki"))?;
+    }
+    info!(
+        state = %src.display(),
+        "restored worker kubelet credentials from STATE"
     );
     Ok(true)
 }
@@ -1164,5 +1248,31 @@ cluster:
         assert!(admin.contains("https://10.1.1.40:6443"));
         assert_eq!(paths.read_advertise().as_deref(), Some("10.1.1.40"));
         assert!(paths.pki().join("apiserver.crt").is_file());
+    }
+
+    #[test]
+    fn worker_kubelet_snapshot_roundtrip() {
+        let state = tempfile::tempdir().unwrap();
+        let live = tempfile::tempdir().unwrap();
+        let live_dir = live.path();
+        fs::create_dir_all(live_dir.join("pki")).unwrap();
+        fs::write(
+            live_dir.join("kubeconfig"),
+            "users:\n- name: default-auth\n  user:\n    client-certificate: /var/lib/kubelet/pki/kubelet-client-current.pem\n",
+        )
+        .unwrap();
+        fs::write(live_dir.join("ca.crt"), "CA\n").unwrap();
+        fs::write(live_dir.join("pki/kubelet-client-current.pem"), "CERT\n").unwrap();
+
+        assert!(snapshot_worker_kubelet_from(state.path(), live_dir).unwrap());
+
+        let empty = tempfile::tempdir().unwrap();
+        assert!(restore_worker_kubelet_into(state.path(), empty.path()).unwrap());
+        let kc = fs::read_to_string(empty.path().join("kubeconfig")).unwrap();
+        assert!(kubeconfig_has_client_cert(&kc));
+        assert_eq!(
+            fs::read_to_string(empty.path().join("pki/kubelet-client-current.pem")).unwrap(),
+            "CERT\n"
+        );
     }
 }

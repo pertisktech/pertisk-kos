@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -573,6 +573,203 @@ pub async fn rediscover_cluster_ips(state: &AppState, cluster_id: &str) -> anyho
     Ok(updated)
 }
 
+const KUBELET_HEAL_TTL: Duration = Duration::from_secs(90);
+
+fn kubelet_heal_at() -> &'static Mutex<HashMap<String, Instant>> {
+    static C: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 0.3.x guests can leave `kubelet=absent` after VM power-on (CRI race). Re-apply
+/// the node's machine config so pertiskd starts kubelet once containerd is up.
+pub async fn heal_absent_kubelets(state: &AppState, cluster_id: &str) -> anyhow::Result<usize> {
+    let pertiskctl = &state.cfg().pertiskctl;
+    if !pertiskctl.is_file() {
+        return Ok(0);
+    }
+    let row = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT name, kubeconfig_path FROM clusters WHERE id = ?",
+    )
+    .bind(cluster_id)
+    .fetch_optional(state.pool())
+    .await?;
+    let Some((cluster_name, kc_path)) = row else {
+        return Ok(0);
+    };
+    let Some(kc) = kc_path.filter(|p| !p.is_empty()) else {
+        return Ok(0);
+    };
+    let kc = PathBuf::from(kc);
+    if !kc.is_file() {
+        return Ok(0);
+    }
+
+    let rows = fetch_from_kubectl(&kc).await.unwrap_or_default();
+    let mut healed = 0usize;
+    for (name, snap) in rows {
+        if snap.kubelet_status.as_deref() != Some("not_ready") {
+            continue;
+        }
+        let Some(ip) = snap.ip.as_deref().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        {
+            let mut g = kubelet_heal_at()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if let Some(at) = g.get(ip) {
+                if at.elapsed() < KUBELET_HEAL_TTL {
+                    continue;
+                }
+            }
+            g.insert(ip.to_string(), Instant::now());
+        }
+        if !tcp_open(ip, 50000).await {
+            continue;
+        }
+        let health = fetch_machine_health(pertiskctl, ip).await;
+        if health.as_deref() != Some("absent") {
+            continue;
+        }
+        let Some(cfg_path) = machine_config_for_node(&state.cfg().kubeconfigs_dir(), &cluster_name, &name)
+        else {
+            tracing::debug!(node = %name, "kubelet heal skipped; no machine yaml");
+            continue;
+        };
+        let Ok(yaml) = std::fs::read_to_string(&cfg_path) else {
+            continue;
+        };
+        let mut yaml = patch_yaml_hostname(&yaml, &name);
+        if let Some(ver) = snap.k8s_version.as_deref() {
+            yaml = patch_yaml_kubernetes_version(&yaml, ver);
+        }
+        let tmp = state.cfg().data_dir.join(format!(
+            "kubelet-heal-{}-{}.yaml",
+            cluster_id,
+            uuid_stamp()
+        ));
+        if std::fs::write(&tmp, &yaml).is_err() {
+            continue;
+        }
+        tracing::info!(node = %name, ip, "re-applying machine config to start kubelet");
+        let apply = timeout(
+            Duration::from_secs(20),
+            Command::new(pertiskctl)
+                .args(["-e", &format!("{ip}:50000"), "apply", "-f", &tmp.to_string_lossy()])
+                .output(),
+        )
+        .await;
+        let _ = std::fs::remove_file(&tmp);
+        match apply {
+            Ok(Ok(out)) if out.status.success() => healed += 1,
+            Ok(Ok(out)) => tracing::warn!(
+                node = %name,
+                status = %out.status,
+                stderr = %String::from_utf8_lossy(&out.stderr),
+                "kubelet heal apply failed"
+            ),
+            Ok(Err(err)) => tracing::warn!(node = %name, error = %err, "kubelet heal apply failed"),
+            Err(_) => tracing::warn!(node = %name, "kubelet heal apply timed out"),
+        }
+    }
+    Ok(healed)
+}
+
+fn uuid_stamp() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos().to_string())
+        .unwrap_or_else(|_| "x".into())
+}
+
+async fn fetch_machine_health(pertiskctl: &Path, ip: &str) -> Option<String> {
+    let out = timeout(
+        Duration::from_secs(4),
+        Command::new(pertiskctl)
+            .args(["-e", &format!("{ip}:50000"), "health"])
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_health_kubelet(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_health_kubelet(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let main = line.split(" — ").next().unwrap_or(line);
+        let main = main.split(" - ").next().unwrap_or(main);
+        for part in main.split_whitespace() {
+            if let Some(v) = part.strip_prefix("kubelet=") {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn machine_config_for_node(kubeconfigs_dir: &Path, cluster_name: &str, node_name: &str) -> Option<PathBuf> {
+    let dir = kubeconfigs_dir.join(cluster_name);
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(suffix) = node_name.strip_prefix(&format!("{cluster_name}-")) {
+        if let Some(rest) = suffix.strip_prefix("cp-") {
+            if rest == "1" {
+                candidates.push(dir.join("controlplane.yaml"));
+            } else {
+                candidates.push(dir.join(format!("controlplane-{rest}.yaml")));
+            }
+        } else if let Some(rest) = suffix.strip_prefix("wk-") {
+            candidates.push(dir.join(format!("worker-{rest}.yaml")));
+            candidates.push(dir.join("worker.yaml"));
+        }
+    }
+    candidates.push(dir.join(format!("{node_name}.yaml")));
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+fn patch_yaml_hostname(yaml: &str, hostname: &str) -> String {
+    let mut out = String::with_capacity(yaml.len() + 16);
+    let mut patched = false;
+    for line in yaml.lines() {
+        let trimmed = line.trim_start();
+        if !patched && trimmed.starts_with("hostname:") {
+            let indent = line.len() - trimmed.len();
+            out.push_str(&" ".repeat(indent));
+            out.push_str("hostname: ");
+            out.push_str(hostname);
+            out.push('\n');
+            patched = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn patch_yaml_kubernetes_version(yaml: &str, version: &str) -> String {
+    let mut out = String::with_capacity(yaml.len() + 32);
+    let mut patched = false;
+    for line in yaml.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("kubernetesVersion:") {
+            let indent = line.len() - trimmed.len();
+            out.push_str(&" ".repeat(indent));
+            out.push_str("kubernetesVersion: ");
+            out.push_str(version);
+            out.push('\n');
+            patched = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 async fn maybe_rewrite_cluster_endpoint(
     state: &AppState,
     cluster_id: &str,
@@ -819,5 +1016,28 @@ lab-ha-wk-1   Ready    <none>          42s   v1.36.2   10.1.1.134    <none>
             Some("cri-o://1.32.0")
         );
         assert_eq!(parse_container_runtime("").as_deref(), None);
+    }
+
+    #[test]
+    fn parses_health_kubelet() {
+        assert_eq!(
+            parse_health_kubelet("ready=true containerd=up kubelet=absent — containerd=up kubelet=absent")
+                .as_deref(),
+            Some("absent")
+        );
+        assert_eq!(
+            parse_health_kubelet("ready=true containerd=up kubelet=up — all good").as_deref(),
+            Some("up")
+        );
+    }
+
+    #[test]
+    fn patches_hostname_and_k8s_version() {
+        let yaml = "machine:\n  type: worker\n  network:\n    hostname: old-wk-1\ncluster:\n  kubernetesVersion: v1.36.1\n";
+        let y = patch_yaml_hostname(yaml, "lab-ha-nutanix-wk-1");
+        assert!(y.contains("hostname: lab-ha-nutanix-wk-1"));
+        let y = patch_yaml_kubernetes_version(&y, "v1.36.3");
+        assert!(y.contains("kubernetesVersion: v1.36.3"));
+        assert!(!y.contains("v1.36.1"));
     }
 }

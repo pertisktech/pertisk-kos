@@ -3,7 +3,8 @@
 use anyhow::Result;
 use pertisk_config::{MachineConfig, MachineType};
 use pertisk_kubelet::{
-    ensure_kubelet_version, start_kubelet_with_sink, KubeletHandle, KubeletPaths,
+    ensure_kubelet_version, start_kubelet_with_sink, try_start_kubelet_with_sink, KubeletHandle,
+    KubeletPaths,
 };
 use pertisk_runtime::{start_containerd_with_sink, ContainerdHandle, RuntimePaths};
 use tracing::{info, warn};
@@ -15,9 +16,19 @@ pub struct NodeServices {
     pub containerd: Option<ContainerdHandle>,
     pub kubelet: Option<KubeletHandle>,
     pub guest_agent: Option<GuestAgentHandle>,
+    kubelet_retry_warn_at: Option<std::time::Instant>,
 }
 
 impl NodeServices {
+    pub fn empty(guest_agent: Option<GuestAgentHandle>) -> Self {
+        Self {
+            containerd: None,
+            kubelet: None,
+            guest_agent,
+            kubelet_retry_warn_at: None,
+        }
+    }
+
     /// Attempt to start runtime services. Missing binaries are soft-warned.
     pub fn start(cfg: &MachineConfig, logs: &LogRing) -> Result<Self> {
         Self::start_with_guest_agent(cfg, logs, guest_agent::start())
@@ -33,6 +44,7 @@ impl NodeServices {
             containerd: None,
             kubelet: None,
             guest_agent,
+            kubelet_retry_warn_at: None,
         };
 
         match start_containerd_with_sink(&RuntimePaths::default(), Some(logs.sink("containerd"))) {
@@ -81,6 +93,31 @@ impl NodeServices {
         if let Some(ref mut cd) = self.containerd {
             if let Err(err) = cd.ensure_alive() {
                 warn!(error = %err, "containerd restart failed");
+            }
+        }
+        // After reboot kubelet can lose the CRI race (containerd socket exists,
+        // plugin not ready). Start/retry even when the handle was never stored.
+        if self.kubelet.is_none() && self.containerd.is_some() && cfg.cluster.is_some() {
+            match try_start_kubelet_with_sink(
+                &KubeletPaths::default(),
+                cfg,
+                Some(crate::log_ring().sink("kubelet")),
+            ) {
+                Ok(handle) => {
+                    info!(pid = handle.pid(), "kubelet started after earlier failure");
+                    self.kubelet = Some(handle);
+                    self.kubelet_retry_warn_at = None;
+                }
+                Err(err) => {
+                    let now = std::time::Instant::now();
+                    let noisy = self
+                        .kubelet_retry_warn_at
+                        .is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_secs(5));
+                    if noisy {
+                        warn!(error = %err, "kubelet retry failed");
+                        self.kubelet_retry_warn_at = Some(now);
+                    }
+                }
             }
         }
         if let Some(ref mut kl) = self.kubelet {

@@ -127,6 +127,7 @@ async fn probe_uncached(state: &AppState, cluster_id: &str) -> String {
 
     let results = futures::future::join_all(futs).await;
     if results.into_iter().any(|ok| ok) {
+        spawn_kubelet_heal(state.clone(), cluster_id.to_string());
         return "online".into();
     }
 
@@ -159,9 +160,16 @@ async fn probe_uncached(state: &AppState, cluster_id: &str) -> String {
         .into_iter()
         .any(|ok| ok)
     {
+        spawn_kubelet_heal(state.clone(), cluster_id.to_string());
         return "online".into();
     }
     "offline".into()
+}
+
+fn spawn_kubelet_heal(state: AppState, cluster_id: String) {
+    tokio::spawn(async move {
+        let _ = crate::node_sync::heal_absent_kubelets(&state, &cluster_id).await;
+    });
 }
 
 pub async fn probe_readyz(kc: &Path, server: Option<&str>) -> bool {

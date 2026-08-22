@@ -151,6 +151,9 @@ mod unix_impl {
                         Ok(false) => {}
                         Err(err) => warn!(error = %err, "advertise rebase failed"),
                     }
+                    if let Err(err) = pertisk_bootstrap::snapshot_worker_kubelet(&state_root) {
+                        warn!(error = %err, "worker kubelet snapshot failed");
+                    }
                 }
             }
             if !dhcp_ok && std::time::Instant::now() >= dhcp_retry_at {

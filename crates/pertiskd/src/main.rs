@@ -514,6 +514,11 @@ fn run() -> Result<()> {
         Ok(false) => {}
         Err(err) => warn!(error = %err, "control-plane restore failed"),
     }
+    match pertisk_bootstrap::restore_worker_kubelet(&volume.root) {
+        Ok(true) => info!("worker kubelet credentials restored from STATE"),
+        Ok(false) => {}
+        Err(err) => warn!(error = %err, "worker kubelet restore failed"),
+    }
     // Before kubelet (`protectKernelDefaults: true`).
     sysctl::apply_hardening_sysctls();
 
@@ -534,29 +539,17 @@ fn run() -> Result<()> {
         st.set_message("starting runtime");
     }
     let mut services = if args.skip_runtime {
-        NodeServices {
-            containerd: None,
-            kubelet: None,
-            guest_agent,
-        }
+        NodeServices::empty(guest_agent)
     } else if let Some(ref cfg) = cfg {
         match NodeServices::start_with_guest_agent(cfg, log_ring(), guest_agent) {
             Ok(s) => s,
             Err(err) => {
                 warn!(error = %err, "runtime services failed to start");
-                NodeServices {
-                    containerd: None,
-                    kubelet: None,
-                    guest_agent: guest_agent::start(),
-                }
+                NodeServices::empty(guest_agent::start())
             }
         }
     } else {
-        NodeServices {
-            containerd: None,
-            kubelet: None,
-            guest_agent,
-        }
+        NodeServices::empty(guest_agent)
     };
 
     {

@@ -125,19 +125,31 @@ pub fn start_containerd_with_sink(
         log_sink,
     };
 
-    // Brief wait for the socket (non-fatal if slow).
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Brief wait for the socket (non-fatal if slow). The socket file can exist
+    // before the CRI plugin answers Version(); kubelet then exits immediately.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut socket_seen = None;
     while Instant::now() < deadline {
-        if handle.paths.socket.exists() {
-            info!(pid = handle.pid(), socket = %handle.paths.socket.display(), "containerd ready");
-            return Ok(handle);
-        }
         if matches!(handle.child.try_wait(), Ok(Some(_))) {
             return Err(RuntimeError::Msg("containerd exited during startup".into()));
+        }
+        if handle.paths.socket.exists() {
+            if socket_seen.is_none() {
+                socket_seen = Some(Instant::now());
+            }
+            // Hold ~2s after the socket appears so CRI can finish init.
+            if socket_seen.is_some_and(|t| t.elapsed() >= Duration::from_secs(2)) {
+                info!(pid = handle.pid(), socket = %handle.paths.socket.display(), "containerd ready");
+                return Ok(handle);
+            }
         }
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    warn!("containerd socket not ready yet; continuing");
+    if handle.paths.socket.exists() {
+        info!(pid = handle.pid(), socket = %handle.paths.socket.display(), "containerd socket up (CRI may still be settling)");
+    } else {
+        warn!("containerd socket not ready yet; continuing");
+    }
     Ok(handle)
 }

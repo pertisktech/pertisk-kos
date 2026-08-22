@@ -123,6 +123,8 @@ Proxmox pins `net0` MAC from VMID so the LAN DHCP server keeps the same lease ac
 
 **Existing VMs** (created before this change): recreate the guest, or power the VM off in Host Client, then start it once from Pertisk mgmt (node reboot / hardware apply) so `uuid.action=keep` is written. Recreate is required to switch to the pinned `00:50:56:…` MAC.
 
-If the **ESXi host reboots** and DHCP still issues a new IPv4, the guest rebases etcd/apiserver onto the live address. Mgmt rediscovers the IP from VMware Tools when present, otherwise scans `:50000` on the node subnet and matches hostnames. For HA, add DHCP static leases so etcd peer URLs do not churn.
+If the **ESXi host reboots** and DHCP still issues a new IPv4, the guest rebases etcd/apiserver onto the live address. Workers keep the **issued** kubelet client cert across reboot instead of re-bootstrapping with an expired join token. After power-on, kubelet retries until containerd’s CRI plugin is actually serving (the socket file appearing first used to leave `kubelet=absent` and the Node **NotReady**). Mgmt rediscovers the IP from VMware Tools when present, otherwise scans `:50000` on the node subnet and matches hostnames. For HA, add DHCP static leases so etcd peer URLs do not churn.
+
+Guests on **0.3.9** still fail this race until you roll a new OS bundle (`make os-bundle`) or cloud image. Until then: `./scripts/recover-not-ready-nodes.sh ~/.kube/ptkos/lab-ha-vsphere.yaml` (or open the cluster in mgmt).
 
 For a hard guarantee, add **Static Leases** on the DHCP server for each MAC (same as Proxmox). Do not reserve the HA kube-vip.
