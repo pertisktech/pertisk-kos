@@ -139,6 +139,12 @@ Prefer an unmanaged VLAN + router DHCP static leases (same as Proxmox) when you 
 
 Recreate VMs after updating scripts. Guest image rebuild is needed for DHCP-before-STATE / partprobe timeout fixes inside `pertiskd`.
 
+## Stale OS-IMAGE (`pertisk-kos 0.1.0`)
+
+Proxmox always re-imports the qcow2 from mgmt. Older Nutanix create **reused** the last ACTIVE Prism `DISK_IMAGE` named `pertisk-cloud-{vmid}-…`, so a new cluster could boot a leftover guest. `kubectl get nodes -o wide` then shows `OS-IMAGE` `pertisk-kos 0.1.0` (the workspace Cargo default baked into that old initramfs).
+
+Upload now names the Prism image with a qcow2 content hash and re-imports when the file on mgmt changes. Recreate the VMs (Cluster → Create, or `nutanix-upload-vm.sh` without `NUTANIX_IMAGE_NAME`). Force a re-import of the same file with `NUTANIX_FORCE_IMPORT=1`.
+
 ## Limits
 
 - Scale-out via UI / Terraform `pertisk_node` (`mode=create`) uses `nutanix-add-node.sh` (same join path as Proxmox).

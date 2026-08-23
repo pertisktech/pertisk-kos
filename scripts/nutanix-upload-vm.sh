@@ -41,6 +41,10 @@ Options:
   --storage NAME    storage container (default $NUTANIX_STORAGE)
   --no-start        do not power on after create
   --repair-name NAME  existing VM: power off, attach IPAM netcfg, power on
+
+Env:
+  NUTANIX_FORCE_IMPORT=1   re-import even when the qcow2 fingerprint already exists
+  NUTANIX_IMAGE_NAME=NAME  pin a Prism image (skips fingerprint; can boot a stale guest)
 EOF
   exit 1
 }
@@ -240,6 +244,44 @@ delete_image() {
   else
     sleep 2
   fi
+}
+
+# Content id for the qcow2 on mgmt. Prism image names used to be
+# pertisk-cloud-${VMID}-$(basename) with no hash, so create-cluster reused an
+# old ACTIVE DISK_IMAGE and kubelet kept OS-IMAGE "pertisk-kos 0.1.0".
+qcow2_fingerprint() {
+  local f="$1" sum
+  if command -v sha256sum >/dev/null 2>&1; then
+    sum="$(sha256sum "$f" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    sum="$(shasum -a 256 "$f" | awk '{print $1}')"
+  else
+    sum="$(python3 -c 'import hashlib,sys
+h=hashlib.sha256()
+with open(sys.argv[1],"rb") as fh:
+    for chunk in iter(lambda: fh.read(1024*1024), b""):
+        h.update(chunk)
+print(h.hexdigest())' "$f")"
+  fi
+  printf '%s\n' "${sum:0:12}"
+}
+
+# Drop leftover per-VMID images from older scripts (unhashed names).
+delete_legacy_vmid_images() {
+  local vmid="$1"
+  local prefix="pertisk-cloud-${vmid}-"
+  local uuid name
+  while IFS=$'\t' read -r uuid name; do
+    [[ -n "$uuid" ]] || continue
+    echo "==> removing stale Prism image ${name} (${uuid})" >&2
+    delete_image "$uuid"
+  done < <(api_get images 2>/dev/null | jq -r --arg p "$prefix" '
+    (.entities // .)
+    | if type=="array" then . else [.] end
+    | .[]
+    | select((.name // "") | startswith($p))
+    | "\(.uuid)\t\(.name // "")"
+  ')
 }
 
 # Address Prism can reach to pull the qcow2 over HTTP.
@@ -531,8 +573,22 @@ else
   fi
 fi
 
-IMAGE_NAME="${IMAGE_NAME:-pertisk-cloud-${VMID}-$(basename "$DISK" .qcow2)}"
-echo "==> create/import image ${IMAGE_NAME} (${DISK_BYTES} bytes file)"
+if [[ -n "$IMAGE_NAME" ]]; then
+  echo "warn: NUTANIX_IMAGE_NAME=${IMAGE_NAME} — Prism will reuse this image even if ${DISK} changed" >&2
+else
+  echo "==> fingerprinting ${DISK}" >&2
+  DISK_HASH="$(qcow2_fingerprint "$DISK")"
+  IMAGE_NAME="pertisk-$(basename "$DISK" .qcow2)-${DISK_HASH}"
+fi
+echo "==> create/import image ${IMAGE_NAME} (${DISK_BYTES} bytes file, src=${DISK})"
+delete_legacy_vmid_images "$VMID"
+if [[ "${NUTANIX_FORCE_IMPORT:-0}" == "1" ]]; then
+  FORCE_UUID="$(find_image_uuid "$IMAGE_NAME" || true)"
+  if [[ -n "${FORCE_UUID:-}" ]]; then
+    echo "==> NUTANIX_FORCE_IMPORT=1 — re-import ${IMAGE_NAME}" >&2
+    delete_image "$FORCE_UUID"
+  fi
+fi
 
 IMAGE_UUID="$(find_image_uuid "$IMAGE_NAME")"
 VMDISK_UUID=""
@@ -541,7 +597,7 @@ if [[ -n "${IMAGE_UUID:-}" ]]; then
   IMG_STATE="$(echo "$IMG" | jq -r '.image_state // .status // empty' | tr 'a-z' 'A-Z')"
   VMDISK_UUID="$(echo "$IMG" | jq -r '.vmdisk_uuid // .vm_disk_id // empty')"
   if [[ "$IMG_STATE" == "ACTIVE" || "$IMG_STATE" == "COMPLETE" ]] && [[ -n "$VMDISK_UUID" ]]; then
-    echo "==> reusing ACTIVE image ${IMAGE_UUID}"
+    echo "==> reusing ACTIVE image ${IMAGE_UUID} (qcow2 fingerprint matches ${DISK})"
   else
     echo "==> existing image ${IMAGE_UUID} state=${IMG_STATE:-?} — delete and re-import"
     delete_image "$IMAGE_UUID"
