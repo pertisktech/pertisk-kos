@@ -213,26 +213,14 @@ fn rewrite_proxmox_ssh_for_provider(ssh: &str, provider_url: &str) -> Option<Str
     }
 }
 
-/// Background dispatcher: run up to `PERTISK_JOB_WORKERS` jobs at once (default 4),
-/// never two jobs for the same cluster.
+/// One job at a time. Parallel VM clones happen inside create scripts (`PERTISK_VM_JOBS`).
 pub fn spawn_worker(state: AppState) {
     tokio::spawn(async move {
-        let max = job_workers();
-        tracing::info!(max_workers = max, "job dispatcher started");
         loop {
-            match claim_next(&state, max).await {
-                Ok(Some(job)) => {
-                    let st = state.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = execute_job(&st, job).await {
-                            tracing::error!(error = %e, "job execute failed");
-                        }
-                        st.notify_jobs();
-                    });
-                    continue;
-                }
-                Ok(None) => {}
-                Err(e) => tracing::error!(error = %e, "job claim failed"),
+            match tick(&state).await {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(e) => tracing::error!(error = %e, "job worker tick failed"),
             }
             tokio::select! {
                 _ = state.inner.job_notify.notified() => {}
@@ -242,15 +230,22 @@ pub fn spawn_worker(state: AppState) {
     });
 }
 
-fn job_workers() -> usize {
-    job_workers_from(std::env::var("PERTISK_JOB_WORKERS").ok().as_deref())
-}
-
-pub(crate) fn job_workers_from(raw: Option<&str>) -> usize {
-    raw.and_then(|s| s.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(4)
-        .min(16)
+/// Crash / RPM restart can leave rows `running` with no worker. Put them back in line.
+pub async fn requeue_orphaned_jobs(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    let now = db::now_rfc3339();
+    let n = sqlx::query(
+        r#"UPDATE jobs
+           SET status = 'queued', error = 'requeued after mgmt restart', updated_at = ?
+           WHERE status = 'running' AND finished_at IS NULL"#,
+    )
+    .bind(&now)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if n > 0 {
+        tracing::warn!(count = n, "requeued jobs left running after restart");
+    }
+    Ok(())
 }
 
 struct ClaimedJob {
@@ -261,118 +256,107 @@ struct ClaimedJob {
     log_file: String,
 }
 
-async fn claim_next(state: &AppState, max_running: usize) -> anyhow::Result<Option<ClaimedJob>> {
-    loop {
-        let running: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE status = 'running'")
-            .fetch_one(state.pool())
-            .await?;
-        if running >= max_running as i64 {
-            return Ok(None);
-        }
+async fn tick(state: &AppState) -> anyhow::Result<bool> {
+    let Some(job) = claim_next(state).await? else {
+        return Ok(false);
+    };
+    execute_job(state, job).await?;
+    Ok(true)
+}
 
-        // Prefer deletes. Skip a cluster that already has a running job.
-        let row = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>)>(
-            r#"SELECT j.id, j.cluster_id, j.kind, j.payload_json, j.log_path FROM jobs j
-               WHERE j.status = 'queued'
-                 AND (
-                   j.cluster_id IS NULL
-                   OR NOT EXISTS (
-                     SELECT 1 FROM jobs r
-                     WHERE r.status = 'running'
-                       AND r.cluster_id IS NOT NULL
-                       AND r.cluster_id = j.cluster_id
-                   )
-                 )
-               ORDER BY CASE WHEN j.kind = 'delete_cluster' THEN 0 ELSE 1 END, j.created_at ASC
-               LIMIT 1"#,
-        )
-        .fetch_optional(state.pool())
-        .await?;
+async fn claim_next(state: &AppState) -> anyhow::Result<Option<ClaimedJob>> {
+    // Prefer deletes so failed clusters can be cleaned up while creates queue.
+    let row = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>)>(
+        r#"SELECT id, cluster_id, kind, payload_json, log_path FROM jobs
+           WHERE status = 'queued'
+           ORDER BY CASE WHEN kind = 'delete_cluster' THEN 0 ELSE 1 END, created_at ASC
+           LIMIT 1"#,
+    )
+    .fetch_optional(state.pool())
+    .await?;
 
-        let Some((id, cluster_id, kind, payload, log_path)) = row else {
-            return Ok(None);
-        };
+    let Some((id, cluster_id, kind, payload, log_path)) = row else {
+        return Ok(None);
+    };
 
-        if matches!(
-            kind.as_str(),
-            "create_cluster"
-                | "add_node"
-                | "upgrade_cluster"
-                | "upgrade_os"
-                | "update_config"
-                | "remove_node"
-                | "resize_node"
-                | "reboot_node"
-                | "install_addon"
-        ) {
-            if let Some(cid) = &cluster_id {
-                let st: Option<String> =
-                    sqlx::query_scalar("SELECT status FROM clusters WHERE id = ?")
-                        .bind(cid)
-                        .fetch_optional(state.pool())
-                        .await?;
-                if st.as_deref() == Some("deleting") || st.is_none() {
-                    let now = db::now_rfc3339();
-                    sqlx::query(
-                        "UPDATE jobs SET status = 'cancelled', error = 'cluster deleting or removed', updated_at = ?, finished_at = ? WHERE id = ?",
-                    )
-                    .bind(&now)
-                    .bind(&now)
-                    .bind(&id)
-                    .execute(state.pool())
-                    .await?;
-                    state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "cancelled");
-                    continue;
-                }
+    if matches!(
+        kind.as_str(),
+        "create_cluster"
+            | "add_node"
+            | "upgrade_cluster"
+            | "upgrade_os"
+            | "update_config"
+            | "remove_node"
+            | "resize_node"
+            | "reboot_node"
+            | "install_addon"
+    ) {
+        if let Some(cid) = &cluster_id {
+            let st: Option<String> = sqlx::query_scalar("SELECT status FROM clusters WHERE id = ?")
+                .bind(cid)
+                .fetch_optional(state.pool())
+                .await?;
+            if st.as_deref() == Some("deleting") || st.is_none() {
+                let now = db::now_rfc3339();
+                sqlx::query(
+                    "UPDATE jobs SET status = 'cancelled', error = 'cluster deleting or removed', updated_at = ?, finished_at = ? WHERE id = ?",
+                )
+                .bind(&now)
+                .bind(&now)
+                .bind(&id)
+                .execute(state.pool())
+                .await?;
+                state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "cancelled");
+                return Ok(None);
             }
         }
+    }
 
-        let now = db::now_rfc3339();
-        let claimed = sqlx::query(
-            "UPDATE jobs SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
-        )
+    let now = db::now_rfc3339();
+    let claimed = sqlx::query(
+        "UPDATE jobs SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
+    )
+    .bind(&now)
+    .bind(&id)
+    .execute(state.pool())
+    .await?;
+    if claimed.rows_affected() == 0 {
+        return Ok(None);
+    }
+    state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "running");
+
+    if let Some(cid) = &cluster_id {
+        if kind != "delete_cluster" && !is_node_maintenance_job(&kind) {
+            let _ = sqlx::query(
+                "UPDATE clusters SET status = 'provisioning', updated_at = ?, error = NULL WHERE id = ?",
+            )
+            .bind(&now)
+            .bind(cid)
+            .execute(state.pool())
+            .await;
+            state.emit_cluster(cid, "provisioning");
+        }
+    }
+
+    let log_file = log_path.unwrap_or_else(|| {
+        let p = state.cfg().jobs_dir().join(format!("{id}.log"));
+        p.to_string_lossy().into_owned()
+    });
+    std::fs::create_dir_all(state.cfg().jobs_dir())?;
+    sqlx::query("UPDATE jobs SET log_path = ?, updated_at = ? WHERE id = ?")
+        .bind(&log_file)
         .bind(&now)
         .bind(&id)
         .execute(state.pool())
         .await?;
-        if claimed.rows_affected() == 0 {
-            continue;
-        }
-        state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "running");
 
-        if let Some(cid) = &cluster_id {
-            if kind != "delete_cluster" && !is_node_maintenance_job(&kind) {
-                let _ = sqlx::query(
-                    "UPDATE clusters SET status = 'provisioning', updated_at = ?, error = NULL WHERE id = ?",
-                )
-                .bind(&now)
-                .bind(cid)
-                .execute(state.pool())
-                .await;
-                state.emit_cluster(cid, "provisioning");
-            }
-        }
-
-        let log_file = log_path.unwrap_or_else(|| {
-            let p = state.cfg().jobs_dir().join(format!("{id}.log"));
-            p.to_string_lossy().into_owned()
-        });
-        std::fs::create_dir_all(state.cfg().jobs_dir())?;
-        sqlx::query("UPDATE jobs SET log_path = ?, updated_at = ? WHERE id = ?")
-            .bind(&log_file)
-            .bind(&now)
-            .bind(&id)
-            .execute(state.pool())
-            .await?;
-
-        return Ok(Some(ClaimedJob {
-            id,
-            cluster_id,
-            kind,
-            payload,
-            log_file,
-        }));
-    }
+    Ok(Some(ClaimedJob {
+        id,
+        cluster_id,
+        kind,
+        payload,
+        log_file,
+    }))
 }
 
 async fn execute_job(state: &AppState, job: ClaimedJob) -> anyhow::Result<()> {
@@ -4609,15 +4593,6 @@ pub async fn enqueue(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn job_workers_from_clamps() {
-        assert_eq!(job_workers_from(None), 4);
-        assert_eq!(job_workers_from(Some("")), 4);
-        assert_eq!(job_workers_from(Some("0")), 4);
-        assert_eq!(job_workers_from(Some("2")), 2);
-        assert_eq!(job_workers_from(Some("99")), 16);
-    }
 
     #[test]
     fn pve_host_from_url_strips_scheme_and_port() {

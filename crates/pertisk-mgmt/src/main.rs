@@ -93,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
     let pool = db::connect(&cfg.db).await?;
     db::migrate(&pool).await?;
     auth::seed_admin(&pool, &cfg).await?;
+    jobs::requeue_orphaned_jobs(&pool).await?;
 
     let state = AppState::new(cfg.clone(), pool);
     jobs::spawn_worker(state.clone());

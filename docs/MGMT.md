@@ -336,8 +336,7 @@ PROXMOX_NO_SSH=1
 PROXMOX_UPLOAD_STORAGE=local
 LAB_SUBNET=10.1.1.0/24
 PERTISK_IMAGES_DIR=/var/lib/pertisk-mgmt/images
-# Parallel cluster creates (different clusters) and VM clones:
-# PERTISK_JOB_WORKERS=4
+# Parallel VM clones during create (default 4; 1 = serial):
 # PERTISK_VM_JOBS=4
 # do NOT set PROXMOX_SSH (or comment it out)
 
