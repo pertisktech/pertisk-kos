@@ -15,6 +15,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPLOAD="${ROOT}/scripts/proxmox-upload-vm.sh"
 LAB_UP_SH="${ROOT}/scripts/proxmox-lab-up.sh"
+# shellcheck source=pertisk-parallel.sh
+. "$(cd "$(dirname "$0")" && pwd)/pertisk-parallel.sh"
 
 # Load local credentials without running proxmox.sh's trailing `exec`.
 load_proxmox_sh() {
@@ -164,12 +166,13 @@ fi
 
 echo "==> Proxmox create-cluster arch=${ARCH} prefix=${NAME_PREFIX}"
 
+pertisk_parallel_init
 for i in $(seq 1 "$CONTROLPLANES"); do
   cvid=$((CP_VMID + i - 1))
   echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${CP_DISK} mem=${CP_MEMORY} cores=${CP_CORES} disk-gb=${CP_DISK_GB:-image}"
   UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$CP_DISK" --arch "$ARCH" --memory "$CP_MEMORY" --cores "$CP_CORES")
   [[ -n "$CP_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$CP_DISK_GB")
-  "$UPLOAD" "${UPLOAD_ARGS[@]}"
+  pertisk_parallel_add "${NAME_PREFIX}-cp-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
 
 for i in $(seq 1 "$WORKERS"); do
@@ -177,8 +180,9 @@ for i in $(seq 1 "$WORKERS"); do
   echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i} disk=${WORKER_DISK} mem=${WORKER_MEMORY} cores=${WORKER_CORES} disk-gb=${WORKER_DISK_GB:-image}"
   UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$WORKER_DISK" --arch "$ARCH" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
   [[ -n "$WORKER_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$WORKER_DISK_GB")
-  "$UPLOAD" "${UPLOAD_ARGS[@]}"
+  pertisk_parallel_add "${NAME_PREFIX}-wk-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
+pertisk_parallel_wait
 
 echo "==> VMs created (CP=${CP_VMID}..$((CP_VMID + CONTROLPLANES - 1)), workers=${WORKERS})"
 

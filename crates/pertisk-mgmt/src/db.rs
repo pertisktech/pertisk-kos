@@ -1,16 +1,19 @@
 use std::path::Path;
 
 use anyhow::Context;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::str::FromStr;
+use std::time::Duration;
 
 pub async fn connect(path: &Path) -> anyhow::Result<SqlitePool> {
     let url = format!("sqlite:{}?mode=rwc", path.display());
     let opts = SqliteConnectOptions::from_str(&url)
         .context("sqlite url")?
         .create_if_missing(true)
-        .foreign_keys(true);
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(8));
     let pool = SqlitePoolOptions::new()
         .max_connections(8)
         .connect_with(opts)

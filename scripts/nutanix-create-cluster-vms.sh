@@ -12,6 +12,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPLOAD="${ROOT}/scripts/nutanix-upload-vm.sh"
 LAB_UP_SH="${ROOT}/scripts/nutanix-lab-up.sh"
+# shellcheck source=pertisk-parallel.sh
+. "$(cd "$(dirname "$0")" && pwd)/pertisk-parallel.sh"
 
 MEMORY="${NUTANIX_MEMORY:-4096}"
 CORES="${NUTANIX_CORES:-2}"
@@ -100,12 +102,25 @@ if [[ "$CONTROLPLANES" -lt 1 ]]; then
   exit 1
 fi
 
+# Import each unique qcow2 once so parallel VM clones do not race Prism HTTP.
+echo "==> ensure Prism DISK_IMAGE for ${CP_DISK}"
+"$UPLOAD" --import-only --disk "$CP_DISK"
+if [[ "$WORKERS" -gt 0 ]]; then
+  cp_real="$(cd "$(dirname "$CP_DISK")" && pwd)/$(basename "$CP_DISK")"
+  wk_real="$(cd "$(dirname "$WORKER_DISK")" && pwd)/$(basename "$WORKER_DISK")"
+  if [[ "$wk_real" != "$cp_real" ]]; then
+    echo "==> ensure Prism DISK_IMAGE for ${WORKER_DISK}"
+    "$UPLOAD" --import-only --disk "$WORKER_DISK"
+  fi
+fi
+
+pertisk_parallel_init
 for i in $(seq 1 "$CONTROLPLANES"); do
   cvid=$((CP_VMID + i - 1))
   echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${CP_DISK} mem=${CP_MEMORY} cores=${CP_CORES}"
   UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$CP_DISK" --memory "$CP_MEMORY" --cores "$CP_CORES")
   [[ -n "$CP_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$CP_DISK_GB")
-  "$UPLOAD" "${UPLOAD_ARGS[@]}"
+  pertisk_parallel_add "${NAME_PREFIX}-cp-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
 
 for i in $(seq 1 "$WORKERS"); do
@@ -113,8 +128,9 @@ for i in $(seq 1 "$WORKERS"); do
   echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i} disk=${WORKER_DISK} mem=${WORKER_MEMORY} cores=${WORKER_CORES}"
   UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$WORKER_DISK" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
   [[ -n "$WORKER_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$WORKER_DISK_GB")
-  "$UPLOAD" "${UPLOAD_ARGS[@]}"
+  pertisk_parallel_add "${NAME_PREFIX}-wk-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
+pertisk_parallel_wait
 
 echo "==> VMs created (CP=${CP_VMID}..$((CP_VMID + CONTROLPLANES - 1)), workers=${WORKERS})"
 

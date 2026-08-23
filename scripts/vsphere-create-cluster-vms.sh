@@ -12,6 +12,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPLOAD="${ROOT}/scripts/vsphere-upload-vm.sh"
 LAB_UP_SH="${ROOT}/scripts/vsphere-lab-up.sh"
+# shellcheck source=pertisk-parallel.sh
+. "$(cd "$(dirname "$0")" && pwd)/pertisk-parallel.sh"
 
 MEMORY="${VSPHERE_MEMORY:-4096}"
 CORES="${VSPHERE_CORES:-2}"
@@ -101,12 +103,13 @@ if [[ "$CONTROLPLANES" -lt 1 ]]; then
 fi
 
 # Naming: {prefix}-cp-N / {prefix}-wk-N (same as Proxmox; matches mgmt seed stubs + k8s node names).
+pertisk_parallel_init
 for i in $(seq 1 "$CONTROLPLANES"); do
   cvid=$((CP_VMID + i - 1))
   echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${CP_DISK} mem=${CP_MEMORY} cores=${CP_CORES}"
   UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$CP_DISK" --memory "$CP_MEMORY" --cores "$CP_CORES")
   [[ -n "$CP_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$CP_DISK_GB")
-  "$UPLOAD" "${UPLOAD_ARGS[@]}"
+  pertisk_parallel_add "${NAME_PREFIX}-cp-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
 
 for i in $(seq 1 "$WORKERS"); do
@@ -114,8 +117,9 @@ for i in $(seq 1 "$WORKERS"); do
   echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i} disk=${WORKER_DISK} mem=${WORKER_MEMORY} cores=${WORKER_CORES}"
   UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$WORKER_DISK" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
   [[ -n "$WORKER_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$WORKER_DISK_GB")
-  "$UPLOAD" "${UPLOAD_ARGS[@]}"
+  pertisk_parallel_add "${NAME_PREFIX}-wk-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
+pertisk_parallel_wait
 
 echo "==> VMs created (CP=${CP_VMID}..$((CP_VMID + CONTROLPLANES - 1)), workers=${WORKERS})"
 

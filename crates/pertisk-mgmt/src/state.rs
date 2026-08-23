@@ -56,7 +56,7 @@ impl AppState {
     }
 
     pub fn notify_jobs(&self) {
-        self.inner.job_notify.notify_one();
+        self.inner.job_notify.notify_waiters();
     }
 
     pub fn emit_job(

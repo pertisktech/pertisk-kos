@@ -24,6 +24,7 @@ STORAGE="${NUTANIX_STORAGE:-}"
 START=1
 IMAGE_NAME="${NUTANIX_IMAGE_NAME:-}"
 REPAIR_NAME=""
+IMPORT_ONLY=0
 
 usage() {
   cat <<'EOF'
@@ -31,7 +32,7 @@ Usage:
   ./scripts/nutanix-upload-vm.sh --vmid ID --disk PATH [options]
 
 Options:
-  --vmid N          numeric id used in default name PREFIX-N (required)
+  --vmid N          numeric id used in default name PREFIX-N (required unless --import-only)
   --disk PATH       qcow2 path (required)
   --name NAME       VM name (default: ${NAME_PREFIX:-pertisk}-$VMID)
   --memory MB       RAM (default 4096; env NUTANIX_MEMORY)
@@ -41,10 +42,12 @@ Options:
   --storage NAME    storage container (default $NUTANIX_STORAGE)
   --no-start        do not power on after create
   --repair-name NAME  existing VM: power off, attach IPAM netcfg, power on
+  --import-only     fingerprint + import qcow2 into Prism; do not create a VM
 
 Env:
   NUTANIX_FORCE_IMPORT=1   re-import even when the qcow2 fingerprint already exists
   NUTANIX_IMAGE_NAME=NAME  pin a Prism image (skips fingerprint; can boot a stale guest)
+  NUTANIX_HTTP_PORT        HTTP bind for Prism pull (default 18765, or 18765+VMID%200)
 EOF
   exit 1
 }
@@ -61,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --storage) STORAGE="$2"; shift 2 ;;
     --no-start) START=0; shift ;;
     --repair-name) REPAIR_NAME="$2"; shift 2 ;;
+    --import-only) IMPORT_ONLY=1; shift ;;
     -h | --help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
@@ -70,6 +74,13 @@ if [[ -n "$REPAIR_NAME" ]]; then
   NAME="$REPAIR_NAME"
   VMID="${VMID:-0}"
   DISK="${DISK:-/dev/null}"
+elif [[ "$IMPORT_ONLY" == "1" ]]; then
+  [[ -n "${DISK}" && -f "${DISK}" ]] || {
+    echo "disk not found: ${DISK:-}" >&2
+    exit 1
+  }
+  VMID="${VMID:-0}"
+  NAME="${NAME:-pertisk-import}"
 else
   [[ -n "${VMID}" && -n "${DISK}" ]] || usage
   [[ -f "${DISK}" ]] || {
@@ -96,6 +107,12 @@ command -v jq >/dev/null || {
 NAME="${NAME:-${NAME_PREFIX:-pertisk}-${VMID}}"
 BASE="${NUTANIX_URL%/}"
 API="${BASE}/api/nutanix/v2.0"
+
+# Parallel VM creates each pull netcfg over HTTP; pin a distinct port per VMID
+# unless the operator set NUTANIX_HTTP_PORT.
+if [[ -z "${NUTANIX_HTTP_PORT:-}" && "${VMID:-0}" =~ ^[1-9][0-9]*$ ]]; then
+  export NUTANIX_HTTP_PORT=$((18765 + (VMID % 200)))
+fi
 
 CURL=(curl -sS)
 [[ "${NUTANIX_INSECURE:-0}" == "1" ]] && CURL+=(-k)
@@ -538,6 +555,7 @@ else
 fi
 
 if [[ -z "$REPAIR_NAME" ]]; then
+if [[ "$IMPORT_ONLY" != "1" ]]; then
 # Delete existing VM with same name (recreate).
 EXISTING="$(api_get vms)"
 EXIST_UUID="$(EXISTING_JSON="$EXISTING" python3 -c '
@@ -561,6 +579,7 @@ if [[ -n "${EXIST_UUID:-}" ]]; then
     sleep 2
   fi
 fi
+fi
 
 DISK_BYTES="$(python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$DISK")"
 if [[ -n "$DISK_GB" ]]; then
@@ -581,7 +600,9 @@ else
   IMAGE_NAME="pertisk-$(basename "$DISK" .qcow2)-${DISK_HASH}"
 fi
 echo "==> create/import image ${IMAGE_NAME} (${DISK_BYTES} bytes file, src=${DISK})"
-delete_legacy_vmid_images "$VMID"
+if [[ "$IMPORT_ONLY" != "1" ]]; then
+  delete_legacy_vmid_images "$VMID"
+fi
 if [[ "${NUTANIX_FORCE_IMPORT:-0}" == "1" ]]; then
   FORCE_UUID="$(find_image_uuid "$IMAGE_NAME" || true)"
   if [[ -n "${FORCE_UUID:-}" ]]; then
@@ -618,6 +639,11 @@ fi
   echo "image ${IMAGE_UUID} has no vmdisk_uuid" >&2
   exit 1
 }
+
+if [[ "$IMPORT_ONLY" == "1" ]]; then
+  echo "OK image=${IMAGE_UUID} name=${IMAGE_NAME} vmdisk=${VMDISK_UUID}"
+  exit 0
+fi
 
 echo "==> create UEFI VM ${NAME} (mem=${MEMORY} cores=${CORES} disk>=${WANT_BYTES})"
 # Deterministic MAC (like Proxmox) — PE GET /vms/{uuid} often omits NICs unless
