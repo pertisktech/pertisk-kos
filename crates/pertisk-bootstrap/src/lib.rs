@@ -26,7 +26,7 @@ use tracing::info;
 
 pub use etcd_backup::{
     default_restore_identity, etcd_force_new_cluster, etcd_restore, etcd_snapshot,
-    EtcdRestoreResult, EtcdSnapshotResult,
+    heal_etcd_membership_blocking, EtcdRestoreResult, EtcdSnapshotResult,
 };
 pub use gen::{
     gen_config, gen_config_ha, gen_config_ha_with_network, gen_config_with_network,
@@ -558,6 +558,7 @@ pub fn rebase_advertise_address(state_root: &Path, new_ip: &str) -> Result<bool>
             .with_context(|| format!("write {}", paths.admin_kubeconfig().display()))?;
     }
     paths.write_advertise(new_ip)?;
+    crate::etcd_backup::mark_etcd_heal_ip_changed();
     request_kubelet_reload();
     Ok(true)
 }
@@ -768,6 +769,9 @@ pub(crate) fn finalize_bootstrap_when_ready(
     let (ca, cert, key) = api::credentials_from_kubeconfig(&kc)?;
     let client = api::KubeClient::local(&ca, &cert, &key)?;
 
+    // TCP :6443 can succeed (kube-vip / half-open apiserver) while HTTP still RSTs.
+    wait_apiserver_readyz(&client, deadline)?;
+
     // Apiserver can accept TCP before controller-manager has created kube-system.
     ensure_kube_system(&client, deadline)?;
 
@@ -827,13 +831,28 @@ pub(crate) fn finalize_bootstrap_when_ready(
         }
         // Confirm readable (create 201 alone is not enough if a later flap drops etcd).
         let get_path = format!("/api/v1/namespaces/kube-system/secrets/{secret_name}");
-        let (gstatus, _) = client.get(&get_path)?;
-        if gstatus != 200 {
-            bail!("bootstrap-token Secret {secret_name} missing after create (HTTP {gstatus})");
+        let mut last_get = None;
+        while Instant::now() < deadline {
+            match client.get(&get_path) {
+                Ok((gstatus, _)) if gstatus == 200 => {
+                    last_get = None;
+                    break;
+                }
+                Ok((gstatus, _)) => {
+                    last_get = Some(anyhow::anyhow!(
+                        "bootstrap-token Secret {secret_name} missing after create (HTTP {gstatus})"
+                    ));
+                }
+                Err(err) => last_get = Some(err),
+            }
+            thread::sleep(Duration::from_secs(2));
+        }
+        if let Some(err) = last_get {
+            return Err(err).context("bootstrap-token Secret not readable within finalize timeout");
         }
     }
 
-    ensure_node_join_rbac(&client)?;
+    ensure_node_join_rbac(&client, deadline)?;
     // Fresh deadline: waiting for local apiserver/images can consume most of the
     // original window; CP3 join especially was left unlabeled (looked like a worker).
     let label_deadline = Instant::now() + Duration::from_secs(300);
@@ -867,6 +886,31 @@ pub(crate) fn ensure_created(
     }
 }
 
+/// HTTP /readyz (not TCP). Join finalize used to fail with
+/// `Connection reset by peer (os error 104)` as soon as :6443 accepted a socket.
+fn wait_apiserver_readyz(client: &api::KubeClient, deadline: Instant) -> Result<()> {
+    while Instant::now() < deadline {
+        match client.get("/readyz") {
+            Ok((status, body)) if status == 200 || body.trim().eq_ignore_ascii_case("ok") => {
+                info!("apiserver /readyz ok");
+                return Ok(());
+            }
+            Ok((status, body)) => {
+                tracing::debug!(status, body = %body.chars().take(120).collect::<String>(), "apiserver /readyz not ready");
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "apiserver /readyz I/O; retrying");
+            }
+        }
+        thread::sleep(Duration::from_secs(2));
+    }
+    bail!(
+        "apiserver 127.0.0.1:6443/readyz not HTTP 200 within {}s \
+(TCP can succeed while HTTP still RSTs after etcd join)",
+        finalize_timeout().as_secs()
+    )
+}
+
 /// Wait for (or create) `kube-system` so bootstrap-token Secrets can be posted.
 fn ensure_kube_system(client: &api::KubeClient, deadline: Instant) -> Result<()> {
     let body = serde_json::json!({
@@ -877,27 +921,59 @@ fn ensure_kube_system(client: &api::KubeClient, deadline: Instant) -> Result<()>
     .to_string();
 
     while Instant::now() < deadline {
-        let (status, resp) = client.get("/api/v1/namespaces/kube-system")?;
-        if status == 200 {
-            info!("kube-system namespace ready");
-            return Ok(());
-        }
-        if status == 404 {
-            let (cstatus, cresp) = client.post_json("/api/v1/namespaces", &body)?;
-            if cstatus == 201 || cstatus == 200 || cstatus == 409 {
-                info!(status = cstatus, "ensured kube-system namespace");
+        match client.get("/api/v1/namespaces/kube-system") {
+            Ok((status, _)) if status == 200 => {
+                info!("kube-system namespace ready");
                 return Ok(());
             }
-            tracing::warn!(status = cstatus, body = %cresp, "create kube-system failed; retrying");
-        } else {
-            tracing::warn!(status, body = %resp, "get kube-system failed; retrying");
+            Ok((status, _)) if status == 404 => {
+                match client.post_json("/api/v1/namespaces", &body) {
+                    Ok((cstatus, _)) if cstatus == 201 || cstatus == 200 || cstatus == 409 => {
+                        info!(status = cstatus, "ensured kube-system namespace");
+                        return Ok(());
+                    }
+                    Ok((cstatus, cresp)) => {
+                        tracing::warn!(status = cstatus, body = %cresp, "create kube-system failed; retrying");
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "create kube-system I/O; retrying");
+                    }
+                }
+            }
+            Ok((status, resp)) => {
+                tracing::warn!(status, body = %resp, "get kube-system failed; retrying");
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "get kube-system I/O; retrying");
+            }
         }
         thread::sleep(Duration::from_secs(2));
     }
     bail!("kube-system namespace not available within finalize timeout")
 }
 
-fn ensure_node_join_rbac(client: &api::KubeClient) -> Result<()> {
+fn ensure_created_until(
+    client: &api::KubeClient,
+    path: &str,
+    body: &str,
+    name: &str,
+    deadline: Instant,
+) -> Result<()> {
+    let mut last_err = None;
+    while Instant::now() < deadline {
+        match ensure_created(client, path, body, name) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                tracing::warn!(error = %err, name, "ensure API object failed; retrying");
+                last_err = Some(err);
+                thread::sleep(Duration::from_secs(2));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("ensure {name} timed out")))
+}
+
+fn ensure_node_join_rbac(client: &api::KubeClient, deadline: Instant) -> Result<()> {
     // Mirrors examples/bootstrap/node-rbac.yaml (kubeadm-shaped).
     let group_bindings = [
         (
@@ -932,11 +1008,12 @@ fn ensure_node_join_rbac(client: &api::KubeClient) -> Result<()> {
                 "name": role
             }
         });
-        ensure_created(
+        ensure_created_until(
             client,
             "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings",
             &body.to_string(),
             name,
+            deadline,
         )?;
     }
 
@@ -958,11 +1035,12 @@ fn ensure_node_join_rbac(client: &api::KubeClient) -> Result<()> {
             "name": "system:kubelet-api-admin"
         }
     });
-    ensure_created(
+    ensure_created_until(
         client,
         "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings",
         &kubelet_api.to_string(),
         "system:kube-apiserver-to-kubelet",
+        deadline,
     )?;
     Ok(())
 }
@@ -973,9 +1051,16 @@ fn ensure_control_plane_node_role(
     deadline: Instant,
 ) -> Result<()> {
     let path = format!("/api/v1/nodes/{node_name}");
-    while Instant::now() < deadline {
+    let (status, body) = loop {
+        if Instant::now() >= deadline {
+            bail!(
+                "node {node_name} not registered before timeout. \
+Check kubelet logs on that node; if STATE was reused after a failed create, \
+soft-reset it (pertiskctl reset --force) and re-join"
+            );
+        }
         match client.get(&path) {
-            Ok((status, _)) if status == 200 => break,
+            Ok((status, body)) if status == 200 => break (status, body),
             Ok((status, _)) => {
                 tracing::debug!(status, node = %node_name, "node not registered yet");
             }
@@ -984,17 +1069,8 @@ fn ensure_control_plane_node_role(
             }
         }
         thread::sleep(Duration::from_secs(3));
-    }
-    let (status, body) = client
-        .get(&path)
-        .with_context(|| format!("get node {node_name}"))?;
-    if status != 200 {
-        bail!(
-            "node {node_name} not registered before timeout (HTTP {status}). \
-Check kubelet logs on that node; if STATE was reused after a failed create, \
-soft-reset it (pertiskctl reset --force) and re-join"
-        );
-    }
+    };
+    let _ = status;
     // Already labeled (retry after a previous partial finalize) — still ensure taint.
     if node_has_control_plane_label(&body) {
         ensure_control_plane_taint(client, &path, node_name);
@@ -1010,28 +1086,53 @@ soft-reset it (pertiskctl reset --force) and re-join"
             }
         }
     });
-    let (status, resp) = client
-        .patch_merge(&path, &label_patch.to_string())
-        .with_context(|| format!("patch label on {node_name}"))?;
-    if status != 200 {
-        bail!("label node {node_name} failed HTTP {status}: {resp}");
+    let mut last_patch = None;
+    let patch_deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < patch_deadline {
+        match client.patch_merge(&path, &label_patch.to_string()) {
+            Ok((status, _)) if status == 200 => {
+                last_patch = None;
+                break;
+            }
+            Ok((status, resp)) => {
+                last_patch = Some(anyhow::anyhow!(
+                    "label node {node_name} failed HTTP {status}: {resp}"
+                ));
+            }
+            Err(err) => last_patch = Some(err),
+        }
+        thread::sleep(Duration::from_secs(2));
+    }
+    if let Some(err) = last_patch {
+        return Err(err).context(format!("patch label on {node_name}"));
     }
 
     ensure_control_plane_taint(client, &path, node_name);
 
     // Verify label stuck (node recreate / patch no-op races).
     // JSON Pointer: `/` in a key must be escaped as `~1` (RFC 6901).
-    let (status, body) = client
-        .get(&path)
-        .with_context(|| format!("re-get node {node_name}"))?;
-    if status != 200 {
-        bail!("re-get node {node_name} after label failed HTTP {status}");
+    let mut last_reget = None;
+    while Instant::now() < deadline {
+        match client.get(&path) {
+            Ok((status, body)) if status == 200 => {
+                if node_has_control_plane_label(&body) {
+                    info!(node = %node_name, "labeled control-plane (+ NoSchedule taint)");
+                    return Ok(());
+                }
+                last_reget = Some(anyhow::anyhow!(
+                    "node {node_name} missing control-plane label after patch"
+                ));
+            }
+            Ok((status, _)) => {
+                last_reget = Some(anyhow::anyhow!(
+                    "re-get node {node_name} after label failed HTTP {status}"
+                ));
+            }
+            Err(err) => last_reget = Some(err),
+        }
+        thread::sleep(Duration::from_secs(2));
     }
-    if !node_has_control_plane_label(&body) {
-        bail!("node {node_name} missing control-plane label after patch");
-    }
-    info!(node = %node_name, "labeled control-plane (+ NoSchedule taint)");
-    Ok(())
+    Err(last_reget.unwrap_or_else(|| anyhow::anyhow!("re-get node {node_name} timed out")))
 }
 
 fn node_has_control_plane_label(body: &str) -> bool {

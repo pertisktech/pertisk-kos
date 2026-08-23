@@ -71,7 +71,11 @@ Copy the `.db` off the node for safekeeping.
 
 ### Recover when snapshot hangs (no etcd leader)
 
-A live snapshot needs a leader. After DHCP reassigns control-plane IPs, members can lose quorum (`ID mismatch`) and `etcd snapshot` times out. Promote **one** surviving CP from the existing data dir (guest must include this RPC — rebuild/roll the OS image):
+A live snapshot needs a leader. After DHCP reassigns control-plane IPs, members can lose quorum (`ID mismatch`) and `etcd snapshot` times out.
+
+Current guest images heal this on boot: `*-cp-1` runs `member update` when another member still has a leader, otherwise `--force-new-cluster` (SIGKILLs a hung etcd task first). Extra CPs stay on the old membership until you reset and re-join them.
+
+To recover an older image by hand (guest must include the recover RPC):
 
 ```bash
 ./out/bin/pertiskctl -e <CP_IP>:50000 etcd recover --force-new-cluster --force

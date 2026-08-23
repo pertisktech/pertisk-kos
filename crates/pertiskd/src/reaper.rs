@@ -34,6 +34,7 @@ mod unix_impl {
     use nix::unistd::Pid;
 
     static STOP: AtomicBool = AtomicBool::new(false);
+    static ETCD_HEAL_BUSY: AtomicBool = AtomicBool::new(false);
 
     extern "C" fn handle_stop(_: nix::libc::c_int) {
         STOP.store(true, Ordering::SeqCst);
@@ -151,6 +152,11 @@ mod unix_impl {
                         Ok(false) => {}
                         Err(err) => warn!(error = %err, "advertise rebase failed"),
                     }
+                    if pertisk_bootstrap::BootstrapPaths::default_state(&state_root)
+                        .is_bootstrapped()
+                    {
+                        spawn_etcd_heal(state_root.clone());
+                    }
                     if let Err(err) = pertisk_bootstrap::snapshot_worker_kubelet(&state_root) {
                         warn!(error = %err, "worker kubelet snapshot failed");
                     }
@@ -214,6 +220,33 @@ mod unix_impl {
         info!("supervise loop exiting");
         stop_services(services);
         Ok(())
+    }
+
+    fn spawn_etcd_heal(state_root: std::path::PathBuf) {
+        if state_root.as_os_str().is_empty() {
+            return;
+        }
+        if ETCD_HEAL_BUSY
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        let spawn = std::thread::Builder::new()
+            .name("etcd-heal".into())
+            .spawn(move || {
+                // Let kubelet start the etcd static pod after a DHCP rebase.
+                std::thread::sleep(std::time::Duration::from_secs(15));
+                match pertisk_bootstrap::heal_etcd_membership_blocking(&state_root) {
+                    Ok(msg) => info!(message = %msg, "etcd membership heal"),
+                    Err(err) => warn!(error = %err, "etcd membership heal failed"),
+                }
+                ETCD_HEAL_BUSY.store(false, Ordering::SeqCst);
+            });
+        if let Err(err) = spawn {
+            warn!(error = %err, "failed to start etcd heal thread");
+            ETCD_HEAL_BUSY.store(false, Ordering::SeqCst);
+        }
     }
 
     fn refresh_state(services: &mut NodeServices, state: &SharedState) {

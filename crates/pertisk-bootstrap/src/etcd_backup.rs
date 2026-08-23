@@ -206,7 +206,8 @@ async fn etcd_restore_inner(
         }
     }
 
-    disable_etcd_static_pod()?;
+    disable_etcd_static_pod(state_root)?;
+    kill_etcd_tasks();
     wait_etcd_down(Duration::from_secs(90))?;
 
     // Clear data dir.
@@ -217,7 +218,7 @@ async fn etcd_restore_inner(
 
     run_etcdutl_restore(snapshot_path, member_name, initial_cluster, peer_url)?;
 
-    enable_etcd_static_pod()?;
+    enable_etcd_static_pod(state_root)?;
     wait_etcd_up(state_root, Duration::from_secs(120)).await?;
 
     Ok(format!(
@@ -263,27 +264,28 @@ async fn etcd_force_new_cluster_inner(
         bail!("advertise address required for force-new-cluster");
     }
 
-    let raw = read_etcd_manifest()?;
+    let raw = read_etcd_manifest(state_root)?;
     let name = if member_name.trim().is_empty() {
         etcd_flag_value(&raw, "--name=").unwrap_or_else(|| "pertisk-cp-1".into())
     } else {
         member_name.trim().to_string()
     };
 
-    disable_etcd_static_pod()?;
+    disable_etcd_static_pod(state_root)?;
+    kill_etcd_tasks();
     wait_etcd_down(Duration::from_secs(90))?;
 
     let patched = patch_etcd_manifest_force_new_cluster(&raw, &name, advertise_ip);
-    fs::write(ETCD_MANIFEST_LIVE, patched)
+    write_etcd_manifest(state_root, &patched)
         .context("write etcd manifest with --force-new-cluster")?;
-    let _ = fs::remove_file(ETCD_MANIFEST_DISABLED);
+    remove_etcd_disabled_sidecars(state_root);
     info!(name = %name, advertise_ip, "etcd static pod enabled with --force-new-cluster");
 
     wait_etcd_up(state_root, Duration::from_secs(120)).await?;
 
-    let live = fs::read_to_string(ETCD_MANIFEST_LIVE).context("re-read etcd manifest")?;
+    let live = read_etcd_manifest(state_root).context("re-read etcd manifest")?;
     let finalized = finalize_etcd_manifest_after_force_new(&live, &name, advertise_ip);
-    fs::write(ETCD_MANIFEST_LIVE, finalized)
+    write_etcd_manifest(state_root, &finalized)
         .context("strip --force-new-cluster from etcd manifest")?;
     wait_etcd_up(state_root, Duration::from_secs(120)).await?;
 
@@ -292,14 +294,272 @@ async fn etcd_force_new_cluster_inner(
     ))
 }
 
-fn read_etcd_manifest() -> Result<String> {
-    for path in [ETCD_MANIFEST_LIVE, ETCD_MANIFEST_DISABLED] {
-        let p = Path::new(path);
-        if p.is_file() {
-            return fs::read_to_string(p).with_context(|| format!("read {}", p.display()));
+/// After DHCP rebases CP IPs, etcd often has no leader (peer URLs still point at
+/// the old addresses, which may now be other nodes). Called from pertiskd.
+///
+/// 1. If any member has a leader, `member update` this node's peer URL.
+/// 2. If nobody has a leader and this node is `*-cp-1`, `--force-new-cluster`.
+pub fn heal_etcd_membership_blocking(state_root: &Path) -> Result<String> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("tokio runtime for etcd heal")?;
+    rt.block_on(heal_etcd_membership(state_root))
+}
+
+async fn heal_etcd_membership(state_root: &Path) -> Result<String> {
+    let paths = BootstrapPaths::default_state(state_root);
+    if !paths.is_bootstrapped() {
+        return Ok("skip etcd heal: not a control-plane".into());
+    }
+    let yaml = match read_etcd_manifest(state_root) {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => return Ok("skip etcd heal: no etcd manifest".into()),
+    };
+    let name = etcd_flag_value(&yaml, "--name=").unwrap_or_else(|| "pertisk-cp-1".into());
+    let initial = etcd_flag_value(&yaml, "--initial-cluster=").unwrap_or_default();
+    let advertise = crate::detect_advertise_ip()
+        .or_else(|| {
+            etcd_flag_value(&yaml, "--initial-advertise-peer-urls=").and_then(|u| {
+                u.trim_start_matches("https://")
+                    .trim_start_matches("http://")
+                    .rsplit_once(':')
+                    .map(|(h, _)| h.to_string())
+            })
+        })
+        .context("advertise IP for etcd heal")?;
+
+    if let Some(msg) = try_sync_peer_via_leader(state_root, &name, &advertise, &initial).await {
+        return Ok(msg);
+    }
+
+    if !is_etcd_heal_leader(&name, &initial) {
+        return Ok(format!(
+            "etcd has no leader; {name} waits for *-cp-1 to recover"
+        ));
+    }
+
+    // HA join MemberAdd temporarily drops quorum (2 voting members, joiner not
+    // up yet). Treating that as "DHCP killed the cluster" ran --force-new-cluster
+    // and removed the joining peer; the joiner then crashloops (member count unequal).
+    let ip_changed = etcd_heal_ip_changed() || !initial_cluster_contains_ip(&initial, &advertise);
+    if !ip_changed {
+        return Ok(
+            "skip force-new-cluster: guest IP already in etcd initial-cluster \
+(likely in-progress control-plane join, not DHCP)"
+                .into(),
+        );
+    }
+
+    info!(
+        name = %name,
+        advertise_ip = %advertise,
+        "etcd has no leader after IP change; force-new-cluster on healer"
+    );
+    let out = etcd_force_new_cluster_inner(state_root, true, &name, &advertise).await;
+    clear_etcd_heal_ip_changed();
+    out
+}
+
+pub(crate) fn mark_etcd_heal_ip_changed() {
+    let _ = fs::create_dir_all("/run/pertisk");
+    let _ = fs::write("/run/pertisk/etcd-heal-ip-changed", b"1");
+}
+
+fn etcd_heal_ip_changed() -> bool {
+    Path::new("/run/pertisk/etcd-heal-ip-changed").is_file()
+}
+
+fn clear_etcd_heal_ip_changed() {
+    let _ = fs::remove_file("/run/pertisk/etcd-heal-ip-changed");
+}
+
+pub(crate) fn initial_cluster_contains_ip(spec: &str, ip: &str) -> bool {
+    let ip = ip.trim();
+    if ip.is_empty() {
+        return false;
+    }
+    parse_etcd_initial_cluster(spec)
+        .iter()
+        .any(|(_, host)| host == ip)
+}
+
+async fn try_sync_peer_via_leader(
+    state_root: &Path,
+    name: &str,
+    advertise_ip: &str,
+    initial_cluster: &str,
+) -> Option<String> {
+    if let Ok(mut c) = connect_local(state_root).await {
+        if client_has_leader(&mut c).await {
+            match sync_this_member_peer_url(&mut c, name, advertise_ip).await {
+                Ok(msg) => return Some(msg),
+                Err(err) => warn!(error = %err, "local etcd member update failed"),
+            }
+        }
+    }
+    for (peer_name, ip) in parse_etcd_initial_cluster(initial_cluster) {
+        if ip == advertise_ip || peer_name == name {
+            continue;
+        }
+        let ep = format!("https://{ip}:2379");
+        match connect_endpoint(state_root, &ep).await {
+            Ok(mut c) => {
+                if client_has_leader(&mut c).await {
+                    match sync_this_member_peer_url(&mut c, name, advertise_ip).await {
+                        Ok(msg) => {
+                            return Some(format!("{msg} (via {peer_name} {ep})"));
+                        }
+                        Err(err) => {
+                            warn!(error = %err, peer = %ep, "remote etcd member update failed")
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(error = %err, peer = %ep, "etcd peer unreachable");
+            }
+        }
+    }
+    None
+}
+
+async fn client_has_leader(client: &mut Client) -> bool {
+    client.status().await.ok().is_some_and(|s| s.leader() != 0)
+}
+
+async fn sync_this_member_peer_url(
+    client: &mut Client,
+    name: &str,
+    advertise_ip: &str,
+) -> Result<String> {
+    let want = format!("https://{advertise_ip}:2380");
+    let list = client.member_list().await.context("etcd member list")?;
+    for m in list.members() {
+        if m.name() != name {
+            continue;
+        }
+        if m.peer_urls().iter().any(|u| u == &want) {
+            return Ok(format!("etcd has leader; {name} peer URL already {want}"));
+        }
+        client
+            .member_update(m.id(), vec![want.clone()])
+            .await
+            .with_context(|| format!("member update {name}"))?;
+        info!(name, peer = %want, "updated etcd member peer URL");
+        return Ok(format!("updated etcd member {name} peer URL to {want}"));
+    }
+    Ok(format!(
+        "etcd has leader but member {name} is not in the list"
+    ))
+}
+
+async fn connect_endpoint(state_root: &Path, endpoint: &str) -> Result<Client> {
+    let (ca_path, cert_path, key_path) = etcd_tls_paths(state_root)?;
+    let ca_pem = fs::read(&ca_path)?;
+    let cert_pem = fs::read(&cert_path)?;
+    let key_pem = fs::read(&key_path)?;
+    let opts = ConnectOptions::new()
+        .with_timeout(Duration::from_secs(4))
+        .with_connect_timeout(Duration::from_secs(4))
+        .with_tls(
+            etcd_client::TlsOptions::new()
+                .ca_certificate(EtcdCert::from_pem(ca_pem))
+                .identity(EtcdIdentity::from_pem(cert_pem, key_pem)),
+        );
+    Client::connect([endpoint], Some(opts))
+        .await
+        .with_context(|| format!("connect {endpoint}"))
+}
+
+pub(crate) fn parse_etcd_initial_cluster(spec: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for part in spec.split(',') {
+        let part = part.trim();
+        let Some((name, url)) = part.split_once('=') else {
+            continue;
+        };
+        let hostport = url
+            .trim()
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap_or("");
+        let host = if let Some(rest) = hostport.strip_prefix('[') {
+            rest.split(']').next().unwrap_or(rest).to_string()
+        } else {
+            hostport
+                .rsplit_once(':')
+                .map(|(h, _)| h.to_string())
+                .unwrap_or_else(|| hostport.to_string())
+        };
+        if !name.is_empty() && !host.is_empty() {
+            out.push((name.to_string(), host));
+        }
+    }
+    out
+}
+
+pub(crate) fn is_etcd_heal_leader(name: &str, initial_cluster: &str) -> bool {
+    let n = name.trim();
+    if n.ends_with("-cp-1") || n.ends_with("-cp1") {
+        return true;
+    }
+    parse_etcd_initial_cluster(initial_cluster)
+        .first()
+        .is_some_and(|(m, _)| m == n)
+}
+
+fn read_etcd_manifest(state_root: &Path) -> Result<String> {
+    let state = etcd_manifest_state_path(state_root);
+    let disabled_state = state.with_file_name("etcd.yaml.pertisk-restore-disabled");
+    for path in [
+        PathBuf::from(ETCD_MANIFEST_LIVE),
+        PathBuf::from(ETCD_MANIFEST_DISABLED),
+        state,
+        disabled_state,
+    ] {
+        if path.is_file() {
+            return fs::read_to_string(&path).with_context(|| format!("read {}", path.display()));
         }
     }
     bail!("etcd static pod manifest missing ({ETCD_MANIFEST_LIVE})")
+}
+
+fn etcd_manifest_state_path(state_root: &Path) -> PathBuf {
+    BootstrapPaths::default_state(state_root)
+        .manifests()
+        .join("etcd.yaml")
+}
+
+fn write_etcd_manifest(state_root: &Path, contents: &str) -> Result<()> {
+    let state = etcd_manifest_state_path(state_root);
+    if let Some(parent) = state.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    fs::write(&state, contents).with_context(|| format!("write {}", state.display()))?;
+    let live = Path::new(ETCD_MANIFEST_LIVE);
+    if let (Ok(a), Ok(b)) = (fs::canonicalize(&state), fs::canonicalize(live)) {
+        if a == b {
+            return Ok(());
+        }
+    }
+    if let Some(parent) = live.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    if live.symlink_metadata().is_ok() {
+        let _ = fs::remove_file(live);
+    }
+    fs::write(live, contents).with_context(|| format!("write {}", live.display()))?;
+    Ok(())
+}
+
+fn remove_etcd_disabled_sidecars(state_root: &Path) {
+    let _ = fs::remove_file(ETCD_MANIFEST_DISABLED);
+    let _ = fs::remove_file(
+        etcd_manifest_state_path(state_root).with_file_name("etcd.yaml.pertisk-restore-disabled"),
+    );
 }
 
 fn etcd_flag_value(yaml: &str, flag: &str) -> Option<String> {
@@ -422,23 +682,86 @@ fn finalize_etcd_manifest_after_force_new(yaml: &str, name: &str, advertise_ip: 
     replace_command_flag(&out, "--initial-cluster-state=", "existing")
 }
 
-fn disable_etcd_static_pod() -> Result<()> {
-    let live = Path::new(ETCD_MANIFEST_LIVE);
-    if live.is_file() {
-        fs::rename(live, ETCD_MANIFEST_DISABLED).context("disable etcd static pod manifest")?;
-        info!("disabled etcd static pod (manifest moved aside)");
+fn disable_etcd_static_pod(state_root: &Path) -> Result<()> {
+    let mut renamed = 0usize;
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for path in [
+        PathBuf::from(ETCD_MANIFEST_LIVE),
+        etcd_manifest_state_path(state_root),
+    ] {
+        if !path.is_file() {
+            continue;
+        }
+        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if seen.iter().any(|s| s == &canon) {
+            continue;
+        }
+        seen.push(canon);
+        let dest = path.with_file_name("etcd.yaml.pertisk-restore-disabled");
+        fs::rename(&path, &dest)
+            .with_context(|| format!("disable etcd manifest {}", path.display()))?;
+        renamed += 1;
+        info!(from = %path.display(), to = %dest.display(), "disabled etcd static pod");
+    }
+    if renamed == 0 {
+        warn!("etcd manifest not found to disable; continuing");
     }
     Ok(())
 }
 
-fn enable_etcd_static_pod() -> Result<()> {
-    let disabled = Path::new(ETCD_MANIFEST_DISABLED);
-    let live = Path::new(ETCD_MANIFEST_LIVE);
-    if disabled.is_file() {
-        fs::rename(disabled, live).context("re-enable etcd static pod manifest")?;
-        info!("re-enabled etcd static pod");
-    } else if !live.is_file() {
-        // Fall back to STATE copy.
+/// kubelet may leave a hung etcd task bound to :2379 after the manifest is removed.
+fn kill_etcd_tasks() {
+    let Some(ctr) = find_ctr() else {
+        warn!("ctr not found; cannot SIGKILL leftover etcd");
+        return;
+    };
+    let Ok(out) = Command::new(&ctr)
+        .args(["-n", "k8s.io", "tasks", "ls"])
+        .output()
+    else {
+        return;
+    };
+    let txt = String::from_utf8_lossy(&out.stdout);
+    for line in txt.lines() {
+        let id = match line.split_whitespace().next() {
+            Some(s) if s != "TASK" && !s.is_empty() => s,
+            _ => continue,
+        };
+        let info = Command::new(&ctr)
+            .args(["-n", "k8s.io", "containers", "info", id])
+            .output();
+        let blob = match info {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).to_ascii_lowercase(),
+            Err(_) => continue,
+        };
+        if !(blob.contains("etcd") || id.to_ascii_lowercase().contains("etcd")) {
+            continue;
+        }
+        info!(task = id, "SIGKILL leftover etcd task");
+        let _ = Command::new(&ctr)
+            .args([
+                "-n", "k8s.io", "tasks", "kill", "--all", "--signal", "SIGKILL", id,
+            ])
+            .status();
+    }
+}
+
+fn enable_etcd_static_pod(state_root: &Path) -> Result<()> {
+    let mut restored = false;
+    for disabled in [
+        PathBuf::from(ETCD_MANIFEST_DISABLED),
+        etcd_manifest_state_path(state_root).with_file_name("etcd.yaml.pertisk-restore-disabled"),
+    ] {
+        if !disabled.is_file() {
+            continue;
+        }
+        let live = disabled.with_file_name("etcd.yaml");
+        fs::rename(&disabled, &live)
+            .with_context(|| format!("re-enable etcd manifest {}", live.display()))?;
+        restored = true;
+        info!(to = %live.display(), "re-enabled etcd static pod");
+    }
+    if !restored && !Path::new(ETCD_MANIFEST_LIVE).is_file() {
         bail!("etcd manifest missing; cannot re-enable static pod");
     }
     Ok(())
@@ -446,6 +769,7 @@ fn enable_etcd_static_pod() -> Result<()> {
 
 fn wait_etcd_down(timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
+    let mut last_kill = Instant::now() - Duration::from_secs(10);
     while Instant::now() < deadline {
         if std::net::TcpStream::connect_timeout(
             &"127.0.0.1:2379".parse().unwrap(),
@@ -454,6 +778,10 @@ fn wait_etcd_down(timeout: Duration) -> Result<()> {
         .is_err()
         {
             return Ok(());
+        }
+        if last_kill.elapsed() >= Duration::from_secs(5) {
+            kill_etcd_tasks();
+            last_kill = Instant::now();
         }
         std::thread::sleep(Duration::from_secs(2));
     }
@@ -624,5 +952,22 @@ command:
         assert!(!done.contains("--force-new-cluster"));
         assert!(done.contains("--initial-cluster-state=existing"));
         assert!(done.contains("--initial-cluster=lab-cp-1=https://10.1.1.180:2380"));
+    }
+
+    #[test]
+    fn parse_initial_cluster_and_healer() {
+        let spec =
+            "lab-ha-vsphere-cp-1=https://10.1.1.96:2380,lab-ha-vsphere-cp-2=https://10.1.1.97:2380";
+        let peers = parse_etcd_initial_cluster(spec);
+        assert_eq!(peers[0], ("lab-ha-vsphere-cp-1".into(), "10.1.1.96".into()));
+        assert_eq!(peers[1].1, "10.1.1.97");
+        assert!(is_etcd_heal_leader("lab-ha-vsphere-cp-1", spec));
+        assert!(!is_etcd_heal_leader("lab-ha-vsphere-cp-2", spec));
+        assert!(is_etcd_heal_leader(
+            "lab-cp-1",
+            "lab-cp-1=https://10.0.0.1:2380"
+        ));
+        assert!(initial_cluster_contains_ip(spec, "10.1.1.96"));
+        assert!(!initial_cluster_contains_ip(spec, "10.1.1.99"));
     }
 }

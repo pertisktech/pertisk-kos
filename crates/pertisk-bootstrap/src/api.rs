@@ -3,6 +3,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -48,6 +49,30 @@ impl KubeClient {
     }
 
     pub fn request(
+        &self,
+        method: &str,
+        path: &str,
+        content_type: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<(u16, String)> {
+        // Local apiserver often accepts TCP (or kube-vip does) then RSTs during
+        // TLS/HTTP while etcd is still catching up after a control-plane join.
+        let mut last_err = None;
+        for attempt in 1u32..=4 {
+            match self.request_once(method, path, content_type, body) {
+                Ok(v) => return Ok(v),
+                Err(err) if is_retryable_kube_io(&err) && attempt < 4 => {
+                    tracing::debug!(attempt, error = %err, path, "kube API I/O retry");
+                    last_err = Some(err);
+                    thread::sleep(Duration::from_millis(250 * u64::from(attempt)));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_err.expect("kube API retry loop"))
+    }
+
+    fn request_once(
         &self,
         method: &str,
         path: &str,
@@ -112,6 +137,21 @@ impl KubeClient {
             Some(body),
         )
     }
+}
+
+pub(crate) fn is_retryable_kube_io(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}").to_ascii_lowercase();
+    msg.contains("connection reset")
+        || msg.contains("broken pipe")
+        || msg.contains("connection aborted")
+        || msg.contains("connection refused")
+        || msg.contains("timed out")
+        || msg.contains("timeout")
+        || msg.contains("incomplete http")
+        || msg.contains("os error 104")
+        || msg.contains("os error 32")
+        || msg.contains("os error 54")
+        || msg.contains("os error 110")
 }
 
 fn parse_http_response(raw: &str) -> Result<(u16, String)> {
@@ -261,5 +301,13 @@ mod tests {
         let body = "4\r\n{\"ab\r\n3\r\nc\":\r\n2\r\n1}\r\n0\r\n\r\n";
         let decoded = decode_chunked_body(body).unwrap();
         assert_eq!(decoded, r#"{"abc":1}"#);
+    }
+
+    #[test]
+    fn connection_reset_is_retryable() {
+        let err = anyhow::anyhow!("Connection reset by peer (os error 104)");
+        assert!(is_retryable_kube_io(&err));
+        let err = anyhow::anyhow!("create secret failed HTTP 500");
+        assert!(!is_retryable_kube_io(&err));
     }
 }

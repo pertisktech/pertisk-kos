@@ -6,7 +6,9 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use etcd_client::{Certificate as EtcdCert, Client, ConnectOptions, Identity as EtcdIdentity};
+use etcd_client::{
+    Certificate as EtcdCert, Client, ConnectOptions, Identity as EtcdIdentity, MemberAddOptions,
+};
 use pertisk_config::{
     Cluster, ClusterNetwork, CniMode, Dashboard, Interface, Machine, MachineConfig, MachineType,
     Network, CONFIG_VERSION,
@@ -93,12 +95,43 @@ DHCP assigned the kube-vip to this guest. Delete the cluster and recreate with a
 outside the DHCP pool"
             );
         }
-        // Prior joins could write BOOTSTRAPPED before the CP role label stuck
-        // (especially CP3). Re-run finalize so retries actually fix ROLES=<none>.
-        // Give pertiskd a beat to honor the kubelet-reload flag from restore.
+        let peer_url = format!("https://{advertise}:2380");
+        if !advertise.is_empty() && !local_etcd_listening() {
+            // CP1 --force-new-cluster may have dropped this peer after a failed join.
+            wipe_etcd_datadir();
+            let ca_pem = fs::read_to_string(paths.etcd_pki().join("ca.crt")).unwrap_or_default();
+            let cert_pem =
+                fs::read_to_string(paths.etcd_pki().join("server.crt")).unwrap_or_default();
+            let key_pem =
+                fs::read_to_string(paths.etcd_pki().join("server.key")).unwrap_or_default();
+            if !ca_pem.is_empty() && !cert_pem.is_empty() && !key_pem.is_empty() {
+                match etcd_member_add(
+                    etcd_endpoints,
+                    &hostname,
+                    &peer_url,
+                    &ca_pem,
+                    &cert_pem,
+                    &key_pem,
+                )
+                .await
+                {
+                    Ok(initial) => info!(%initial, "re-added etcd learner after failed join"),
+                    Err(err) => tracing::warn!(error = %err, "etcd re-add after failed join"),
+                }
+                let _ = crate::restore_control_plane(state_root);
+                wait_local_etcd(Duration::from_secs(120));
+                if let Err(err) =
+                    etcd_promote_learner(etcd_endpoints, &peer_url, &ca_pem, &cert_pem, &key_pem)
+                        .await
+                {
+                    tracing::warn!(error = %err, "etcd learner promote after re-add");
+                }
+            }
+        }
         thread::sleep(Duration::from_secs(5));
         let admin_path = paths.admin_kubeconfig();
         let defer_addons = matches!(cluster.cni, pertisk_config::CniMode::None);
+        info!(hostname = %hostname, "already joined; waiting for local apiserver /readyz then finalize");
         finalize_bootstrap_when_ready(&admin_path, None, &hostname, defer_addons).with_context(
             || format!("already-joined control-plane missing finalize/label for {hostname}"),
         )?;
@@ -146,7 +179,8 @@ delete the cluster, and recreate (do not reuse this node)"
     )?;
     pki::write_pki(&paths.pki(), &paths.etcd_pki(), &pki)?;
 
-    // MemberAdd against an existing etcd using the new peer's client certs.
+    // MemberAdd as learner so CP1 keeps quorum until this etcd process is up.
+    // A voting add + delayed joiner made *-cp-1 --force-new-cluster and drop us.
     let peer_url = format!("https://{advertise}:2380");
     let initial_cluster = etcd_member_add(
         etcd_endpoints,
@@ -249,7 +283,7 @@ delete the cluster, and recreate (do not reuse this node)"
         copy_dir(&paths.pki(), &pki_live)?;
     }
 
-    fs::create_dir_all("/var/lib/etcd").ok();
+    wipe_etcd_datadir();
     paths.write_advertise(&advertise)?;
     // Marker after join material is on disk so reboot restore works; finalize may
     // still fail (slow CP3). Retries hit already_joined and re-run finalize/label.
@@ -262,6 +296,18 @@ delete the cluster, and recreate (do not reuse this node)"
     // (via /run/pertisk/kubelet-reload) so the Node object appears before finalize.
     info!("waiting for kubelet credential reload before finalize");
     thread::sleep(Duration::from_secs(8));
+    wait_local_etcd(Duration::from_secs(120));
+    if let Err(err) = etcd_promote_learner(
+        etcd_endpoints,
+        &peer_url,
+        &pki.ca_crt,
+        &pki.etcd_crt,
+        &pki.etcd_key,
+    )
+    .await
+    {
+        tracing::warn!(error = %err, "etcd learner promote (join will still try finalize)");
+    }
 
     // Label this CP node once local apiserver is up (skip token/RBAC/addons).
     // Must succeed: unlabeled joined CPs show ROLES=<none> in `kubectl get nodes`.
@@ -299,37 +345,32 @@ async fn etcd_member_add(
     let mut last_err: Option<anyhow::Error> = None;
     for attempt in 1..=45 {
         match Client::connect(endpoints, Some(opts.clone())).await {
-            Ok(mut client) => match client.member_add([peer_url.to_string()], None).await {
+            Ok(mut client) => match client
+                .member_add(
+                    [peer_url.to_string()],
+                    Some(MemberAddOptions::new().with_is_learner()),
+                )
+                .await
+            {
                 Ok(_) => {
                     let list = client.member_list().await.context("etcd member_list")?;
-                    let mut parts = Vec::new();
-                    for m in list.members() {
-                        let peer = m
-                            .peer_urls()
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| peer_url.to_string());
-                        let n = m.name();
-                        if n.is_empty() {
-                            if m.peer_urls().iter().any(|u| u == peer_url) {
-                                parts.push(format!("{name}={peer_url}"));
-                            } else {
-                                parts.push(format!("{}={peer}", m.id()));
-                            }
-                        } else {
-                            parts.push(format!("{n}={peer}"));
-                        }
-                    }
-                    if !parts.iter().any(|p| p.starts_with(&format!("{name}="))) {
-                        parts.push(format!("{name}={peer_url}"));
-                    }
-                    parts.sort();
-                    parts.dedup();
-                    let initial = parts.join(",");
-                    info!(%initial, attempt, "etcd MemberAdd ok");
+                    let initial = initial_cluster_from_members(list.members(), name, peer_url);
+                    info!(%initial, attempt, "etcd MemberAdd ok (learner)");
                     return Ok(initial);
                 }
                 Err(err) => {
+                    let msg = err.to_string();
+                    if msg.to_ascii_lowercase().contains("peerurl")
+                        || msg.to_ascii_lowercase().contains("already")
+                    {
+                        if let Ok(list) = client.member_list().await {
+                            return Ok(initial_cluster_from_members(
+                                list.members(),
+                                name,
+                                peer_url,
+                            ));
+                        }
+                    }
                     last_err = Some(anyhow::anyhow!("member_add: {err}"));
                 }
             },
@@ -340,6 +381,99 @@ async fn etcd_member_add(
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("etcd MemberAdd failed")))
+}
+
+fn initial_cluster_from_members(
+    members: &[etcd_client::Member],
+    name: &str,
+    peer_url: &str,
+) -> String {
+    let mut parts = Vec::new();
+    for m in members {
+        let peer = m
+            .peer_urls()
+            .first()
+            .cloned()
+            .unwrap_or_else(|| peer_url.to_string());
+        let n = m.name();
+        if n.is_empty() {
+            if m.peer_urls().iter().any(|u| u == peer_url) {
+                parts.push(format!("{name}={peer_url}"));
+            } else {
+                parts.push(format!("{}={peer}", m.id()));
+            }
+        } else {
+            parts.push(format!("{n}={peer}"));
+        }
+    }
+    if !parts.iter().any(|p| p.starts_with(&format!("{name}="))) {
+        parts.push(format!("{name}={peer_url}"));
+    }
+    parts.sort();
+    parts.dedup();
+    parts.join(",")
+}
+
+fn wipe_etcd_datadir() {
+    let p = Path::new("/var/lib/etcd");
+    if p.exists() {
+        let _ = fs::remove_dir_all(p);
+    }
+    let _ = fs::create_dir_all(p);
+}
+
+fn local_etcd_listening() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &"127.0.0.1:2379".parse().expect("addr"),
+        Duration::from_secs(1),
+    )
+    .is_ok()
+}
+
+fn wait_local_etcd(timeout: Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if local_etcd_listening() {
+            info!("local etcd :2379 is up");
+            return;
+        }
+        thread::sleep(Duration::from_secs(2));
+    }
+    tracing::warn!(
+        "local etcd :2379 not listening within {}s",
+        timeout.as_secs()
+    );
+}
+
+async fn etcd_promote_learner(
+    endpoints: &[String],
+    peer_url: &str,
+    ca_pem: &str,
+    cert_pem: &str,
+    key_pem: &str,
+) -> Result<()> {
+    let ca = EtcdCert::from_pem(ca_pem.as_bytes());
+    let identity = EtcdIdentity::from_pem(cert_pem.as_bytes(), key_pem.as_bytes());
+    let opts = ConnectOptions::new().with_tls(
+        etcd_client::TlsOptions::new()
+            .ca_certificate(ca)
+            .identity(identity),
+    );
+    let mut client = Client::connect(endpoints, Some(opts))
+        .await
+        .context("connect etcd to promote learner")?;
+    let list = client.member_list().await.context("etcd member_list")?;
+    for m in list.members() {
+        if m.peer_urls().iter().any(|u| u == peer_url) && m.is_learner() {
+            client
+                .member_promote(m.id())
+                .await
+                .with_context(|| format!("promote learner {}", m.id()))?;
+            info!(id = m.id(), %peer_url, "etcd learner promoted to voting member");
+            return Ok(());
+        }
+    }
+    Ok(())
 }
 
 /// Export worker + controlplane-join YAML (with shared secrets) from a bootstrapped CP.

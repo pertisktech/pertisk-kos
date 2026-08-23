@@ -13,6 +13,7 @@
 #   ./scripts/proxmox-lab-up.sh --skip-build --cni calico
 #   ./scripts/proxmox-lab-up.sh --skip-build --cni flannel
 #   ./scripts/proxmox-lab-up.sh --skip-build --skip-vms --cp-vmid 210   # reuse VMs / resume HA
+#     (skips soft-reset when CP1 :6443/readyz is already up — do not wipe a live join)
 #   CNI=flannel APPS="examples/apps/nginx.yaml" ./scripts/proxmox-lab-up.sh --skip-build
 #   ./scripts/proxmox-lab-up.sh --skip-addons   # skip optional reflector (CoreDNS + metrics-server always)
 set -euo pipefail
@@ -116,6 +117,9 @@ IP_TIMEOUT="${IP_TIMEOUT:-300}"
 API_AFTER_IP_TIMEOUT="${API_AFTER_IP_TIMEOUT:-900}"
 API_TIMEOUT="${API_TIMEOUT:-300}"
 BOOTSTRAP_TIMEOUT="${BOOTSTRAP_TIMEOUT:-600}"
+# Join finalize talks to local apiserver; TCP :6443 can RST HTTP for minutes after etcd member add.
+JOIN_TRIES="${JOIN_TRIES:-15}"
+JOIN_READYZ_WAIT="${JOIN_READYZ_WAIT:-180}"
 LAB_SUBNET="${LAB_SUBNET:-}"  # optional CIDR for ping-sweep fallback, e.g. 10.1.1.0/24
 REFLECTOR_YAML="${REFLECTOR_YAML:-https://github.com/emberstack/kubernetes-reflector/releases/latest/download/reflector.yaml}"
 METRICS_SERVER_YAML="${METRICS_SERVER_YAML:-${ROOT}/examples/addons/metrics-server.yaml}"
@@ -165,6 +169,7 @@ Env: PROXMOX_*, PROXMOX_SSH, APPS (space/comma-separated kubectl apply paths)
      PROXMOX_CP_MEMORY / PROXMOX_CP_CORES / PROXMOX_WORKER_MEMORY / PROXMOX_WORKER_CORES
      PROXMOX_CP_DISK_GB / PROXMOX_WORKER_DISK_GB / PERTISK_DISK_GB
      PERTISK_IMAGES_DIR / PROXMOX_IMAGES_DIR (default: /var/lib/pertisk-mgmt/images or \$ROOT/out)
+     JOIN_TRIES (default 15) JOIN_READYZ_WAIT (seconds to wait for joining CP :6443/readyz)
 EOF
   exit 0
 }
@@ -1042,6 +1047,42 @@ wait_api() {
   die "pertiskctl API not ready at ${ip}:50000"
 }
 
+# HTTP /readyz on a node IP (not TCP). Join finalize used to fail with
+# Connection reset by peer while :6443 accepted sockets.
+https_readyz() {
+  local ip="$1"
+  local host="$ip"
+  [[ "$ip" == *:* && "$ip" != \[* ]] && host="[${ip}]"
+  curl -sk --connect-timeout 3 --max-time 8 "https://${host}:6443/readyz" 2>/dev/null | grep -qi ok
+}
+
+wait_https_readyz() {
+  local ip="$1" timeout_s="${2:-180}"
+  local deadline=$((SECONDS + timeout_s))
+  if https_readyz "$ip"; then
+    return 0
+  fi
+  log "waiting for https://${ip}:6443/readyz (up to ${timeout_s}s; TCP :6443 can RST HTTP after etcd join)"
+  while (( SECONDS < deadline )); do
+    https_readyz "$ip" && return 0
+    sleep 5
+  done
+  return 1
+}
+
+# True when this guest already wrote admin.conf (bootstrapped or joined).
+guest_has_admin_kubeconfig() {
+  local ip="$1" tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/pertisk-kc.XXXXXX")"
+  if "$CTL" -e "${ip}:50000" kubeconfig -f "$tmp" >/dev/null 2>&1 \
+    && grep -q 'certificate-authority-data:' "$tmp"; then
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
 # Apply after :50000 is up. The API listens *before* the STATE partition is
 # mounted; an early write lands on initramfs `/system/state` and disappears
 # when prepare_state mounts the disk over that path (bootstrap then sees
@@ -1741,46 +1782,48 @@ step_cluster() {
   wait_api "$CP_IP"
   # Reused disks / failed creates leave BOOTSTRAPPED with a stale advertise IP.
   assert_guest_identity "$CP_IP" "${CLUSTER_NAME}-cp-1"
-  log "soft-reset CP1 @ ${CP_IP} before apply (clear leftover STATE)"
-  if "$CTL" -e "${CP_IP}:50000" reset --force 2>&1; then
-    sleep 8
-    CP_IP="$(wait_ip "$CP_VMID" "${CLUSTER_NAME}-cp-1")"
-    CP_IPS[0]="$CP_IP"
-    wait_api "$CP_IP"
+  if guest_has_admin_kubeconfig "$CP_IP" && https_readyz "$CP_IP"; then
+    log "CP1 already bootstrapped and https://${CP_IP}:6443/readyz ok — skip soft-reset/apply/bootstrap (resume)"
   else
-    log "WARNING: reset CP1 failed — continuing (fresh guests are fine)"
-  fi
-  log "apply controlplane → ${CP_IP}"
-  apply_machine_yaml "$CP_IP" "$CLUSTER_OUT/controlplane.yaml" "$CP_VMID"
-  # Apply only writes STATE + flags reload; give pertiskd a moment to start
-  # containerd/kubelet as controlplane before the long bootstrap RPC.
-  sleep 8
-  wait_api "$CP_IP"
-
-  log "bootstrap CP1 (advertise=${CP_IP}; waits for registry.k8s.io pulls + :6443, up to ~10m)"
-  local boot_out boot_try=0
-  while true; do
-    boot_out="$("$CTL" -e "${CP_IP}:50000" bootstrap --advertise-address "$CP_IP" 2>&1)" && break
-    echo "$boot_out" >&2
-    if echo "$boot_out" | grep -q 'No such file or directory'; then
-      boot_try=$((boot_try + 1))
-      (( boot_try < 6 )) || die "bootstrap CP1 failed"
-      log "config.yaml missing after apply (STATE race); re-apply and retry ${boot_try}/5"
-      apply_machine_yaml "$CP_IP" "$CLUSTER_OUT/controlplane.yaml" "$CP_VMID"
+    log "soft-reset CP1 @ ${CP_IP} before apply (clear leftover STATE)"
+    if "$CTL" -e "${CP_IP}:50000" reset --force 2>&1; then
+      sleep 8
+      CP_IP="$(wait_ip "$CP_VMID" "${CLUSTER_NAME}-cp-1")"
+      CP_IPS[0]="$CP_IP"
       wait_api "$CP_IP"
-      continue
+    else
+      log "WARNING: reset CP1 failed — continuing (fresh guests are fine)"
     fi
-    die "bootstrap CP1 failed"
-  done
-  echo "$boot_out"
-  if echo "$boot_out" | grep -q 'already=true'; then
-    log "CP1 already bootstrapped — verifying apiserver on ${CP_IP}"
-    local host="$CP_IP"
-    [[ "$CP_IP" == *:* ]] && host="[${CP_IP}]"
-    if ! curl -sk --connect-timeout 3 "https://${host}:6443/readyz" 2>/dev/null | grep -qi ok; then
-      die "CP1 already bootstrapped but https://${CP_IP}:6443/readyz failed.
+    log "apply controlplane → ${CP_IP}"
+    apply_machine_yaml "$CP_IP" "$CLUSTER_OUT/controlplane.yaml" "$CP_VMID"
+    # Apply only writes STATE + flags reload; give pertiskd a moment to start
+    # containerd/kubelet as controlplane before the long bootstrap RPC.
+    sleep 8
+    wait_api "$CP_IP"
+
+    log "bootstrap CP1 (advertise=${CP_IP}; waits for registry.k8s.io pulls + :6443, up to ~10m)"
+    local boot_out boot_try=0
+    while true; do
+      boot_out="$("$CTL" -e "${CP_IP}:50000" bootstrap --advertise-address "$CP_IP" 2>&1)" && break
+      echo "$boot_out" >&2
+      if echo "$boot_out" | grep -q 'No such file or directory'; then
+        boot_try=$((boot_try + 1))
+        (( boot_try < 6 )) || die "bootstrap CP1 failed"
+        log "config.yaml missing after apply (STATE race); re-apply and retry ${boot_try}/5"
+        apply_machine_yaml "$CP_IP" "$CLUSTER_OUT/controlplane.yaml" "$CP_VMID"
+        wait_api "$CP_IP"
+        continue
+      fi
+      die "bootstrap CP1 failed"
+    done
+    echo "$boot_out"
+    if echo "$boot_out" | grep -q 'already=true'; then
+      log "CP1 already bootstrapped — verifying apiserver on ${CP_IP}"
+      if ! https_readyz "$CP_IP"; then
+        die "CP1 already bootstrapped but https://${CP_IP}:6443/readyz failed.
 STATE is likely leftover from a previous create (guest IP may have changed).
 Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate the cluster."
+      fi
     fi
   fi
   log "bootstrap CP1 done"
@@ -1806,28 +1849,41 @@ Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate th
     fi
     wait_api "$ip"
     # Clear leftover BOOTSTRAPPED from a previous failed join on reused disks.
+    # If this guest already joined (admin kubeconfig), skip reset — wiping it
+    # leaves a zombie etcd member on CP1 and lab-up would lose quorum.
     assert_guest_identity "$ip" "$host"
-    log "soft-reset ${host} @ ${ip} before join (clear leftover STATE)"
-    if "$CTL" -e "${ip}:50000" reset --force 2>&1; then
-      sleep 8
-      ip="$(wait_ip "$cvid" "$host")"
-      CP_IPS[$((i - 1))]="$ip"
-      wait_api "$ip"
+    if guest_has_admin_kubeconfig "$ip"; then
+      log "${host} already joined (admin kubeconfig) — skip soft-reset/apply; wait for /readyz then finalize"
+      wait_https_readyz "$ip" "$JOIN_READYZ_WAIT" || true
     else
-      log "WARNING: reset ${host} failed — continuing (fresh guests are fine)"
+      log "soft-reset ${host} @ ${ip} before join (clear leftover STATE)"
+      if "$CTL" -e "${ip}:50000" reset --force 2>&1; then
+        sleep 8
+        ip="$(wait_ip "$cvid" "$host")"
+        CP_IPS[$((i - 1))]="$ip"
+        wait_api "$ip"
+      else
+        log "WARNING: reset ${host} failed — continuing (fresh guests are fine)"
+      fi
+      log "apply + join-controlplane ${host} @ ${ip}"
+      apply_machine_yaml "$ip" "$cpyaml" "$cvid"
+      # apply reloads runtime; give Machine API a moment before the long join RPC
+      sleep 5
+      wait_api "$ip"
     fi
-    log "apply + join-controlplane ${host} @ ${ip}"
-    apply_machine_yaml "$ip" "$cpyaml" "$cvid"
-    # apply reloads runtime; give Machine API a moment before the long join RPC
-    sleep 5
-    wait_api "$ip"
     log "waiting for CP1 etcd ${etcd_ep} (join retries inside agent)"
     local join_try=0
-    until "$CTL" -e "${ip}:50000" join-controlplane --etcd-endpoints "$etcd_ep"; do
+    until "$CTL" -e "${ip}:50000" join-controlplane --advertise-address "$ip" --etcd-endpoints "$etcd_ep"; do
       join_try=$((join_try + 1))
-      (( join_try < 5 )) || die "join-controlplane failed for ${host} after ${join_try} attempts"
-      log "join-controlplane retry ${join_try}/5 for ${host}..."
-      sleep 10
+      if (( join_try >= JOIN_TRIES )); then
+        if guest_has_admin_kubeconfig "$ip" && https_readyz "$ip"; then
+          log "WARNING: join-controlplane RPC still failing but ${ip}:6443/readyz is ok — continue (label via kubectl later)"
+          break
+        fi
+        die "join-controlplane failed for ${host} after ${join_try} attempts"
+      fi
+      log "join-controlplane retry ${join_try}/${JOIN_TRIES} for ${host}..."
+      wait_https_readyz "$ip" "$JOIN_READYZ_WAIT" || true
       wait_api "$ip"
     done
   done

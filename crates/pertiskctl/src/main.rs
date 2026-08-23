@@ -767,12 +767,12 @@ async fn main() -> Result<()> {
             ref advertise_address,
         } => {
             let mut client = connect(&cli).await?;
-            let resp = client
-                .bootstrap(BootstrapRequest {
-                    advertise_address: advertise_address.clone().unwrap_or_default(),
-                })
-                .await?
-                .into_inner();
+            let mut req = Request::new(BootstrapRequest {
+                advertise_address: advertise_address.clone().unwrap_or_default(),
+            });
+            // Finalize waits up to PERTISK_BOOTSTRAP_FINALIZE_SECS (default 600).
+            req.set_timeout(Duration::from_secs(720));
+            let resp = client.bootstrap(req).await?.into_inner();
             if resp.ok {
                 println!(
                     "bootstrap ok already={} — {}",
@@ -787,13 +787,13 @@ async fn main() -> Result<()> {
             ref etcd_endpoints,
         } => {
             let mut client = connect(&cli).await?;
-            let resp = client
-                .join_control_plane(JoinControlPlaneRequest {
-                    advertise_address: advertise_address.clone().unwrap_or_default(),
-                    etcd_endpoints: etcd_endpoints.clone(),
-                })
-                .await?
-                .into_inner();
+            let mut req = Request::new(JoinControlPlaneRequest {
+                advertise_address: advertise_address.clone().unwrap_or_default(),
+                etcd_endpoints: etcd_endpoints.clone(),
+            });
+            // Post-join finalize waits for local /readyz (default 600s).
+            req.set_timeout(Duration::from_secs(720));
+            let resp = client.join_control_plane(req).await?.into_inner();
             if resp.ok {
                 println!(
                     "join-controlplane ok already={} — {}",
