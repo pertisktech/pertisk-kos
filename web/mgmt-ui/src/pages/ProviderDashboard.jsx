@@ -96,9 +96,9 @@ export default function ProviderDashboard() {
 
       <div className="card" style={{ padding: '1.25rem' }}>
         <div className="resource-gauge-row provider-dash-gauges">
-          <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} />
-          <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} />
-          <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} />
+          <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} size="lg" />
+          <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} size="lg" />
+          <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} size="lg" />
         </div>
         {summary.error && (
           <p className="muted cluster-resource-soft-err" title={summary.error}>

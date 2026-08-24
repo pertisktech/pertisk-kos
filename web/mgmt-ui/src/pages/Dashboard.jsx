@@ -33,6 +33,7 @@ function ClusterResourceCard({ summary, onOpen }) {
   const cardClass = [
     'card',
     'cluster-resource-card',
+    'cluster-resource-card-large',
     `status-${statusClass}`,
     statusClass === 'ready' ? `avail-${avail}` : '',
   ]
@@ -70,9 +71,9 @@ function ClusterResourceCard({ summary, onOpen }) {
         <ClusterStatusBadges status={summary.status} availability={summary.availability} />
       </div>
       <div className="resource-gauge-row">
-        <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} />
-        <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} />
-        <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} />
+        <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} size="lg" />
+        <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} size="lg" />
+        <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} size="lg" />
       </div>
       {summary.error && summary.status === 'ready' && (
         <p className="muted cluster-resource-soft-err" title={summary.error}>
@@ -90,6 +91,7 @@ function ProviderResourceCard({ summary, onOpen }) {
   const cardClass = [
     'card',
     'cluster-resource-card',
+    'cluster-resource-card-compact',
     avail === 'online' ? 'status-ready avail-online' : '',
     avail === 'offline' ? 'status-ready avail-offline' : '',
   ]
@@ -128,9 +130,9 @@ function ProviderResourceCard({ summary, onOpen }) {
         <ProviderStatusBadge availability={avail} showUnknown />
       </div>
       <div className="resource-gauge-row">
-        <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} />
-        <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} />
-        <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} />
+        <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} size="sm" />
+        <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} size="sm" />
+        <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} size="sm" />
       </div>
       {summary.error && (
         <p className="muted cluster-resource-soft-err" title={summary.error}>
@@ -157,6 +159,22 @@ function placeholderSummary(c) {
     disk: { ...empty, unit: 'GiB' },
     error: null,
     _placeholder: true,
+  }
+}
+
+function placeholderProvider(p) {
+  const empty = { used: null, total: null, percent: null, unit: '', display_used: null, display_total: null, error: null }
+  return {
+    provider_id: p.id,
+    provider_name: p.name,
+    kind: p.kind,
+    node: p.node,
+    storage: p.storage,
+    availability: p.availability || 'unknown',
+    cpu: { ...empty, unit: 'cores' },
+    memory: { ...empty, unit: 'GiB' },
+    disk: { ...empty, unit: 'GiB' },
+    error: null,
   }
 }
 
@@ -281,6 +299,12 @@ export default function Dashboard() {
   const providersOffline = providers.filter((p) => p.availability === 'offline').length
   const recent = clusters.slice(0, 8)
 
+  const displayProviders = useMemo(() => {
+    if (providers.length === 0) return providerRes
+    const byId = new Map(providerRes.map((r) => [r.provider_id, r]))
+    return providers.map((p) => byId.get(p.id) || placeholderProvider(p))
+  }, [providerRes, providers])
+
   return (
     <div className="dash-page">
       <div className="page-head">
@@ -307,38 +331,103 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {providers.length > 0 && (
-        <>
-          <div className="section-head dash-resources-head">
-            <div>
-              <h2 className="card-title" style={{ marginBottom: 0 }}>
-                <Icon name="providers" size={18} /> Providers
-              </h2>
-              <p className="muted dash-section-sub">
-                Hypervisor CPU, memory, and disk (used / available / total)
-              </p>
-            </div>
-            <div className="dash-resources-actions">
-              <Link className="secondary btn-icon" to="/providers">
-                <Icon name="providers" size={14} /> All providers
+      <section className="dash-panel dash-panel-clusters">
+        <div className="section-head dash-resources-head">
+          <div>
+            <h2 className="card-title" style={{ marginBottom: 0 }}>
+              <Icon name="clusters" size={18} /> Clusters
+            </h2>
+            <p className="muted dash-section-sub">
+              Live CPU, memory, and disk · updates every {RESOURCES_POLL_MS / 1000}s
+              {resourcesLoading && (resources.length === 0 || awaitingLiveMetrics) ? ' · loading metrics…' : ''}
+            </p>
+          </div>
+          <div className="dash-resources-actions">
+            <Link className="secondary btn-icon" to="/clusters">
+              <Icon name="clusters" size={14} /> All clusters
+            </Link>
+            <button type="button" className="secondary btn-icon" onClick={loadResources} disabled={resourcesLoading}>
+              <Icon name="refresh" size={14} /> Refresh
+            </button>
+          </div>
+        </div>
+
+        {resourcesErr && <div className="error">{resourcesErr}</div>}
+
+        {listLoading && clusters.length === 0 ? (
+          <div className="cluster-resource-grid dash-cluster-grid">
+            {[0, 1].map((i) => (
+              <div key={i} className="card cluster-resource-card cluster-resource-card-large cluster-resource-skeleton" aria-hidden>
+                <div className="skeleton-line w-40" />
+                <div className="skeleton-line w-80" />
+                <div className="resource-gauge-row">
+                  <div className="skeleton-line" />
+                  <div className="skeleton-line" />
+                  <div className="skeleton-line" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : clusters.length === 0 ? (
+          <div className="card dash-empty">
+            <p className="muted" style={{ margin: 0 }}>
+              No clusters yet. Add a provider, then create control planes and workers.
+            </p>
+            <div className="dash-empty-actions">
+              <Link className="btn btn-icon" to="/providers">
+                <Icon name="providers" size={16} /> Providers
               </Link>
-              <button type="button" className="secondary btn-icon" onClick={loadProviderResources}>
-                <Icon name="refresh" size={14} /> Refresh
-              </button>
+              <Link className="btn btn-icon" to="/clusters?new=1">
+                <Icon name="plus" size={16} /> Create cluster
+              </Link>
             </div>
           </div>
-          <div className="cluster-resource-grid">
-            {(providerRes.length ? providerRes : providers.map((p) => ({
-              provider_id: p.id,
-              provider_name: p.name,
-              kind: p.kind,
-              node: p.node,
-              storage: p.storage,
-              availability: p.availability || 'unknown',
-              cpu: { unit: 'cores' },
-              memory: { unit: 'GiB' },
-              disk: { unit: 'GiB' },
-            }))).map((s) => (
+        ) : (
+          <div className="cluster-resource-grid dash-cluster-grid">
+            {displayResources.map((s) => (
+              <ClusterResourceCard
+                key={s.cluster_id}
+                summary={s}
+                onOpen={() => nav(`/clusters/${s.cluster_id}`)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="dash-panel dash-panel-providers">
+        <div className="section-head dash-resources-head">
+          <div>
+            <h2 className="card-title" style={{ marginBottom: 0 }}>
+              <Icon name="providers" size={18} /> Providers
+            </h2>
+            <p className="muted dash-section-sub">
+              Hypervisor CPU, memory, and disk (used / available / total)
+            </p>
+          </div>
+          <div className="dash-resources-actions">
+            <Link className="secondary btn-icon" to="/providers">
+              <Icon name="providers" size={14} /> All providers
+            </Link>
+            <button type="button" className="secondary btn-icon" onClick={loadProviderResources}>
+              <Icon name="refresh" size={14} /> Refresh
+            </button>
+          </div>
+        </div>
+        {displayProviders.length === 0 ? (
+          <div className="card dash-empty">
+            <p className="muted" style={{ margin: 0 }}>
+              No providers yet. Add Proxmox, vSphere, or Nutanix to create clusters.
+            </p>
+            <div className="dash-empty-actions">
+              <Link className="btn btn-icon" to="/providers">
+                <Icon name="plus" size={16} /> Add provider
+              </Link>
+            </div>
+          </div>
+        ) : (
+          <div className="cluster-resource-grid dash-provider-grid">
+            {displayProviders.map((s) => (
               <ProviderResourceCard
                 key={s.provider_id}
                 summary={s}
@@ -346,70 +435,8 @@ export default function Dashboard() {
               />
             ))}
           </div>
-        </>
-      )}
-
-      <div className="section-head dash-resources-head">
-        <div>
-          <h2 className="card-title" style={{ marginBottom: 0 }}>
-            <Icon name="cpu" size={18} /> Clusters
-          </h2>
-          <p className="muted dash-section-sub">
-            Live CPU, memory, and disk · updates every {RESOURCES_POLL_MS / 1000}s
-            {resourcesLoading && (resources.length === 0 || awaitingLiveMetrics) ? ' · loading metrics…' : ''}
-          </p>
-        </div>
-        <div className="dash-resources-actions">
-          <Link className="secondary btn-icon" to="/clusters">
-            <Icon name="clusters" size={14} /> All clusters
-          </Link>
-          <button type="button" className="secondary btn-icon" onClick={loadResources} disabled={resourcesLoading}>
-            <Icon name="refresh" size={14} /> Refresh
-          </button>
-        </div>
-      </div>
-
-      {resourcesErr && <div className="error">{resourcesErr}</div>}
-
-      {listLoading && clusters.length === 0 ? (
-        <div className="cluster-resource-grid">
-          {[0, 1].map((i) => (
-            <div key={i} className="card cluster-resource-card cluster-resource-skeleton" aria-hidden>
-              <div className="skeleton-line w-40" />
-              <div className="skeleton-line w-80" />
-              <div className="resource-gauge-row">
-                <div className="skeleton-line" />
-                <div className="skeleton-line" />
-                <div className="skeleton-line" />
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : clusters.length === 0 ? (
-        <div className="card dash-empty">
-          <p className="muted" style={{ margin: 0 }}>
-            No clusters yet. Add a provider, then create control planes and workers.
-          </p>
-          <div className="dash-empty-actions">
-            <Link className="btn btn-icon" to="/providers">
-              <Icon name="providers" size={16} /> Providers
-            </Link>
-            <Link className="btn btn-icon" to="/clusters?new=1">
-              <Icon name="plus" size={16} /> Create cluster
-            </Link>
-          </div>
-        </div>
-      ) : (
-        <div className="cluster-resource-grid">
-          {displayResources.map((s) => (
-            <ClusterResourceCard
-              key={s.cluster_id}
-              summary={s}
-              onOpen={() => nav(`/clusters/${s.cluster_id}`)}
-            />
-          ))}
-        </div>
-      )}
+        )}
+      </section>
 
       {recent.length > 0 && (
         <div className="card dash-recent">
