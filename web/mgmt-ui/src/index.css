@@ -737,6 +737,46 @@ label {
   .cluster-resource-grid { grid-template-columns: 1fr; }
 }
 
+.usage-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 13.5rem;
+}
+.usage-bar-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex: 0 0 auto;
+  min-width: 7.5rem;
+}
+.usage-bar-track {
+  height: 6px;
+  width: 4rem;
+  flex: 0 0 4rem;
+  border-radius: 999px;
+  background: var(--bg-hover, color-mix(in srgb, var(--border) 70%, transparent));
+  overflow: hidden;
+}
+.usage-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+.usage-bar-cpu { background: #3b82f6; }
+.usage-bar-memory { background: #a855f7; }
+.usage-bar-disk { background: #10b981; }
+.usage-bar-pct {
+  font-size: 0.75rem;
+  font-weight: 500;
+  width: 2.25rem;
+  text-align: right;
+  flex: 0 0 2.25rem;
+}
+.usage-bar-empty {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

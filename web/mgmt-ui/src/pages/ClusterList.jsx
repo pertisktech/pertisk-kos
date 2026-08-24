@@ -6,6 +6,7 @@ import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 import { formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
 import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import ClusterWizard from '../components/ClusterWizard'
+import UsageBar from '../components/UsageBar'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
@@ -18,6 +19,7 @@ const CACHE_CLUSTERS = 'pertisk_dash_clusters'
 export default function Clusters() {
   const nav = useNavigate()
   const [list, setList] = useState(() => readSessionJson(CACHE_CLUSTERS, []))
+  const [metrics, setMetrics] = useState({})
   const [loaded, setLoaded] = useState(() => Array.isArray(readSessionJson(CACHE_CLUSTERS, null)))
   const [error, setError] = useState('')
   const [search, setSearch] = useSearchParams()
@@ -34,11 +36,19 @@ export default function Clusters() {
   }, [search, setSearch])
 
   const load = useCallback(() => {
-    api('/clusters')
-      .then((rows) => {
+    Promise.all([
+      api('/clusters'),
+      api('/dashboard/resources').catch(() => []),
+    ])
+      .then(([rows, res]) => {
         const next = Array.isArray(rows) ? rows : []
         setList(next)
         writeSessionJson(CACHE_CLUSTERS, next)
+        const map = {}
+        for (const r of Array.isArray(res) ? res : []) {
+          if (r?.cluster_id) map[r.cluster_id] = r
+        }
+        setMetrics(map)
         setLoaded(true)
         // Drop ?deleting= once that cluster is gone from the API.
         if (expectDelete && !next.some((c) => c.id === expectDelete)) {
@@ -105,6 +115,9 @@ export default function Clusters() {
               <th>Arch</th>
               <th>Provider</th>
               <th>CP / Workers</th>
+              <th>CPU</th>
+              <th>Memory</th>
+              <th>Disk</th>
               <th>Network</th>
               <th>CNI</th>
             </tr>
@@ -156,6 +169,9 @@ export default function Clusters() {
                     )}
                   </td>
                   <td>{c.controlplanes} / {c.workers}</td>
+                  <td><UsageBar metric={metrics[c.id]?.cpu} color="cpu" /></td>
+                  <td><UsageBar metric={metrics[c.id]?.memory} color="memory" /></td>
+                  <td><UsageBar metric={metrics[c.id]?.disk} color="disk" /></td>
                   <td>
                     <span className="badge">{net}</span>
                     <span className="muted" style={{ marginLeft: 8 }}>

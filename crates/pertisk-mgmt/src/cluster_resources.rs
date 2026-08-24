@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -29,11 +29,21 @@ pub struct ClusterResourceSummary {
     pub cpu: ResourceMetric,
     pub memory: ResourceMetric,
     pub disk: ResourceMetric,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<NodeResource>,
     /// Soft error for live metrics (capacity may still be present).
     pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct NodeResource {
+    pub name: String,
+    pub cpu: ResourceMetric,
+    pub memory: ResourceMetric,
+    pub disk: ResourceMetric,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceMetric {
     pub used: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,6 +169,34 @@ pub async fn gather_all(state: &AppState) -> Vec<ClusterResourceSummary> {
     futures::future::join_all(futs).await
 }
 
+/// Cached summary for one cluster; kicks a background refresh when stale.
+pub async fn gather_one_cached(state: &AppState, cluster_id: &str) -> Option<ClusterResourceSummary> {
+    let c: ClusterRow = sqlx::query_as(
+        "SELECT id, name, status, k8s_version, controlplanes, vip, vip6 \
+         FROM clusters WHERE id = ?",
+    )
+    .bind(cluster_id)
+    .fetch_optional(state.pool())
+    .await
+    .ok()??;
+
+    if let Some(s) = cached_live(&c.id, Some(LIVE_TTL)) {
+        if s.status != c.status {
+            spawn_live(state.clone(), c);
+        }
+        return Some(s);
+    }
+    spawn_live(state.clone(), c.clone());
+    if let Some(s) = cached_live(&c.id, None).filter(|s| s.status == c.status) {
+        return Some(s);
+    }
+    Some(capacity_now(state, &c).await)
+}
+
+pub fn cached_summary(cluster_id: &str) -> Option<ClusterResourceSummary> {
+    cached_live(cluster_id, None)
+}
+
 async fn capacity_now(state: &AppState, cluster: &ClusterRow) -> ClusterResourceSummary {
     let nodes: Vec<NodeCap> = sqlx::query_as(
         "SELECT name, role, ip, cores, memory, disk_gb \
@@ -170,18 +208,16 @@ async fn capacity_now(state: &AppState, cluster: &ClusterRow) -> ClusterResource
     .unwrap_or_default();
 
     let (cpu, memory, disk) = capacity_metrics(&nodes);
-    ClusterResourceSummary {
-        cluster_id: cluster.id.clone(),
-        cluster_name: cluster.name.clone(),
-        status: cluster.status.clone(),
-        availability: cluster_availability::cached_or(&cluster.id, &cluster.status),
-        k8s_version: cluster.k8s_version.clone(),
-        node_count: nodes.len() as i64,
+    pack(
+        cluster,
+        nodes.len() as i64,
         cpu,
         memory,
         disk,
-        error: None,
-    }
+        cluster_availability::cached_or(&cluster.id, &cluster.status),
+        None,
+        capacity_node_metrics(&nodes),
+    )
 }
 
 /// Like gather_one capacity path, used when the live probe hits the outer deadline.
@@ -200,22 +236,20 @@ async fn timeout_summary_with_capacity(
 
     let (cpu, memory, disk) = capacity_metrics(&nodes);
     let err = Some("resource probe timed out (API unreachable?)".to_string());
-    ClusterResourceSummary {
-        cluster_id: cluster.id.clone(),
-        cluster_name: cluster.name.clone(),
-        status: cluster.status.clone(),
-        availability: if cluster.status == "ready" {
+    pack(
+        cluster,
+        nodes.len() as i64,
+        with_metric_error(cpu, err.clone()),
+        with_metric_error(memory, err.clone()),
+        with_metric_error(disk, err.clone()),
+        if cluster.status == "ready" {
             "offline".into()
         } else {
             "unknown".into()
         },
-        k8s_version: cluster.k8s_version.clone(),
-        node_count: nodes.len() as i64,
-        cpu: with_metric_error(cpu, err.clone()),
-        memory: with_metric_error(memory, err.clone()),
-        disk: with_metric_error(disk, err.clone()),
-        error: err,
-    }
+        err,
+        capacity_node_metrics(&nodes),
+    )
 }
 
 fn capacity_metrics(nodes: &[NodeCap]) -> (ResourceMetric, ResourceMetric, ResourceMetric) {
@@ -288,6 +322,81 @@ fn with_metric_error(mut m: ResourceMetric, err: Option<String>) -> ResourceMetr
     m
 }
 
+fn pack(
+    cluster: &ClusterRow,
+    node_count: i64,
+    cpu: ResourceMetric,
+    memory: ResourceMetric,
+    disk: ResourceMetric,
+    availability: String,
+    error: Option<String>,
+    nodes: Vec<NodeResource>,
+) -> ClusterResourceSummary {
+    ClusterResourceSummary {
+        cluster_id: cluster.id.clone(),
+        cluster_name: cluster.name.clone(),
+        status: cluster.status.clone(),
+        availability,
+        k8s_version: cluster.k8s_version.clone(),
+        node_count,
+        cpu,
+        memory,
+        disk,
+        nodes,
+        error,
+    }
+}
+
+fn capacity_node_metrics(nodes: &[NodeCap]) -> Vec<NodeResource> {
+    nodes
+        .iter()
+        .map(|n| {
+            let (cpu, memory, disk) = capacity_metrics(std::slice::from_ref(n));
+            NodeResource {
+                name: n.name.clone(),
+                cpu,
+                memory,
+                disk,
+            }
+        })
+        .collect()
+}
+
+fn apply_top_to_node(nr: &mut NodeResource, r: &TopRow) {
+    let cap_cores = nr.cpu.total.unwrap_or(0.0);
+    nr.cpu.used = Some(r.cpu_cores);
+    nr.cpu.display_used = Some(format_cores(r.cpu_cores));
+    nr.cpu.percent = if cap_cores > 0.0 {
+        Some(((r.cpu_cores / cap_cores) * 100.0).clamp(0.0, 100.0))
+    } else {
+        r.cpu_percent
+    };
+
+    let cap_mem_mib = nr.memory.total.map(|g| g * 1024.0).unwrap_or(0.0);
+    let used_gib = r.memory_mib / 1024.0;
+    nr.memory.used = Some(used_gib);
+    nr.memory.display_used = Some(format!("{used_gib:.1} GiB"));
+    nr.memory.percent = if cap_mem_mib > 0.0 {
+        Some(((r.memory_mib / cap_mem_mib) * 100.0).clamp(0.0, 100.0))
+    } else {
+        r.memory_percent
+    };
+}
+
+fn apply_disk_to_node(nr: &mut NodeResource, used_b: u64, cap_b: u64) {
+    if cap_b == 0 {
+        return;
+    }
+    let used_gib = used_b as f64 / (1024.0 * 1024.0 * 1024.0);
+    let total_gib = cap_b as f64 / (1024.0 * 1024.0 * 1024.0);
+    nr.disk.used = Some(used_gib);
+    nr.disk.total = Some(total_gib);
+    nr.disk.percent = Some(((used_b as f64 / cap_b as f64) * 100.0).clamp(0.0, 100.0));
+    nr.disk.display_used = Some(format!("{used_gib:.1} GiB"));
+    nr.disk.display_total = Some(format!("{total_gib:.0} GiB"));
+    nr.disk.error = None;
+}
+
 async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSummary {
     let nodes: Vec<NodeCap> = sqlx::query_as(
         "SELECT name, role, ip, cores, memory, disk_gb \
@@ -300,40 +409,37 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
 
     let node_count = nodes.len() as i64;
     let (mut cpu, mut memory, mut disk) = capacity_metrics(&nodes);
+    let mut node_res = capacity_node_metrics(&nodes);
     let cap_cores = cpu.total.unwrap_or(0.0);
     let cap_mem_mib = memory.total.map(|g| g * 1024.0).unwrap_or(0.0);
 
     if cluster.status != "ready" {
         let status = cluster.status.clone();
-        return ClusterResourceSummary {
-            cluster_id: cluster.id,
-            cluster_name: cluster.name,
-            status: cluster.status,
-            availability: "unknown".into(),
-            k8s_version: cluster.k8s_version,
+        return pack(
+            &cluster,
             node_count,
             cpu,
             memory,
             disk,
-            error: Some(format!("live usage when status is ready (now {status})")),
-        };
+            "unknown".into(),
+            Some(format!("live usage when status is ready (now {status})")),
+            node_res,
+        );
     }
 
     let kc = match resolve_cluster_kubeconfig(state, &cluster.id).await {
         Ok((p, _)) => p,
         Err(e) => {
-            return ClusterResourceSummary {
-                cluster_id: cluster.id,
-                cluster_name: cluster.name,
-                status: cluster.status,
-                availability: "offline".into(),
-                k8s_version: cluster.k8s_version,
+            return pack(
+                &cluster,
                 node_count,
                 cpu,
                 memory,
                 disk,
-                error: Some(e.to_string()),
-            };
+                "offline".into(),
+                Some(e.to_string()),
+                node_res,
+            );
         }
     };
 
@@ -346,18 +452,16 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
         cpu.error = soft_err.clone();
         memory.error = soft_err.clone();
         disk.error = soft_err.clone();
-        return ClusterResourceSummary {
-            cluster_id: cluster.id,
-            cluster_name: cluster.name,
-            status: cluster.status,
-            availability: "offline".into(),
-            k8s_version: cluster.k8s_version,
+        return pack(
+            &cluster,
             node_count,
             cpu,
             memory,
             disk,
-            error: soft_err,
-        };
+            "offline".into(),
+            soft_err,
+            node_res,
+        );
     }
 
     let top_fut = fetch_kubectl_top_all(&kc, server_override.as_deref());
@@ -391,7 +495,9 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
             let mut cpu_pct_sum = 0.0_f64;
             let mut mem_pct_sum = 0.0_f64;
             let mut n = 0_usize;
+            let mut by_name: HashMap<String, &TopRow> = HashMap::new();
             for r in &rows {
+                by_name.insert(r.name.clone(), r);
                 used_cores += r.cpu_cores;
                 used_mem_mib += r.memory_mib;
                 if let Some(p) = r.cpu_percent {
@@ -424,6 +530,12 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
             } else {
                 None
             };
+
+            for nr in &mut node_res {
+                if let Some(r) = by_name.get(&nr.name) {
+                    apply_top_to_node(nr, r);
+                }
+            }
         }
         Ok(_) => {
             soft_err = soft_err.or(Some(
@@ -440,17 +552,26 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
     }
 
     match disk_res {
-        Ok(Some((used_b, cap_b))) if cap_b > 0 => {
-            let used_gib = used_b as f64 / (1024.0 * 1024.0 * 1024.0);
-            let total_gib = cap_b as f64 / (1024.0 * 1024.0 * 1024.0);
-            disk.used = Some(used_gib);
-            disk.total = Some(total_gib);
-            disk.percent = Some(((used_b as f64 / cap_b as f64) * 100.0).clamp(0.0, 100.0));
-            disk.display_used = Some(format!("{used_gib:.1} GiB"));
-            disk.display_total = Some(format!("{total_gib:.0} GiB"));
-            disk.error = None;
+        Ok(map) if !map.is_empty() => {
+            let used_b: u64 = map.values().map(|(u, _)| *u).sum();
+            let cap_b: u64 = map.values().map(|(_, c)| *c).sum();
+            if cap_b > 0 {
+                let used_gib = used_b as f64 / (1024.0 * 1024.0 * 1024.0);
+                let total_gib = cap_b as f64 / (1024.0 * 1024.0 * 1024.0);
+                disk.used = Some(used_gib);
+                disk.total = Some(total_gib);
+                disk.percent = Some(((used_b as f64 / cap_b as f64) * 100.0).clamp(0.0, 100.0));
+                disk.display_used = Some(format!("{used_gib:.1} GiB"));
+                disk.display_total = Some(format!("{total_gib:.0} GiB"));
+                disk.error = None;
+            }
+            for nr in &mut node_res {
+                if let Some((u, c)) = map.get(&nr.name) {
+                    apply_disk_to_node(nr, *u, *c);
+                }
+            }
         }
-        Ok(None) | Ok(Some(_)) => {
+        Ok(_) => {
             if disk.total.is_none() {
                 disk.error = Some("disk capacity unknown".into());
             }
@@ -465,18 +586,16 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
         }
     }
 
-    ClusterResourceSummary {
-        cluster_id: cluster.id,
-        cluster_name: cluster.name,
-        status: cluster.status,
-        availability: "online".into(),
-        k8s_version: cluster.k8s_version,
+    pack(
+        &cluster,
         node_count,
         cpu,
         memory,
         disk,
-        error: soft_err,
-    }
+        "online".into(),
+        soft_err,
+        node_res,
+    )
 }
 
 /// Pick a working API server override when the kubeconfig endpoint (often a VIP)
@@ -604,6 +723,7 @@ fn rewrite_kubeconfig_server(kc: &Path, url: &str) -> std::io::Result<()> {
 
 #[derive(Debug)]
 struct TopRow {
+    name: String,
     cpu_cores: f64,
     cpu_percent: Option<f64>,
     memory_mib: f64,
@@ -646,6 +766,7 @@ fn parse_top_line(line: &str) -> Option<TopRow> {
         return None;
     }
     Some(TopRow {
+        name: parts[0].to_string(),
         cpu_cores: parse_cpu_cores(parts[1]),
         cpu_percent: parse_percent(parts[2]),
         memory_mib: parse_memory_mib(parts[3]),
@@ -702,9 +823,9 @@ async fn fetch_disk_from_stats(
     kc: &Path,
     nodes: &[NodeCap],
     server: Option<&str>,
-) -> Result<Option<(u64, u64)>, String> {
+) -> Result<HashMap<String, (u64, u64)>, String> {
     if nodes.is_empty() {
-        return Ok(None);
+        return Ok(HashMap::new());
     }
 
     let kc_buf = kc.to_path_buf();
@@ -722,8 +843,8 @@ async fn fetch_disk_from_stats(
                 )
                 .await
                 {
-                    Ok(Ok(Some((u, c)))) => Ok(Some((u, c))),
-                    Ok(Ok(None)) => Ok(None),
+                    Ok(Ok(Some((u, c)))) => Ok((name, Some((u, c)))),
+                    Ok(Ok(None)) => Ok((name, None)),
                     Ok(Err(e)) => Err(e),
                     Err(_) => Err(format!("stats timeout for {name}")),
                 }
@@ -731,24 +852,20 @@ async fn fetch_disk_from_stats(
         })
         .collect();
 
-    let mut used = 0_u64;
-    let mut cap = 0_u64;
-    let mut any = false;
+    let mut map = HashMap::new();
     let mut last_err: Option<String> = None;
     for res in futures::future::join_all(futs).await {
         match res {
-            Ok(Some((u, c))) => {
-                used = used.saturating_add(u);
-                cap = cap.saturating_add(c);
-                any = true;
+            Ok((name, Some((u, c)))) => {
+                map.insert(name, (u, c));
             }
-            Ok(None) => {}
+            Ok((_, None)) => {}
             Err(e) => last_err = Some(e),
         }
     }
 
-    if any {
-        return Ok(Some((used, cap)));
+    if !map.is_empty() {
+        return Ok(map);
     }
     Err(last_err.unwrap_or_else(|| "no filesystem stats".into()))
 }

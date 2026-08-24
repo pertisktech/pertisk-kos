@@ -57,6 +57,15 @@ pub struct NodeOut {
     pub memory: Option<i64>,
     pub cores: Option<i64>,
     pub disk_gb: Option<i64>,
+    #[sqlx(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<crate::cluster_resources::ResourceMetric>,
+    #[sqlx(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_usage: Option<crate::cluster_resources::ResourceMetric>,
+    #[sqlx(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_usage: Option<crate::cluster_resources::ResourceMetric>,
     /// Stored AK public (TPM2B_PUBLIC bytes, base64). Not serialized to API clients.
     #[serde(skip_serializing)]
     pub ak_public_b64: Option<String>,
@@ -95,6 +104,21 @@ pub const NODE_SELECT: &str = r#"SELECT id, cluster_id, name, role, vmid, ip, ip
          )
        END AS source, status, created_at, updated_at
        FROM nodes"#;
+
+pub fn attach_resource_metrics(cluster_id: &str, nodes: &mut [NodeOut]) {
+    let Some(s) = crate::cluster_resources::cached_summary(cluster_id) else {
+        return;
+    };
+    let by: std::collections::HashMap<_, _> =
+        s.nodes.iter().map(|n| (n.name.clone(), n)).collect();
+    for n in nodes {
+        if let Some(nr) = by.get(&n.name) {
+            n.cpu = Some(nr.cpu.clone());
+            n.memory_usage = Some(nr.memory.clone());
+            n.disk_usage = Some(nr.disk.clone());
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct AddNode {
@@ -166,6 +190,8 @@ async fn list(
     .fetch_all(state.pool())
     .await?;
     crate::node_availability::fill(&mut rows).await;
+    let _ = crate::cluster_resources::gather_one_cached(&state, &id).await;
+    attach_resource_metrics(&id, &mut rows);
     Ok(Json(rows))
 }
 
@@ -184,6 +210,8 @@ async fn get_one(
         return Err(AppError::NotFound);
     };
     node.availability = crate::node_availability::probe_node(&node).await;
+    let _ = crate::cluster_resources::gather_one_cached(&state, &cid).await;
+    attach_resource_metrics(&cid, std::slice::from_mut(&mut node));
     Ok(Json(node))
 }
 

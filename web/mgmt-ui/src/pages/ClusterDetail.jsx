@@ -18,6 +18,7 @@ import K8sTab from './cluster-k8s/K8sTab'
 import ShellTab from './cluster-k8s/ShellTab'
 import AddonsTab from './cluster-k8s/AddonsTab'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
+import UsageBar from '../components/UsageBar'
 
 const YamlEditor = lazy(() => import('../components/YamlEditor'))
 
@@ -162,6 +163,9 @@ function NodesTable({
           {showK8s && <th>K8s</th>}
           {showOs && <th>OS</th>}
           {showHw && <th>Hardware</th>}
+          <th>CPU</th>
+          <th>Memory</th>
+          <th>Disk</th>
           <th>Status</th>
           {(onHardware || onReboot) && <th className="col-actions" />}
         </tr>
@@ -227,6 +231,9 @@ function NodesTable({
                 </td>
               )}
               {showHw && <td className="hw-cell">{formatHw(n)}</td>}
+              <td><UsageBar metric={n.cpu} color="cpu" /></td>
+              <td><UsageBar metric={n.memory_usage} color="memory" /></td>
+              <td><UsageBar metric={n.disk_usage} color="disk" /></td>
               <td>
                 <NodeStatusBadges status={n.status} availability={n.availability} />
               </td>

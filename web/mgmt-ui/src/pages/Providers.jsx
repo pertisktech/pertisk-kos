@@ -6,6 +6,7 @@ import { useConfirm } from '../components/Confirm'
 import ProviderWizard from '../components/ProviderWizard'
 import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import { formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
+import UsageBar from '../components/UsageBar'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 
 const AVAIL_POLL_MS = 15000
@@ -40,6 +41,7 @@ function formatProbe(r, kind) {
 export default function Providers() {
   const confirm = useConfirm()
   const [list, setList] = useState([])
+  const [metrics, setMetrics] = useState({})
   const [wizardOpen, setWizardOpen] = useState(false)
   const [wizardMode, setWizardMode] = useState('create')
   const [editing, setEditing] = useState(null)
@@ -48,7 +50,19 @@ export default function Providers() {
   const [testing, setTesting] = useState(false)
 
   const load = useCallback(() => {
-    api('/providers').then(setList).catch((e) => setError(e.message))
+    Promise.all([
+      api('/providers'),
+      api('/dashboard/providers').catch(() => []),
+    ])
+      .then(([rows, res]) => {
+        setList(Array.isArray(rows) ? rows : [])
+        const map = {}
+        for (const r of Array.isArray(res) ? res : []) {
+          if (r?.provider_id) map[r.provider_id] = r
+        }
+        setMetrics(map)
+      })
+      .catch((e) => setError(e.message))
   }, [])
   useEffect(() => {
     load()
@@ -137,6 +151,9 @@ export default function Providers() {
               <th>Arch</th>
               <th>URL</th>
               <th>Host / Node</th>
+              <th>CPU</th>
+              <th>Memory</th>
+              <th>Disk</th>
               <th>Storage</th>
               <th>TLS</th>
               <th></th>
@@ -159,6 +176,9 @@ export default function Providers() {
                 <td>{p.arch || 'amd64'}</td>
                 <td className="mono">{p.url}</td>
                 <td>{p.node}</td>
+                <td><UsageBar metric={metrics[p.id]?.cpu} color="cpu" /></td>
+                <td><UsageBar metric={metrics[p.id]?.memory} color="memory" /></td>
+                <td><UsageBar metric={metrics[p.id]?.disk} color="disk" /></td>
                 <td>{p.storage}</td>
                 <td>{p.insecure ? 'insecure' : 'verify'}</td>
                 <td className="row-actions">

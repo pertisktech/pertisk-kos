@@ -21,6 +21,7 @@ pub fn routes() -> Router<AppState> {
         .route("/clusters/suggest-vmid", axum::routing::post(suggest_vmid))
         .route("/clusters/check-vip", axum::routing::post(check_vip))
         .route("/clusters/{id}", get(get_one).delete(delete))
+        .route("/clusters/{id}/resources", get(resources))
         .route("/clusters/{id}/kubeconfig", get(kubeconfig))
         .route("/clusters/{id}/versions", get(versions))
         .route("/clusters/{id}/config-bundle", get(config_bundle))
@@ -342,6 +343,8 @@ async fn get_one(
     .await?;
 
     crate::node_availability::fill(&mut nodes).await;
+    let _ = crate::cluster_resources::gather_one_cached(&state, &id).await;
+    crate::routes::nodes::attach_resource_metrics(&id, &mut nodes);
 
     cluster.availability = crate::cluster_availability::cached_or(&id, &cluster.status);
     crate::cluster_availability::spawn_refresh(state.clone(), id.clone(), cluster.status.clone());
@@ -355,6 +358,17 @@ async fn get_one(
         "nodes": nodes,
         "versions": versions,
     })))
+}
+
+async fn resources(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<crate::cluster_resources::ClusterResourceSummary>> {
+    crate::cluster_resources::gather_one_cached(&state, &id)
+        .await
+        .ok_or(AppError::NotFound)
+        .map(Json)
 }
 
 async fn versions(
