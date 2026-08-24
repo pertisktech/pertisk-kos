@@ -15,7 +15,7 @@ pub async fn connect(path: &Path) -> anyhow::Result<SqlitePool> {
         .journal_mode(SqliteJournalMode::Wal)
         .busy_timeout(Duration::from_secs(8));
     let pool = SqlitePoolOptions::new()
-        .max_connections(8)
+        .max_connections(16)
         .connect_with(opts)
         .await
         .context("connect sqlite")?;

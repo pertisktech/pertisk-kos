@@ -172,7 +172,7 @@ Proxmox always re-imports the qcow2 from mgmt. Older Nutanix create **reused** t
 
 Upload now names the Prism image with a qcow2 content hash and re-imports when the file on mgmt changes. Recreate the VMs (Cluster → Create, or `nutanix-upload-vm.sh` without `NUTANIX_IMAGE_NAME`). Force a re-import of the same file with `NUTANIX_FORCE_IMPORT=1`.
 
-Create imports the hashed qcow2 **once**, then clones VMs in parallel (`PERTISK_VM_JOBS`, default 4). Mgmt still runs one cluster job at a time.
+Create imports the hashed qcow2 **once**, then clones VMs in parallel (`PERTISK_VM_JOBS`, default 4). Mgmt still runs one exclusive cluster job (create/upgrade/delete) at a time; add-on installs run in parallel.
 
 ## Limits
 

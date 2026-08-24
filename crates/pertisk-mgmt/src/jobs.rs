@@ -213,14 +213,17 @@ fn rewrite_proxmox_ssh_for_provider(ssh: &str, provider_url: &str) -> Option<Str
     }
 }
 
-/// One job at a time. Parallel VM clones happen inside create scripts (`PERTISK_VM_JOBS`).
-/// Delete aborts that cluster's in-flight job so create is not stuck `queued`.
+/// Exclusive jobs (create/delete/upgrade/node ops) still run one at a time globally
+/// so hypervisor clones do not pile up. `install_addon` runs in parallel with other
+/// clusters' jobs (and with other add-ons), but waits if *this* cluster already has
+/// an exclusive job running. Delete aborts that cluster's in-flight jobs so create
+/// is not stuck `queued`.
 pub fn spawn_worker(state: AppState) {
     tokio::spawn(async move {
         loop {
-            match tick(&state).await {
-                Ok(true) => continue,
-                Ok(false) => {}
+            match start_available_jobs(&state).await {
+                Ok(n) if n > 0 => continue,
+                Ok(_) => {}
                 Err(e) => tracing::error!(error = %e, "job worker tick failed"),
             }
             tokio::select! {
@@ -320,121 +323,192 @@ struct ClaimedJob {
     log_file: String,
 }
 
-async fn tick(state: &AppState) -> anyhow::Result<bool> {
-    let Some(job) = claim_next(state).await? else {
-        return Ok(false);
-    };
-    let job_id = job.id.clone();
-    let cluster_id = job.cluster_id.clone();
-    let kind = job.kind.clone();
-    let state_run = state.clone();
-    let handle = tokio::spawn(async move { execute_job(&state_run, job).await });
-    state.set_running_job(
-        job_id.clone(),
-        cluster_id.clone(),
-        kind.clone(),
-        handle.abort_handle(),
-    );
-    let join = handle.await;
-    state.clear_running_job(&job_id);
-    match join {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::error!(job = %job_id, error = %e, "job task returned error"),
-        Err(e) if e.is_cancelled() => {
-            tracing::info!(job = %job_id, "job aborted");
-            let now = db::now_rfc3339();
-            let _ = sqlx::query(
-                r#"UPDATE jobs SET status = 'cancelled', error = 'aborted because cluster was deleted',
-                   updated_at = ?, finished_at = ? WHERE id = ? AND status = 'running'"#,
-            )
-            .bind(&now)
-            .bind(&now)
-            .bind(&job_id)
-            .execute(state.pool())
-            .await;
-            state.emit_job(cluster_id.as_deref(), &job_id, Some(&kind), "cancelled");
-        }
-        Err(e) => tracing::error!(job = %job_id, error = %e, "job task panicked"),
+/// Start every currently eligible queued job without waiting for any of them.
+async fn start_available_jobs(state: &AppState) -> anyhow::Result<usize> {
+    let mut started = 0;
+    while let Some(job) = claim_next(state).await? {
+        started += 1;
+        let job_id = job.id.clone();
+        let cluster_id = job.cluster_id.clone();
+        let kind = job.kind.clone();
+        let state_run = state.clone();
+        let handle = tokio::spawn(async move { execute_job(&state_run, job).await });
+        state.set_running_job(
+            job_id.clone(),
+            cluster_id.clone(),
+            kind.clone(),
+            handle.abort_handle(),
+        );
+        let state_done = state.clone();
+        tokio::spawn(async move {
+            let join = handle.await;
+            state_done.clear_running_job(&job_id);
+            match join {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::error!(job = %job_id, error = %e, "job task returned error")
+                }
+                Err(e) if e.is_cancelled() => {
+                    tracing::info!(job = %job_id, "job aborted");
+                    let now = db::now_rfc3339();
+                    let _ = sqlx::query(
+                        r#"UPDATE jobs SET status = 'cancelled', error = 'aborted because cluster was deleted',
+                           updated_at = ?, finished_at = ? WHERE id = ? AND status = 'running'"#,
+                    )
+                    .bind(&now)
+                    .bind(&now)
+                    .bind(&job_id)
+                    .execute(state_done.pool())
+                    .await;
+                    state_done.emit_job(cluster_id.as_deref(), &job_id, Some(&kind), "cancelled");
+                }
+                Err(e) => tracing::error!(job = %job_id, error = %e, "job task panicked"),
+            }
+            state_done.notify_jobs();
+        });
     }
-    Ok(true)
+    Ok(started)
+}
+
+/// Create/upgrade/node ops must not overlap globally. Add-on installs are the exception.
+fn job_is_exclusive(kind: &str) -> bool {
+    kind != "install_addon"
+}
+
+const MAX_PARALLEL_ADDON_JOBS: usize = 8;
+
+/// Whether this queued job can start given the in-flight set.
+fn job_can_start(
+    kind: &str,
+    cluster_id: Option<&str>,
+    running: &[(Option<String>, String)],
+) -> bool {
+    if kind == "delete_cluster" {
+        // Same-cluster exclusive work is aborted; wait only for *other* clusters.
+        let Some(cid) = cluster_id else {
+            return true;
+        };
+        return !running
+            .iter()
+            .any(|(c, k)| job_is_exclusive(k) && c.as_deref() != Some(cid));
+    }
+    if kind == "install_addon" {
+        let Some(cid) = cluster_id else {
+            return false;
+        };
+        let addon_n = running
+            .iter()
+            .filter(|(_, k)| *k == "install_addon")
+            .count();
+        if addon_n >= MAX_PARALLEL_ADDON_JOBS {
+            return false;
+        }
+        return !running
+            .iter()
+            .any(|(c, k)| c.as_deref() == Some(cid) && job_is_exclusive(k));
+    }
+    if running.iter().any(|(_, k)| job_is_exclusive(k)) {
+        return false;
+    }
+    if let Some(cid) = cluster_id {
+        if running.iter().any(|(c, _)| c.as_deref() == Some(cid)) {
+            return false;
+        }
+    }
+    true
 }
 
 async fn claim_next(state: &AppState) -> anyhow::Result<Option<ClaimedJob>> {
     // Prefer deletes so failed clusters can be cleaned up while creates queue.
+    // Skip ineligible rows (do not claim them) so an add-on is not stuck behind
+    // another cluster's create.
     loop {
-        let row = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>)>(
+        let rows: Vec<(String, Option<String>, String, String, Option<String>)> = sqlx::query_as(
             r#"SELECT id, cluster_id, kind, payload_json, log_path FROM jobs
                WHERE status = 'queued'
-               ORDER BY CASE WHEN kind = 'delete_cluster' THEN 0 ELSE 1 END, created_at ASC
-               LIMIT 1"#,
+               ORDER BY CASE WHEN kind = 'delete_cluster' THEN 0 ELSE 1 END, created_at ASC"#,
         )
-        .fetch_optional(state.pool())
+        .fetch_all(state.pool())
         .await?;
 
-        let Some((id, cluster_id, kind, payload, log_path)) = row else {
+        if rows.is_empty() {
             return Ok(None);
-        };
-
-        if job_is_stale(state, cluster_id.as_deref(), &kind).await? {
-            let now = db::now_rfc3339();
-            sqlx::query(
-                r#"UPDATE jobs SET status = 'cancelled', error = 'cluster deleting or removed',
-                   updated_at = ?, finished_at = ? WHERE id = ? AND status = 'queued'"#,
-            )
-            .bind(&now)
-            .bind(&now)
-            .bind(&id)
-            .execute(state.pool())
-            .await?;
-            state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "cancelled");
-            continue;
         }
 
-        let now = db::now_rfc3339();
-        let claimed = sqlx::query(
-            "UPDATE jobs SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
-        )
-        .bind(&now)
-        .bind(&id)
-        .execute(state.pool())
-        .await?;
-        if claimed.rows_affected() == 0 {
-            continue;
-        }
-        state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "running");
+        let running = state.running_jobs_snapshot();
+        let mut cancelled_stale = false;
 
-        if let Some(cid) = &cluster_id {
-            if kind != "delete_cluster" && !is_node_maintenance_job(&kind) {
-                let _ = sqlx::query(
-                    "UPDATE clusters SET status = 'provisioning', updated_at = ?, error = NULL WHERE id = ?",
+        for (id, cluster_id, kind, payload, log_path) in rows {
+            if job_is_stale(state, cluster_id.as_deref(), &kind).await? {
+                let now = db::now_rfc3339();
+                sqlx::query(
+                    r#"UPDATE jobs SET status = 'cancelled', error = 'cluster deleting or removed',
+                       updated_at = ?, finished_at = ? WHERE id = ? AND status = 'queued'"#,
                 )
                 .bind(&now)
-                .bind(cid)
+                .bind(&now)
+                .bind(&id)
                 .execute(state.pool())
-                .await;
-                state.emit_cluster(cid, "provisioning");
+                .await?;
+                state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "cancelled");
+                cancelled_stale = true;
+                continue;
             }
-        }
 
-        let log_file = log_path.unwrap_or_else(|| {
-            let p = state.cfg().jobs_dir().join(format!("{id}.log"));
-            p.to_string_lossy().into_owned()
-        });
-        std::fs::create_dir_all(state.cfg().jobs_dir())?;
-        sqlx::query("UPDATE jobs SET log_path = ?, updated_at = ? WHERE id = ?")
-            .bind(&log_file)
+            if !job_can_start(&kind, cluster_id.as_deref(), &running) {
+                continue;
+            }
+
+            let now = db::now_rfc3339();
+            let claimed = sqlx::query(
+                "UPDATE jobs SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
+            )
             .bind(&now)
             .bind(&id)
             .execute(state.pool())
             .await?;
+            if claimed.rows_affected() == 0 {
+                continue;
+            }
+            state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "running");
 
-        return Ok(Some(ClaimedJob {
-            id,
-            cluster_id,
-            kind,
-            payload,
-            log_file,
-        }));
+            if let Some(cid) = &cluster_id {
+                if kind != "delete_cluster" && !is_node_maintenance_job(&kind) {
+                    let _ = sqlx::query(
+                        "UPDATE clusters SET status = 'provisioning', updated_at = ?, error = NULL WHERE id = ?",
+                    )
+                    .bind(&now)
+                    .bind(cid)
+                    .execute(state.pool())
+                    .await;
+                    state.emit_cluster(cid, "provisioning");
+                }
+            }
+
+            let log_file = log_path.unwrap_or_else(|| {
+                let p = state.cfg().jobs_dir().join(format!("{id}.log"));
+                p.to_string_lossy().into_owned()
+            });
+            std::fs::create_dir_all(state.cfg().jobs_dir())?;
+            sqlx::query("UPDATE jobs SET log_path = ?, updated_at = ? WHERE id = ?")
+                .bind(&log_file)
+                .bind(&now)
+                .bind(&id)
+                .execute(state.pool())
+                .await?;
+
+            return Ok(Some(ClaimedJob {
+                id,
+                cluster_id,
+                kind,
+                payload,
+                log_file,
+            }));
+        }
+
+        if !cancelled_stale {
+            return Ok(None);
+        }
     }
 }
 
@@ -4890,6 +4964,33 @@ mod tests {
             proxmox_ssh_host("root@10.1.1.196:22"),
             Some("10.1.1.196".into())
         );
+    }
+
+    #[test]
+    fn addon_install_starts_while_other_cluster_create_runs() {
+        let running = vec![(Some("a".into()), "create_cluster".into())];
+        assert!(job_can_start("install_addon", Some("b"), &running));
+        assert!(!job_can_start("install_addon", Some("a"), &running));
+        assert!(!job_can_start("create_cluster", Some("b"), &running));
+    }
+
+    #[test]
+    fn two_addons_can_run_in_parallel() {
+        let running = vec![
+            (Some("a".into()), "install_addon".into()),
+            (Some("b".into()), "install_addon".into()),
+        ];
+        assert!(job_can_start("install_addon", Some("a"), &running));
+        assert!(job_can_start("install_addon", Some("c"), &running));
+        assert!(job_can_start("create_cluster", Some("d"), &running));
+        assert!(!job_can_start("create_cluster", Some("a"), &running));
+    }
+
+    #[test]
+    fn delete_can_start_on_same_cluster_while_create_aborts() {
+        let running = vec![(Some("a".into()), "create_cluster".into())];
+        assert!(job_can_start("delete_cluster", Some("a"), &running));
+        assert!(!job_can_start("delete_cluster", Some("b"), &running));
     }
 
     #[test]

@@ -344,6 +344,7 @@ export default function AddonsTab({ clusterId, ready, onInstalled }) {
           <h3 className="section-label">Add-ons</h3>
           <p className="muted">
             Check config, then install into this cluster via kubectl or Helm on the management host.
+            Add-on jobs run in parallel with other clusters (they do not wait in the global create queue).
           </p>
         </div>
         <button type="button" className="secondary btn-icon" onClick={load} disabled={loading}>

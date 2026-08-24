@@ -1154,7 +1154,7 @@ export default function ClusterDetail() {
         <div className="banner info">
           <Icon name="clock" size={18} />
           <span>
-            Create is queued — waiting for another mgmt job to finish (one cluster job at a time).
+            Create is queued — waiting for another cluster create, upgrade, or delete to finish.
             {' '}
             <button type="button" className="linkish" onClick={() => setTab('jobs')}>Watch job log</button>
           </span>
