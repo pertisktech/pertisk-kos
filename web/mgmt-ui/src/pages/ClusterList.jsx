@@ -106,7 +106,8 @@ export default function Clusters() {
           Deleting cluster… the list will update when the job finishes.
         </p>
       )}
-      <div className="card">
+      <div className="card table-card">
+        <div className="table-meta">Total: {list.length} records</div>
         <table>
           <thead>
             <tr>

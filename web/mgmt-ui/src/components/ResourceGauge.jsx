@@ -3,9 +3,9 @@ import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts'
 import { Icon } from './Icons'
 
 export const GAUGE_BASE = {
-  cpu: 'var(--accent)',
-  memory: 'var(--success)',
-  disk: 'var(--brand-deep)',
+  cpu: 'var(--color-blue-b1)',
+  memory: '#a855f7',
+  disk: '#10b981',
   track: 'color-mix(in srgb, var(--border) 70%, transparent)',
 }
 

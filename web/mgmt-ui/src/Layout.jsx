@@ -5,6 +5,7 @@ import { api } from './api'
 import { Icon } from './components/Icons'
 import { useConfirm } from './components/Confirm'
 import { APP_VERSION } from './utils/version'
+import { applyTheme } from './utils/theme'
 
 const SIDEBAR_COLLAPSED_KEY = 'pertisk_kos_sidebar_collapsed'
 
@@ -46,8 +47,7 @@ export default function Layout() {
   const title = resolveTitle(location.pathname)
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme)
-    localStorage.setItem('theme', theme)
+    applyTheme(theme)
   }, [theme])
 
   useEffect(() => {

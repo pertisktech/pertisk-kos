@@ -143,7 +143,11 @@ function NodesTable({
   const someSelected = selectable && nodes.some((n) => selected.has(n.id)) && !allSelected
 
   return (
-    <table>
+    <div className="table-shell">
+      {nodes.length > 0 && (
+        <div className="table-meta">Total: {nodes.length} records</div>
+      )}
+      <table>
       <thead>
         <tr>
           {selectable && (
@@ -268,6 +272,7 @@ function NodesTable({
         })}
       </tbody>
     </table>
+    </div>
   )
 }
 

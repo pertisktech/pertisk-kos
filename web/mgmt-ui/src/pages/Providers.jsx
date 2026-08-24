@@ -141,7 +141,8 @@ export default function Providers() {
       </div>
       {error && <div className="error">{error}</div>}
       {msg && <p className="muted">{msg}</p>}
-      <div className="card">
+      <div className="card table-card">
+        <div className="table-meta">Total: {list.length} records</div>
         <table>
           <thead>
             <tr>
