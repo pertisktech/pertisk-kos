@@ -1,7 +1,7 @@
 //! Additional control-plane join + join-config export for HA.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
@@ -119,22 +119,36 @@ outside the DHCP pool"
                     Err(err) => tracing::warn!(error = %err, "etcd re-add after failed join"),
                 }
                 let _ = crate::restore_control_plane(state_root);
-                wait_local_etcd(Duration::from_secs(120));
-                if let Err(err) =
-                    etcd_promote_learner(etcd_endpoints, &peer_url, &ca_pem, &cert_pem, &key_pem)
-                        .await
+                if !wait_local_etcd_async(Duration::from_secs(600)).await {
+                    tracing::warn!("local etcd :2379 not up after re-add");
+                }
+                if let Err(err) = etcd_promote_learner_retry(
+                    etcd_endpoints,
+                    &peer_url,
+                    &ca_pem,
+                    &cert_pem,
+                    &key_pem,
+                    Duration::from_secs(360),
+                )
+                .await
                 {
                     tracing::warn!(error = %err, "etcd learner promote after re-add");
                 }
             }
         }
-        thread::sleep(Duration::from_secs(5));
+        tokio::time::sleep(Duration::from_secs(5)).await;
         let admin_path = paths.admin_kubeconfig();
         let defer_addons = matches!(cluster.cni, pertisk_config::CniMode::None);
         info!(hostname = %hostname, "already joined; waiting for local apiserver /readyz then finalize");
-        finalize_bootstrap_when_ready(&admin_path, None, &hostname, defer_addons).with_context(
-            || format!("already-joined control-plane missing finalize/label for {hostname}"),
-        )?;
+        if let Err(err) =
+            finalize_join_async(admin_path, hostname.clone(), defer_addons, true).await
+        {
+            tracing::warn!(error = %err, hostname = %hostname, "already-joined finalize still pending");
+            return Ok(JoinControlPlaneResult {
+                already_joined: true,
+                message: format!("already bootstrapped / joined (finalize pending: {err:#})"),
+            });
+        }
         return Ok(JoinControlPlaneResult {
             already_joined: true,
             message: "already bootstrapped / joined".into(),
@@ -294,28 +308,43 @@ delete the cluster, and recreate (do not reuse this node)"
 
     // Cert kubeconfig is on disk; wait briefly for pertiskd to restart kubelet
     // (via /run/pertisk/kubelet-reload) so the Node object appears before finalize.
-    info!("waiting for kubelet credential reload before finalize");
-    thread::sleep(Duration::from_secs(8));
-    wait_local_etcd(Duration::from_secs(120));
-    if let Err(err) = etcd_promote_learner(
+    info!("waiting for kubelet credential reload before etcd promote");
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    if !wait_local_etcd_async(Duration::from_secs(480)).await {
+        bail!(
+            "local etcd :2379 not up within 480s after join \
+(static pod / registry.k8s.io pull). Not returning success: etcd allows only one learner"
+        );
+    }
+    etcd_promote_learner_retry(
         etcd_endpoints,
         &peer_url,
         &pki.ca_crt,
         &pki.etcd_crt,
         &pki.etcd_key,
+        Duration::from_secs(300),
     )
     .await
-    {
-        tracing::warn!(error = %err, "etcd learner promote (join will still try finalize)");
-    }
+    .context(
+        "etcd learner not promoted — another control-plane cannot join until this member votes",
+    )?;
 
     // Label this CP node once local apiserver is up (skip token/RBAC/addons).
     // Must succeed: unlabeled joined CPs show ROLES=<none> in `kubectl get nodes`.
     let admin_path = paths.admin_kubeconfig();
     let node_name = hostname.clone();
     let defer_addons = matches!(cluster.cni, pertisk_config::CniMode::None);
-    finalize_bootstrap_when_ready(&admin_path, None, &node_name, defer_addons)
-        .with_context(|| format!("post-join finalize failed for {node_name}"))?;
+    if let Err(err) = finalize_join_async(admin_path, node_name, defer_addons, false).await {
+        // Marker + etcd learner already promoted. Lab-up waits for :6443/readyz
+        // and labels the node; do not fail the RPC after image pulls.
+        tracing::warn!(error = %err, hostname = %hostname, "post-join finalize still pending");
+        return Ok(JoinControlPlaneResult {
+            already_joined: false,
+            message: format!(
+                "control-plane joined advertise={advertise} etcd_initial_cluster={initial_cluster} (finalize pending: {err:#})"
+            ),
+        });
+    }
 
     Ok(JoinControlPlaneResult {
         already_joined: false,
@@ -342,38 +371,60 @@ async fn etcd_member_add(
     );
 
     // Retry: first CP etcd may still be starting when lab races ahead.
+    // etcd allows only one learner; a previous joiner may still be catching up.
     let mut last_err: Option<anyhow::Error> = None;
-    for attempt in 1..=45 {
+    for attempt in 1..=90 {
         match Client::connect(endpoints, Some(opts.clone())).await {
-            Ok(mut client) => match client
-                .member_add(
-                    [peer_url.to_string()],
-                    Some(MemberAddOptions::new().with_is_learner()),
-                )
-                .await
-            {
-                Ok(_) => {
-                    let list = client.member_list().await.context("etcd member_list")?;
-                    let initial = initial_cluster_from_members(list.members(), name, peer_url);
-                    info!(%initial, attempt, "etcd MemberAdd ok (learner)");
-                    return Ok(initial);
-                }
-                Err(err) => {
-                    let msg = err.to_string();
-                    if msg.to_ascii_lowercase().contains("peerurl")
-                        || msg.to_ascii_lowercase().contains("already")
+            Ok(mut client) => {
+                if let Ok(list) = client.member_list().await {
+                    if list
+                        .members()
+                        .iter()
+                        .any(|m| m.peer_urls().iter().any(|u| u == peer_url))
                     {
-                        if let Ok(list) = client.member_list().await {
-                            return Ok(initial_cluster_from_members(
-                                list.members(),
-                                name,
-                                peer_url,
-                            ));
-                        }
+                        let initial = initial_cluster_from_members(list.members(), name, peer_url);
+                        info!(%initial, attempt, "etcd member already present");
+                        return Ok(initial);
                     }
-                    last_err = Some(anyhow::anyhow!("member_add: {err}"));
+                    if list.members().iter().any(|m| m.is_learner()) {
+                        let _ = promote_ready_learners(&mut client).await;
+                    }
                 }
-            },
+                match client
+                    .member_add(
+                        [peer_url.to_string()],
+                        Some(MemberAddOptions::new().with_is_learner()),
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        let list = client.member_list().await.context("etcd member_list")?;
+                        let initial = initial_cluster_from_members(list.members(), name, peer_url);
+                        info!(%initial, attempt, "etcd MemberAdd ok (learner)");
+                        return Ok(initial);
+                    }
+                    Err(err) => {
+                        let msg = err.to_string();
+                        let lower = msg.to_ascii_lowercase();
+                        if lower.contains("peerurl") || lower.contains("already") {
+                            if let Ok(list) = client.member_list().await {
+                                return Ok(initial_cluster_from_members(
+                                    list.members(),
+                                    name,
+                                    peer_url,
+                                ));
+                            }
+                        }
+                        if lower.contains("learner") {
+                            let _ = promote_ready_learners(&mut client).await;
+                            last_err = Some(anyhow::anyhow!("member_add: {err}"));
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            continue;
+                        }
+                        last_err = Some(anyhow::anyhow!("member_add: {err}"));
+                    }
+                }
+            }
             Err(err) => {
                 last_err = Some(anyhow::anyhow!("connect: {err}"));
             }
@@ -430,12 +481,12 @@ fn local_etcd_listening() -> bool {
     .is_ok()
 }
 
-fn wait_local_etcd(timeout: Duration) {
+fn wait_local_etcd(timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
         if local_etcd_listening() {
             info!("local etcd :2379 is up");
-            return;
+            return true;
         }
         thread::sleep(Duration::from_secs(2));
     }
@@ -443,6 +494,74 @@ fn wait_local_etcd(timeout: Duration) {
         "local etcd :2379 not listening within {}s",
         timeout.as_secs()
     );
+    false
+}
+
+async fn wait_local_etcd_async(timeout: Duration) -> bool {
+    tokio::task::spawn_blocking(move || wait_local_etcd(timeout))
+        .await
+        .unwrap_or(false)
+}
+
+async fn finalize_join_async(
+    admin_path: PathBuf,
+    node_name: String,
+    defer_addons: bool,
+    already: bool,
+) -> Result<()> {
+    tokio::task::spawn_blocking(move || {
+        finalize_bootstrap_when_ready(&admin_path, None, &node_name, defer_addons).with_context(
+            || {
+                if already {
+                    format!("already-joined control-plane missing finalize/label for {node_name}")
+                } else {
+                    format!("post-join finalize failed for {node_name}")
+                }
+            },
+        )
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("finalize join task: {e}"))?
+}
+
+async fn promote_ready_learners(client: &mut Client) -> Result<usize> {
+    let list = client.member_list().await.context("etcd member_list")?;
+    let mut n = 0usize;
+    for m in list.members() {
+        if !m.is_learner() {
+            continue;
+        }
+        match client.member_promote(m.id()).await {
+            Ok(_) => {
+                info!(id = m.id(), "etcd learner promoted to voting member");
+                n += 1;
+            }
+            Err(err) => {
+                tracing::debug!(id = m.id(), error = %err, "learner not in sync yet");
+            }
+        }
+    }
+    Ok(n)
+}
+
+async fn etcd_promote_learner_retry(
+    endpoints: &[String],
+    peer_url: &str,
+    ca_pem: &str,
+    cert_pem: &str,
+    key_pem: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut last_err: Option<anyhow::Error> = None;
+    while std::time::Instant::now() < deadline {
+        match etcd_promote_learner(endpoints, peer_url, ca_pem, cert_pem, key_pem).await {
+            Ok(()) => return Ok(()),
+            Err(err) => last_err = Some(err),
+        }
+        tokio::time::sleep(Duration::from_secs(4)).await;
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("etcd learner promote timed out")))
 }
 
 async fn etcd_promote_learner(
@@ -464,16 +583,20 @@ async fn etcd_promote_learner(
         .context("connect etcd to promote learner")?;
     let list = client.member_list().await.context("etcd member_list")?;
     for m in list.members() {
-        if m.peer_urls().iter().any(|u| u == peer_url) && m.is_learner() {
-            client
-                .member_promote(m.id())
-                .await
-                .with_context(|| format!("promote learner {}", m.id()))?;
-            info!(id = m.id(), %peer_url, "etcd learner promoted to voting member");
+        if !m.peer_urls().iter().any(|u| u == peer_url) {
+            continue;
+        }
+        if !m.is_learner() {
             return Ok(());
         }
+        client
+            .member_promote(m.id())
+            .await
+            .with_context(|| format!("promote learner {}", m.id()))?;
+        info!(id = m.id(), %peer_url, "etcd learner promoted to voting member");
+        return Ok(());
     }
-    Ok(())
+    bail!("etcd member {peer_url} not in member list yet")
 }
 
 /// Export worker + controlplane-join YAML (with shared secrets) from a bootstrapped CP.

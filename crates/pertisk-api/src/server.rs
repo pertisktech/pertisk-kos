@@ -7,6 +7,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, MutexGuard};
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use pertisk_bootstrap::{
     bootstrap_control_plane, default_restore_identity, detect_advertise_ip, etcd_force_new_cluster,
@@ -423,10 +424,14 @@ impl MachineService for MachineSvc {
         let adv = if advertise.is_empty() {
             None
         } else {
-            Some(advertise.as_str())
+            Some(advertise.clone())
         };
-        let result = bootstrap_control_plane(&state_root, &cfg, adv)
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let result = tokio::task::spawn_blocking(move || {
+            bootstrap_control_plane(&state_root, &cfg, adv.as_deref())
+        })
+        .await
+        .map_err(|e| Status::internal(format!("bootstrap task: {e}")))?
+        .map_err(|e| Status::internal(e.to_string()))?;
         {
             let mut st = lock(&self.state)?;
             st.message = result.message.clone();
@@ -939,6 +944,7 @@ pub async fn serve(
     }
 
     builder
+        .tcp_keepalive(Some(Duration::from_secs(60)))
         .layer(crate::api_metrics::ApiMetricsLayer)
         .add_service(MachineServiceServer::new(svc))
         .serve(listen)

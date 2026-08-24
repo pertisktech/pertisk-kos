@@ -1003,7 +1003,6 @@ export default function ClusterDetail() {
   const latestJob = jobs[0]
   const selectedJobRow = jobs.find((j) => j.id === selectedJob)
   const createJob = jobs.find((j) => j.kind === 'create_cluster')
-  const createRunning = createJob?.status === 'running' || createJob?.status === 'queued'
   const createFailed = createJob?.status === 'failed'
   const nodesWithoutIp = nodes.filter((n) => !n.ip?.trim())
   const hollowReady =
@@ -1151,11 +1150,21 @@ export default function ClusterDetail() {
           </div>
         )
       })()}
-      {createRunning && (
+      {createJob?.status === 'queued' && (
+        <div className="banner info">
+          <Icon name="clock" size={18} />
+          <span>
+            Create is queued — waiting for another mgmt job to finish (one cluster job at a time).
+            {' '}
+            <button type="button" className="linkish" onClick={() => setTab('jobs')}>Watch job log</button>
+          </span>
+        </div>
+      )}
+      {createJob?.status === 'running' && (
         <div className="banner info">
           <Icon name="play" size={18} />
           <span>
-            Creating cluster — Proxmox VMs and join in progress.
+            Creating cluster — VMs and join in progress.
             {' '}
             <button type="button" className="linkish" onClick={() => setTab('jobs')}>Watch job log</button>
             {' · '}

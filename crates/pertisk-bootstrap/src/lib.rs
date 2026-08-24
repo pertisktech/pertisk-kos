@@ -740,7 +740,7 @@ fn finalize_timeout() -> Duration {
     let secs = std::env::var("PERTISK_BOOTSTRAP_FINALIZE_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(600);
+        .unwrap_or(900);
     Duration::from_secs(secs.max(60))
 }
 

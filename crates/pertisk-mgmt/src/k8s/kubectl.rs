@@ -69,7 +69,7 @@ pub async fn resolve_cluster_kubeconfig(
     candidates.push(state.cfg().kubeconfigs_dir().join(&name).join("admin.conf"));
     candidates.push(PathBuf::from("out/cluster/admin.conf"));
     for c in candidates {
-        if c.is_file() {
+        if kubeconfig_file_usable(&c) {
             return Ok((c, name));
         }
     }
@@ -100,7 +100,7 @@ pub async fn resolve_ready_kubeconfig(
     }
     candidates.push(state.cfg().kubeconfigs_dir().join(&name).join("admin.conf"));
     for c in candidates {
-        if c.is_file() {
+        if kubeconfig_file_usable(&c) {
             return Ok((c, name));
         }
     }
@@ -265,4 +265,67 @@ pub async fn helm_output(kubeconfig: Option<&Path>, args: &[&str]) -> ApiResult<
         }));
     }
     Ok(format!("{stdout}{stderr}"))
+}
+
+/// Skip empty / stub files left by a previous cluster of the same name.
+pub fn kubeconfig_file_usable(path: &Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    kubeconfig_file_usable_str(&raw)
+}
+
+pub fn kubeconfig_tls_error(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("x509")
+        || m.contains("certificate signed by unknown authority")
+        || m.contains("tls: failed to verify")
+        || m.contains("ecdsa verification failure")
+}
+
+/// Pull a fresh admin kubeconfig from a live guest (new CA after recreate).
+pub async fn refresh_kubeconfig_from_guest(
+    pertiskctl: &Path,
+    guest_ip: &str,
+    dest: &Path,
+    cluster_name: &str,
+) -> anyhow::Result<()> {
+    if !pertiskctl.is_file() {
+        anyhow::bail!("pertiskctl missing");
+    }
+    let ip = guest_ip.trim();
+    if ip.is_empty() {
+        anyhow::bail!("no guest IP");
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = dest.with_extension("conf.refresh");
+    let out = Command::new(pertiskctl)
+        .args(["-e", &format!("{ip}:50000"), "kubeconfig", "-f"])
+        .arg(&tmp)
+        .output()
+        .await?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        anyhow::bail!(
+            "pertiskctl kubeconfig: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let content = std::fs::read_to_string(&tmp).unwrap_or_default();
+    let _ = std::fs::remove_file(&tmp);
+    if !kubeconfig_file_usable_str(&content) {
+        anyhow::bail!("guest returned empty kubeconfig");
+    }
+    let rewritten = crate::kubeconfig::rename_kubeconfig_context(&content, cluster_name);
+    std::fs::write(dest, rewritten)?;
+    Ok(())
+}
+
+fn kubeconfig_file_usable_str(raw: &str) -> bool {
+    let t = raw.trim();
+    !t.is_empty()
+        && !t.starts_with('#')
+        && (t.contains("certificate-authority-data") || t.contains("certificate-authority:"))
 }

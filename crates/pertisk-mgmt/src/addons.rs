@@ -905,12 +905,7 @@ fn ingress_chart_version(image_tag: &str) -> Option<String> {
         .strip_suffix("-arm64")
         .or_else(|| t.strip_suffix("-amd64"))
         .unwrap_or(t);
-    if t.is_empty()
-        || !t.contains('.')
-        || !t
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.')
-    {
+    if t.is_empty() || !t.contains('.') || !t.chars().all(|c| c.is_ascii_digit() || c == '.') {
         return None;
     }
     Some(t.to_string())
@@ -3766,10 +3761,7 @@ mod tests {
 
     #[test]
     fn ingress_chart_version_from_image_tag() {
-        assert_eq!(
-            ingress_chart_version("v0.1.85").as_deref(),
-            Some("0.1.85")
-        );
+        assert_eq!(ingress_chart_version("v0.1.85").as_deref(), Some("0.1.85"));
         assert_eq!(
             ingress_chart_version("v0.1.85-arm64").as_deref(),
             Some("0.1.85")

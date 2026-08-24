@@ -80,7 +80,7 @@ pub fn start_kubelet_with_sink(
     cfg: &MachineConfig,
     log_sink: Option<LineSink>,
 ) -> Result<KubeletHandle, KubeletError> {
-    start_kubelet_inner(paths, cfg, log_sink, Duration::from_secs(20))
+    start_kubelet_inner(paths, cfg, log_sink, Duration::from_secs(60))
 }
 
 /// One spawn + liveness check. The supervise loop calls this so DHCP is not blocked.

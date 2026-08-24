@@ -119,7 +119,7 @@ API_TIMEOUT="${API_TIMEOUT:-300}"
 BOOTSTRAP_TIMEOUT="${BOOTSTRAP_TIMEOUT:-600}"
 # Join finalize talks to local apiserver; TCP :6443 can RST HTTP for minutes after etcd member add.
 JOIN_TRIES="${JOIN_TRIES:-15}"
-JOIN_READYZ_WAIT="${JOIN_READYZ_WAIT:-180}"
+JOIN_READYZ_WAIT="${JOIN_READYZ_WAIT:-720}"
 LAB_SUBNET="${LAB_SUBNET:-}"  # optional CIDR for ping-sweep fallback, e.g. 10.1.1.0/24
 REFLECTOR_YAML="${REFLECTOR_YAML:-https://github.com/emberstack/kubernetes-reflector/releases/latest/download/reflector.yaml}"
 METRICS_SERVER_YAML="${METRICS_SERVER_YAML:-${ROOT}/examples/addons/metrics-server.yaml}"
@@ -581,6 +581,12 @@ for iface in result:
 wait_guest_ipv6() {
   local vmid="$1" label="$2" deadline ip6="" last=0
   [[ "${DUAL_STACK}" == "1" ]] || return 0
+  case "${PROVIDER_KIND:-proxmox}" in
+    nutanix | ahv | prism | vsphere | esxi)
+      log "skip QGA IPv6 wait on ${PROVIDER_KIND} (no Proxmox qemu-guest-agent); IPv4-only guests are OK"
+      return 0
+      ;;
+  esac
   deadline=$((SECONDS + 90))
   log "VM ${vmid} (${label}) waiting for IPv6 (dual-stack, QGA)"
   while (( SECONDS < deadline )); do
@@ -879,8 +885,13 @@ guest_icmp_alive() {
 
 # Offer the Prism IPAM address over DHCP from mgmt so an already-running guest
 # (dashboard "no ip") can bind it without recreating the VM.
+# Skip when not root — UDP/67 will fail and the log is noise on unmanaged vlan.0
+# (LAN DHCP already works). Set NUTANIX_IPAM_DHCP=1 to force.
 nutanix_start_ipam_dhcp() {
   local mac="$1" ip="$2" helper gw prefix
+  if [[ "${NUTANIX_IPAM_DHCP:-}" != "1" && "$(id -u 2>/dev/null || echo 1)" != "0" ]]; then
+    return 0
+  fi
   helper="${ROOT}/scripts/nutanix-ipam-dhcp.sh"
   [[ -x "$helper" ]] || helper="/usr/share/pertisk-mgmt/scripts/nutanix-ipam-dhcp.sh"
   [[ -x "$helper" ]] || return 0
@@ -1871,10 +1882,30 @@ Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate th
       sleep 5
       wait_api "$ip"
     fi
-    log "waiting for CP1 etcd ${etcd_ep} (join retries inside agent)"
-    local join_try=0
-    until "$CTL" -e "${ip}:50000" join-controlplane --advertise-address "$ip" --etcd-endpoints "$etcd_ep"; do
+    log "waiting for CP1 etcd ${etcd_ep} (join RPC up to ~30m after soft-reset image pulls)"
+    local join_try=0 join_err=""
+    while true; do
+      if join_err="$("$CTL" -e "${ip}:50000" join-controlplane --advertise-address "$ip" --etcd-endpoints "$etcd_ep" 2>&1)"; then
+        printf '%s\n' "$join_err"
+        break
+      fi
+      printf '%s\n' "$join_err" >&2
       join_try=$((join_try + 1))
+      # Membership + kubeconfig are written before finalize. A 600s /readyz miss
+      # is image-pull lag, not a failed join — wait for :6443 instead of re-RPC.
+      if echo "$join_err" | grep -qiE 'finalize|readyz'; then
+        log "join membership on disk for ${host}; waiting for :6443/readyz (up to ${JOIN_READYZ_WAIT}s)"
+        if wait_https_readyz "$ip" "$JOIN_READYZ_WAIT"; then
+          log "readyz ok after finalize timeout — continue (labels via kubectl later)"
+          break
+        fi
+      fi
+      if echo "$join_err" | grep -qiE 'too many learner'; then
+        log "etcd still has an unpromoted learner (previous CP) — wait then retry MemberAdd"
+        wait_https_readyz "$ip" 30 || true
+        # Previous joiner may still be catching up; give it time before retry.
+        sleep 15
+      fi
       if (( join_try >= JOIN_TRIES )); then
         if guest_has_admin_kubeconfig "$ip" && https_readyz "$ip"; then
           log "WARNING: join-controlplane RPC still failing but ${ip}:6443/readyz is ok — continue (label via kubectl later)"
@@ -1886,6 +1917,14 @@ Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate th
       wait_https_readyz "$ip" "$JOIN_READYZ_WAIT" || true
       wait_api "$ip"
     done
+    # etcd allows only one learner. Do not MemberAdd the next CP until this
+    # joiner is a voting member (local apiserver /readyz).
+    log "waiting for ${host} :6443/readyz before next control-plane (one etcd learner at a time)"
+    if ! wait_https_readyz "$ip" "$JOIN_READYZ_WAIT"; then
+      die "${host} joined but :6443/readyz never came up — etcd learner was not promoted.
+Joining another control-plane would fail with 'too many learner members'.
+Check registry.k8s.io pulls / static pods on ${ip}."
+    fi
   done
 
   log "kubeconfig (endpoint https://${API_ENDPOINT}:6443)"

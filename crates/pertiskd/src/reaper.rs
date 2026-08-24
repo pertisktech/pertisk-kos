@@ -236,7 +236,7 @@ mod unix_impl {
             .name("etcd-heal".into())
             .spawn(move || {
                 // Let kubelet start the etcd static pod after a DHCP rebase.
-                std::thread::sleep(std::time::Duration::from_secs(15));
+                std::thread::sleep(std::time::Duration::from_secs(45));
                 match pertisk_bootstrap::heal_etcd_membership_blocking(&state_root) {
                     Ok(msg) => info!(message = %msg, "etcd membership heal"),
                     Err(err) => warn!(error = %err, "etcd membership heal failed"),

@@ -805,16 +805,7 @@ async fn delete(
         .await?;
     state.emit_cluster(&id, "deleting");
 
-    // Cancel queued work for this cluster so delete is not blocked.
-    let _ = sqlx::query(
-        r#"UPDATE jobs SET status = 'cancelled', error = 'superseded by delete', updated_at = ?, finished_at = ?
-           WHERE cluster_id = ? AND status IN ('queued')"#,
-    )
-    .bind(&now)
-    .bind(&now)
-    .bind(&id)
-    .execute(state.pool())
-    .await;
+    let _ = jobs::cancel_cluster_jobs(&state, &id, None).await;
 
     if immediate {
         jobs::force_delete_cluster(&state, &id)

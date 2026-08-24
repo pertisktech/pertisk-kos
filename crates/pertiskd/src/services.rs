@@ -12,6 +12,50 @@ use tracing::{info, warn};
 use crate::guest_agent::{self, GuestAgentHandle};
 use crate::log_ring::LogRing;
 
+fn has_global_ipv4() -> bool {
+    let ifaces = pertisk_net::list_interfaces().unwrap_or_default();
+    for name in ifaces {
+        let Ok(addrs) = pertisk_net::list_addresses(&name) else {
+            continue;
+        };
+        if addrs.iter().any(|a| {
+            let ip = a.split('/').next().unwrap_or(a.as_str());
+            ip.contains('.') && !ip.starts_with("127.") && !ip.starts_with("169.254.")
+        }) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Static pods (etcd) advertise the DHCP address. Starting kubelet before the
+/// NIC has an address leaves HA members unable to form quorum after a cluster
+/// reboot (`127.0.0.1:6443 connection refused`, nodes never register).
+fn wait_for_ipv4(timeout: std::time::Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    if has_global_ipv4() {
+        return;
+    }
+    info!(
+        timeout_s = timeout.as_secs(),
+        "waiting for guest IPv4 before kubelet"
+    );
+    loop {
+        if has_global_ipv4() {
+            info!("guest IPv4 is up; starting kubelet");
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            warn!(
+                timeout_s = timeout.as_secs(),
+                "no guest IPv4 yet; starting kubelet anyway"
+            );
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+    }
+}
+
 pub struct NodeServices {
     pub containerd: Option<ContainerdHandle>,
     pub kubelet: Option<KubeletHandle>,
@@ -61,17 +105,25 @@ impl NodeServices {
         }
 
         if services.containerd.is_some() && cfg.cluster.is_some() {
-            match start_kubelet_with_sink(&KubeletPaths::default(), cfg, Some(logs.sink("kubelet")))
-            {
-                Ok(handle) => {
-                    info!(pid = handle.pid(), "kubelet running");
-                    services.kubelet = Some(handle);
-                }
-                Err(pertisk_kubelet::KubeletError::MissingBinary(path)) => {
-                    warn!(%path, "kubelet binary missing; skip kubelet");
-                }
-                Err(err) => {
-                    warn!(error = %err, "kubelet failed to start");
+            wait_for_ipv4(std::time::Duration::from_secs(90));
+            if !has_global_ipv4() {
+                warn!("deferring kubelet until guest IPv4 is up");
+            } else {
+                match start_kubelet_with_sink(
+                    &KubeletPaths::default(),
+                    cfg,
+                    Some(logs.sink("kubelet")),
+                ) {
+                    Ok(handle) => {
+                        info!(pid = handle.pid(), "kubelet running");
+                        services.kubelet = Some(handle);
+                    }
+                    Err(pertisk_kubelet::KubeletError::MissingBinary(path)) => {
+                        warn!(%path, "kubelet binary missing; skip kubelet");
+                    }
+                    Err(err) => {
+                        warn!(error = %err, "kubelet failed to start");
+                    }
                 }
             }
         } else if cfg.cluster.is_none() {
@@ -98,24 +150,26 @@ impl NodeServices {
         // After reboot kubelet can lose the CRI race (containerd socket exists,
         // plugin not ready). Start/retry even when the handle was never stored.
         if self.kubelet.is_none() && self.containerd.is_some() && cfg.cluster.is_some() {
-            match try_start_kubelet_with_sink(
-                &KubeletPaths::default(),
-                cfg,
-                Some(crate::log_ring().sink("kubelet")),
-            ) {
-                Ok(handle) => {
-                    info!(pid = handle.pid(), "kubelet started after earlier failure");
-                    self.kubelet = Some(handle);
-                    self.kubelet_retry_warn_at = None;
-                }
-                Err(err) => {
-                    let now = std::time::Instant::now();
-                    let noisy = self
-                        .kubelet_retry_warn_at
-                        .is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_secs(5));
-                    if noisy {
-                        warn!(error = %err, "kubelet retry failed");
-                        self.kubelet_retry_warn_at = Some(now);
+            if has_global_ipv4() {
+                match try_start_kubelet_with_sink(
+                    &KubeletPaths::default(),
+                    cfg,
+                    Some(crate::log_ring().sink("kubelet")),
+                ) {
+                    Ok(handle) => {
+                        info!(pid = handle.pid(), "kubelet started after earlier failure");
+                        self.kubelet = Some(handle);
+                        self.kubelet_retry_warn_at = None;
+                    }
+                    Err(err) => {
+                        let now = std::time::Instant::now();
+                        let noisy = self.kubelet_retry_warn_at.is_none_or(|t| {
+                            now.duration_since(t) >= std::time::Duration::from_secs(5)
+                        });
+                        if noisy {
+                            warn!(error = %err, "kubelet retry failed");
+                            self.kubelet_retry_warn_at = Some(now);
+                        }
                     }
                 }
             }

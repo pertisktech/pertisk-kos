@@ -1,7 +1,8 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use sqlx::SqlitePool;
 use tokio::sync::Notify;
+use tokio::task::AbortHandle;
 
 use crate::config::{Config, MetricsTls};
 use crate::events::EventBus;
@@ -9,6 +10,13 @@ use crate::events::EventBus;
 #[derive(Clone)]
 pub struct AppState {
     pub inner: Arc<Inner>,
+}
+
+pub struct RunningJob {
+    pub id: String,
+    pub cluster_id: Option<String>,
+    pub kind: String,
+    pub abort: AbortHandle,
 }
 
 pub struct Inner {
@@ -19,6 +27,7 @@ pub struct Inner {
     pub http: reqwest::Client,
     /// Dedicated client for guest `:50001/metrics` (HTTP or mTLS HTTPS).
     pub metrics_http: reqwest::Client,
+    pub running_job: Mutex<Option<RunningJob>>,
 }
 
 impl AppState {
@@ -43,6 +52,7 @@ impl AppState {
                 events: EventBus::new(),
                 http,
                 metrics_http,
+                running_job: Mutex::new(None),
             }),
         }
     }
@@ -57,6 +67,65 @@ impl AppState {
 
     pub fn notify_jobs(&self) {
         self.inner.job_notify.notify_one();
+    }
+
+    pub fn set_running_job(
+        &self,
+        id: String,
+        cluster_id: Option<String>,
+        kind: String,
+        abort: AbortHandle,
+    ) {
+        let mut g = self
+            .inner
+            .running_job
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *g = Some(RunningJob {
+            id,
+            cluster_id,
+            kind,
+            abort,
+        });
+    }
+
+    pub fn clear_running_job(&self, id: &str) {
+        let mut g = self
+            .inner
+            .running_job
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if g.as_ref().is_some_and(|j| j.id == id) {
+            *g = None;
+        }
+    }
+
+    /// Stop the in-flight job for this cluster so delete/create are not stuck behind it.
+    pub fn abort_running_job_for_cluster(&self, cluster_id: &str, except_job_id: Option<&str>) {
+        let g = self
+            .inner
+            .running_job
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(cur) = g.as_ref() else {
+            return;
+        };
+        if cur.kind == "delete_cluster" {
+            return;
+        }
+        if except_job_id.is_some_and(|ex| ex == cur.id) {
+            return;
+        }
+        if cur.cluster_id.as_deref() != Some(cluster_id) {
+            return;
+        }
+        tracing::info!(
+            job = %cur.id,
+            kind = %cur.kind,
+            cluster = %cluster_id,
+            "aborting running job so cluster delete can proceed"
+        );
+        cur.abort.abort();
     }
 
     pub fn emit_job(

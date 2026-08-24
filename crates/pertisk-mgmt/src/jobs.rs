@@ -214,6 +214,7 @@ fn rewrite_proxmox_ssh_for_provider(ssh: &str, provider_url: &str) -> Option<Str
 }
 
 /// One job at a time. Parallel VM clones happen inside create scripts (`PERTISK_VM_JOBS`).
+/// Delete aborts that cluster's in-flight job so create is not stuck `queued`.
 pub fn spawn_worker(state: AppState) {
     tokio::spawn(async move {
         loop {
@@ -230,9 +231,25 @@ pub fn spawn_worker(state: AppState) {
     });
 }
 
-/// Crash / RPM restart can leave rows `running` with no worker. Put them back in line.
+/// Crash / RPM restart can leave rows `running` with no worker. Drop jobs whose
+/// cluster is gone, then put the rest back in line.
 pub async fn requeue_orphaned_jobs(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     let now = db::now_rfc3339();
+    let dropped = sqlx::query(
+        r#"UPDATE jobs
+           SET status = 'cancelled', error = 'cluster removed', updated_at = ?, finished_at = ?
+           WHERE status IN ('queued', 'running') AND finished_at IS NULL
+             AND (cluster_id IS NULL
+                  OR NOT EXISTS (SELECT 1 FROM clusters c WHERE c.id = jobs.cluster_id))"#,
+    )
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if dropped > 0 {
+        tracing::warn!(count = dropped, "cancelled jobs whose cluster is gone");
+    }
     let n = sqlx::query(
         r#"UPDATE jobs
            SET status = 'queued', error = 'requeued after mgmt restart', updated_at = ?
@@ -248,6 +265,53 @@ pub async fn requeue_orphaned_jobs(pool: &sqlx::SqlitePool) -> anyhow::Result<()
     Ok(())
 }
 
+/// Cancel queued/running jobs for a cluster and abort the worker task if it is that cluster.
+pub async fn cancel_cluster_jobs(
+    state: &AppState,
+    cid: &str,
+    except_job_id: Option<&str>,
+) -> anyhow::Result<u64> {
+    state.abort_running_job_for_cluster(cid, except_job_id);
+    let now = db::now_rfc3339();
+    let rows: Vec<(String, String)> = if let Some(ex) = except_job_id {
+        sqlx::query_as(
+            r#"SELECT id, kind FROM jobs
+               WHERE cluster_id = ? AND status IN ('queued', 'running')
+                 AND kind != 'delete_cluster' AND id != ?"#,
+        )
+        .bind(cid)
+        .bind(ex)
+        .fetch_all(state.pool())
+        .await?
+    } else {
+        sqlx::query_as(
+            r#"SELECT id, kind FROM jobs
+               WHERE cluster_id = ? AND status IN ('queued', 'running')
+                 AND kind != 'delete_cluster'"#,
+        )
+        .bind(cid)
+        .fetch_all(state.pool())
+        .await?
+    };
+    let n = rows.len() as u64;
+    for (id, kind) in &rows {
+        sqlx::query(
+            r#"UPDATE jobs SET status = 'cancelled', error = 'superseded by delete',
+               updated_at = ?, finished_at = ? WHERE id = ? AND status IN ('queued', 'running')"#,
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .execute(state.pool())
+        .await?;
+        state.emit_job(Some(cid), id, Some(kind), "cancelled");
+    }
+    if n > 0 {
+        state.notify_jobs();
+    }
+    Ok(n)
+}
+
 struct ClaimedJob {
     id: String,
     cluster_id: Option<String>,
@@ -260,103 +324,136 @@ async fn tick(state: &AppState) -> anyhow::Result<bool> {
     let Some(job) = claim_next(state).await? else {
         return Ok(false);
     };
-    execute_job(state, job).await?;
+    let job_id = job.id.clone();
+    let cluster_id = job.cluster_id.clone();
+    let kind = job.kind.clone();
+    let state_run = state.clone();
+    let handle = tokio::spawn(async move { execute_job(&state_run, job).await });
+    state.set_running_job(
+        job_id.clone(),
+        cluster_id.clone(),
+        kind.clone(),
+        handle.abort_handle(),
+    );
+    let join = handle.await;
+    state.clear_running_job(&job_id);
+    match join {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::error!(job = %job_id, error = %e, "job task returned error"),
+        Err(e) if e.is_cancelled() => {
+            tracing::info!(job = %job_id, "job aborted");
+            let now = db::now_rfc3339();
+            let _ = sqlx::query(
+                r#"UPDATE jobs SET status = 'cancelled', error = 'aborted because cluster was deleted',
+                   updated_at = ?, finished_at = ? WHERE id = ? AND status = 'running'"#,
+            )
+            .bind(&now)
+            .bind(&now)
+            .bind(&job_id)
+            .execute(state.pool())
+            .await;
+            state.emit_job(cluster_id.as_deref(), &job_id, Some(&kind), "cancelled");
+        }
+        Err(e) => tracing::error!(job = %job_id, error = %e, "job task panicked"),
+    }
     Ok(true)
 }
 
 async fn claim_next(state: &AppState) -> anyhow::Result<Option<ClaimedJob>> {
     // Prefer deletes so failed clusters can be cleaned up while creates queue.
-    let row = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>)>(
-        r#"SELECT id, cluster_id, kind, payload_json, log_path FROM jobs
-           WHERE status = 'queued'
-           ORDER BY CASE WHEN kind = 'delete_cluster' THEN 0 ELSE 1 END, created_at ASC
-           LIMIT 1"#,
-    )
-    .fetch_optional(state.pool())
-    .await?;
+    loop {
+        let row = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>)>(
+            r#"SELECT id, cluster_id, kind, payload_json, log_path FROM jobs
+               WHERE status = 'queued'
+               ORDER BY CASE WHEN kind = 'delete_cluster' THEN 0 ELSE 1 END, created_at ASC
+               LIMIT 1"#,
+        )
+        .fetch_optional(state.pool())
+        .await?;
 
-    let Some((id, cluster_id, kind, payload, log_path)) = row else {
-        return Ok(None);
-    };
+        let Some((id, cluster_id, kind, payload, log_path)) = row else {
+            return Ok(None);
+        };
 
-    if matches!(
-        kind.as_str(),
-        "create_cluster"
-            | "add_node"
-            | "upgrade_cluster"
-            | "upgrade_os"
-            | "update_config"
-            | "remove_node"
-            | "resize_node"
-            | "reboot_node"
-            | "install_addon"
-    ) {
-        if let Some(cid) = &cluster_id {
-            let st: Option<String> = sqlx::query_scalar("SELECT status FROM clusters WHERE id = ?")
-                .bind(cid)
-                .fetch_optional(state.pool())
-                .await?;
-            if st.as_deref() == Some("deleting") || st.is_none() {
-                let now = db::now_rfc3339();
-                sqlx::query(
-                    "UPDATE jobs SET status = 'cancelled', error = 'cluster deleting or removed', updated_at = ?, finished_at = ? WHERE id = ?",
-                )
-                .bind(&now)
-                .bind(&now)
-                .bind(&id)
-                .execute(state.pool())
-                .await?;
-                state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "cancelled");
-                return Ok(None);
-            }
-        }
-    }
-
-    let now = db::now_rfc3339();
-    let claimed = sqlx::query(
-        "UPDATE jobs SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
-    )
-    .bind(&now)
-    .bind(&id)
-    .execute(state.pool())
-    .await?;
-    if claimed.rows_affected() == 0 {
-        return Ok(None);
-    }
-    state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "running");
-
-    if let Some(cid) = &cluster_id {
-        if kind != "delete_cluster" && !is_node_maintenance_job(&kind) {
-            let _ = sqlx::query(
-                "UPDATE clusters SET status = 'provisioning', updated_at = ?, error = NULL WHERE id = ?",
+        if job_is_stale(state, cluster_id.as_deref(), &kind).await? {
+            let now = db::now_rfc3339();
+            sqlx::query(
+                r#"UPDATE jobs SET status = 'cancelled', error = 'cluster deleting or removed',
+                   updated_at = ?, finished_at = ? WHERE id = ? AND status = 'queued'"#,
             )
             .bind(&now)
-            .bind(cid)
+            .bind(&now)
+            .bind(&id)
             .execute(state.pool())
-            .await;
-            state.emit_cluster(cid, "provisioning");
+            .await?;
+            state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "cancelled");
+            continue;
         }
-    }
 
-    let log_file = log_path.unwrap_or_else(|| {
-        let p = state.cfg().jobs_dir().join(format!("{id}.log"));
-        p.to_string_lossy().into_owned()
-    });
-    std::fs::create_dir_all(state.cfg().jobs_dir())?;
-    sqlx::query("UPDATE jobs SET log_path = ?, updated_at = ? WHERE id = ?")
-        .bind(&log_file)
+        let now = db::now_rfc3339();
+        let claimed = sqlx::query(
+            "UPDATE jobs SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
+        )
         .bind(&now)
         .bind(&id)
         .execute(state.pool())
         .await?;
+        if claimed.rows_affected() == 0 {
+            continue;
+        }
+        state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "running");
 
-    Ok(Some(ClaimedJob {
-        id,
-        cluster_id,
-        kind,
-        payload,
-        log_file,
-    }))
+        if let Some(cid) = &cluster_id {
+            if kind != "delete_cluster" && !is_node_maintenance_job(&kind) {
+                let _ = sqlx::query(
+                    "UPDATE clusters SET status = 'provisioning', updated_at = ?, error = NULL WHERE id = ?",
+                )
+                .bind(&now)
+                .bind(cid)
+                .execute(state.pool())
+                .await;
+                state.emit_cluster(cid, "provisioning");
+            }
+        }
+
+        let log_file = log_path.unwrap_or_else(|| {
+            let p = state.cfg().jobs_dir().join(format!("{id}.log"));
+            p.to_string_lossy().into_owned()
+        });
+        std::fs::create_dir_all(state.cfg().jobs_dir())?;
+        sqlx::query("UPDATE jobs SET log_path = ?, updated_at = ? WHERE id = ?")
+            .bind(&log_file)
+            .bind(&now)
+            .bind(&id)
+            .execute(state.pool())
+            .await?;
+
+        return Ok(Some(ClaimedJob {
+            id,
+            cluster_id,
+            kind,
+            payload,
+            log_file,
+        }));
+    }
+}
+
+async fn job_is_stale(
+    state: &AppState,
+    cluster_id: Option<&str>,
+    kind: &str,
+) -> anyhow::Result<bool> {
+    if kind == "delete_cluster" {
+        return Ok(false);
+    }
+    let Some(cid) = cluster_id else {
+        return Ok(true);
+    };
+    let st: Option<String> = sqlx::query_scalar("SELECT status FROM clusters WHERE id = ?")
+        .bind(cid)
+        .fetch_optional(state.pool())
+        .await?;
+    Ok(st.as_deref() == Some("deleting") || st.is_none())
 }
 
 async fn execute_job(state: &AppState, job: ClaimedJob) -> anyhow::Result<()> {
@@ -394,6 +491,14 @@ async fn execute_job(state: &AppState, job: ClaimedJob) -> anyhow::Result<()> {
     let now = db::now_rfc3339();
     match result {
         Ok(()) => {
+            if kind == "delete_cluster" {
+                let _ = sqlx::query("DELETE FROM jobs WHERE id = ?")
+                    .bind(&id)
+                    .execute(state.pool())
+                    .await;
+                state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "succeeded");
+                return Ok(());
+            }
             sqlx::query(
                 "UPDATE jobs SET status = 'succeeded', updated_at = ?, finished_at = ? WHERE id = ?",
             )
@@ -404,9 +509,7 @@ async fn execute_job(state: &AppState, job: ClaimedJob) -> anyhow::Result<()> {
             .await?;
             state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "succeeded");
             if let Some(cid) = &cluster_id {
-                if kind == "delete_cluster" {
-                    // handled above — skip
-                } else if is_node_maintenance_job(&kind) {
+                if is_node_maintenance_job(&kind) {
                     // Node-level / config apply: keep cluster ready and clear any
                     // sticky error left by older builds that marked update_config as cluster failure.
                     let _ = sqlx::query(
@@ -443,12 +546,19 @@ async fn execute_job(state: &AppState, job: ClaimedJob) -> anyhow::Result<()> {
             .execute(state.pool())
             .await?;
             state.emit_job(cluster_id.as_deref(), &id, Some(&kind), "failed");
-            if let Some(cid) = &cluster_id {
-                if kind == "delete_cluster" {
-                    // Best-effort: still purge DB so UI is not stuck on "deleting".
+            if kind == "delete_cluster" {
+                if let Some(cid) = &cluster_id {
                     let _ = purge_cluster_db(state, cid).await;
                     state.emit_cluster(cid, "deleted");
-                } else if is_node_maintenance_job(&kind) {
+                }
+                let _ = sqlx::query("DELETE FROM jobs WHERE id = ?")
+                    .bind(&id)
+                    .execute(state.pool())
+                    .await;
+                return Ok(());
+            }
+            if let Some(cid) = &cluster_id {
+                if is_node_maintenance_job(&kind) {
                     // Node-level ops must not mark a healthy cluster as broken.
                     // Clear sticky cluster.error from older update_config failures.
                     let _ = sqlx::query(
@@ -541,6 +651,18 @@ async fn run_create_cluster(
     let kc_dir = state.cfg().kubeconfigs_dir();
     std::fs::create_dir_all(&kc_dir)?;
     let cluster_out = kc_dir.join(&cluster.name);
+    // Recreate must not keep the previous cluster's admin.conf (wrong pertisk-ca →
+    // kubectl "ECDSA verification failure" / unknown authority).
+    if cluster_out.exists() {
+        append_log(
+            log_path,
+            &format!(
+                "clear leftover kubeconfig dir {} from a previous cluster of this name\n",
+                cluster_out.display()
+            ),
+        )?;
+        let _ = std::fs::remove_dir_all(&cluster_out);
+    }
     std::fs::create_dir_all(&cluster_out)?;
 
     let lab_up = if provider.kind == "vsphere" {
@@ -1392,8 +1514,22 @@ async fn run_delete_cluster(
     purge_cluster(state, cid, log_path).await
 }
 
-/// Remove cluster from DB (nodes + cluster row). Ignores missing rows.
+/// Remove cluster from DB (nodes + jobs + cluster row). Ignores missing rows.
 pub async fn purge_cluster_db(state: &AppState, cid: &str) -> anyhow::Result<()> {
+    let name: Option<String> = sqlx::query_scalar("SELECT name FROM clusters WHERE id = ?")
+        .bind(cid)
+        .fetch_optional(state.pool())
+        .await?;
+    if let Some(name) = name.filter(|s| !s.is_empty()) {
+        let dir = state.cfg().kubeconfigs_dir().join(&name);
+        if dir.is_dir() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+    sqlx::query("DELETE FROM jobs WHERE cluster_id = ? AND kind != 'delete_cluster'")
+        .bind(cid)
+        .execute(state.pool())
+        .await?;
     sqlx::query("DELETE FROM nodes WHERE cluster_id = ?")
         .bind(cid)
         .execute(state.pool())
@@ -1402,6 +1538,13 @@ pub async fn purge_cluster_db(state: &AppState, cid: &str) -> anyhow::Result<()>
         .bind(cid)
         .execute(state.pool())
         .await?;
+    // delete_cluster row is SET NULL by FK; drop it so it cannot stay queued.
+    sqlx::query(
+        r#"DELETE FROM jobs
+           WHERE cluster_id IS NULL AND kind = 'delete_cluster' AND status != 'running'"#,
+    )
+    .execute(state.pool())
+    .await?;
     state.emit_cluster(cid, "deleted");
     Ok(())
 }
@@ -1422,17 +1565,7 @@ pub async fn purge_cluster(state: &AppState, cid: &str, log_path: &str) -> anyho
 
     append_log(log_path, &format!("purging cluster status={status}\n"))?;
 
-    // Cancel other queued jobs for this cluster.
-    let now = db::now_rfc3339();
-    let _ = sqlx::query(
-        r#"UPDATE jobs SET status = 'cancelled', error = 'superseded by delete', updated_at = ?, finished_at = ?
-           WHERE cluster_id = ? AND status = 'queued'"#,
-    )
-    .bind(&now)
-    .bind(&now)
-    .bind(&id)
-    .execute(state.pool())
-    .await;
+    let _ = cancel_cluster_jobs(state, &id, None).await;
 
     // Best-effort hypervisor cleanup (failed creates may have 0 VMs).
     match sqlx::query_as::<_, ProviderRow>(
@@ -2268,6 +2401,7 @@ async fn resolve_cp_ip(
 
 async fn stream_command(cmd: &mut Command, log_path: &str) -> anyhow::Result<String> {
     append_log(log_path, &format!("$ {:?}\n", cmd.as_std().get_program()))?;
+    cmd.kill_on_drop(true);
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -3454,18 +3588,19 @@ async fn upgrade_os_node(
         anyhow::bail!("pertiskctl upgrade failed on {name}");
     }
 
+    let mut api_ip = ip.to_string();
     if reboot {
         append_log(
             log_path,
             &format!("wait Machine API {ip}:50000 after OS reboot\n"),
         )?;
-        wait_guest_api(ip, log_path, 150).await?;
+        api_ip = wait_guest_after_os_reboot(state, cluster_id, id, name, ip, log_path).await?;
     }
 
     let mut marked = false;
     for attempt in 1..=8 {
         let mark = Command::new(&state.cfg().pertiskctl)
-            .args(["-e", &format!("{ip}:50000"), "mark-boot-good"])
+            .args(["-e", &format!("{api_ip}:50000"), "mark-boot-good"])
             .output()
             .await;
         match mark {
@@ -3490,7 +3625,7 @@ async fn upgrade_os_node(
     }
 
     let status = Command::new(&state.cfg().pertiskctl)
-        .args(["-e", &format!("{ip}:50000"), "upgrade-status"])
+        .args(["-e", &format!("{api_ip}:50000"), "upgrade-status"])
         .output()
         .await;
     let mut got_ver = version.to_string();
@@ -3769,28 +3904,167 @@ async fn delete_os_stage_pod(kubeconfig: &str, pod: &str, wait: bool) -> anyhow:
     Ok(())
 }
 
-async fn wait_guest_api(ip: &str, log_path: &str, attempts: u32) -> anyhow::Result<()> {
+async fn guest_api_open(ip: &str) -> bool {
     use tokio::net::TcpStream;
-    use tokio::time::{sleep, timeout, Duration};
+    use tokio::time::{timeout, Duration};
 
     let addr = format!("{ip}:50000");
+    timeout(Duration::from_secs(2), TcpStream::connect(&addr))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .is_some()
+}
+
+fn provider_kind_is_nutanix(kind: &str) -> bool {
+    matches!(kind, "nutanix" | "ahv" | "prism")
+}
+
+async fn nutanix_client_for_cluster(
+    state: &AppState,
+    cid: &str,
+) -> anyhow::Result<Option<crate::nutanix::NutanixClient>> {
+    let provider = provider_row_for_cluster(state, cid).await?;
+    if !provider_kind_is_nutanix(&provider.kind) {
+        return Ok(None);
+    }
+    let secret = crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?;
+    Ok(Some(crate::nutanix::NutanixClient::new(
+        provider.url,
+        provider.token_id,
+        secret,
+        provider.insecure != 0,
+    )))
+}
+
+async fn node_ipv4(state: &AppState, node_id: &str) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>("SELECT ip FROM nodes WHERE id = ?")
+        .bind(node_id)
+        .fetch_optional(state.pool())
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        .filter(|s| !s.is_empty())
+}
+
+async fn wait_guest_api_down(ip: &str, log_path: &str, attempts: u32) -> anyhow::Result<()> {
     for i in 1..=attempts {
-        if timeout(Duration::from_secs(2), TcpStream::connect(&addr))
-            .await
-            .ok()
-            .and_then(|r| r.ok())
-            .is_some()
-        {
+        if !guest_api_open(ip).await {
             append_log(
                 log_path,
-                &format!("guest API up ({addr}) after ~{}s\n", i * 2),
+                &format!("guest API down ({ip}:50000) after ~{}s\n", i * 2),
             )?;
-            sleep(Duration::from_secs(3)).await;
             return Ok(());
         }
-        sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
-    anyhow::bail!("guest API {addr} not ready after OS reboot")
+    anyhow::bail!(
+        "guest API {ip}:50000 never dropped after upgrade --reboot — reboot did not start"
+    )
+}
+
+/// Wait until the Machine API is gone (reboot started), then until it is back.
+/// Nutanix: pin UEFI to the OS disk; if firmware hangs, power-cycle. Rediscover IPAM/DHCP.
+async fn wait_guest_after_os_reboot(
+    state: &AppState,
+    cluster_id: &str,
+    node_id: &str,
+    name: &str,
+    old_ip: &str,
+    log_path: &str,
+) -> anyhow::Result<String> {
+    wait_guest_api_down(old_ip, log_path, 45).await?;
+
+    let nutanix = nutanix_client_for_cluster(state, cluster_id)
+        .await
+        .ok()
+        .flatten();
+    if let Some(ref client) = nutanix {
+        append_log(
+            log_path,
+            &format!(
+                "pin UEFI boot to OS disk on {name} (extra virtio disks can steal AHV boot)\n"
+            ),
+        )?;
+        match client.pin_uefi_os_disk(name).await {
+            Ok(()) => append_log(log_path, "UEFI boot pinned to disk 0\n")?,
+            Err(e) => append_log(log_path, &format!("UEFI pin (best-effort): {e}\n"))?,
+        }
+    }
+
+    let mut live_ip = old_ip.to_string();
+    let mut healed = false;
+    for i in 1..=180u32 {
+        if guest_api_open(&live_ip).await {
+            append_log(
+                log_path,
+                &format!(
+                    "guest API up ({live_ip}:50000) after OS reboot (~{}s)\n",
+                    i * 2
+                ),
+            )?;
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            return Ok(live_ip);
+        }
+
+        if let Some(ref client) = nutanix {
+            if i % 3 == 0 {
+                if let Ok(Some(hv)) = client.vm_ipv4(name).await {
+                    if hv != live_ip {
+                        append_log(
+                            log_path,
+                            &format!("node IP from Prism after reboot: {live_ip} → {hv}\n"),
+                        )?;
+                        let _ = sqlx::query("UPDATE nodes SET ip = ?, updated_at = ? WHERE id = ?")
+                            .bind(&hv)
+                            .bind(db::now_rfc3339())
+                            .bind(node_id)
+                            .execute(state.pool())
+                            .await;
+                        live_ip = hv;
+                        continue;
+                    }
+                }
+            }
+        } else if i % 8 == 0 {
+            let _ = crate::node_sync::rediscover_cluster_ips_now(state, cluster_id).await;
+            if let Some(next) = node_ipv4(state, node_id).await {
+                if next != live_ip {
+                    append_log(
+                        log_path,
+                        &format!("node IP after reboot: {live_ip} → {next}\n"),
+                    )?;
+                    live_ip = next;
+                    continue;
+                }
+            }
+        }
+
+        if !healed && i == 30 {
+            if let Some(ref client) = nutanix {
+                healed = true;
+                append_log(
+                    log_path,
+                    &format!(
+                        "AHV guest still down — pin UEFI OS disk and power-cycle {name} (firmware may show 'Unable to find valid boot device')\n"
+                    ),
+                )?;
+                match client.pin_uefi_boot_and_power_cycle(name).await {
+                    Ok(()) => append_log(log_path, "power-cycled after UEFI pin\n")?,
+                    Err(e) => append_log(log_path, &format!("power-cycle: {e}\n"))?,
+                }
+            } else {
+                let _ = crate::node_sync::rediscover_cluster_ips_now(state, cluster_id).await;
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+
+    anyhow::bail!(
+        "guest API not reachable after OS reboot on {name} (last IP {live_ip}). On Nutanix, Prism Serial may show 'Unable to find valid boot device' if the netcfg virtio disk stole UEFI; power off, pin boot to pci:0, detach extra disk, power on."
+    )
 }
 
 /// kubeadm-shaped per-node upgrade: drain → bump version on-node → wait Ready → uncordon.

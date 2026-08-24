@@ -61,6 +61,11 @@ impl NutanixClient {
         format!("{}/api/nutanix/v2.0/{}", self.base(), path)
     }
 
+    fn api_v3(&self, path: &str) -> String {
+        let path = path.trim_start_matches('/');
+        format!("{}/api/nutanix/v3/{}", self.base(), path)
+    }
+
     fn http(&self) -> ApiResult<reqwest::Client> {
         let mut b = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
@@ -97,9 +102,18 @@ impl NutanixClient {
         path: &str,
         body: Option<&Value>,
     ) -> ApiResult<Value> {
+        self.request_url(method, self.api(path), body).await
+    }
+
+    async fn request_url(
+        &self,
+        method: reqwest::Method,
+        url: String,
+        body: Option<&Value>,
+    ) -> ApiResult<Value> {
         let client = self.http()?;
         let mut req = client
-            .request(method, self.api(path))
+            .request(method, url)
             .basic_auth(&self.username, Some(&self.password))
             .header("Accept", "application/json")
             .header("Content-Type", "application/json");
@@ -146,6 +160,16 @@ impl NutanixClient {
     async fn delete(&self, path: &str) -> ApiResult<()> {
         let _ = self.request(reqwest::Method::DELETE, path, None).await?;
         Ok(())
+    }
+
+    async fn get_v3(&self, path: &str) -> ApiResult<Value> {
+        self.request_url(reqwest::Method::GET, self.api_v3(path), None)
+            .await
+    }
+
+    async fn put_v3(&self, path: &str, body: &Value) -> ApiResult<Value> {
+        self.request_url(reqwest::Method::PUT, self.api_v3(path), Some(body))
+            .await
     }
 
     fn entities(v: &Value) -> Vec<&Value> {
@@ -574,20 +598,109 @@ impl NutanixClient {
 
     pub async fn restart_vm_by_name(&self, name: &str) -> ApiResult<()> {
         let _ = self.power_off(name).await;
+        self.wait_powered_off(name).await;
+        self.power_on(name).await
+    }
+
+    async fn wait_powered_off(&self, name: &str) {
         for _ in 0..60 {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            if let Some(vm) = self.find_vm(name).await? {
+            if let Ok(Some(vm)) = self.find_vm(name).await {
                 if vm
                     .power_state
                     .as_deref()
                     .map(|s| s.eq_ignore_ascii_case("off") || s.eq_ignore_ascii_case("powered_off"))
                     .unwrap_or(false)
                 {
-                    break;
+                    return;
                 }
             }
         }
+    }
+
+    /// Pin UEFI to the OS image (bus:0). Extra IPAM netcfg virtio disks steal boot after
+    /// a guest reboot and AHV firmware then shows "Unable to find valid boot device".
+    pub async fn pin_uefi_os_disk(&self, name: &str) -> ApiResult<()> {
+        let Some(vm) = self.find_vm(name).await? else {
+            return Err(AppError::bad(format!("VM `{name}` not found")));
+        };
+        let bus = self.os_disk_bus(&vm.uuid).await;
+        self.pin_uefi_os_disk_v2(&vm.uuid, &bus).await
+    }
+
+    /// Power off, pin UEFI via v2+v3, power on. Use when firmware is already hung.
+    pub async fn pin_uefi_boot_and_power_cycle(&self, name: &str) -> ApiResult<()> {
+        let Some(vm) = self.find_vm(name).await? else {
+            return Err(AppError::bad(format!("VM `{name}` not found")));
+        };
+        let _ = self.power_off(name).await;
+        self.wait_powered_off(name).await;
+        let bus = self.os_disk_bus(&vm.uuid).await;
+        let _ = self.pin_uefi_os_disk_v2(&vm.uuid, &bus).await;
+        let _ = self.pin_uefi_os_disk_v3(&vm.uuid, &bus).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         self.power_on(name).await
+    }
+
+    async fn os_disk_bus(&self, uuid: &str) -> String {
+        let json = self
+            .get(&format!("vms/{uuid}?include_vm_disk_config=true"))
+            .await
+            .unwrap_or(Value::Null);
+        os_disk_bus_from_vm(&json)
+    }
+
+    async fn pin_uefi_os_disk_v2(&self, uuid: &str, bus: &str) -> ApiResult<()> {
+        let body = serde_json::json!({
+            "boot": {
+                "uefi_boot": true,
+                "secure_boot": false,
+                "boot_device_type": "disk",
+                "disk_address": { "device_bus": bus, "device_index": 0 }
+            }
+        });
+        let _ = self.put(&format!("vms/{uuid}"), &body).await?;
+        Ok(())
+    }
+
+    async fn pin_uefi_os_disk_v3(&self, uuid: &str, bus: &str) -> ApiResult<()> {
+        let get3 = self.get_v3(&format!("vms/{uuid}")).await?;
+        if get3.get("spec").and_then(|s| s.get("resources")).is_none() {
+            return Ok(());
+        }
+        let adapter = get3
+            .pointer("/spec/resources/disk_list/0/device_properties/disk_address/adapter_type")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| bus_to_v3_adapter(bus));
+        let mut put3 = get3.clone();
+        if let Some(obj) = put3.as_object_mut() {
+            obj.remove("status");
+        }
+        if let Some(res) = put3.pointer_mut("/spec/resources") {
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert("power_state".into(), Value::from("OFF"));
+                let mut boot = obj
+                    .get("boot_config")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                if let Some(b) = boot.as_object_mut() {
+                    b.insert("boot_type".into(), Value::from("UEFI"));
+                    b.insert(
+                        "boot_device".into(),
+                        serde_json::json!({
+                            "disk_address": {
+                                "adapter_type": adapter,
+                                "device_index": 0
+                            }
+                        }),
+                    );
+                }
+                obj.insert("boot_config".into(), boot);
+            }
+        }
+        let _ = self.put_v3(&format!("vms/{uuid}"), &put3).await?;
+        Ok(())
     }
 
     pub async fn delete_vm_by_name(&self, name: &str) -> ApiResult<()> {
@@ -749,6 +862,41 @@ impl NutanixClient {
     }
 }
 
+fn bus_to_v3_adapter(bus: &str) -> String {
+    match bus.to_ascii_lowercase().as_str() {
+        "scsi" => "SCSI".into(),
+        "ide" => "IDE".into(),
+        "sata" => "SATA".into(),
+        _ => "PCI".into(),
+    }
+}
+
+fn os_disk_bus_from_vm(json: &Value) -> String {
+    let disks = json
+        .get("vm_disks")
+        .or_else(|| json.get("vm_disk_info"))
+        .and_then(|d| d.as_array());
+    let Some(disks) = disks else {
+        return "pci".into();
+    };
+    for d in disks {
+        if d.get("is_cdrom").and_then(|v| v.as_bool()).unwrap_or(false) {
+            continue;
+        }
+        if let Some(bus) = d
+            .get("disk_address")
+            .and_then(|a| a.get("device_bus"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_ascii_lowercase())
+        {
+            if !bus.is_empty() && bus != "null" {
+                return bus;
+            }
+        }
+    }
+    "pci".into()
+}
+
 fn parse_vm(vm: &Value) -> Option<NutanixVm> {
     let uuid = vm.get("uuid")?.as_str()?.to_string();
     let name = vm
@@ -884,5 +1032,16 @@ mod tests {
             }]
         });
         assert_eq!(first_nic_ipv4(&vm).as_deref(), Some("10.1.1.40"));
+    }
+
+    #[test]
+    fn os_disk_bus_skips_cdrom() {
+        let vm = json!({
+            "vm_disks": [
+                { "is_cdrom": true, "disk_address": { "device_bus": "ide", "device_index": 0 } },
+                { "is_cdrom": false, "disk_address": { "device_bus": "PCI", "device_index": 0 } }
+            ]
+        });
+        assert_eq!(os_disk_bus_from_vm(&vm), "pci");
     }
 }

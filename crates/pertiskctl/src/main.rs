@@ -19,7 +19,7 @@ use pertisk_proto::{
     MarkBootGoodRequest, NetInspectRequest, QuoteRequest, RebootRequest, ResetRequest,
     ServiceListRequest, ShutdownRequest, UpgradeRequest, UpgradeStatusRequest, VersionRequest,
 };
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tonic::Request;
 
 #[derive(Parser)]
@@ -770,8 +770,9 @@ async fn main() -> Result<()> {
             let mut req = Request::new(BootstrapRequest {
                 advertise_address: advertise_address.clone().unwrap_or_default(),
             });
-            // Finalize waits up to PERTISK_BOOTSTRAP_FINALIZE_SECS (default 600).
-            req.set_timeout(Duration::from_secs(720));
+            // Finalize waits up to PERTISK_BOOTSTRAP_FINALIZE_SECS (default 900)
+            // plus registry.k8s.io pulls after a soft-reset.
+            req.set_timeout(long_rpc_timeout());
             let resp = client.bootstrap(req).await?.into_inner();
             if resp.ok {
                 println!(
@@ -791,8 +792,8 @@ async fn main() -> Result<()> {
                 advertise_address: advertise_address.clone().unwrap_or_default(),
                 etcd_endpoints: etcd_endpoints.clone(),
             });
-            // Post-join finalize waits for local /readyz (default 600s).
-            req.set_timeout(Duration::from_secs(720));
+            // Local etcd wait + finalize /readyz (default 600s) + image pulls.
+            req.set_timeout(long_rpc_timeout());
             let resp = client.join_control_plane(req).await?.into_inner();
             if resp.ok {
                 println!(
@@ -996,6 +997,26 @@ fn extract_ca_from_kubeconfig(kc: &str) -> Option<String> {
     None
 }
 
+/// Bootstrap / join-controlplane wait for local etcd + apiserver /readyz.
+/// Soft-reset wipes containerd, so registry.k8s.io pulls can exceed 12 minutes.
+/// Override with `PERTISKCTL_LONG_RPC_SECS` (minimum 120).
+fn long_rpc_timeout() -> Duration {
+    let secs = std::env::var("PERTISKCTL_LONG_RPC_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(1800);
+    Duration::from_secs(secs.max(120))
+}
+
+fn configure_endpoint(endpoint: Endpoint) -> Endpoint {
+    // Do not enable HTTP/2 PING keep-alives. Bootstrap/join are long unary RPCs
+    // and pertiskd blocks the connection while pulling images; a 10s PING timeout
+    // shows up as `http2 error: keep-alive timed out`. TCP keepalive is enough.
+    endpoint
+        .connect_timeout(Duration::from_secs(15))
+        .tcp_keepalive(Some(Duration::from_secs(60)))
+}
+
 async fn connect(cli: &Cli) -> Result<MachineServiceClient<Channel>> {
     match (&cli.ca, &cli.cert, &cli.key) {
         (Some(ca), Some(cert), Some(key)) => {
@@ -1008,7 +1029,7 @@ async fn connect(cli: &Cli) -> Result<MachineServiceClient<Channel>> {
                 .ca_certificate(Certificate::from_pem(ca_pem))
                 .identity(Identity::from_pem(cert_pem, key_pem));
             let endpoint = format!("https://{}", cli.endpoints);
-            let channel = Channel::from_shared(endpoint.clone())?
+            let channel = configure_endpoint(Channel::from_shared(endpoint.clone())?)
                 .tls_config(tls)?
                 .connect()
                 .await
@@ -1022,10 +1043,11 @@ async fn connect(cli: &Cli) -> Result<MachineServiceClient<Channel>> {
                 } else {
                     format!("http://{}", cli.endpoints)
                 };
-            let client = MachineServiceClient::connect(endpoint.clone())
+            let channel = configure_endpoint(Channel::from_shared(endpoint.clone())?)
+                .connect()
                 .await
                 .with_context(|| format!("connect {endpoint}"))?;
-            Ok(client)
+            Ok(MachineServiceClient::new(channel))
         }
         _ => anyhow::bail!("mTLS requires --ca, --cert, and --key together"),
     }

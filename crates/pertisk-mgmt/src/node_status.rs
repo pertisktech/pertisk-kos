@@ -1,13 +1,13 @@
 //! Live node status: Machine Health, Prometheus scrape, kubectl top.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Serialize;
 use tokio::process::Command;
 
 use crate::config::Config;
+use crate::k8s::{kubeconfig_tls_error, refresh_kubeconfig_from_guest, resolve_cluster_kubeconfig};
 use crate::routes::nodes::NodeOut;
 use crate::state::AppState;
 
@@ -287,11 +287,49 @@ fn label_value(labels: &str, key: &str) -> Option<String> {
 }
 
 async fn fetch_resources(state: &AppState, cluster_id: &str, node_name: &str) -> ResourcesOut {
-    let kc = match resolve_cluster_kubeconfig(state, cluster_id).await {
-        Ok(p) => p,
-        Err(e) => return ResourcesOut::err(e),
+    let (kc, cluster_name) = match resolve_cluster_kubeconfig(state, cluster_id).await {
+        Ok(v) => v,
+        Err(e) => return ResourcesOut::err(e.to_string()),
     };
-    let out = Command::new("kubectl")
+    let out = kubectl_top_node(&kc, node_name).await;
+    match out {
+        Ok(o) => parse_top_output(o, node_name),
+        Err(e) if kubeconfig_tls_error(&e) => {
+            let ip: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT ip FROM nodes WHERE cluster_id = ? AND role = 'controlplane' \
+                 ORDER BY name LIMIT 1",
+            )
+            .bind(cluster_id)
+            .fetch_optional(state.pool())
+            .await
+            .ok()
+            .flatten()
+            .flatten()
+            .filter(|s| !s.is_empty());
+            if let Some(ip) = ip {
+                if refresh_kubeconfig_from_guest(&state.cfg().pertiskctl, &ip, &kc, &cluster_name)
+                    .await
+                    .is_ok()
+                {
+                    match kubectl_top_node(&kc, node_name).await {
+                        Ok(o) => return parse_top_output(o, node_name),
+                        Err(e2) => return ResourcesOut::err(e2),
+                    }
+                }
+            }
+            ResourcesOut::err(format!(
+                "{e} — leftover kubeconfig CA from a previous cluster of this name?"
+            ))
+        }
+        Err(e) => ResourcesOut::err(e),
+    }
+}
+
+async fn kubectl_top_node(
+    kc: &std::path::Path,
+    node_name: &str,
+) -> Result<std::process::Output, String> {
+    let o = Command::new("kubectl")
         .args([
             "--kubeconfig",
             &kc.to_string_lossy(),
@@ -301,46 +339,23 @@ async fn fetch_resources(state: &AppState, cluster_id: &str, node_name: &str) ->
             "--no-headers",
         ])
         .output()
-        .await;
-    match out {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            if !o.status.success() {
-                let msg = stderr.trim();
-                return ResourcesOut::err(if msg.is_empty() {
-                    "kubectl top node failed (is metrics-server installed?)".into()
-                } else {
-                    msg.to_string()
-                });
-            }
-            parse_kubectl_top(stdout.trim())
-        }
-        Err(e) => ResourcesOut::err(format!("kubectl: {e}")),
+        .await
+        .map_err(|e| format!("kubectl: {e}"))?;
+    if !o.status.success() {
+        let msg = String::from_utf8_lossy(&o.stderr);
+        let msg = msg.trim();
+        return Err(if msg.is_empty() {
+            "kubectl top node failed (is metrics-server installed?)".into()
+        } else {
+            msg.to_string()
+        });
     }
+    Ok(o)
 }
 
-async fn resolve_cluster_kubeconfig(state: &AppState, cluster_id: &str) -> Result<PathBuf, String> {
-    let row: Option<(Option<String>, String)> =
-        sqlx::query_as("SELECT kubeconfig_path, name FROM clusters WHERE id = ?")
-            .bind(cluster_id)
-            .fetch_optional(state.pool())
-            .await
-            .map_err(|e| e.to_string())?;
-    let Some((path, name)) = row else {
-        return Err("cluster not found".into());
-    };
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(p) = path.filter(|s| !s.is_empty()) {
-        candidates.push(PathBuf::from(p));
-    }
-    candidates.push(state.cfg().kubeconfigs_dir().join(&name).join("admin.conf"));
-    for c in candidates {
-        if c.is_file() {
-            return Ok(c);
-        }
-    }
-    Err("kubeconfig not available yet".into())
+fn parse_top_output(o: std::process::Output, _node_name: &str) -> ResourcesOut {
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    parse_kubectl_top(stdout.trim())
 }
 
 /// Parse `NAME CPU(cores) CPU% MEMORY(bytes) MEMORY%`.

@@ -138,7 +138,7 @@ pub fn start_containerd_with_sink(
                 socket_seen = Some(Instant::now());
             }
             // Hold ~2s after the socket appears so CRI can finish init.
-            if socket_seen.is_some_and(|t| t.elapsed() >= Duration::from_secs(2)) {
+            if socket_seen.is_some_and(|t| t.elapsed() >= Duration::from_secs(5)) {
                 info!(pid = handle.pid(), socket = %handle.paths.socket.display(), "containerd ready");
                 return Ok(handle);
             }

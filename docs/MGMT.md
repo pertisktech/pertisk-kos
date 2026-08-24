@@ -211,9 +211,11 @@ make os-bundle VERSION=0.2.86 ARCH=amd64   # → out/os-bundle-amd64-v0.2.86.zip
 make os-bundle VERSION=0.2.86 ARCH=arm64
 ```
 
-Job `upgrade_os` stages the bundle onto each guest via a privileged hostPath pod (`/var/lib/pertisk-os-upgrade`), installs `os-trust.pk` on STATE if missing, then `pertiskctl upgrade --bundle … --reboot` and `mark-boot-good`. Order: workers first, then control planes. Requires `kubectl` + `pertiskctl` on the mgmt host.
+Job `upgrade_os` stages the bundle onto each guest via a privileged hostPath pod (`/var/lib/pertisk-os-upgrade`), installs `os-trust.pk` on STATE if missing, then `pertiskctl upgrade --bundle … --reboot`, waits for the Machine API to go **down** then **up** (rediscovering DHCP/IPAM), `mark-boot-good`, uncordon. On Nutanix, extra netcfg disks can steal UEFI (`Unable to find valid boot device`); the job re-pins boot to the OS disk and power-cycles if the guest stays dark. Order: workers first, then control planes. Requires `kubectl` + `pertiskctl` on the mgmt host.
 
-**0.3.9 guests** stay **NotReady** after VM power-off/on (`kubelet=absent` after a containerd CRI race). Ship a new OS bundle with the kubelet retry fix, or wait for mgmt to re-apply machine config (cluster list/detail probe). Lab: `./scripts/recover-not-ready-nodes.sh <kubeconfig>`.
+Mgmt runs **one cluster job at a time**. Delete cancels that cluster’s queued work, **aborts** a running create/upgrade, and removes job rows when the cluster is gone — so a new create is not stuck `queued` behind a leftover delete.
+
+**0.3.9 guests** stay **NotReady** after VM power-off/on (`kubelet=absent` after a containerd CRI race). A later guest waits for IPv4 before kubelet so HA etcd can form quorum after a full cluster reboot (`127.0.0.1:6443 connection refused` / `node not registered`). Ship a new OS bundle, or wait for mgmt to re-apply machine config (cluster list/detail probe). Lab: `./scripts/recover-not-ready-nodes.sh <kubeconfig>`. If nodes never appear in `kubectl get nodes`, stagger power-on (CP1 first, then CP2/CP3, then workers) until the new image is rolling.
 
 Recreating VMs from a new qcow2 is a reinstall, not this path.
 
@@ -255,7 +257,7 @@ Uses SOAP `/sdk` (not REST). Cluster create runs `vsphere-lab-up.sh` / `vsphere-
 
 UI → Providers → Kind **Nutanix (AHV)** → URL (`:9440`), username/password, cluster, storage container, network ([NUTANIX.md](./NUTANIX.md)).
 
-Uses Prism Element REST v2.0 (+ v0.8 image upload). Cluster create runs `nutanix-lab-up.sh` / `nutanix-upload-vm.sh` (qcow2 → DISK_IMAGE → UEFI VM). Mgmt must share L2 with guests for MAC→IP (`LAB_SUBNET`).
+Uses Prism Element REST v2.0 (+ v0.8 image upload). Cluster create runs `nutanix-lab-up.sh` / `nutanix-upload-vm.sh` (qcow2 → DISK_IMAGE → UEFI VM). Mgmt must share L2 with guests for MAC→IP (`LAB_SUBNET`). Prefer the **unmanaged** VLAN (`vlan.0`) plus LAN DHCP; managed IPAM needs the netcfg disk. HA join writes etcd membership first; if local `/readyz` is still pulling images, lab-up waits up to 12 minutes then continues (node labels come later). `pertiskctl` waits up to 30 minutes (`PERTISKCTL_LONG_RPC_SECS`). Lab VLAN is IPv4-only — leave the wizard on **IPv4** unless the LAN has RA/DHCPv6.
 
 ## Clusters (HA)
 

@@ -10,7 +10,9 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 use crate::cluster_availability;
-use crate::k8s::{kubectl_json, resolve_cluster_kubeconfig};
+use crate::k8s::{
+    kubeconfig_tls_error, kubectl_json, refresh_kubeconfig_from_guest, resolve_cluster_kubeconfig,
+};
 use crate::state::AppState;
 
 const LIVE_TTL: Duration = Duration::from_secs(20);
@@ -351,6 +353,26 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
     let top_fut = fetch_kubectl_top_all(&kc, server_override.as_deref());
     let disk_fut = fetch_disk_from_stats(&kc, &nodes, server_override.as_deref());
     let (top_res, disk_res) = tokio::join!(top_fut, disk_fut);
+
+    let top_res = match top_res {
+        Err(e) if kubeconfig_tls_error(&e) => {
+            if let Some(ip) = first_cp_ip(&nodes) {
+                if refresh_kubeconfig_from_guest(&state.cfg().pertiskctl, &ip, &kc, &cluster.name)
+                    .await
+                    .is_ok()
+                {
+                    fetch_kubectl_top_all(&kc, server_override.as_deref()).await
+                } else {
+                    Err(format!(
+                        "{e} — leftover kubeconfig CA from a previous cluster? Delete leftover admin.conf or recreate."
+                    ))
+                }
+            } else {
+                Err(e)
+            }
+        }
+        other => other,
+    };
 
     match top_res {
         Ok(rows) if !rows.is_empty() => {

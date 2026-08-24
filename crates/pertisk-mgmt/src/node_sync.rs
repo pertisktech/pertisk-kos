@@ -487,11 +487,29 @@ fn rediscover_at() -> &'static Mutex<HashMap<String, Instant>> {
 /// Refresh `nodes.ip` from the hypervisor (or a :50000 scan) and fix kubeconfig
 /// when the cluster endpoint was the old control-plane IP.
 pub async fn rediscover_cluster_ips(state: &AppState, cluster_id: &str) -> anyhow::Result<usize> {
+    rediscover_cluster_ips_inner(state, cluster_id, false).await
+}
+
+/// Same as [`rediscover_cluster_ips`] but ignores the 60s TTL (OS upgrade / reboot).
+pub async fn rediscover_cluster_ips_now(
+    state: &AppState,
+    cluster_id: &str,
+) -> anyhow::Result<usize> {
+    rediscover_cluster_ips_inner(state, cluster_id, true).await
+}
+
+async fn rediscover_cluster_ips_inner(
+    state: &AppState,
+    cluster_id: &str,
+    force: bool,
+) -> anyhow::Result<usize> {
     {
         let mut g = rediscover_at().lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(at) = g.get(cluster_id) {
-            if at.elapsed() < REDISCOVER_TTL {
-                return Ok(0);
+        if !force {
+            if let Some(at) = g.get(cluster_id) {
+                if at.elapsed() < REDISCOVER_TTL {
+                    return Ok(0);
+                }
             }
         }
         g.insert(cluster_id.to_string(), Instant::now());
@@ -632,9 +650,7 @@ pub async fn heal_absent_kubelets(state: &AppState, cluster_id: &str) -> anyhow:
             continue;
         };
         {
-            let mut g = kubelet_heal_at()
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut g = kubelet_heal_at().lock().unwrap_or_else(|p| p.into_inner());
             if let Some(at) = g.get(ip) {
                 if at.elapsed() < KUBELET_HEAL_TTL {
                     continue;
@@ -649,7 +665,8 @@ pub async fn heal_absent_kubelets(state: &AppState, cluster_id: &str) -> anyhow:
         if health.as_deref() != Some("absent") {
             continue;
         }
-        let Some(cfg_path) = machine_config_for_node(&state.cfg().kubeconfigs_dir(), &cluster_name, &name)
+        let Some(cfg_path) =
+            machine_config_for_node(&state.cfg().kubeconfigs_dir(), &cluster_name, &name)
         else {
             tracing::debug!(node = %name, "kubelet heal skipped; no machine yaml");
             continue;
@@ -661,11 +678,11 @@ pub async fn heal_absent_kubelets(state: &AppState, cluster_id: &str) -> anyhow:
         if let Some(ver) = snap.k8s_version.as_deref() {
             yaml = patch_yaml_kubernetes_version(&yaml, ver);
         }
-        let tmp = state.cfg().data_dir.join(format!(
-            "kubelet-heal-{}-{}.yaml",
-            cluster_id,
-            uuid_stamp()
-        ));
+        let tmp =
+            state
+                .cfg()
+                .data_dir
+                .join(format!("kubelet-heal-{}-{}.yaml", cluster_id, uuid_stamp()));
         if std::fs::write(&tmp, &yaml).is_err() {
             continue;
         }
@@ -673,7 +690,13 @@ pub async fn heal_absent_kubelets(state: &AppState, cluster_id: &str) -> anyhow:
         let apply = timeout(
             Duration::from_secs(20),
             Command::new(pertiskctl)
-                .args(["-e", &format!("{ip}:50000"), "apply", "-f", &tmp.to_string_lossy()])
+                .args([
+                    "-e",
+                    &format!("{ip}:50000"),
+                    "apply",
+                    "-f",
+                    &tmp.to_string_lossy(),
+                ])
                 .output(),
         )
         .await;
@@ -729,7 +752,11 @@ fn parse_health_kubelet(stdout: &str) -> Option<String> {
     None
 }
 
-fn machine_config_for_node(kubeconfigs_dir: &Path, cluster_name: &str, node_name: &str) -> Option<PathBuf> {
+fn machine_config_for_node(
+    kubeconfigs_dir: &Path,
+    cluster_name: &str,
+    node_name: &str,
+) -> Option<PathBuf> {
     let dir = kubeconfigs_dir.join(cluster_name);
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(suffix) = node_name.strip_prefix(&format!("{cluster_name}-")) {
@@ -1039,8 +1066,10 @@ lab-ha-wk-1   Ready    <none>          42s   v1.36.2   10.1.1.134    <none>
     #[test]
     fn parses_health_kubelet() {
         assert_eq!(
-            parse_health_kubelet("ready=true containerd=up kubelet=absent — containerd=up kubelet=absent")
-                .as_deref(),
+            parse_health_kubelet(
+                "ready=true containerd=up kubelet=absent — containerd=up kubelet=absent"
+            )
+            .as_deref(),
             Some("absent")
         );
         assert_eq!(

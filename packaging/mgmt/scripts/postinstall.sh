@@ -10,3 +10,8 @@ if command -v systemctl >/dev/null 2>&1; then
   echo "Enable/start: systemctl enable --now pertisk-mgmt"
   echo "Upload cloud qcow2 in the UI (Images) or copy to /var/lib/pertisk-mgmt/images/ before Create Cluster."
 fi
+# Prism pulls qcow2/netcfg from this host on :18765 (pertisk-mgmt is not root).
+if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+  firewall-cmd --quiet --permanent --add-port=18765/tcp || true
+  firewall-cmd --quiet --reload || true
+fi

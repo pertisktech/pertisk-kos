@@ -64,15 +64,17 @@ export NUTANIX_INSECURE=1
 LAB_SUBNET=10.1.1.0/24 ./scripts/nutanix-lab-up.sh --skip-build --cp-vmid 210 --workers 1
 ```
 
-Upload flow: temporary HTTP server on the mgmt host (default **:18765**) → Prism **image_import_spec** pulls the qcow2 → clone disk into a UEFI AHV VM → power on.
+Upload flow: temporary HTTP server on the mgmt host (default **:18765**, serialized with flock) → Prism **image_import_spec** pulls the qcow2 → clone disk into a UEFI AHV VM → power on.
 
-Prism CVMs must reach the mgmt IP on that port. `No route to host` usually means **firewalld REJECT** — the script tries to open the port temporarily; for a permanent rule:
+Prism CVMs must reach the mgmt IP on that port. `No route to host` is usually **firewalld REJECT**. `pertisk-mgmt` is not root, so it cannot open the port at runtime — RPM postinstall adds a permanent rule when firewalld is running, or:
 
 ```bash
 sudo firewall-cmd --permanent --add-port=18765/tcp && sudo firewall-cmd --reload
 ```
 
-If Prism has an HTTP proxy, whitelist the mgmt IP. Override with `NUTANIX_HTTP_ADDR` / `NUTANIX_HTTP_PORT` if needed.
+Do **not** rely on per-VM ports (`18765+VMID`); those fail with `No route to host`. If Prism has an HTTP proxy, whitelist the mgmt IP. Override with `NUTANIX_HTTP_ADDR` / `NUTANIX_HTTP_PORT` if needed.
+
+On an **unmanaged** AHV network (this lab: `vlan.0`), upload skips the IPAM **netcfg** extra disk and the mgmt `:67` DHCP helper — guests use LAN DHCP. Netcfg is only for **managed IPAM** subnets.
 
 ## Terraform
 
@@ -128,6 +130,31 @@ Until the new guest is rolling, either open the cluster in mgmt (it re-applies m
 ```bash
 ./scripts/recover-not-ready-nodes.sh ~/.kube/ptkos/lab-ha-nutanix.yaml
 ```
+
+## OS A/B upgrade hangs (`Unable to find valid boot device`)
+
+Slot staging can succeed (`upgrade ok slot=B … reboot required`) while the job still fails.
+
+Two separate problems:
+
+1. **False “guest API up”.** `pertiskctl upgrade --reboot` returns while `:50000` is still the *old* process. Mgmt used to treat the first TCP connect as success (~2s), sleep 3s, then `mark-boot-good` hits `No route to host` after the reboot. The job now waits for the API to **drop**, then come back, and rediscovers the Prism/DHCP address (it often changes).
+2. **AHV firmware.** The extra IPAM **netcfg** virtio disk (`pci:1`) can steal UEFI after a guest reboot. Serial shows `Unable to find valid boot device` — that is firmware, not systemd-boot. Pin boot to the OS disk (`pci:0` / `scsi:0`) and power-cycle. After ~60s down, the upgrade job does this itself.
+
+Recover the VM that is already stuck (do **not** use `--repair-name`; that re-attaches netcfg):
+
+```bash
+# on the mgmt host, with Prism env from /etc/pertisk-mgmt.env or the provider
+./scripts/nutanix-upload-vm.sh --pin-boot lab-ha-nutanix-wk-1
+```
+
+Prism Serial should then show systemd-boot. Guest IPv4 may differ from `10.1.1.85`. When `:50000` is up:
+
+```bash
+pertiskctl -e <new-ip>:50000 mark-boot-good
+kubectl uncordon lab-ha-nutanix-wk-1
+```
+
+Until the new mgmt package is installed, `--pin-boot` is the recovery; later OS upgrades pin and power-cycle automatically.
 
 **Existing VMs:** recreate, or repair in place (pins MAC + requested IP, re-attaches netcfg):
 

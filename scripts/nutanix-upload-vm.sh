@@ -25,6 +25,7 @@ START=1
 IMAGE_NAME="${NUTANIX_IMAGE_NAME:-}"
 REPAIR_NAME=""
 IMPORT_ONLY=0
+PIN_BOOT_NAME=""
 
 usage() {
   cat <<'EOF'
@@ -42,12 +43,13 @@ Options:
   --storage NAME    storage container (default $NUTANIX_STORAGE)
   --no-start        do not power on after create
   --repair-name NAME  existing VM: power off, attach IPAM netcfg, power on
+  --pin-boot NAME     existing VM: power off, pin UEFI to OS disk 0, detach extra disks, power on
   --import-only     fingerprint + import qcow2 into Prism; do not create a VM
 
 Env:
   NUTANIX_FORCE_IMPORT=1   re-import even when the qcow2 fingerprint already exists
   NUTANIX_IMAGE_NAME=NAME  pin a Prism image (skips fingerprint; can boot a stale guest)
-  NUTANIX_HTTP_PORT        HTTP bind for Prism pull (default 18765, or 18765+VMID%200)
+  NUTANIX_HTTP_PORT        HTTP bind for Prism pull (default 18765; serialize with flock)
 EOF
   exit 1
 }
@@ -64,13 +66,20 @@ while [[ $# -gt 0 ]]; do
     --storage) STORAGE="$2"; shift 2 ;;
     --no-start) START=0; shift ;;
     --repair-name) REPAIR_NAME="$2"; shift 2 ;;
+    --pin-boot) PIN_BOOT_NAME="$2"; shift 2 ;;
     --import-only) IMPORT_ONLY=1; shift ;;
     -h | --help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
 done
 
-if [[ -n "$REPAIR_NAME" ]]; then
+if [[ -n "$PIN_BOOT_NAME" ]]; then
+  NAME="$PIN_BOOT_NAME"
+  VMID="${VMID:-0}"
+  DISK="${DISK:-/dev/null}"
+  STORAGE="${STORAGE:-}"
+  NETWORK="${NETWORK:-}"
+elif [[ -n "$REPAIR_NAME" ]]; then
   NAME="$REPAIR_NAME"
   VMID="${VMID:-0}"
   DISK="${DISK:-/dev/null}"
@@ -92,8 +101,10 @@ fi
 : "${NUTANIX_URL:?set NUTANIX_URL}"
 : "${NUTANIX_USER:?set NUTANIX_USER}"
 : "${NUTANIX_PASSWORD:?set NUTANIX_PASSWORD}"
-: "${STORAGE:?set NUTANIX_STORAGE or --storage}"
-: "${NETWORK:?set NUTANIX_NETWORK or --network}"
+if [[ -z "$PIN_BOOT_NAME" ]]; then
+  : "${STORAGE:?set NUTANIX_STORAGE or --storage}"
+  : "${NETWORK:?set NUTANIX_NETWORK or --network}"
+fi
 
 command -v python3 >/dev/null || {
   echo "python3 required" >&2
@@ -108,11 +119,9 @@ NAME="${NAME:-${NAME_PREFIX:-pertisk}-${VMID}}"
 BASE="${NUTANIX_URL%/}"
 API="${BASE}/api/nutanix/v2.0"
 
-# Parallel VM creates each pull netcfg over HTTP; pin a distinct port per VMID
-# unless the operator set NUTANIX_HTTP_PORT.
-if [[ -z "${NUTANIX_HTTP_PORT:-}" && "${VMID:-0}" =~ ^[1-9][0-9]*$ ]]; then
-  export NUTANIX_HTTP_PORT=$((18765 + (VMID % 200)))
-fi
+# Always serve Prism pulls on the documented port (firewalld often only allows
+# 18765). Parallel VM creates serialize with flock instead of 18765+VMID%200
+# (those extra ports show up as Prism "No route to host" when mgmt is not root).
 
 CURL=(curl -sS)
 [[ "${NUTANIX_INSECURE:-0}" == "1" ]] && CURL+=(-k)
@@ -380,11 +389,30 @@ open_fw_port() {
   fi
 }
 
+# Serialize Prism HTTP serve so parallel VM creates share :18765 (the port
+# operators open permanently). fd 9 is local to the caller.
+prism_http_lock() {
+  if ! command -v flock >/dev/null 2>&1; then
+    return 0
+  fi
+  local lock=/var/tmp/pertisk-nutanix-http.lock
+  exec 9>"$lock"
+  if ! flock -w 360 9; then
+    echo "timeout waiting for Prism HTTP lock (${lock})" >&2
+    return 1
+  fi
+}
+
+prism_http_unlock() {
+  flock -u 9 2>/dev/null || true
+}
+
 import_image_via_http() {
   local addr port url create_img
   addr="$(detect_http_addr)"
   # Stable default — ephemeral ports are almost always firewalled.
   port="${NUTANIX_HTTP_PORT:-18765}"
+  prism_http_lock || return 1
   HTTP_DIR="$(mktemp -d /var/tmp/pertisk-nutanix-http.XXXXXX 2>/dev/null || mktemp -d)"
   ln -sf "$(cd "$(dirname "$DISK")" && pwd)/$(basename "$DISK")" "${HTTP_DIR}/disk.qcow2"
 
@@ -393,6 +421,8 @@ import_image_via_http() {
   # Fail fast if the port is already taken.
   if ss -ltn "( sport = :${port} )" 2>/dev/null | grep -q ":${port}"; then
     echo "port ${port} already in use — set NUTANIX_HTTP_PORT to a free port" >&2
+    stop_http
+    prism_http_unlock
     return 1
   fi
 
@@ -401,12 +431,16 @@ import_image_via_http() {
   sleep 0.4
   if ! kill -0 "$HTTP_PID" 2>/dev/null; then
     echo "failed to start HTTP server on :${port}" >&2
+    stop_http
+    prism_http_unlock
     return 1
   fi
 
   # Local sanity check (does not prove Prism can reach us).
   if ! curl -fsSI --max-time 3 "http://127.0.0.1:${port}/disk.qcow2" >/dev/null; then
     echo "local HTTP server not responding on :${port}" >&2
+    stop_http
+    prism_http_unlock
     return 1
   fi
 
@@ -432,6 +466,8 @@ import_image_via_http() {
     echo "      (or permanent: --permanent && firewall-cmd --reload)" >&2
     echo "      Also whitelist ${addr} in Prism Settings → HTTP Proxy if a proxy is set." >&2
     echo "      Override bind IP with NUTANIX_HTTP_ADDR if needed." >&2
+    stop_http
+    prism_http_unlock
     return 1
   fi
   echo "==> image uuid=${IMAGE_UUID} (import in progress)" >&2
@@ -444,21 +480,31 @@ import_image_via_http() {
     if [[ "$state" == "ACTIVE" || "$state" == "COMPLETE" ]] && [[ -n "$vmdisk" ]]; then
       VMDISK_UUID="$vmdisk"
       stop_http
+      prism_http_unlock
       return 0
     fi
     if [[ "$state" == "ERROR" ]]; then
       echo "image import ERROR: $(echo "$img" | head -c 600)" >&2
       echo "HINT: sudo firewall-cmd --add-port=${port}/tcp   # Prism pulls from ${addr}:${port}" >&2
       stop_http
+      prism_http_unlock
       return 1
     fi
     sleep 2
   done
   echo "image import timed out (state=${state:-?})" >&2
   stop_http
+  prism_http_unlock
   return 1
 }
 
+if [[ -n "$PIN_BOOT_NAME" ]]; then
+  echo "==> pin-boot ${PIN_BOOT_NAME} (skip storage/network resolve)"
+  CONTAINER_UUID=""
+  NETWORK_UUID=""
+  NETWORK_GATEWAY=""
+  NETWORK_PREFIX=""
+else
 echo "==> resolve storage container '${STORAGE}' and network '${NETWORK}'"
 CONTAINERS="$(api_get storage_containers)"
 CONTAINER_UUID="$(CONTAINERS_JSON="$CONTAINERS" python3 -c '
@@ -553,8 +599,9 @@ if [[ -n "${NETWORK_GATEWAY}" ]]; then
 else
   echo "==> AHV network '${NETWORK}' uuid=${NETWORK_UUID} (unmanaged / no IPAM — guest DHCP from LAN)"
 fi
+fi
 
-if [[ -z "$REPAIR_NAME" ]]; then
+if [[ -z "$REPAIR_NAME" && -z "$PIN_BOOT_NAME" ]]; then
 if [[ "$IMPORT_ONLY" != "1" ]]; then
 # Delete existing VM with same name (recreate).
 EXISTING="$(api_get vms)"
@@ -834,7 +881,11 @@ ensure_serial_port() {
 
 ensure_serial_port "$VM_UUID" "$NAME" || true
 else
-  echo "==> repair netcfg on existing VM ${NAME} (no recreate)"
+  if [[ -n "$PIN_BOOT_NAME" ]]; then
+    echo "==> pin-boot on existing VM ${NAME} (no recreate)"
+  else
+    echo "==> repair netcfg on existing VM ${NAME} (no recreate)"
+  fi
   EXISTING="$(api_get vms)"
   VM_UUID="$(EXISTING_JSON="$EXISTING" python3 -c '
 import json,os,sys
@@ -983,20 +1034,25 @@ import_raw_image() {
   local addr port url create_img uuid vmdisk state img i
   addr="$(detect_http_addr)"
   port="${NUTANIX_HTTP_PORT:-18765}"
+  prism_http_lock || return 1
   HTTP_DIR="$(mktemp -d /var/tmp/pertisk-nutanix-http.XXXXXX 2>/dev/null || mktemp -d)"
   ln -sf "$(cd "$(dirname "$path")" && pwd)/$(basename "$path")" "${HTTP_DIR}/disk.raw"
   open_fw_port "$port"
   if ss -ltn "( sport = :${port} )" 2>/dev/null | grep -q ":${port}"; then
     echo "port ${port} already in use — set NUTANIX_HTTP_PORT" >&2
+    stop_http
+    prism_http_unlock
     return 1
   fi
   python3 -m http.server "$port" --bind 0.0.0.0 --directory "$HTTP_DIR" >/dev/null 2>&1 &
   HTTP_PID=$!
   sleep 0.4
-  kill -0 "$HTTP_PID" 2>/dev/null || {
+  if ! kill -0 "$HTTP_PID" 2>/dev/null; then
     echo "failed to start HTTP server on :${port} for netcfg" >&2
+    stop_http
+    prism_http_unlock
     return 1
-  }
+  fi
   url="http://${addr}:${port}/disk.raw"
   echo "==> Prism netcfg import from ${url}" >&2
   create_img="$(api_json POST images "$(jq -n \
@@ -1014,6 +1070,7 @@ import_raw_image() {
   uuid="$(resolve_create_uuid "$create_img" image "$img_name")" || {
     echo "netcfg image import failed: $create_img" >&2
     stop_http
+    prism_http_unlock
     return 1
   }
   for i in $(seq 1 180); do
@@ -1024,17 +1081,20 @@ import_raw_image() {
       NETCFG_IMAGE_UUID="$uuid"
       echo "$vmdisk"
       stop_http
+      prism_http_unlock
       return 0
     fi
     if [[ "$state" == "ERROR" ]]; then
       echo "netcfg image import ERROR" >&2
       stop_http
+      prism_http_unlock
       return 1
     fi
     sleep 2
   done
   echo "netcfg image import timed out" >&2
   stop_http
+  prism_http_unlock
   return 1
 }
 
@@ -1323,6 +1383,27 @@ PY
   fi
 }
 
+if [[ -n "$PIN_BOOT_NAME" ]]; then
+  echo "==> pin-boot: power off, pin UEFI to ${DISK_BUS}:0, detach extra disks, power on" >&2
+  set_power "$VM_UUID" OFF || true
+  sleep 3
+  detach_extra_disk "$VM_UUID" "$DISK_BUS" 1
+  detach_extra_disk "$VM_UUID" "$(echo "$DISK_BUS" | tr 'a-z' 'A-Z')" 1
+  detach_extra_disk "$VM_UUID" "scsi" 1
+  detach_extra_disk "$VM_UUID" "SCSI" 1
+  pin_boot_os_disk "$VM_UUID" "$DISK_BUS"
+  if [[ "$START" == "1" ]]; then
+    if ! set_power "$VM_UUID" ON; then
+      echo "power on failed for ${NAME} (${VM_UUID})" >&2
+      exit 1
+    fi
+  fi
+  echo "OK pin-boot ${NAME} uuid=${VM_UUID} bus=${DISK_BUS}:0"
+  echo "    Prism Serial should show systemd-boot, not 'Unable to find valid boot device'."
+  echo "    Then: pertiskctl -e <ip>:50000 mark-boot-good  (IP may have changed)"
+  exit 0
+fi
+
 if [[ -n "$REPAIR_NAME" ]]; then
   set_power "$VM_UUID" OFF || true
   sleep 2
@@ -1331,7 +1412,16 @@ if [[ -z "${NET0_MAC:-}" ]]; then
   NET0_MAC="$(mac_for_vmid "${VMID}")"
 fi
 pin_nic "$VM_UUID" "${NET0_MAC}" ""
-attach_ipam_netcfg "$VM_UUID"
+if [[ -n "${NETWORK_GATEWAY:-}" ]]; then
+  attach_ipam_netcfg "$VM_UUID"
+else
+  echo "==> skip IPAM netcfg disk (unmanaged ${NETWORK}; guest DHCP from LAN)" >&2
+  echo "    extra pci:1 netcfg disk also steals UEFI boot after guest reboot" >&2
+  ip="$(learn_ipam_ip "$VM_UUID" || true)"
+  if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    pin_nic "$VM_UUID" "${NET0_MAC}" "$ip"
+  fi
+fi
 
 if [[ -n "$REPAIR_NAME" ]]; then
   echo "==> repair: power off, attach done, power on" >&2
