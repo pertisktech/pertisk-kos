@@ -97,14 +97,18 @@ Mismatch (`Callback URL mismatch`) means Auth0 received a `redirect_uri` that is
 
 ## Dashboard
 
-Home (`/`) shows cluster counts plus a **Cluster resources** section: one card per cluster with CPU, memory, and disk donut charts.
+Home (`/`) shows cluster counts plus **Providers** and **Clusters** resource cards: CPU, memory, and disk donut charts with **used / available / total**.
 
-| Metric | Source |
-|--------|--------|
-| CPU / memory usage | `kubectl top nodes` (needs metrics-server) vs provisioned cores / memory from inventory |
-| Disk | kubelet stats summary (`/proxy/stats/summary` filesystem) when reachable; else provisioned `disk_gb` totals without % |
+Provider cards and **Providers → Dashboard** (or click the provider name) open `/providers/{id}` with the same gauges for that hypervisor.
 
-Polls `GET /api/dashboard/resources` about every 15s. Cluster list / job status updates push via **SSE** (`GET /api/events?token=…`) with a slow poll fallback. Click a card to open the cluster.
+| Surface | Metric | Source |
+|--------|--------|--------|
+| Cluster cards | CPU / memory usage | `kubectl top nodes` vs provisioned cores / memory |
+| Cluster cards | Disk | kubelet stats summary when reachable; else provisioned `disk_gb` |
+| Provider cards / dashboard | CPU / memory | Proxmox node status; Nutanix AHV hosts; ESXi host quickStats |
+| Provider cards / dashboard | Disk | Selected storage / container / datastore capacity |
+
+Polls `GET /api/dashboard/resources` and `GET /api/dashboard/providers` about every 15s. Cluster list / job status updates push via **SSE** (`GET /api/events?token=…`) with a slow poll fallback. Click a cluster card to open the cluster; click a provider card for the hypervisor dashboard (`GET /api/providers/{id}/dashboard`).
 
 ## Nodes tab
 
@@ -147,7 +151,7 @@ When a cluster is **ready**, **Add-ons** uses group tabs (**Certificates**, **In
 | Cilium LoadBalancer | ELB IPv4; IPv6 when dual-stack | `CiliumLoadBalancerIPPool` + `CiliumL2AnnouncementPolicy` (listed only when cluster CNI is `cilium`) |
 | Pertisk Ingress | image tag (default `v0.1.83`); optional admin host; TLS secret list (or HTTP only); optional admin password | Helm `pertisk-ingress` from `--repo https://chart.tools.pertisk.com` into `pertisk-proxy`, public Harbor image pinned to cluster arch (`linux/arm64` or `linux/amd64`) |
 
-**Check config** validates the form (and for NFS, TCP 2049 from the mgmt host) and reports live resources. **Install** / **Update** enqueues job `install_addon` (cluster stays ready on failure). Add-on installs run **in parallel** with other clusters’ jobs (and with other add-ons on the same cluster); they wait only if *this* cluster already has a create/upgrade/node job running. Cloudflare tokens and optional ingress admin/registry passwords are encrypted at rest (`MGMT_SECRET_KEY`) and never returned by the API. Ingress install needs `helm` on the mgmt host PATH (same as the Shell tab). `harbor.tools.pertisk.com/pertisk-proxy` is public (no pull secret unless you set Harbor user/password).
+**Check config** validates the form (and for NFS, TCP 2049 from the mgmt host) and reports live resources. **Install** / **Update** enqueues job `install_addon` (cluster stays ready on failure). Add-on configs (including encrypted tokens) are saved by **cluster name**. Delete keeps that preset; creating the same name again restores the forms and reinstalls after the cluster is ready (wizard **Reuse add-on config**, on by default). You can also copy presets from another cluster name. Add-on installs run **in parallel** with other clusters’ jobs (and with other add-ons on the same cluster); they wait only if *this* cluster already has a create/upgrade/node job running. Cloudflare tokens and optional ingress admin/registry passwords are encrypted at rest (`MGMT_SECRET_KEY`) and never returned by the API. Ingress install needs `helm` on the mgmt host PATH (same as the Shell tab). `harbor.tools.pertisk.com/pertisk-proxy` is public (no pull secret unless you set Harbor user/password).
 
 API (Bearer JWT; install needs **operator/admin**):
 
@@ -155,6 +159,8 @@ API (Bearer JWT; install needs **operator/admin**):
 - `GET /api/clusters/{id}/addons/{name}` — one add-on (`nfs` \| `cert-manager` \| `cilium-lb` \| `ingress`)
 - `POST /api/clusters/{id}/addons/{name}/check` — validate submitted config + live probe
 - `POST /api/clusters/{id}/addons/{name}/install` — persist config and enqueue `install_addon`
+- `GET /api/addon-presets` — saved add-on configs by cluster name (for recreate / copy)
+- `POST /api/clusters` — optional `reuse_addons` (default true) and `addon_preset` (source cluster name)
 
 Guest NFS client modules: [image/extensions/nfs-client](../image/extensions/nfs-client/). Manifests: [examples/addons](../examples/addons/).
 
@@ -379,7 +385,7 @@ Or `./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --with-ssh --pve p
 | Page | API | Notes |
 |------|-----|--------|
 | **Machines** | `GET /api/machines` | Cross-cluster node inventory with live **online** / **offline** (Machine API `:50000`); opens node detail |
-| **Providers** | `GET /api/providers` | Hypervisor inventory with live **online** / **offline** (Proxmox / ESXi / Prism API) |
+| **Providers** | `GET /api/providers`, `GET /api/providers/{id}/dashboard`, `GET /api/dashboard/providers` | Hypervisor inventory with live **online** / **offline**; CPU / memory / disk used·available·total |
 | **OS packages** | `GET/POST /api/os-packages`, `DELETE /api/os-packages/{id}`, `POST /api/os-packages/{id}/apply` | Signed A/B OS bundles by version + arch; apply to matching clusters |
 | **Images** | `GET/POST /api/images`, `DELETE /api/images/{name}` | Cloud qcow2 catalog for cluster create (`pertisk-cloud-{arch}.qcow2`); mgmt does not build |
 | **Templates** | `GET/POST /api/templates`, `GET/PUT/DELETE /api/templates/{id}` | Machine-config YAML blueprints; load into cluster Config tab |

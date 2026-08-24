@@ -5,6 +5,7 @@ import Login from './pages/Login'
 import ForgotPassword, { ResetPassword } from './pages/ForgotPassword'
 import Dashboard from './pages/Dashboard'
 import Providers from './pages/Providers'
+import ProviderDashboard from './pages/ProviderDashboard'
 import Clusters from './pages/ClusterList'
 import ClusterDetail from './pages/ClusterDetail'
 import NodeDetail from './pages/NodeDetail'
@@ -36,6 +37,7 @@ export default function App() {
             <Route path="/images" element={<Images />} />
             <Route path="/templates" element={<Templates />} />
             <Route path="/providers" element={<Providers />} />
+            <Route path="/providers/:id" element={<ProviderDashboard />} />
             <Route path="/users" element={<Users />} />
             <Route path="/audit" element={<Audit />} />
             <Route path="/settings" element={<Settings />} />

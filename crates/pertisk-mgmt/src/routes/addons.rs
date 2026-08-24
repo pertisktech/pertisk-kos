@@ -15,10 +15,19 @@ use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/addon-presets", get(list_presets))
         .route("/clusters/{id}/addons", get(list))
         .route("/clusters/{id}/addons/{name}", get(get_one).post(check))
         .route("/clusters/{id}/addons/{name}/check", post(check))
         .route("/clusters/{id}/addons/{name}/install", post(install))
+}
+
+async fn list_presets(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+) -> ApiResult<Json<Value>> {
+    let data = addons::list_presets(&state).await?;
+    Ok(Json(json!({ "data": data })))
 }
 
 async fn cluster_exists(state: &AppState, id: &str) -> ApiResult<()> {

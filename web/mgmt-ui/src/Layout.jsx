@@ -26,6 +26,7 @@ function getStoredCollapsed() {
 }
 
 function resolveTitle(pathname) {
+  if (pathname.startsWith('/providers/') && pathname !== '/providers') return 'Provider dashboard'
   const match = NAV.filter((n) =>
     n.end ? pathname === n.to : pathname === n.to || pathname.startsWith(`${n.to}/`),
   ).sort((a, b) => b.to.length - a.to.length)[0]

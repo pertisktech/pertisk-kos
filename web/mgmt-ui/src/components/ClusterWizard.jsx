@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api'
+import Checkbox from './Checkbox'
 import { Icon } from './Icons'
 import K8sVersionSelect from './K8sVersionSelect'
 import WizardModal from './WizardModal'
@@ -76,6 +77,9 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
   const [vipChecking, setVipChecking] = useState(false)
   const [images, setImages] = useState(null)
   const [form, setForm] = useState({ ...defaultForm })
+  const [addonPresets, setAddonPresets] = useState([])
+  const [reuseAddons, setReuseAddons] = useState(true)
+  const [addonSource, setAddonSource] = useState('')
 
   useEffect(() => {
     if (!open) return
@@ -87,6 +91,16 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
     setVipCheck(null)
     setImages(null)
     setForm({ ...defaultForm })
+    setAddonPresets([])
+    setReuseAddons(true)
+    setAddonSource('')
+    api('/addon-presets')
+      .then((r) => {
+        if (!cancelled) setAddonPresets(Array.isArray(r?.data) ? r.data : [])
+      })
+      .catch(() => {
+        if (!cancelled) setAddonPresets([])
+      })
     api('/images')
       .then((c) => {
         if (!cancelled) setImages(c)
@@ -227,6 +241,16 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
     }
   }, [open, form.controlplanes, form.network_mode, form.vip, form.vip6])
 
+  const clusterName = String(form.name || '').trim()
+  useEffect(() => {
+    if (!open) return
+    const exact = addonPresets.find((p) => p.cluster_name === clusterName)
+    if (exact) {
+      setAddonSource(exact.cluster_name)
+      setReuseAddons(true)
+    }
+  }, [open, clusterName, addonPresets])
+
   function set(k, v) {
     setForm((f) => {
       const next = { ...f, [k]: v }
@@ -269,6 +293,14 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
   const armAllowed = guestArchAllowed(selectedProvider?.kind, 'arm64')
   const imageReady = !!images?.ready?.[form.arch]
   const imageBlocked = !!images && !imageReady
+  const exactAddonPreset = addonPresets.find((p) => p.cluster_name === clusterName)
+  const selectedAddonPreset =
+    addonPresets.find((p) => p.cluster_name === addonSource) || exactAddonPreset || addonPresets[0]
+  const addonNames = (selectedAddonPreset?.addons || [])
+    .map((a) => a.name || a.id)
+    .filter(Boolean)
+    .join(', ')
+  const willReuseAddons = reuseAddons && !!selectedAddonPreset
 
   const providerVerify = !form.provider_id
     ? { state: 'idle', message: 'Select a provider' }
@@ -446,6 +478,8 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
       worker_cores: Number(form.worker_cores),
       worker_disk_gb: Number(form.worker_disk_gb),
       cp_vmid: Number(form.cp_vmid),
+      reuse_addons: willReuseAddons,
+      addon_preset: willReuseAddons ? selectedAddonPreset.cluster_name : null,
     }
     setSaving(true)
     try {
@@ -744,6 +778,45 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
             <VerifyRow state={vmidVerify.state} label="VMID range" message={vmidVerify.message} />
             <VerifyRow state={vipVerify.state} label="VIP" message={vipVerify.message} />
           </ul>
+          {addonPresets.length > 0 && (
+            <div className="field" style={{ marginTop: '1rem' }}>
+              <Checkbox
+                id="reuse-addons"
+                checked={willReuseAddons}
+                onChange={(on) => {
+                  setReuseAddons(on)
+                  if (on && !addonSource && selectedAddonPreset) {
+                    setAddonSource(selectedAddonPreset.cluster_name)
+                  }
+                }}
+                label="Reuse add-on config and reinstall after the cluster is ready"
+              />
+              {addonPresets.length > 1 && (
+                <select
+                  value={selectedAddonPreset?.cluster_name || ''}
+                  disabled={!reuseAddons}
+                  onChange={(e) => {
+                    setAddonSource(e.target.value)
+                    setReuseAddons(true)
+                  }}
+                  style={{ marginTop: '0.5rem' }}
+                >
+                  {addonPresets.map((p) => (
+                    <option key={p.cluster_name} value={p.cluster_name}>
+                      {p.cluster_name}
+                      {p.cluster_name === clusterName ? ' (this name)' : ''}
+                      {` — ${(p.addons || []).map((a) => a.name || a.id).join(', ')}`}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {willReuseAddons && addonNames && (
+                <p className="hint muted">
+                  Will reinstall {addonNames}. Cloudflare tokens and ingress passwords are reused from the saved config.
+                </p>
+              )}
+            </div>
+          )}
         </>
       )}
     </WizardModal>

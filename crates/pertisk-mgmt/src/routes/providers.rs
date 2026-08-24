@@ -20,6 +20,7 @@ pub fn routes() -> Router<AppState> {
         .route("/providers", get(list).post(create))
         .route("/providers/probe", post(probe))
         .route("/providers/{id}", get(get_one).put(update).delete(delete))
+        .route("/providers/{id}/dashboard", get(dashboard))
         .route("/providers/{id}/test", post(test))
         .route("/providers/{id}/storage", get(storage))
 }
@@ -165,6 +166,16 @@ async fn get_one(
         .ok_or(AppError::NotFound)?;
     row.availability = crate::provider_availability::probe(&state, &id).await;
     Ok(Json(row))
+}
+
+async fn dashboard(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<crate::provider_resources::ProviderResourceSummary>> {
+    crate::provider_resources::gather_one(&state, &id)
+        .await
+        .map(Json)
 }
 
 async fn probe_provider(

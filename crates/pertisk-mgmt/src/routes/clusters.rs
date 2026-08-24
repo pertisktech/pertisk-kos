@@ -130,6 +130,12 @@ struct CreateCluster {
     pod_subnet_ipv6: Option<String>,
     #[serde(default)]
     service_subnet_ipv6: Option<String>,
+    /// Copy saved add-on configs (same cluster name, or `addon_preset`) and reinstall after create.
+    #[serde(default = "default_true")]
+    reuse_addons: bool,
+    /// Cluster name to copy add-on configs from. Defaults to this cluster's name.
+    #[serde(default)]
+    addon_preset: Option<String>,
 }
 
 fn one() -> i64 {
@@ -179,6 +185,10 @@ fn default_pod_subnet_ipv6() -> String {
 }
 fn default_service_subnet_ipv6() -> String {
     "2001:db8:96:1::/112".into()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn map_cluster_insert_err(e: sqlx::Error, name: &str) -> AppError {
@@ -616,6 +626,28 @@ async fn create(
     .execute(state.pool())
     .await
     .map_err(|e| map_cluster_insert_err(e, name))?;
+
+    if body.reuse_addons {
+        let from = body
+            .addon_preset
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(name);
+        match crate::addons::restore_presets(&state, &id, from, &body.cni).await {
+            Ok(restored) if !restored.is_empty() => {
+                tracing::info!(
+                    cluster = %id,
+                    name,
+                    from,
+                    addons = %restored.join(","),
+                    "restored add-on config for recreate"
+                );
+            }
+            Err(e) => tracing::warn!(cluster = %id, error = %e, "failed to restore add-on config"),
+            _ => {}
+        }
+    }
 
     let job_id = jobs::enqueue(
         &state,

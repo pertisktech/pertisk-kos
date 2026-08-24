@@ -695,6 +695,17 @@ label {
   display: block;
   color: var(--text-muted);
 }
+.resource-gauge-breakdown {
+  font-size: 0.66rem;
+  line-height: 1.35;
+  text-align: center;
+  margin-top: 0.15rem;
+  color: var(--text);
+}
+.resource-gauge-breakdown .muted { font-size: 0.62rem; }
+.provider-dash-gauges {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 .resource-gauge-err {
   font-size: 0.6rem;
   margin-top: 0.2rem;

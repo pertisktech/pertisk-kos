@@ -36,10 +36,14 @@ pub struct ClusterResourceSummary {
 #[derive(Debug, Clone, Serialize)]
 pub struct ResourceMetric {
     pub used: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available: Option<f64>,
     pub total: Option<f64>,
     pub percent: Option<f64>,
     pub unit: String,
     pub display_used: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_available: Option<String>,
     pub display_total: Option<String>,
     pub error: Option<String>,
 }
@@ -221,6 +225,7 @@ fn capacity_metrics(nodes: &[NodeCap]) -> (ResourceMetric, ResourceMetric, Resou
 
     let cpu = ResourceMetric {
         used: None,
+        available: None,
         total: if cap_cores > 0.0 {
             Some(cap_cores)
         } else {
@@ -229,6 +234,7 @@ fn capacity_metrics(nodes: &[NodeCap]) -> (ResourceMetric, ResourceMetric, Resou
         percent: None,
         unit: "cores".into(),
         display_used: None,
+        display_available: None,
         display_total: if cap_cores > 0.0 {
             Some(format_cores(cap_cores))
         } else {
@@ -238,6 +244,7 @@ fn capacity_metrics(nodes: &[NodeCap]) -> (ResourceMetric, ResourceMetric, Resou
     };
     let memory = ResourceMetric {
         used: None,
+        available: None,
         total: if cap_mem_mib > 0.0 {
             Some(cap_mem_mib / 1024.0)
         } else {
@@ -246,6 +253,7 @@ fn capacity_metrics(nodes: &[NodeCap]) -> (ResourceMetric, ResourceMetric, Resou
         percent: None,
         unit: "GiB".into(),
         display_used: None,
+        display_available: None,
         display_total: if cap_mem_mib > 0.0 {
             Some(format!("{:.1} GiB", cap_mem_mib / 1024.0))
         } else {
@@ -255,6 +263,7 @@ fn capacity_metrics(nodes: &[NodeCap]) -> (ResourceMetric, ResourceMetric, Resou
     };
     let disk = ResourceMetric {
         used: None,
+        available: None,
         total: if cap_disk_gib > 0.0 {
             Some(cap_disk_gib)
         } else {
@@ -263,6 +272,7 @@ fn capacity_metrics(nodes: &[NodeCap]) -> (ResourceMetric, ResourceMetric, Resou
         percent: None,
         unit: "GiB".into(),
         display_used: None,
+        display_available: None,
         display_total: if cap_disk_gib > 0.0 {
             Some(format!("{cap_disk_gib:.0} GiB"))
         } else {

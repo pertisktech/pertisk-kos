@@ -344,6 +344,7 @@ export default function AddonsTab({ clusterId, ready, onInstalled }) {
           <h3 className="section-label">Add-ons</h3>
           <p className="muted">
             Check config, then install into this cluster via kubectl or Helm on the management host.
+            Config is saved by cluster name (including tokens) and reused when you recreate the cluster.
             Add-on jobs run in parallel with other clusters (they do not wait in the global create queue).
           </p>
         </div>

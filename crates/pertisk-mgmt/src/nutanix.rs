@@ -10,8 +10,8 @@ use serde_json::Value;
 
 use crate::error::{ApiResult, AppError};
 use crate::proxmox::{
-    ProbeResult, ProxmoxNode, ProxmoxStorage, StorageValidation, TestResult, VmIdCheck,
-    VmIdConflict,
+    json_f64_val, HypervisorCapacity, ProbeResult, ProxmoxNode, ProxmoxStorage, StorageValidation,
+    TestResult, VmIdCheck, VmIdConflict,
 };
 
 #[derive(Debug, Clone)]
@@ -316,6 +316,115 @@ impl NutanixClient {
 
     pub async fn list_storage(&self, _node: &str) -> ApiResult<Vec<ProxmoxStorage>> {
         Ok(self.inventory().await?.containers)
+    }
+
+    /// Cluster-wide CPU / memory (sum of hosts) plus selected storage container.
+    pub async fn host_capacity(&self, node: &str, storage: &str) -> ApiResult<HypervisorCapacity> {
+        let hosts_json = self.get("hosts").await.unwrap_or(Value::Null);
+        let want = node.trim();
+        let mut cpu_used = 0.0;
+        let mut cpu_total = 0.0;
+        let mut mem_used = 0.0;
+        let mut mem_total = 0.0;
+        let mut any = false;
+        let mut node_name = want.to_string();
+        for h in Self::entities(&hosts_json) {
+            let name = h
+                .get("name")
+                .or_else(|| h.get("hypervisor_address"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !want.is_empty()
+                && !name.eq_ignore_ascii_case(want)
+                && !want.eq_ignore_ascii_case("cluster")
+            {
+                // Still include all hosts when node is the Prism cluster name.
+                let cluster_like = want.is_empty() || name.is_empty();
+                if !cluster_like && name != want {
+                    continue;
+                }
+            }
+            any = true;
+            if node_name.is_empty() {
+                node_name = name.to_string();
+            }
+            let cores = h
+                .get("num_cpu_cores")
+                .or_else(|| h.get("num_cpu_threads"))
+                .and_then(json_f64_val)
+                .or_else(|| {
+                    let cap = h.get("cpu_capacity_in_hz").and_then(json_f64_val)?;
+                    let hz = h.get("cpu_frequency_in_hz").and_then(json_f64_val)?;
+                    if hz > 0.0 {
+                        Some(cap / hz)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0.0);
+            let stats = h.get("stats").or_else(|| h.get("usage_stats"));
+            let ppm = stats
+                .and_then(|s| s.get("hypervisor_cpu_usage_ppm"))
+                .and_then(json_f64_val)
+                .or_else(|| {
+                    stats.and_then(|s| s.get("hypervisor.cpu_usage_ppm").and_then(json_f64_val))
+                });
+            let used_cores = ppm
+                .map(|p| cores * (p / 1_000_000.0).clamp(0.0, 1.0))
+                .unwrap_or(0.0);
+            cpu_total += cores;
+            cpu_used += used_cores;
+            let m_tot = h
+                .get("memory_capacity_in_bytes")
+                .and_then(json_f64_val)
+                .unwrap_or(0.0);
+            let m_use = stats
+                .and_then(|s| {
+                    s.get("memory_usage_bytes")
+                        .or_else(|| s.get("hypervisor_memory_usage_bytes"))
+                        .and_then(json_f64_val)
+                })
+                .or_else(|| {
+                    let ppm = stats.and_then(|s| {
+                        s.get("hypervisor_memory_usage_ppm")
+                            .or_else(|| s.get("hypervisor.memory_usage_ppm"))
+                            .and_then(json_f64_val)
+                    })?;
+                    Some(m_tot * (ppm / 1_000_000.0).clamp(0.0, 1.0))
+                })
+                .unwrap_or(0.0);
+            mem_total += m_tot;
+            mem_used += m_use;
+        }
+        if !any && !want.is_empty() {
+            return Box::pin(self.host_capacity("", storage)).await;
+        }
+        let mut cap = HypervisorCapacity {
+            cpu_used: (cpu_total > 0.0).then_some(cpu_used),
+            cpu_total: (cpu_total > 0.0).then_some(cpu_total),
+            mem_used_bytes: (mem_total > 0.0).then_some(mem_used),
+            mem_total_bytes: (mem_total > 0.0).then_some(mem_total),
+            node: if node_name.is_empty() {
+                want.to_string()
+            } else {
+                node_name
+            },
+            storage: storage.to_string(),
+            ..HypervisorCapacity::default()
+        };
+        if let Ok(list) = self.list_storage("").await {
+            let st = list.iter().find(|s| s.storage == storage).or(list.first());
+            if let Some(st) = st {
+                cap.disk_total_bytes = st.total.map(|v| v as f64);
+                cap.disk_avail_bytes = st.avail.map(|v| v as f64);
+                cap.disk_used_bytes = match (st.total, st.avail) {
+                    (Some(t), Some(a)) => Some((t - a).max(0) as f64),
+                    _ => None,
+                };
+                cap.storage = st.storage.clone();
+            }
+        }
+        Ok(cap)
     }
 
     pub async fn list_networks(&self) -> ApiResult<Vec<String>> {

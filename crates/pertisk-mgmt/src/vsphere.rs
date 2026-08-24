@@ -10,8 +10,8 @@ use tokio::sync::Mutex;
 
 use crate::error::{ApiResult, AppError};
 use crate::proxmox::{
-    ProbeResult, ProxmoxNode, ProxmoxStorage, StorageValidation, TestResult, VmIdCheck,
-    VmIdConflict,
+    HypervisorCapacity, ProbeResult, ProxmoxNode, ProxmoxStorage, StorageValidation, TestResult,
+    VmIdCheck, VmIdConflict,
 };
 
 #[derive(Debug, Clone)]
@@ -34,10 +34,21 @@ pub struct VsphereVm {
     pub mac: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct HostCap {
+    name: String,
+    cpu_cores: Option<f64>,
+    cpu_mhz: Option<f64>,
+    cpu_used_mhz: Option<f64>,
+    mem_bytes: Option<f64>,
+    mem_used_mb: Option<f64>,
+}
+
 #[derive(Debug, Clone)]
 struct Inventory {
     version: String,
     hosts: Vec<ProxmoxNode>,
+    host_caps: Vec<HostCap>,
     datastores: Vec<ProxmoxStorage>,
     networks: Vec<String>,
     vms: Vec<VsphereVm>,
@@ -190,6 +201,7 @@ impl VsphereClient {
         let xml = self.soap("urn:vim25/8.0.3.0", body).await?;
 
         let mut hosts = Vec::new();
+        let mut host_caps = Vec::new();
         let mut datastores = Vec::new();
         let mut networks = Vec::new();
         let mut vms = Vec::new();
@@ -205,9 +217,33 @@ impl VsphereClient {
             match typ.as_str() {
                 "HostSystem" => {
                     host_moref = moref.clone();
+                    let name = props.get("name").cloned().unwrap_or_else(|| moref.clone());
                     hosts.push(ProxmoxNode {
-                        node: props.get("name").cloned().unwrap_or_else(|| moref.clone()),
+                        node: name.clone(),
                         status: props.get("runtime.connectionState").cloned(),
+                    });
+                    let cores = props
+                        .get("summary.hardware.numCpuCores")
+                        .and_then(|s| s.parse().ok());
+                    let mhz = props
+                        .get("summary.hardware.cpuMhz")
+                        .and_then(|s| s.parse().ok());
+                    let used_mhz = props
+                        .get("summary.quickStats.overallCpuUsage")
+                        .and_then(|s| s.parse().ok());
+                    let mem_bytes = props
+                        .get("summary.hardware.memorySize")
+                        .and_then(|s| s.parse().ok());
+                    let mem_used_mb = props
+                        .get("summary.quickStats.overallMemoryUsage")
+                        .and_then(|s| s.parse().ok());
+                    host_caps.push(HostCap {
+                        name,
+                        cpu_cores: cores,
+                        cpu_mhz: mhz,
+                        cpu_used_mhz: used_mhz,
+                        mem_bytes,
+                        mem_used_mb,
                     });
                 }
                 "Datastore" => {
@@ -277,6 +313,7 @@ impl VsphereClient {
         Ok(Inventory {
             version,
             hosts,
+            host_caps,
             datastores,
             networks,
             vms,
@@ -308,6 +345,79 @@ impl VsphereClient {
 
     pub async fn list_storage(&self, _node: &str) -> ApiResult<Vec<ProxmoxStorage>> {
         Ok(self.inventory().await?.datastores)
+    }
+
+    pub async fn host_capacity(&self, node: &str, storage: &str) -> ApiResult<HypervisorCapacity> {
+        let inv = self.inventory().await?;
+        let want = node.trim();
+        let mut cpu_used = 0.0;
+        let mut cpu_total = 0.0;
+        let mut mem_used = 0.0;
+        let mut mem_total = 0.0;
+        let mut any = false;
+        let mut node_name = want.to_string();
+        for h in &inv.host_caps {
+            if !want.is_empty() && !h.name.eq_ignore_ascii_case(want) && inv.host_caps.len() > 1 {
+                continue;
+            }
+            any = true;
+            if node_name.is_empty() {
+                node_name = h.name.clone();
+            }
+            let cores = h.cpu_cores.unwrap_or(0.0);
+            cpu_total += cores;
+            if let (Some(used_mhz), Some(mhz)) = (h.cpu_used_mhz, h.cpu_mhz) {
+                if mhz > 0.0 {
+                    cpu_used += (used_mhz / mhz).clamp(0.0, cores.max(used_mhz / mhz));
+                }
+            }
+            mem_total += h.mem_bytes.unwrap_or(0.0);
+            mem_used += h.mem_used_mb.unwrap_or(0.0) * 1024.0 * 1024.0;
+        }
+        if !any {
+            for h in &inv.host_caps {
+                let cores = h.cpu_cores.unwrap_or(0.0);
+                cpu_total += cores;
+                if let (Some(used_mhz), Some(mhz)) = (h.cpu_used_mhz, h.cpu_mhz) {
+                    if mhz > 0.0 {
+                        cpu_used += used_mhz / mhz;
+                    }
+                }
+                mem_total += h.mem_bytes.unwrap_or(0.0);
+                mem_used += h.mem_used_mb.unwrap_or(0.0) * 1024.0 * 1024.0;
+            }
+            if node_name.is_empty() {
+                node_name = inv
+                    .hosts
+                    .first()
+                    .map(|h| h.node.clone())
+                    .unwrap_or_default();
+            }
+        }
+        let mut cap = HypervisorCapacity {
+            cpu_used: (cpu_total > 0.0).then_some(cpu_used.min(cpu_total)),
+            cpu_total: (cpu_total > 0.0).then_some(cpu_total),
+            mem_used_bytes: (mem_total > 0.0).then_some(mem_used.min(mem_total)),
+            mem_total_bytes: (mem_total > 0.0).then_some(mem_total),
+            node: node_name,
+            storage: storage.to_string(),
+            ..HypervisorCapacity::default()
+        };
+        let st = inv
+            .datastores
+            .iter()
+            .find(|s| s.storage == storage)
+            .or(inv.datastores.first());
+        if let Some(st) = st {
+            cap.disk_total_bytes = st.total.map(|v| v as f64);
+            cap.disk_avail_bytes = st.avail.map(|v| v as f64);
+            cap.disk_used_bytes = match (st.total, st.avail) {
+                (Some(t), Some(a)) => Some((t - a).max(0) as f64),
+                _ => None,
+            };
+            cap.storage = st.storage.clone();
+        }
+        Ok(cap)
     }
 
     pub async fn list_networks(&self) -> ApiResult<Vec<String>> {
@@ -1136,6 +1246,11 @@ const TRAVERSAL_RETRIEVE: &str = r#"<RetrievePropertiesEx xmlns="urn:vim25">
       <all>false</all>
       <pathSet>name</pathSet>
       <pathSet>runtime.connectionState</pathSet>
+      <pathSet>summary.hardware.numCpuCores</pathSet>
+      <pathSet>summary.hardware.cpuMhz</pathSet>
+      <pathSet>summary.hardware.memorySize</pathSet>
+      <pathSet>summary.quickStats.overallCpuUsage</pathSet>
+      <pathSet>summary.quickStats.overallMemoryUsage</pathSet>
     </propSet>
     <propSet>
       <type>Datastore</type>

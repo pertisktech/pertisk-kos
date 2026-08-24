@@ -2061,6 +2061,261 @@ async fn load_row(state: &AppState, cluster_id: &str, addon: &str) -> ApiResult<
     Ok(row)
 }
 
+fn config_is_empty(config_json: &str) -> bool {
+    let t = config_json.trim();
+    t.is_empty() || t == "{}" || t == "null"
+}
+
+fn should_restore_addon(addon: &str, cni: &str) -> bool {
+    if addon == CILIUM_LB_ID {
+        return cni.eq_ignore_ascii_case("cilium");
+    }
+    true
+}
+
+async fn upsert_preset(
+    state: &AppState,
+    cluster_name: &str,
+    addon: &str,
+    config_json: &str,
+    secrets_enc: Option<&str>,
+    want_install: i64,
+) -> anyhow::Result<()> {
+    if cluster_name.trim().is_empty() || config_is_empty(config_json) {
+        return Ok(());
+    }
+    let now = db::now_rfc3339();
+    sqlx::query(
+        r#"INSERT INTO addon_presets
+             (cluster_name, addon, config_json, secrets_enc, want_install, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(cluster_name, addon) DO UPDATE SET
+             config_json = excluded.config_json,
+             secrets_enc = excluded.secrets_enc,
+             want_install = excluded.want_install,
+             updated_at = excluded.updated_at"#,
+    )
+    .bind(cluster_name.trim())
+    .bind(addon)
+    .bind(config_json)
+    .bind(secrets_enc)
+    .bind(want_install)
+    .bind(&now)
+    .execute(state.pool())
+    .await?;
+    Ok(())
+}
+
+/// Persist this cluster's add-on configs under its name so a later recreate can reuse them.
+pub async fn snapshot_cluster(state: &AppState, cluster_id: &str) -> anyhow::Result<()> {
+    let name: Option<String> = sqlx::query_scalar("SELECT name FROM clusters WHERE id = ?")
+        .bind(cluster_id)
+        .fetch_optional(state.pool())
+        .await?;
+    let Some(name) = name.filter(|s| !s.trim().is_empty()) else {
+        return Ok(());
+    };
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT addon, config_json, secrets_enc FROM cluster_addons WHERE cluster_id = ?",
+    )
+    .bind(cluster_id)
+    .fetch_all(state.pool())
+    .await?;
+    for (addon, config_json, secrets_enc) in rows {
+        upsert_preset(
+            state,
+            &name,
+            &addon,
+            &config_json,
+            secrets_enc.as_deref(),
+            1,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn remember_addon(state: &AppState, cluster_id: &str, addon: &str) -> ApiResult<()> {
+    let _ = sqlx::query(
+        "UPDATE cluster_addons SET want_install = 1 WHERE cluster_id = ? AND addon = ?",
+    )
+    .bind(cluster_id)
+    .bind(addon)
+    .execute(state.pool())
+    .await;
+    let name: Option<String> = sqlx::query_scalar("SELECT name FROM clusters WHERE id = ?")
+        .bind(cluster_id)
+        .fetch_optional(state.pool())
+        .await?;
+    let Some(name) = name.filter(|s| !s.trim().is_empty()) else {
+        return Ok(());
+    };
+    let row = load_row(state, cluster_id, addon).await?;
+    if let Some(row) = row {
+        upsert_preset(
+            state,
+            &name,
+            addon,
+            &row.config_json,
+            row.secrets_enc.as_deref(),
+            1,
+        )
+        .await
+        .map_err(AppError::Anyhow)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct PresetRow {
+    cluster_name: String,
+    addon: String,
+    config_json: String,
+    want_install: i64,
+}
+
+/// Saved add-on configs grouped by cluster name (no secrets).
+pub async fn list_presets(state: &AppState) -> ApiResult<Vec<Value>> {
+    let rows: Vec<PresetRow> = sqlx::query_as(
+        r#"SELECT cluster_name, addon, config_json, want_install
+           FROM addon_presets
+           ORDER BY cluster_name COLLATE NOCASE, addon"#,
+    )
+    .fetch_all(state.pool())
+    .await?;
+    let mut grouped: Vec<(String, Vec<Value>)> = Vec::new();
+    for row in rows {
+        if config_is_empty(&row.config_json) {
+            continue;
+        }
+        let entry = catalog_entry(&row.addon).ok();
+        let item = json!({
+            "id": row.addon,
+            "name": entry.map(|e| e.name).unwrap_or(row.addon.as_str()),
+            "want_install": row.want_install != 0,
+            "config": serde_json::from_str::<Value>(&row.config_json).unwrap_or_else(|_| json!({})),
+        });
+        match grouped.last_mut() {
+            Some((name, addons)) if name == &row.cluster_name => addons.push(item),
+            _ => grouped.push((row.cluster_name, vec![item])),
+        }
+    }
+    Ok(grouped
+        .into_iter()
+        .map(|(cluster_name, addons)| json!({ "cluster_name": cluster_name, "addons": addons }))
+        .collect())
+}
+
+/// Copy saved add-on configs onto a new cluster. Returns restored addon ids.
+pub async fn restore_presets(
+    state: &AppState,
+    cluster_id: &str,
+    from_name: &str,
+    cni: &str,
+) -> anyhow::Result<Vec<String>> {
+    let from = from_name.trim();
+    if from.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(String, String, Option<String>, i64)> = sqlx::query_as(
+        r#"SELECT addon, config_json, secrets_enc, want_install
+           FROM addon_presets WHERE cluster_name = ?"#,
+    )
+    .bind(from)
+    .fetch_all(state.pool())
+    .await?;
+    let now = db::now_rfc3339();
+    let mut restored = Vec::new();
+    for (addon, config_json, secrets_enc, want_install) in rows {
+        if config_is_empty(&config_json) || !should_restore_addon(&addon, cni) {
+            continue;
+        }
+        sqlx::query(
+            r#"INSERT INTO cluster_addons
+                 (cluster_id, addon, status, config_json, secrets_enc, error, installed_at, updated_at, want_install)
+               VALUES (?, ?, 'not_installed', ?, ?, NULL, NULL, ?, ?)
+               ON CONFLICT(cluster_id, addon) DO UPDATE SET
+                 config_json = excluded.config_json,
+                 secrets_enc = excluded.secrets_enc,
+                 want_install = excluded.want_install,
+                 error = NULL,
+                 updated_at = excluded.updated_at"#,
+        )
+        .bind(cluster_id)
+        .bind(&addon)
+        .bind(&config_json)
+        .bind(secrets_enc.as_deref())
+        .bind(&now)
+        .bind(want_install)
+        .execute(state.pool())
+        .await?;
+        restored.push(addon);
+    }
+    if !restored.is_empty() {
+        let _ = snapshot_cluster(state, cluster_id).await;
+    }
+    Ok(restored)
+}
+
+/// After create succeeds, queue install jobs for restored add-ons.
+pub async fn enqueue_restored_installs(
+    state: &AppState,
+    cluster_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let cni: String =
+        sqlx::query_scalar("SELECT COALESCE(cni, 'cilium') FROM clusters WHERE id = ?")
+            .bind(cluster_id)
+            .fetch_optional(state.pool())
+            .await?
+            .unwrap_or_else(|| "cilium".into());
+    let addons: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT addon, COALESCE(want_install, 0) FROM cluster_addons WHERE cluster_id = ?",
+    )
+    .bind(cluster_id)
+    .fetch_all(state.pool())
+    .await?;
+    let mut queued = Vec::new();
+    for (addon, want) in addons {
+        if want == 0 || !should_restore_addon(&addon, &cni) {
+            continue;
+        }
+        let existing: Option<String> = sqlx::query_scalar(
+            r#"SELECT id FROM jobs
+               WHERE cluster_id = ?
+                 AND kind = 'install_addon'
+                 AND status IN ('queued', 'running')
+                 AND json_extract(payload_json, '$.addon') = ?
+               LIMIT 1"#,
+        )
+        .bind(cluster_id)
+        .bind(&addon)
+        .fetch_optional(state.pool())
+        .await?;
+        if existing.is_some() {
+            continue;
+        }
+        let now = db::now_rfc3339();
+        sqlx::query(
+            "UPDATE cluster_addons SET status = 'installing', want_install = 0, error = NULL, updated_at = ? \
+             WHERE cluster_id = ? AND addon = ?",
+        )
+        .bind(&now)
+        .bind(cluster_id)
+        .bind(&addon)
+        .execute(state.pool())
+        .await?;
+        crate::jobs::enqueue(
+            state,
+            Some(cluster_id),
+            "install_addon",
+            json!({ "addon": addon, "reused": true }),
+        )
+        .await?;
+        queued.push(addon);
+    }
+    Ok(queued)
+}
+
 async fn installing_job(
     state: &AppState,
     cluster_id: &str,
@@ -2498,7 +2753,7 @@ pub async fn upsert_install(
     body: Value,
 ) -> ApiResult<(NfsConfig, CertManagerConfig, Value)> {
     let now = db::now_rfc3339();
-    match addon {
+    let result = match addon {
         NFS_ID => {
             let cfg = NfsConfig {
                 server: body
@@ -2669,7 +2924,9 @@ pub async fn upsert_install(
             Ok((NfsConfig::default(), CertManagerConfig::default(), public))
         }
         other => Err(AppError::bad(format!("unknown addon {other}"))),
-    }
+    }?;
+    remember_addon(state, cluster_id, addon).await?;
+    Ok(result)
 }
 
 async fn mark_addon(
@@ -3465,6 +3722,22 @@ mod tests {
         assert_eq!(catalog()[2].requires_cni, Some("cilium"));
         assert_eq!(catalog()[3].id, "ingress");
         assert_eq!(catalog()[3].section, "ingress");
+    }
+
+    #[test]
+    fn restore_skips_cilium_lb_when_cni_is_not_cilium() {
+        assert!(should_restore_addon("nfs", "flannel"));
+        assert!(should_restore_addon("cilium-lb", "cilium"));
+        assert!(!should_restore_addon("cilium-lb", "flannel"));
+        assert!(should_restore_addon("ingress", "calico"));
+    }
+
+    #[test]
+    fn empty_addon_config_json_is_skipped() {
+        assert!(config_is_empty(""));
+        assert!(config_is_empty("{}"));
+        assert!(config_is_empty("  null  "));
+        assert!(!config_is_empty(r#"{"server":"10.1.1.150"}"#));
     }
 
     #[test]

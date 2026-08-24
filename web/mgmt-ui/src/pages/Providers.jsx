@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { useConfirm } from '../components/Confirm'
@@ -144,7 +145,9 @@ export default function Providers() {
           <tbody>
             {list.map((p) => (
               <tr key={p.id}>
-                <td>{p.name}</td>
+                <td>
+                  <Link to={`/providers/${p.id}`}>{p.name}</Link>
+                </td>
                 <td>
                   <ProviderStatusBadge availability={p.availability} showUnknown />
                 </td>
@@ -159,6 +162,9 @@ export default function Providers() {
                 <td>{p.storage}</td>
                 <td>{p.insecure ? 'insecure' : 'verify'}</td>
                 <td className="row-actions">
+                  <Link className="btn secondary btn-icon" to={`/providers/${p.id}`}>
+                    <Icon name="dashboard" size={14} /> Dashboard
+                  </Link>
                   <button type="button" className="secondary btn-icon" onClick={() => startEdit(p)}>
                     <Icon name="edit" size={14} /> Edit
                   </button>

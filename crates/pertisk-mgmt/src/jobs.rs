@@ -1033,6 +1033,24 @@ async fn run_create_cluster(
     let _ =
         crate::node_sync::sync_cluster_nodes(state.pool(), cid, Some(kc.as_path()), Some(log_path))
             .await;
+    match crate::addons::enqueue_restored_installs(state, cid).await {
+        Ok(addons) if !addons.is_empty() => {
+            append_log(
+                log_path,
+                &format!(
+                    "reinstall add-ons from saved config: {}\n",
+                    addons.join(", ")
+                ),
+            )?;
+        }
+        Err(e) => {
+            append_log(
+                log_path,
+                &format!("warn: could not queue saved add-ons: {e}\n"),
+            )?;
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -1590,6 +1608,7 @@ async fn run_delete_cluster(
 
 /// Remove cluster from DB (nodes + jobs + cluster row). Ignores missing rows.
 pub async fn purge_cluster_db(state: &AppState, cid: &str) -> anyhow::Result<()> {
+    let _ = crate::addons::snapshot_cluster(state, cid).await;
     let name: Option<String> = sqlx::query_scalar("SELECT name FROM clusters WHERE id = ?")
         .bind(cid)
         .fetch_optional(state.pool())

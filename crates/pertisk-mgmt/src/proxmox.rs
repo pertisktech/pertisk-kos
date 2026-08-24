@@ -29,6 +29,31 @@ pub struct ProxmoxStorage {
     pub total: Option<i64>,
 }
 
+/// Hypervisor host capacity (CPU cores, memory/disk bytes).
+#[derive(Debug, Clone, Default)]
+pub struct HypervisorCapacity {
+    pub cpu_used: Option<f64>,
+    pub cpu_total: Option<f64>,
+    pub mem_used_bytes: Option<f64>,
+    pub mem_total_bytes: Option<f64>,
+    pub disk_used_bytes: Option<f64>,
+    pub disk_avail_bytes: Option<f64>,
+    pub disk_total_bytes: Option<f64>,
+    pub node: String,
+    pub storage: String,
+}
+
+fn json_f64(v: Option<&Value>) -> Option<f64> {
+    json_f64_val(v?)
+}
+
+pub(crate) fn json_f64_val(v: &Value) -> Option<f64> {
+    v.as_f64()
+        .or_else(|| v.as_u64().map(|n| n as f64))
+        .or_else(|| v.as_i64().map(|n| n as f64))
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
 #[derive(Debug, Serialize)]
 pub struct StorageValidation {
     pub ok: bool,
@@ -386,6 +411,47 @@ impl ProxmoxClient {
             })
             .unwrap_or("");
         Ok(normalize_host_arch(machine))
+    }
+
+    /// Node CPU / memory plus selected storage used / available / total.
+    pub async fn host_capacity(&self, node: &str, storage: &str) -> ApiResult<HypervisorCapacity> {
+        let status = self.get_json(&format!("/nodes/{node}/status")).await?;
+        let data = status.get("data").cloned().unwrap_or(Value::Null);
+        let cpu_frac = json_f64(data.get("cpu"));
+        let cpu_total = data
+            .pointer("/cpuinfo/cpus")
+            .and_then(json_f64_val)
+            .or_else(|| json_f64(data.get("maxcpu")));
+        let cpu_used = match (cpu_frac, cpu_total) {
+            (Some(f), Some(t)) => Some((f * t).clamp(0.0, t)),
+            _ => None,
+        };
+        let mem = data.get("memory").cloned().unwrap_or(Value::Null);
+        let mem_total = json_f64(mem.get("total"));
+        let mem_used = json_f64(mem.get("used"));
+        let mut cap = HypervisorCapacity {
+            cpu_used,
+            cpu_total,
+            mem_used_bytes: mem_used,
+            mem_total_bytes: mem_total,
+            node: node.to_string(),
+            storage: storage.to_string(),
+            ..HypervisorCapacity::default()
+        };
+        if !storage.trim().is_empty() {
+            if let Ok(list) = self.list_storage(node).await {
+                if let Some(st) = list.iter().find(|s| s.storage == storage) {
+                    cap.disk_total_bytes = st.total.map(|v| v as f64);
+                    cap.disk_avail_bytes = st.avail.map(|v| v as f64);
+                    cap.disk_used_bytes = match (st.total, st.avail) {
+                        (Some(t), Some(a)) => Some((t - a).max(0) as f64),
+                        _ => None,
+                    };
+                    cap.storage = st.storage.clone();
+                }
+            }
+        }
+        Ok(cap)
     }
 
     /// PUT/POST form helpers — Proxmox often returns HTTP 200 with `errors` in JSON.

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
-import { ClusterMetaBadges } from '../components/ClusterMetaBadges'
+import { ClusterMetaBadges, formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
+import ResourceGauge, { GAUGE_BASE } from '../components/ResourceGauge'
+import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
@@ -15,81 +16,7 @@ const LIST_POLL_MS = 15000
 const CACHE_CLUSTERS = 'pertisk_dash_clusters'
 const CACHE_PROVIDERS = 'pertisk_dash_providers'
 const CACHE_RESOURCES = 'pertisk_dash_resources'
-
-const GAUGE_BASE = {
-  cpu: 'var(--accent)',
-  memory: 'var(--success)',
-  disk: 'var(--brand-deep)',
-  track: 'color-mix(in srgb, var(--border) 70%, transparent)',
-}
-
-function gaugeFill(base, percent, hasPct) {
-  if (!hasPct) return GAUGE_BASE.track
-  if (percent >= 90) return 'var(--danger)'
-  if (percent >= 75) return 'var(--warning)'
-  return base
-}
-
-function gaugeData(percent) {
-  const p = typeof percent === 'number' && Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0
-  return [
-    { name: 'used', value: p },
-    { name: 'free', value: Math.max(0, 100 - p) },
-  ]
-}
-
-function ResourceGauge({ label, icon, metric, color }) {
-  const pct = metric?.percent
-  const hasPct = typeof pct === 'number' && Number.isFinite(pct)
-  const data = useMemo(() => gaugeData(hasPct ? pct : 0), [hasPct, pct])
-  const fill = gaugeFill(color, pct, hasPct)
-  const usedLabel = metric?.display_used || (metric?.used != null ? String(metric.used) : '—')
-  const totalLabel = metric?.display_total || (metric?.total != null ? String(metric.total) : '—')
-  const level = !hasPct ? 'unknown' : pct >= 90 ? 'critical' : pct >= 75 ? 'warn' : 'ok'
-
-  return (
-    <div className={`resource-gauge resource-gauge-${level}`}>
-      <div className="resource-gauge-label">
-        {icon && <Icon name={icon} size={12} />}
-        {label}
-      </div>
-      <div className="resource-gauge-chart">
-        <ResponsiveContainer width="100%" height={88}>
-          <PieChart>
-            <Pie
-              data={data}
-              dataKey="value"
-              cx="50%"
-              cy="50%"
-              startAngle={90}
-              endAngle={-270}
-              innerRadius={28}
-              outerRadius={36}
-              paddingAngle={hasPct && pct > 0 && pct < 100 ? 2 : 0}
-              cornerRadius={4}
-              stroke="none"
-              isAnimationActive={false}
-            >
-              <Cell fill={fill} />
-              <Cell fill={GAUGE_BASE.track} />
-            </Pie>
-          </PieChart>
-        </ResponsiveContainer>
-        <div className="resource-gauge-center">
-          <span className="resource-gauge-pct">
-            {hasPct ? `${Math.round(pct)}%` : '—'}
-          </span>
-        </div>
-      </div>
-      <div className="mono-inline resource-gauge-values">
-        {usedLabel} <span className="muted">/</span> {totalLabel}
-      </div>
-      {metric?.error && (
-        <div className="muted resource-gauge-err" title={metric.error}>{metric.error}</div>
-      )}
-    </div>
-  )
-}
+const CACHE_PROVIDER_RES = 'pertisk_dash_provider_res'
 
 function formatK8sVersion(v) {
   if (!v) return null
@@ -157,6 +84,64 @@ function ClusterResourceCard({ summary, onOpen }) {
   )
 }
 
+function ProviderResourceCard({ summary, onOpen }) {
+  const kind = normalizeProviderKind(summary.kind)
+  const avail = summary.availability || 'unknown'
+  const cardClass = [
+    'card',
+    'cluster-resource-card',
+    avail === 'online' ? 'status-ready avail-online' : '',
+    avail === 'offline' ? 'status-ready avail-offline' : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+
+  return (
+    <article
+      className={cardClass}
+      role="link"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onOpen()
+        }
+      }}
+    >
+      <div className="cluster-resource-head">
+        <div className="cluster-resource-identity">
+          <div className="cluster-resource-icon" aria-hidden>
+            <Icon name="providers" size={18} />
+          </div>
+          <div className="cluster-resource-title">
+            <h3 className="cluster-resource-name">{summary.provider_name}</h3>
+            <div className="cluster-resource-tags">
+              <span className={`badge kind kind-${kind}`}>{formatProviderKind(summary.kind)}</span>
+              {summary.node && <span className="cluster-resource-chip">{summary.node}</span>}
+              {summary.storage && (
+                <span className="cluster-resource-chip mono-inline">{summary.storage}</span>
+              )}
+            </div>
+          </div>
+        </div>
+        <ProviderStatusBadge availability={avail} showUnknown />
+      </div>
+      <div className="resource-gauge-row">
+        <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} />
+        <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} />
+        <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} />
+      </div>
+      {summary.error && (
+        <p className="muted cluster-resource-soft-err" title={summary.error}>
+          <Icon name="alert" size={12} />
+          {summary.error}
+        </p>
+      )}
+    </article>
+  )
+}
+
 function placeholderSummary(c) {
   const nodes = (c.controlplanes || 0) + (c.workers || 0)
   const empty = { used: null, total: null, percent: null, unit: '', display_used: null, display_total: null, error: null }
@@ -180,6 +165,7 @@ export default function Dashboard() {
   const [clusters, setClusters] = useState(() => readSessionJson(CACHE_CLUSTERS, []))
   const [providers, setProviders] = useState(() => readSessionJson(CACHE_PROVIDERS, []))
   const [resources, setResources] = useState(() => readSessionJson(CACHE_RESOURCES, []))
+  const [providerRes, setProviderRes] = useState(() => readSessionJson(CACHE_PROVIDER_RES, []))
   const [listLoading, setListLoading] = useState(() => {
     const cached = readSessionJson(CACHE_CLUSTERS, null)
     return !Array.isArray(cached)
@@ -226,10 +212,22 @@ export default function Dashboard() {
       .finally(() => setResourcesLoading(false))
   }, [])
 
+  const loadProviderResources = useCallback(() => {
+    api('/dashboard/providers')
+      .then((rows) => {
+        if (Array.isArray(rows)) {
+          setProviderRes(rows)
+          writeSessionJson(CACHE_PROVIDER_RES, rows)
+        }
+      })
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
     load()
     loadResources()
-  }, [load, loadResources])
+    loadProviderResources()
+  }, [load, loadResources, loadProviderResources])
 
   useMgmtRefresh(load)
 
@@ -263,6 +261,12 @@ export default function Dashboard() {
     timer = setTimeout(tick, awaitingLiveMetrics ? 2500 : RESOURCES_POLL_MS)
     return () => clearTimeout(timer)
   }, [clusters.length, awaitingLiveMetrics, loadResources])
+
+  useEffect(() => {
+    if (providers.length === 0) return undefined
+    const t = setInterval(loadProviderResources, RESOURCES_POLL_MS)
+    return () => clearInterval(t)
+  }, [providers.length, loadProviderResources])
 
   const displayResources = useMemo(() => {
     if (clusters.length === 0) return resources
@@ -302,6 +306,48 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {providers.length > 0 && (
+        <>
+          <div className="section-head dash-resources-head">
+            <div>
+              <h2 className="card-title" style={{ marginBottom: 0 }}>
+                <Icon name="providers" size={18} /> Providers
+              </h2>
+              <p className="muted dash-section-sub">
+                Hypervisor CPU, memory, and disk (used / available / total)
+              </p>
+            </div>
+            <div className="dash-resources-actions">
+              <Link className="secondary btn-icon" to="/providers">
+                <Icon name="providers" size={14} /> All providers
+              </Link>
+              <button type="button" className="secondary btn-icon" onClick={loadProviderResources}>
+                <Icon name="refresh" size={14} /> Refresh
+              </button>
+            </div>
+          </div>
+          <div className="cluster-resource-grid">
+            {(providerRes.length ? providerRes : providers.map((p) => ({
+              provider_id: p.id,
+              provider_name: p.name,
+              kind: p.kind,
+              node: p.node,
+              storage: p.storage,
+              availability: p.availability || 'unknown',
+              cpu: { unit: 'cores' },
+              memory: { unit: 'GiB' },
+              disk: { unit: 'GiB' },
+            }))).map((s) => (
+              <ProviderResourceCard
+                key={s.provider_id}
+                summary={s}
+                onOpen={() => nav(`/providers/${s.provider_id}`)}
+              />
+            ))}
+          </div>
+        </>
+      )}
 
       <div className="section-head dash-resources-head">
         <div>

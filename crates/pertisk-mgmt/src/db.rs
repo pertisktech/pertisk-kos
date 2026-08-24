@@ -180,7 +180,18 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             error TEXT,
             installed_at TEXT,
             updated_at TEXT NOT NULL,
+            want_install INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (cluster_id, addon)
+        );
+
+        CREATE TABLE IF NOT EXISTS addon_presets (
+            cluster_name TEXT NOT NULL,
+            addon TEXT NOT NULL,
+            config_json TEXT NOT NULL DEFAULT '{}',
+            secrets_enc TEXT,
+            want_install INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (cluster_name, addon)
         );
         "#,
     )
@@ -300,8 +311,42 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
             error TEXT,
             installed_at TEXT,
             updated_at TEXT NOT NULL,
+            want_install INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (cluster_id, addon)
         )"#,
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "ALTER TABLE cluster_addons ADD COLUMN want_install INTEGER NOT NULL DEFAULT 0",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS addon_presets (
+            cluster_name TEXT NOT NULL,
+            addon TEXT NOT NULL,
+            config_json TEXT NOT NULL DEFAULT '{}',
+            secrets_enc TEXT,
+            want_install INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (cluster_name, addon)
+        )"#,
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        r#"INSERT INTO addon_presets (cluster_name, addon, config_json, secrets_enc, want_install, updated_at)
+           SELECT c.name, a.addon, a.config_json, a.secrets_enc, 1, COALESCE(a.updated_at, datetime('now'))
+           FROM cluster_addons a
+           JOIN clusters c ON c.id = a.cluster_id
+           WHERE TRIM(COALESCE(a.config_json, '')) != ''
+             AND TRIM(COALESCE(a.config_json, '')) != '{}'
+           ON CONFLICT(cluster_name, addon) DO UPDATE SET
+             config_json = excluded.config_json,
+             secrets_enc = excluded.secrets_enc,
+             want_install = 1,
+             updated_at = excluded.updated_at"#,
     )
     .execute(pool)
     .await;
