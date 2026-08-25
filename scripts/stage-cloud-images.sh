@@ -74,7 +74,7 @@ resize_to() {
   if command -v qemu-img >/dev/null 2>&1; then
     qemu-img resize "$dest" "${gb}G"
   else
-    docker run --rm -v "$(cd "$(dirname "$dest")" && pwd):/work" alpine:3.20 \
+    docker run --rm -v "$(cd "$(dirname "$dest")" && pwd):/work" alpine:3.22 \
       sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img resize /work/$(basename "$dest") ${gb}G"
   fi
 }

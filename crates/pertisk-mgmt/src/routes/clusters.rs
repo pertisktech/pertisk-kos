@@ -613,7 +613,7 @@ async fn create(
            VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&id)
-    .bind(&name)
+    .bind(name)
     .bind(&body.provider_id)
     .bind(body.controlplanes)
     .bind(body.workers)
@@ -677,7 +677,7 @@ async fn create(
         Some(&user.id),
         "cluster.create",
         Some(&id),
-        Some(&name),
+        Some(name),
     )
     .await;
 

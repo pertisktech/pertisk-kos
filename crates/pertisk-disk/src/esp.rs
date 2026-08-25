@@ -6,6 +6,8 @@ use thiserror::Error;
 use tracing::warn;
 
 use crate::layout::{MountPaths, PARTLABEL_EFI};
+
+#[cfg(target_os = "linux")]
 use crate::partlabel::find_by_partlabel;
 
 #[derive(Debug, Error)]

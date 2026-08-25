@@ -82,15 +82,14 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) -> Opt
             }
         }
     }
-    if !using_ssh {
-        if std::env::var("PROXMOX_UPLOAD_STORAGE")
+    if !using_ssh
+        && std::env::var("PROXMOX_UPLOAD_STORAGE")
             .ok()
             .filter(|s| !s.is_empty())
             .is_none()
-        {
-            // Directory storage for content=import; VM disks can still be local-zfs.
-            cmd.env("PROXMOX_UPLOAD_STORAGE", "local");
-        }
+    {
+        // Directory storage for content=import; VM disks can still be local-zfs.
+        cmd.env("PROXMOX_UPLOAD_STORAGE", "local");
     }
     note
 }
@@ -419,11 +418,13 @@ fn job_can_start(
 }
 
 async fn claim_next(state: &AppState) -> anyhow::Result<Option<ClaimedJob>> {
+    type QueuedJobRow = (String, Option<String>, String, String, Option<String>);
+
     // Prefer deletes so failed clusters can be cleaned up while creates queue.
     // Skip ineligible rows (do not claim them) so an add-on is not stuck behind
     // another cluster's create.
     loop {
-        let rows: Vec<(String, Option<String>, String, String, Option<String>)> = sqlx::query_as(
+        let rows: Vec<QueuedJobRow> = sqlx::query_as(
             r#"SELECT id, cluster_id, kind, payload_json, log_path FROM jobs
                WHERE status = 'queued'
                ORDER BY CASE WHEN kind = 'delete_cluster' THEN 0 ELSE 1 END, created_at ASC"#,
@@ -1284,7 +1285,7 @@ async fn apply_create_log_progress(
                 touch_node_progress(
                     pool,
                     cluster_id,
-                    &name,
+                    name,
                     role,
                     Some(vmid_n),
                     None,
@@ -1498,6 +1499,7 @@ fn extract_kv<'a>(s: &'a str, key: &str) -> Option<&'a str> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn touch_node_progress(
     pool: &sqlx::SqlitePool,
     cluster_id: &str,
@@ -3596,6 +3598,7 @@ async fn run_upgrade_os(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn upgrade_os_node(
     state: &AppState,
     cluster_id: &str,
@@ -4161,6 +4164,7 @@ async fn wait_guest_after_os_reboot(
 }
 
 /// kubeadm-shaped per-node upgrade: drain → bump version on-node → wait Ready → uncordon.
+#[allow(clippy::too_many_arguments)]
 async fn upgrade_node_zero_downtime(
     state: &AppState,
     cluster_id: &str,

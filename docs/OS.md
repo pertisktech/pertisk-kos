@@ -6,7 +6,7 @@ Immutable initramfs OS. A/B swaps **kernel + initramfs** only. STATE and EPHEMER
 - No SSH
 - musl / Alpine `linux-virt`
 
-> **Kernel pin is behind LTS.** Guest kernel is Alpine 3.20 `linux-virt` **6.6.142** (Alpine EOL 1 Apr 2026). kernel.org LTS is 6.6.151 / 6.12.103 / 6.18.44. Next OS bundle should fetch Alpine **3.22** or **3.24**. See [PACKAGE.md](./PACKAGE.md).
+> Guest kernel tracks Alpine `linux-virt` from the image fetch pipeline (now Alpine 3.22). Verify current pin in `out/modules-*/version` after `image/fetch-kernel.sh`. See [PACKAGE.md](./PACKAGE.md).
 
 | EFI | BOOT A / B | STATE | EPHEMERAL |
 |-----|------------|-------|-----------|
@@ -74,8 +74,8 @@ UEFI
 
 | Layer | Pertisk pin | Current upstream | Ship how |
 |-------|-------------|------------------|----------|
-| Kernel | linux-virt 6.6.142 (Alpine 3.20) | 6.6.151 / 6.12.103 / 6.18.44 | OS A/B bundle |
-| Alpine tools | alpine:3.20 (EOL) | 3.22 or 3.24 | OS A/B bundle |
+| Kernel | linux-virt 6.12.x (Alpine 3.22) | kernel.org LTS track | OS A/B bundle |
+| Alpine tools | alpine:3.22 | latest stable Alpine | OS A/B bundle |
 | Kubernetes | v1.36.3 | v1.36.3 stable.txt | cluster Upgrade tab |
 | containerd | fetch-time latest | GitHub releases | OS A/B (in initramfs) |
 | etcd | 3.5.16-0 | 3.6.x line | static pod image |

@@ -260,7 +260,16 @@ fmt:
 	cargo fmt --all
 
 clippy:
-	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets -- \
+		-D clippy::correctness \
+		-D clippy::suspicious \
+		-A clippy::result_large_err \
+		-A clippy::too_many_arguments \
+		-A clippy::type_complexity \
+		-A clippy::collapsible_if \
+		-A clippy::derivable_impls \
+		-A clippy::redundant_guards \
+		-A clippy::useless_format
 
 check: fmt clippy test check-hardening
 

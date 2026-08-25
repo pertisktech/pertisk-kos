@@ -84,7 +84,7 @@ docker run --rm \
   -e "KERNEL_NAME=$(basename "${KERNEL_OUT}")" \
   -e "MODULES_NAME=$(basename "${MODULES_OUT}")" \
   -e "APK_ARCH=${APK_ARCH}" \
-  alpine:3.20 sh -c '
+  alpine:3.22 sh -c '
   set -e
   # Install gzip (for .ko.gz) plus apk tools; then fetch the foreign-arch linux-virt.
   sh /apk-retry.sh gzip

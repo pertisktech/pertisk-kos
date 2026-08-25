@@ -289,12 +289,11 @@ impl VsphereClient {
                         vm_folder = f.clone();
                     }
                 }
-                "ResourcePool" => {
+                "ResourcePool"
                     if moref.contains("root")
-                        || props.get("name").map(|n| n == "Resources").unwrap_or(false)
-                    {
-                        resource_pool = moref.clone();
-                    }
+                        || props.get("name").map(|n| n == "Resources").unwrap_or(false) =>
+                {
+                    resource_pool = moref.clone();
                 }
                 _ => {}
             }

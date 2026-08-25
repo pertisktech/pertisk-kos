@@ -116,7 +116,6 @@ async fn probe_uncached(state: &AppState, cluster_id: &str) -> String {
         servers.push(Some(format!("https://{}:6443", ip.trim())));
     }
 
-    let kc = kc;
     let futs: Vec<_> = servers
         .into_iter()
         .map(|server| {

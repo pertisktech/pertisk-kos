@@ -880,7 +880,7 @@ pub fn ensure_dashboard_mgmt_url(yaml: &str, public_url: &str) -> Result<String,
         .ok_or_else(|| ConfigError::Msg("machine must be a mapping".into()))?;
     if !machine.contains_key(serde_yaml::Value::from("dashboard"))
         || machine
-            .get(&serde_yaml::Value::from("dashboard"))
+            .get(serde_yaml::Value::from("dashboard"))
             .and_then(|v| v.as_mapping())
             .is_none()
     {
@@ -894,8 +894,8 @@ pub fn ensure_dashboard_mgmt_url(yaml: &str, public_url: &str) -> Result<String,
         .and_then(|m| m.as_mapping_mut())
         .ok_or_else(|| ConfigError::Msg("dashboard must be a mapping".into()))?;
     let existing = dashboard
-        .get(&serde_yaml::Value::from("mgmt_url"))
-        .or_else(|| dashboard.get(&serde_yaml::Value::from("mgmtUrl")))
+        .get(serde_yaml::Value::from("mgmt_url"))
+        .or_else(|| dashboard.get(serde_yaml::Value::from("mgmtUrl")))
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty());

@@ -837,7 +837,7 @@ if [[ -n "${DISK_GB}" ]]; then
     IMG_BYTES="$(qemu-img info --output=json "${DISK}" 2>/dev/null | jq -r '.["virtual-size"] // 0' || echo 0)"
   elif command -v docker >/dev/null 2>&1; then
     IMG_BYTES="$(
-      docker run --rm -v "$(cd "$(dirname "${DISK}")" && pwd):/d:ro" alpine:3.20 \
+      docker run --rm -v "$(cd "$(dirname "${DISK}")" && pwd):/d:ro" alpine:3.22 \
         sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img info --output=json /d/$(basename "${DISK}")" \
         2>/dev/null | jq -r '.["virtual-size"] // 0' || echo 0
     )"

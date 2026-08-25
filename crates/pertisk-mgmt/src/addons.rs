@@ -870,10 +870,7 @@ fn json_i64(v: &Value, key: &str, default: i64) -> i64 {
     if let Some(n) = v.get(key).and_then(|x| x.as_i64()) {
         return n;
     }
-    json_str(v, key)
-        .trim()
-        .parse::<i64>()
-        .unwrap_or(default)
+    json_str(v, key).trim().parse::<i64>().unwrap_or(default)
 }
 
 pub fn parse_kos_scaler_stored(v: &Value) -> KosScalerConfig {
@@ -905,7 +902,10 @@ pub fn public_kos_scaler_config(cfg: &KosScalerConfig) -> Value {
     })
 }
 
-pub fn validate_kos_scaler(cfg: &KosScalerConfig, require_password: bool) -> Result<(), Vec<String>> {
+pub fn validate_kos_scaler(
+    cfg: &KosScalerConfig,
+    require_password: bool,
+) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
     if cfg.username.trim().is_empty() {
         errors.push("mgmt username is required".into());
@@ -999,9 +999,7 @@ pub fn ingress_pin_tag(raw: &str, arch: &str) -> String {
         raw.trim()
     };
     let arch = kube_arch(arch);
-    if tag.ends_with("-amd64") || tag.ends_with("-arm64") {
-        tag.to_string()
-    } else if tag.contains('@') {
+    if tag.ends_with("-amd64") || tag.ends_with("-arm64") || tag.contains('@') {
         tag.to_string()
     } else {
         format!("{tag}-{arch}")
@@ -2089,7 +2087,7 @@ async fn live_ingress(kc: &Path) -> Value {
         "partial": deploy.is_some() || svc.is_some() || class.is_some(),
         "controller_ready": deploy.as_ref().map(deploy_ready).unwrap_or(false),
         "ingress_class": class.is_some(),
-        "image": deploy.as_ref().and_then(|d| container_image(d)),
+        "image": deploy.as_ref().and_then(container_image),
         "lb_ipv4": lb_ipv4.join(", "),
         "lb_ipv6": lb_ipv6.join(", "),
         "gateway_api": gateway_api_available(kc).await,
@@ -2122,7 +2120,7 @@ async fn live_kos_scaler(kc: &Path) -> Value {
         "installed": deploy.as_ref().map(deploy_ready).unwrap_or(false),
         "partial": deploy.is_some(),
         "ready": deploy.as_ref().map(deploy_ready).unwrap_or(false),
-        "image": deploy.as_ref().and_then(|d| container_image(d)),
+        "image": deploy.as_ref().and_then(container_image),
     })
 }
 
@@ -2670,7 +2668,7 @@ pub async fn summarize_one(
                 public_config = public_nfs_config(&cfg);
             }
             CERT_MANAGER_ID => {
-                let mut cfg = parse_cert_stored(&body);
+                let mut cfg = parse_cert_stored(body);
                 cfg.api_token = body
                     .get("api_token")
                     .and_then(|v| v.as_str())
@@ -2686,54 +2684,53 @@ pub async fn summarize_one(
                 if let Err(e) = require_cilium_cni(&cluster_cni) {
                     errors.push(e.to_string());
                 }
-                let cfg = parse_cilium_lb_stored(&body);
+                let cfg = parse_cilium_lb_stored(body);
                 if let Err(e) = validate_cilium_lb(&cfg, &network_mode) {
                     errors.extend(e);
                 }
                 public_config = public_cilium_lb_config(&cfg);
             }
-                    INGRESS_ID => {
-                        let mut cfg = parse_ingress_stored(&body);
-                        cfg.admin_password = body
-                            .get("admin_password")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        cfg.registry_password = body
-                            .get("registry_password")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let stored_secrets = decrypt_ingress_secrets(
-                            state,
-                            row.as_ref().and_then(|r| r.secrets_enc.as_deref()),
-                        );
-                        let need_pw = !cfg.registry_user.trim().is_empty()
-                            && cfg.registry_password.trim().is_empty()
-                            && stored_secrets.registry_password.trim().is_empty();
-                        if let Err(e) = validate_ingress(&cfg, need_pw) {
-                            errors.extend(e);
-                        }
-                        public_config = public_ingress_config(&cfg);
-                    }
-                    KOS_SCALER_ID => {
-                        let mut cfg = parse_kos_scaler_stored(&body);
-                        cfg.password = json_str(&body, "password");
-                        let need_pw = cfg.password.trim().is_empty() && !token_set;
-                        if let Err(e) = validate_kos_scaler(&cfg, need_pw) {
-                            errors.extend(e);
-                        }
-                        let endpoint = kos_scaler_endpoint(&cfg, &state.cfg().public_url);
-                        if endpoint.is_empty() || crate::config::public_url_host_unusable(&endpoint)
-                        {
-                            warnings.push(format!(
+            INGRESS_ID => {
+                let mut cfg = parse_ingress_stored(body);
+                cfg.admin_password = body
+                    .get("admin_password")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                cfg.registry_password = body
+                    .get("registry_password")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let stored_secrets = decrypt_ingress_secrets(
+                    state,
+                    row.as_ref().and_then(|r| r.secrets_enc.as_deref()),
+                );
+                let need_pw = !cfg.registry_user.trim().is_empty()
+                    && cfg.registry_password.trim().is_empty()
+                    && stored_secrets.registry_password.trim().is_empty();
+                if let Err(e) = validate_ingress(&cfg, need_pw) {
+                    errors.extend(e);
+                }
+                public_config = public_ingress_config(&cfg);
+            }
+            KOS_SCALER_ID => {
+                let mut cfg = parse_kos_scaler_stored(body);
+                cfg.password = json_str(body, "password");
+                let need_pw = cfg.password.trim().is_empty() && !token_set;
+                if let Err(e) = validate_kos_scaler(&cfg, need_pw) {
+                    errors.extend(e);
+                }
+                let endpoint = kos_scaler_endpoint(&cfg, &state.cfg().public_url);
+                if endpoint.is_empty() || crate::config::public_url_host_unusable(&endpoint) {
+                    warnings.push(format!(
                                 "mgmt URL {endpoint:?} is not reachable from cluster nodes; set Mgmt URL override or MGMT_PUBLIC_URL"
                             ));
-                        }
-                        public_config = public_kos_scaler_config(&cfg);
-                    }
-                    _ => {}
                 }
+                public_config = public_kos_scaler_config(&cfg);
+            }
+            _ => {}
+        }
     } else if addon == NFS_ID
         && stored
             .get("server")
@@ -2979,12 +2976,12 @@ pub async fn summarize_one(
             );
         }
     }
-    if addon == KOS_SCALER_ID && live.get("available") == Some(&json!(true)) {
-        if live_installed
-            && !live.get("ready").and_then(|v| v.as_bool()).unwrap_or(false)
-        {
-            warnings.push("kos-scaler is installed but the deployment is not ready".into());
-        }
+    if addon == KOS_SCALER_ID
+        && live.get("available") == Some(&json!(true))
+        && live_installed
+        && !live.get("ready").and_then(|v| v.as_bool()).unwrap_or(false)
+    {
+        warnings.push("kos-scaler is installed but the deployment is not ready".into());
     }
 
     Ok(json!({
@@ -3224,7 +3221,8 @@ pub async fn upsert_install(
                 .as_ref()
                 .map(|r| r.secrets_enc.as_ref().is_some_and(|s| !s.is_empty()))
                 .unwrap_or(false);
-            if let Err(e) = validate_kos_scaler(&cfg, cfg.password.trim().is_empty() && !token_set) {
+            if let Err(e) = validate_kos_scaler(&cfg, cfg.password.trim().is_empty() && !token_set)
+            {
                 return Err(AppError::bad(e.join("; ")));
             }
             let password = if cfg.password.trim().is_empty() && token_set {
@@ -3241,7 +3239,8 @@ pub async fn upsert_install(
                 return Err(AppError::bad("mgmt password is required"));
             }
             let public = public_kos_scaler_config(&cfg);
-            let enc = crypto::encrypt(&state.cfg().secret_key, &password).map_err(AppError::Anyhow)?;
+            let enc =
+                crypto::encrypt(&state.cfg().secret_key, &password).map_err(AppError::Anyhow)?;
             sqlx::query(
                 r#"INSERT INTO cluster_addons
                      (cluster_id, addon, status, config_json, secrets_enc, error, installed_at, updated_at)
@@ -4156,7 +4155,10 @@ mod tests {
     #[test]
     fn catalog_has_nfs_and_cert_manager() {
         let ids: Vec<_> = catalog().iter().map(|e| e.id).collect();
-        assert_eq!(ids, ["nfs", "cert-manager", "cilium-lb", "ingress"]);
+        assert_eq!(
+            ids,
+            ["nfs", "cert-manager", "cilium-lb", "ingress", "kos-scaler"]
+        );
         assert_eq!(catalog()[1].section, "certificates");
         assert_eq!(catalog()[2].requires_cni, Some("cilium"));
         assert_eq!(catalog()[3].id, "ingress");

@@ -141,7 +141,7 @@ docker run --rm \
   -v "${SEED}:/work/config.yaml:ro" \
   -v "${ROOT}/image/cloud/populate-disk.sh:/work/populate-disk.sh:ro" \
   ${APK_RETRY[@]+"${APK_RETRY[@]}"} \
-  alpine:3.20 \
+  alpine:3.22 \
   sh -c 'sh /apk-retry.sh sgdisk e2fsprogs e2fsprogs-extra dosfstools mtools && sh /work/populate-disk.sh'
 
 echo "==> converting qcow2 (${BUILD_GB}G)"
@@ -156,7 +156,7 @@ else
     ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
     -v "${OUT}:/out" \
     ${APK_RETRY[@]+"${APK_RETRY[@]}"} \
-    alpine:3.20 \
+    alpine:3.22 \
     sh -c "sh /apk-retry.sh qemu-img && qemu-img convert -p -f raw -O qcow2 /out/${RAW_BASE} /out/${QCOW_BASE}"
 fi
 if [[ "${PERTISK_KEEP_RAW:-0}" != "1" ]]; then
@@ -175,7 +175,7 @@ if [[ "$TARGET_GB" -gt "$BUILD_GB" ]]; then
       ${DOCKER_NET[@]+"${DOCKER_NET[@]}"} \
       -v "${OUT}:/out" \
       ${APK_RETRY[@]+"${APK_RETRY[@]}"} \
-      alpine:3.20 \
+      alpine:3.22 \
       sh -c "sh /apk-retry.sh qemu-img && qemu-img resize /out/${QCOW_BASE} ${TARGET_GB}G && qemu-img info /out/${QCOW_BASE}"
   fi
 else

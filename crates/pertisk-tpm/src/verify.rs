@@ -64,7 +64,7 @@ pub fn verify_quote(
         .map_err(|e| Error::Verify(format!("AK public key: {e}")))?;
 
     let (r, s) = parse_ecdsa_signature(signature)?;
-    let sig = Signature::from_scalars(field_bytes(&r)?.clone(), field_bytes(&s)?.clone())
+    let sig = Signature::from_scalars(*field_bytes(&r)?, *field_bytes(&s)?)
         .map_err(|e| Error::Verify(format!("signature scalars: {e}")))?;
 
     // p256 Verifier hashes the message with SHA-256 (matches ECDSA-SHA256 scheme).
@@ -219,7 +219,7 @@ fn field_bytes(b: &[u8]) -> Result<&FieldBytes> {
 
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(Error::Verify("odd hex length".into()));
     }
     (0..s.len())

@@ -659,7 +659,9 @@ fn process_count() -> usize {
 /// Returns `(idle_all, total)` where idle_all includes iowait.
 pub fn parse_proc_stat_cpu(text: &str) -> Option<(u64, u64)> {
     for line in text.lines() {
-        let rest = line.strip_prefix("cpu ")?;
+        let Some(rest) = line.strip_prefix("cpu ") else {
+            continue;
+        };
         let mut vals = rest
             .split_whitespace()
             .filter_map(|v| v.parse::<u64>().ok());

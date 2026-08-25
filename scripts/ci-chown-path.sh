@@ -16,7 +16,7 @@ gid="$(id -g)"
 if command -v docker >/dev/null 2>&1; then
   docker run --rm \
     -v "${target}:/t" \
-    alpine:3.20 \
+    alpine:3.22 \
     chown -R "${uid}:${gid}" /t
   exit 0
 fi

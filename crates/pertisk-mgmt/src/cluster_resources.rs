@@ -170,7 +170,10 @@ pub async fn gather_all(state: &AppState) -> Vec<ClusterResourceSummary> {
 }
 
 /// Cached summary for one cluster; kicks a background refresh when stale.
-pub async fn gather_one_cached(state: &AppState, cluster_id: &str) -> Option<ClusterResourceSummary> {
+pub async fn gather_one_cached(
+    state: &AppState,
+    cluster_id: &str,
+) -> Option<ClusterResourceSummary> {
     let c: ClusterRow = sqlx::query_as(
         "SELECT id, name, status, k8s_version, controlplanes, vip, vip6 \
          FROM clusters WHERE id = ?",
@@ -322,6 +325,7 @@ fn with_metric_error(mut m: ResourceMetric, err: Option<String>) -> ResourceMetr
     m
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pack(
     cluster: &ClusterRow,
     node_count: i64,

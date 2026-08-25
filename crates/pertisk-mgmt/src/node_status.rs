@@ -225,7 +225,7 @@ fn parse_prometheus(body: &str) -> MetricsOut {
 
         match name {
             "pertisk_api_requests_total" => {
-                if let Some(method) = label_value(&labels, "method") {
+                if let Some(method) = label_value(labels, "method") {
                     if !method.is_empty() {
                         by_method.insert(method, value as u64);
                     }

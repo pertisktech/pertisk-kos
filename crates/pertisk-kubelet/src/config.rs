@@ -70,7 +70,7 @@ staticPodPath: "/etc/kubernetes/manifests"
 # Workers: rotateCertificates + bootstrap-kubeconfig → node client cert.
 # Control-plane: cert kubeconfig from pertiskctl bootstrap (no rotation needed).
 rotateCertificates: {rotate}
-serverTLSBootstrap: false
+serverTLSBootstrap: true
 {max_pods_line}# Pods that set spec.hostUsers (Flannel/charts) need this; GA in 1.36 but
 # explicit so a mismatched/older kubelet binary does not reject the field.
 featureGates:

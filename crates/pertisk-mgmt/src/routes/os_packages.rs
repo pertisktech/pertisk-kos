@@ -216,7 +216,7 @@ pub(crate) async fn upsert_package(
         (id, dest)
     };
 
-    os_upgrade::copy_bundle_dir(src, &dest).map_err(anyhow::Error::from)?;
+    os_upgrade::copy_bundle_dir(src, &dest)?;
     let size = os_upgrade::dir_size_bytes(&dest) as i64;
     let has_pk = i64::from(os_upgrade::bundle_trust_pk(&dest).is_some());
     let path_s = dest.display().to_string();

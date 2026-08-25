@@ -127,7 +127,7 @@ fn ek_fp_short(full: &str) -> Option<String> {
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("odd hex length".into());
     }
     (0..s.len())
@@ -188,7 +188,7 @@ pub async fn enroll(
     if let Some(ref fp) = ek_fp {
         message.push_str(&format!(
             "; EK fingerprint {}… (chain={})",
-            &fp.chars().take(16).collect::<String>(),
+            fp.chars().take(16).collect::<String>(),
             if quote.ek_chain_status.is_empty() {
                 "—"
             } else {

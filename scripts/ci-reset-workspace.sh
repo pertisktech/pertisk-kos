@@ -13,7 +13,7 @@ fi
 
 echo "==> reset workspace ${ws} (remove leftover Docker root files)"
 if command -v docker >/dev/null 2>&1; then
-  docker run --rm -v "${ws}:/w" alpine:3.20 \
+  docker run --rm -v "${ws}:/w" alpine:3.22 \
     sh -c 'find /w -mindepth 1 -maxdepth 1 -exec rm -rf {} +'
   exit 0
 fi

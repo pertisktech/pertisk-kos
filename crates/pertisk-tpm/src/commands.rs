@@ -286,7 +286,7 @@ pub fn nv_data_size(dev: &mut Device, nv_index: u32) -> Result<u16> {
     let _ = n.u16()?;
     let _ = n.u32()?;
     n.skip_tpm2b()?;
-    Ok(n.u16()?)
+    n.u16()
 }
 
 fn cmd_nv_read(nv_index: u32, size: u16, offset: u16) -> Vec<u8> {

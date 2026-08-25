@@ -86,7 +86,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 # Tools stage: always run on the build host (amd64). For arm64 targets, install
 # foreign-arch packages via apk --root --arch so we never execute aarch64 code.
 # This avoids QEMU binfmt which is broken on the self-hosted runner.
-FROM --platform=$BUILDPLATFORM alpine:3.20 AS tools
+FROM --platform=$BUILDPLATFORM alpine:3.22 AS tools
 ARG TARGETARCH
 ARG BUILDPLATFORM
 COPY image/apk-retry.sh /apk-retry.sh
@@ -96,7 +96,7 @@ COPY image/tools-extract.sh /tools-extract.sh
 RUN chmod +x /tools-extract.sh && TARGETARCH="${TARGETARCH}" sh /tools-extract.sh
 
 # Pack on the build host — operates on data files only (COPY, ln, cpio, gzip).
-FROM --platform=$BUILDPLATFORM alpine:3.20 AS pack
+FROM --platform=$BUILDPLATFORM alpine:3.22 AS pack
 RUN apk add --no-cache cpio gzip
 ARG IMAGE_PROFILE=production
 WORKDIR /rootfs

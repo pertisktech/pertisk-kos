@@ -37,49 +37,48 @@ pub struct ClusterVersionCtx<'a> {
 }
 
 pub fn summarize(cluster: &ClusterVersionCtx<'_>, nodes: &[NodeOut]) -> Vec<ComponentVersion> {
-    let mut out = Vec::new();
+    let mut out = vec![
+        from_nodes(
+            "kubernetes",
+            "Kubernetes",
+            nodes,
+            |n| n.k8s_version.as_deref(),
+            Some(cluster.k8s_version),
+        ),
+        from_nodes(
+            "os",
+            "OS",
+            nodes,
+            |n| n.os_version.as_deref(),
+            cluster.catalog_os,
+        ),
+        from_nodes(
+            "kernel",
+            "Kernel",
+            nodes,
+            |n| n.kernel_version.as_deref(),
+            None,
+        ),
+        from_nodes(
+            "containerd",
+            "containerd",
+            nodes,
+            |n| n.container_runtime.as_deref(),
+            None,
+        ),
+        ComponentVersion {
+            id: "cni".into(),
+            name: "CNI".into(),
+            version: nonempty(cluster.cni).unwrap_or_else(|| "—".into()),
+            desired: None,
+            source: "cluster".into(),
+            mixed: false,
+            nodes: Vec::new(),
+        },
+        pinned("etcd", "etcd", DEFAULT_ETCD_IMAGE),
+        pinned("pause", "pause", DEFAULT_PAUSE_IMAGE),
+    ];
 
-    out.push(from_nodes(
-        "kubernetes",
-        "Kubernetes",
-        nodes,
-        |n| n.k8s_version.as_deref(),
-        Some(cluster.k8s_version),
-    ));
-    out.push(from_nodes(
-        "os",
-        "OS",
-        nodes,
-        |n| n.os_version.as_deref(),
-        cluster.catalog_os,
-    ));
-    out.push(from_nodes(
-        "kernel",
-        "Kernel",
-        nodes,
-        |n| n.kernel_version.as_deref(),
-        None,
-    ));
-    out.push(from_nodes(
-        "containerd",
-        "containerd",
-        nodes,
-        |n| n.container_runtime.as_deref(),
-        None,
-    ));
-
-    out.push(ComponentVersion {
-        id: "cni".into(),
-        name: "CNI".into(),
-        version: nonempty(cluster.cni).unwrap_or_else(|| "—".into()),
-        desired: None,
-        source: "cluster".into(),
-        mixed: false,
-        nodes: Vec::new(),
-    });
-
-    out.push(pinned("etcd", "etcd", DEFAULT_ETCD_IMAGE));
-    out.push(pinned("pause", "pause", DEFAULT_PAUSE_IMAGE));
     if cluster.has_vip {
         out.push(pinned("kube-vip", "kube-vip", DEFAULT_KUBE_VIP_IMAGE));
     }

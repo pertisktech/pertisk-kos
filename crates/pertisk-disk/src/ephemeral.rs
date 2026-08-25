@@ -1,13 +1,22 @@
 //! EPHEMERAL volume discovery and mount over `/var`.
 
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use thiserror::Error;
-use tracing::{info, warn};
+use tracing::warn;
 
-use crate::layout::{MountPaths, PARTLABEL_EPHEMERAL};
+use crate::layout::MountPaths;
+
+#[cfg(target_os = "linux")]
+use std::fs;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
+#[cfg(target_os = "linux")]
+use tracing::info;
+
+#[cfg(target_os = "linux")]
+use crate::layout::PARTLABEL_EPHEMERAL;
+#[cfg(target_os = "linux")]
 use crate::partlabel::{find_by_partlabel, wait_for_partlabel};
 
 #[derive(Debug, Error)]

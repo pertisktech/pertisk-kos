@@ -1518,7 +1518,7 @@ resize_qcow_to_gb() {
     local out_dir base
     out_dir="$(cd "$(dirname "$qcow")" && pwd)"
     base="$(basename "$qcow")"
-    docker run --rm -v "${out_dir}:/work" alpine:3.20 \
+    docker run --rm -v "${out_dir}:/work" alpine:3.22 \
       sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img resize /work/${base} ${gb}G"
   fi
 }

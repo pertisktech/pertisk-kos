@@ -124,8 +124,8 @@ DF="image/Dockerfile.initramfs"
 check "IMAGE_PROFILE defaults to production" file_has "${DF}" 'ARG IMAGE_PROFILE=production'
 check "production removes BusyBox staging" file_has "${DF}" 'rm -f ./usr/lib/pertisk/.busybox-debug'
 check "production removes /bin/busybox" file_has "${DF}" 'rm -f ./usr/lib/pertisk/.busybox-debug ./bin/busybox'
-check "util-linux mount shipped" file_has "${DF}" 'tools/bin/mount /tools/bin/umount'
-check "iproute2 ip shipped" file_has "${DF}" 'tools/bin/ip ./sbin/ip'
+check "util-linux mount shipped" file_has "${DF}" 'ln -sf /bin/mount ./sbin/mount'
+check "iproute2 ip shipped" file_has "${DF}" 'ln -sf /sbin/ip ./usr/sbin/ip'
 check "no udhcpc in image" bash -c "! grep -qE 'usr/sbin/udhcpc|pertisk-udhcpc-hook' '${DF}'"
 check "debug profile installs ash via /bin/busybox" file_has "${DF}" 'mv ./usr/lib/pertisk/.busybox-debug ./bin/busybox'
 check "builtin DHCP only" file_has "crates/pertisk-net/src/link.rs" 'crate::dhcp::run_dhcp\(iface\)'

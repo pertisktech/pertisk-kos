@@ -109,8 +109,7 @@ pub fn attach_resource_metrics(cluster_id: &str, nodes: &mut [NodeOut]) {
     let Some(s) = crate::cluster_resources::cached_summary(cluster_id) else {
         return;
     };
-    let by: std::collections::HashMap<_, _> =
-        s.nodes.iter().map(|n| (n.name.clone(), n)).collect();
+    let by: std::collections::HashMap<_, _> = s.nodes.iter().map(|n| (n.name.clone(), n)).collect();
     for n in nodes {
         if let Some(nr) = by.get(&n.name) {
             n.cpu = Some(nr.cpu.clone());

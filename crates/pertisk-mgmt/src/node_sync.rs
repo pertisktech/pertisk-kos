@@ -136,11 +136,10 @@ pub async fn persist_snapshot_by_id(
 
 /// Cloud-image seed / Cargo workspace default — not the running A/B slot.
 pub fn is_placeholder_os_version(v: Option<&str>) -> bool {
-    match v.map(str::trim) {
-        None | Some("") => true,
-        Some("0.1.0") | Some("v0.1.0") => true,
-        _ => false,
-    }
+    matches!(
+        v.map(str::trim),
+        None | Some("") | Some("0.1.0") | Some("v0.1.0")
+    )
 }
 
 /// Guest `pertiskctl version` — running initramfs. Refresh whenever the node answers

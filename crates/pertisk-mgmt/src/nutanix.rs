@@ -918,15 +918,7 @@ impl NutanixClient {
             .or_else(|| disk.get("vmdisk_uuid"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::bad(format!("VM `{name}` disk has no vmdisk_uuid")))?;
-        let size = disk
-            .get("size")
-            .and_then(|v| v.as_i64())
-            .or_else(|| {
-                disk.get("disk_address")
-                    .and_then(|a| a.get("ndfs_filepath"))
-                    .and_then(|_| None)
-            })
-            .unwrap_or(0);
+        let size = disk.get("size").and_then(|v| v.as_i64()).unwrap_or(0);
         if size >= want_bytes {
             return Ok(());
         }

@@ -2,13 +2,16 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use thiserror::Error;
 use tracing::info;
 
 use crate::layout::{MountPaths, PARTLABEL_STATE};
+
+#[cfg(target_os = "linux")]
 use crate::partlabel::{guess_state_nodes, wait_for_partlabel};
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 /// Default machine config filename under STATE.
 pub const DEFAULT_CONFIG_NAME: &str = "config.yaml";

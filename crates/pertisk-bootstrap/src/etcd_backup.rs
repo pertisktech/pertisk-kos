@@ -885,7 +885,7 @@ fn find_ctr() -> Option<PathBuf> {
             return Some(PathBuf::from(p));
         }
     }
-    which("ctr").ok().map(PathBuf::from)
+    which("ctr").ok()
 }
 
 fn which(bin: &str) -> Result<PathBuf> {
