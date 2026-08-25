@@ -1,8 +1,8 @@
 ---
 page_title: "pertisk_addon Resource - pertisk"
 subcategory: ""
-description: |-
-  Install or update a Pertisk cluster add-on (NFS, cert-manager, Cilium LB, Ingress).
+  description: |-
+    Install or update a Pertisk cluster add-on (NFS, cert-manager, Cilium LB, Ingress, KOS scaler).
 ---
 
 # pertisk_addon (Resource)
@@ -61,6 +61,22 @@ resource "pertisk_addon" "ingress" {
     tls_secret = "none"
   }
 }
+
+resource "pertisk_addon" "scaler" {
+  cluster_id = pertisk_cluster.lab.id
+  addon      = "kos-scaler"
+
+  config = {
+    username   = "admin"
+    min_size   = "2"
+    max_size   = "10"
+    image_tag  = "0.1.0"
+  }
+
+  secrets = {
+    password = var.mgmt_password
+  }
+}
 ```
 
 Recreate a cluster and restore the last add-on configs for that name (mgmt default):
@@ -80,7 +96,7 @@ resource "pertisk_cluster" "lab" {
 ### Required
 
 * `cluster_id` - (String) Cluster UUID. Forces new resource.
-* `addon` - (String) `nfs` | `cert-manager` | `cilium-lb` | `ingress`. Forces new resource.
+* `addon` - (String) `nfs` | `cert-manager` | `cilium-lb` | `ingress` | `kos-scaler`. Forces new resource.
 
 ### Optional
 
@@ -89,7 +105,8 @@ resource "pertisk_cluster" "lab" {
   * **cert-manager:** `provider` (`cloudflare`), `email`, `acme` (`production`|`staging`), `domain`
   * **cilium-lb:** `ipv4`, optional `ipv6` (required on dual-stack)
   * **ingress:** `image_tag`, optional `admin_host`, `tls_secret`, `registry_user`
-* `secrets` - (Map of String, Sensitive) `api_token` (cert-manager); `admin_password` / `registry_password` (ingress).
+  * **kos-scaler:** `username`, `min_size`, `max_size`, optional `image_tag`, `storage_class`, `mgmt_url`
+* `secrets` - (Map of String, Sensitive) `api_token` (cert-manager); `admin_password` / `registry_password` (ingress); `password` (kos-scaler).
 * `timeout_minutes` - (Number) Job wait timeout (default `20`).
 
 ## Attribute Reference

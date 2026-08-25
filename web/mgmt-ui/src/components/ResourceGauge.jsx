@@ -1,5 +1,3 @@
-import { useMemo } from 'react'
-import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts'
 import { Icon } from './Icons'
 
 export const GAUGE_BASE = {
@@ -13,19 +11,11 @@ function isNum(v) {
   return typeof v === 'number' && Number.isFinite(v)
 }
 
-function gaugeFill(base, percent, hasPct) {
+function barFill(base, percent, hasPct) {
   if (!hasPct) return GAUGE_BASE.track
   if (percent >= 90) return 'var(--danger)'
   if (percent >= 75) return 'var(--warning)'
   return base
-}
-
-function gaugeData(percent) {
-  const p = isNum(percent) ? Math.min(100, Math.max(0, percent)) : 0
-  return [
-    { name: 'used', value: p },
-    { name: 'free', value: Math.max(0, 100 - p) },
-  ]
 }
 
 function formatFallback(v, unit) {
@@ -35,17 +25,15 @@ function formatFallback(v, unit) {
   return String(v)
 }
 
-const GAUGE_SIZE = {
-  sm: { height: 64, inner: 20, outer: 26, icon: 11 },
-  md: { height: 88, inner: 28, outer: 36, icon: 12 },
-  lg: { height: 108, inner: 34, outer: 44, icon: 13 },
+function barWidth(percent) {
+  if (percent <= 0) return 0
+  return Math.max(percent, 4)
 }
 
 export default function ResourceGauge({ label, icon, metric, color, size = 'md' }) {
   const pct = metric?.percent
   const hasPct = isNum(pct)
-  const data = useMemo(() => gaugeData(hasPct ? pct : 0), [hasPct, pct])
-  const fill = gaugeFill(color, pct, hasPct)
+  const fill = barFill(color, pct, hasPct)
   const unit = metric?.unit || ''
   const used = metric?.used
   const total = metric?.total
@@ -58,49 +46,32 @@ export default function ResourceGauge({ label, icon, metric, color, size = 'md' 
   const availLabel = metric?.display_available || formatFallback(avail, unit)
   const totalLabel = metric?.display_total || formatFallback(total, unit)
   const level = !hasPct ? 'unknown' : pct >= 90 ? 'critical' : pct >= 75 ? 'warn' : 'ok'
-  const geo = GAUGE_SIZE[size] || GAUGE_SIZE.md
 
   return (
-    <div className={`resource-gauge resource-gauge-${level} resource-gauge-${size}`}>
-      <div className="resource-gauge-label">
-        {icon && <Icon name={icon} size={geo.icon} />}
-        {label}
+    <div className={`metric-tile metric-tile-${level} metric-tile-${size}`}>
+      <div className="metric-tile-top">
+        <span className="metric-tile-label">
+          {icon && <Icon name={icon} size={size === 'lg' ? 14 : 12} />}
+          {label}
+        </span>
+        <span className="metric-tile-pct">
+          {hasPct ? `${Math.round(pct)}%` : '—'}
+        </span>
       </div>
-      <div className="resource-gauge-chart" style={{ height: geo.height }}>
-        <ResponsiveContainer width="100%" height={geo.height}>
-          <PieChart>
-            <Pie
-              data={data}
-              dataKey="value"
-              cx="50%"
-              cy="50%"
-              startAngle={90}
-              endAngle={-270}
-              innerRadius={geo.inner}
-              outerRadius={geo.outer}
-              paddingAngle={hasPct && pct > 0 && pct < 100 ? 2 : 0}
-              cornerRadius={4}
-              stroke="none"
-              isAnimationActive={false}
-            >
-              <Cell fill={fill} />
-              <Cell fill={GAUGE_BASE.track} />
-            </Pie>
-          </PieChart>
-        </ResponsiveContainer>
-        <div className="resource-gauge-center">
-          <span className="resource-gauge-pct">
-            {hasPct ? `${Math.round(pct)}%` : '—'}
-          </span>
-        </div>
+      <div className="metric-tile-headline">{usedLabel}</div>
+      <div className="metric-tile-track" aria-hidden>
+        <div
+          className="metric-tile-fill"
+          style={{ width: `${hasPct ? barWidth(pct) : 0}%`, background: fill }}
+        />
       </div>
-      <div className="resource-gauge-breakdown">
-        <div><span className="mono-inline">{usedLabel}</span> <span className="muted">used</span></div>
-        <div><span className="mono-inline">{availLabel}</span> <span className="muted">avail</span></div>
-        <div><span className="mono-inline">{totalLabel}</span> <span className="muted">total</span></div>
+      <div className="metric-tile-stats">
+        <span><em>{usedLabel}</em> used</span>
+        <span><em>{availLabel}</em> free</span>
+        <span><em>{totalLabel}</em> total</span>
       </div>
       {metric?.error && (
-        <div className="muted resource-gauge-err" title={metric.error}>{metric.error}</div>
+        <div className="muted metric-tile-err" title={metric.error}>{metric.error}</div>
       )}
     </div>
   )

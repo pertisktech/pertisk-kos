@@ -63,6 +63,14 @@ pertisk-proxy Ingress controller from Helm chart `pertisk/pertisk-ingress` (imag
 
 From the management UI: cluster → **Add-ons** → **Ingress** → Pertisk Ingress. Requires `helm` on the management host. When an admin host is set, choose a TLS Secret from certificates issued by cert-manager (or **none** for HTTP only).
 
+## KOS scaler (worker autoscaling)
+
+Helm chart `pertisk/kos-scaler` — scale workers through pertisk-mgmt when pods are pending or CPU/memory is high:
+
+→ [kos-scaler/README.md](./kos-scaler/README.md)
+
+From the management UI: cluster → **Add-ons** → **Autoscaling**. Set mgmt username/password and worker min/max. The cluster UUID and management public URL are filled in automatically.
+
 ## Observability (host metrics)
 
 Node OS metrics (CPU, RAM, network, disk I/O) are on `pertiskd` `:50001/metrics` — not this addon. See [../observability/README.md](../observability/README.md). metrics-server stays for `kubectl top` / HPA.

@@ -64,6 +64,11 @@ function optionLabel(f, opt) {
 
 const ADDON_SECTIONS = [
   {
+    id: 'autoscaling',
+    title: 'Autoscaling',
+    blurb: 'Scale workers through pertisk-mgmt when pods are pending or utilization is high.',
+  },
+  {
     id: 'certificates',
     title: 'Certificates',
     blurb: 'Issue a wildcard TLS certificate and copy it into every namespace.',

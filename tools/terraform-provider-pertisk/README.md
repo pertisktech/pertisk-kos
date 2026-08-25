@@ -20,7 +20,7 @@ Address: `registry.terraform.io/pertisk-tech/pertisk`
 | K8s version | `pertisk_cluster` | Set at create; **change triggers in-place upgrade** (no replace) |
 | Scale out / in | `pertisk_node` | `mode=create` (hypervisor VM) or `mode=adopt` (existing IP) |
 | Node hardware overrides | `pertisk_node` | Optional `memory` / `cores` / `disk_gb` on create |
-| Install cluster add-ons | `pertisk_addon` | `nfs`, `cert-manager`, `cilium-lb`, `ingress`; waits for install job |
+| Install cluster add-ons | `pertisk_addon` | `nfs`, `cert-manager`, `cilium-lb`, `ingress`, `kos-scaler`; waits for install job |
 | Reuse add-on configs | `pertisk_cluster` | `reuse_addons` (default true) + optional `addon_preset` |
 | Import | cluster / provider / node / addon | Cluster & provider by UUID; node/addon as `cluster_id/…` |
 

@@ -94,19 +94,17 @@ export default function ProviderDashboard() {
         {summary.url ? ` · ${summary.url}` : ''}
       </p>
 
-      <div className="card" style={{ padding: '1.25rem' }}>
-        <div className="resource-gauge-row provider-dash-gauges">
-          <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} size="lg" />
-          <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} size="lg" />
-          <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} size="lg" />
-        </div>
-        {summary.error && (
-          <p className="muted cluster-resource-soft-err" title={summary.error}>
-            <Icon name="alert" size={12} />
-            {summary.error}
-          </p>
-        )}
+      <div className="resource-gauge-row provider-dash-gauges">
+        <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} size="lg" />
+        <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} size="lg" />
+        <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} size="lg" />
       </div>
+      {summary.error && (
+        <p className="muted cluster-resource-soft-err" title={summary.error} style={{ borderTop: 'none', paddingLeft: 0 }}>
+          <Icon name="alert" size={12} />
+          {summary.error}
+        </p>
+      )}
 
       <p className="muted chart-footnote">
         Disk is the provider storage ({summary.storage || 'configured datastore / container'}).
