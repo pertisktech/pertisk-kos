@@ -17,7 +17,9 @@ import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import K8sTab from './cluster-k8s/K8sTab'
 import ShellTab from './cluster-k8s/ShellTab'
 import AddonsTab from './cluster-k8s/AddonsTab'
+import { listAddons } from './cluster-k8s/api'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
+import { generateClusterTerraform, terraformFilename } from '../utils/terraformExport'
 import UsageBar from '../components/UsageBar'
 
 const YamlEditor = lazy(() => import('../components/YamlEditor'))
@@ -908,8 +910,8 @@ export default function ClusterDetail() {
     return res.text()
   }
 
-  function triggerDownload(text, filename) {
-    const blob = new Blob([text], { type: 'application/x-yaml;charset=utf-8' })
+  function triggerDownload(text, filename, mimeType = 'application/x-yaml;charset=utf-8') {
+    const blob = new Blob([text], { type: mimeType })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -958,6 +960,24 @@ export default function ClusterDetail() {
       }
       const blob = await res.blob()
       triggerBlobDownload(blob, filename)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function downloadTerraform() {
+    setError('')
+    try {
+      const [addonsRes, settings] = await Promise.all([
+        listAddons(id).catch(() => ({ data: [] })),
+        api('/settings').catch(() => null),
+      ])
+      const hcl = generateClusterTerraform({
+        cluster: data?.cluster || {},
+        addons: addonsRes?.data || [],
+        mgmtUrl: settings?.public_url,
+      })
+      triggerDownload(hcl, terraformFilename(data?.cluster?.name), 'text/plain;charset=utf-8')
     } catch (err) {
       setError(err.message)
     }
@@ -1092,6 +1112,14 @@ export default function ClusterDetail() {
             title="Download cluster-out ZIP (kubeconfig + machine/join YAMLs)"
           >
             <Icon name="download" size={16} /> Download config
+          </button>
+          <button
+            type="button"
+            className="secondary btn-icon"
+            onClick={downloadTerraform}
+            title="Export this cluster as a Terraform (.tf) configuration"
+          >
+            <Icon name="download" size={16} /> Export to Terraform
           </button>
           <button type="button" className="danger btn-icon" onClick={del}>
             <Icon name="trash" size={16} /> Delete
