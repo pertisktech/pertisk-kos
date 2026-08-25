@@ -123,6 +123,7 @@ func (p *PertiskProvider) Resources(_ context.Context) []func() resource.Resourc
 		NewProviderResource,
 		NewClusterResource,
 		NewNodeResource,
+		NewAddonResource,
 	}
 }
 

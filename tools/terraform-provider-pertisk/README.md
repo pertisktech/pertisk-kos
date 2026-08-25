@@ -20,7 +20,9 @@ Address: `registry.terraform.io/pertisk-tech/pertisk`
 | K8s version | `pertisk_cluster` | Set at create; **change triggers in-place upgrade** (no replace) |
 | Scale out / in | `pertisk_node` | `mode=create` (hypervisor VM) or `mode=adopt` (existing IP) |
 | Node hardware overrides | `pertisk_node` | Optional `memory` / `cores` / `disk_gb` on create |
-| Import | cluster / provider / node | Cluster & provider by UUID; node as `cluster_id/node_id` |
+| Install cluster add-ons | `pertisk_addon` | `nfs`, `cert-manager`, `cilium-lb`, `ingress`; waits for install job |
+| Reuse add-on configs | `pertisk_cluster` | `reuse_addons` (default true) + optional `addon_preset` |
+| Import | cluster / provider / node / addon | Cluster & provider by UUID; node/addon as `cluster_id/…` |
 
 ### Create-time vs scale
 
@@ -91,6 +93,15 @@ resource "pertisk_node" "extra_worker" {
   role       = "worker"
   mode       = "create"
 }
+
+resource "pertisk_addon" "nfs" {
+  cluster_id = pertisk_cluster.lab.id
+  addon      = "nfs"
+  config = {
+    server = "10.1.1.150"
+    path   = "/mnt/nfs_share"
+  }
+}
 ```
 
 Nutanix AHV (`kind = "nutanix"`; see [NUTANIX.md](../../docs/NUTANIX.md)):
@@ -143,6 +154,7 @@ Registry-style docs (Example Usage, Argument Reference, Attribute Reference):
 | [`docs/resources/cluster.md`](./docs/resources/cluster.md) | `pertisk_cluster` |
 | [`docs/resources/provider.md`](./docs/resources/provider.md) | `pertisk_provider` |
 | [`docs/resources/node.md`](./docs/resources/node.md) | `pertisk_node` |
+| [`docs/resources/addon.md`](./docs/resources/addon.md) | `pertisk_addon` |
 | [`docs/data-sources/provider.md`](./docs/data-sources/provider.md) | Data source |
 
 Example layouts:
@@ -158,6 +170,7 @@ Example layouts:
 | `pertisk_provider` + data source | Done |
 | `pertisk_cluster` (HA, dual-stack, sizing, upgrade) | Done |
 | `pertisk_node` (create / adopt) | Done |
+| `pertisk_addon` (install / update) | Done |
 | HashiCorp docs | Done |
 | Unit + acceptance tests | Done |
 | CI + GoReleaser | Done |

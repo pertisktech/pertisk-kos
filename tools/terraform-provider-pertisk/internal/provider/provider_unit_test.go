@@ -53,11 +53,39 @@ func TestClusterSchemaHasSizing(t *testing.T) {
 	}
 }
 
-func TestClusterResourceTypeName(t *testing.T) {
-	r := NewClusterResource()
+func TestAddonResourceTypeName(t *testing.T) {
+	r := NewAddonResource()
 	var resp resource.MetadataResponse
 	r.Metadata(context.Background(), resource.MetadataRequest{ProviderTypeName: "pertisk"}, &resp)
-	if resp.TypeName != "pertisk_cluster" {
-		t.Fatalf("TypeName = %q, want pertisk_cluster", resp.TypeName)
+	if resp.TypeName != "pertisk_addon" {
+		t.Fatalf("TypeName = %q, want pertisk_addon", resp.TypeName)
+	}
+}
+
+func TestAddonSchema(t *testing.T) {
+	r := NewAddonResource()
+	var resp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", resp.Diagnostics)
+	}
+	for _, key := range []string{"cluster_id", "addon", "config", "secrets", "status"} {
+		if _, ok := resp.Schema.Attributes[key]; !ok {
+			t.Fatalf("missing addon attribute %q", key)
+		}
+	}
+}
+
+func TestClusterSchemaHasAddonReuse(t *testing.T) {
+	r := NewClusterResource()
+	var resp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", resp.Diagnostics)
+	}
+	for _, key := range []string{"reuse_addons", "addon_preset"} {
+		if _, ok := resp.Schema.Attributes[key]; !ok {
+			t.Fatalf("missing cluster attribute %q", key)
+		}
 	}
 }

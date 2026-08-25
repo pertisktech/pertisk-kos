@@ -88,6 +88,8 @@ The following arguments are supported:
 * `service_subnet` - (String) IPv4 service CIDR (default `10.96.0.0/12`). Forces new resource.
 * `pod_subnet_ipv6` - (String) IPv6 pod CIDR. When omitted on dual-stack, mgmt applies its default. Forces new resource.
 * `service_subnet_ipv6` - (String) IPv6 service CIDR. When omitted on dual-stack, mgmt applies its default. Forces new resource.
+* `reuse_addons` - (Boolean) Restore saved add-on configs for this cluster name (or `addon_preset`) and reinstall after create. Default `true`. Forces new resource.
+* `addon_preset` - (String) Cluster name to copy add-on configs from. Defaults to `name`. Forces new resource.
 * `timeout_minutes` - (Number) How long to wait for create/delete/upgrade jobs (default `45`).
 
 ## Attribute Reference

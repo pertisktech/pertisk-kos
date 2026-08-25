@@ -47,6 +47,8 @@ type CreateClusterRequest struct {
 	ServiceSubnet     string  `json:"service_subnet,omitempty"`
 	PodSubnetIPv6     *string `json:"pod_subnet_ipv6,omitempty"`
 	ServiceSubnetIPv6 *string `json:"service_subnet_ipv6,omitempty"`
+	ReuseAddons       bool    `json:"reuse_addons"`
+	AddonPreset       *string `json:"addon_preset,omitempty"`
 }
 
 type CreateClusterResponse struct {
@@ -346,6 +348,39 @@ func (c *Client) AdoptNode(ctx context.Context, clusterID string, req AdoptNodeR
 func (c *Client) RemoveNode(ctx context.Context, clusterID, nodeID string) (*JobIDResponse, error) {
 	var out JobIDResponse
 	if err := c.doJSON(ctx, http.MethodDelete, "/api/clusters/"+clusterID+"/nodes/"+nodeID, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type AddonSummary struct {
+	ID     string  `json:"id"`
+	Name   string  `json:"name"`
+	Status string  `json:"status"`
+	OK     bool    `json:"ok"`
+	Error  *string `json:"error"`
+	JobID  *string `json:"job_id"`
+}
+
+type InstallAddonResponse struct {
+	OK    bool   `json:"ok"`
+	JobID string `json:"job_id"`
+	Addon string `json:"addon"`
+}
+
+func (c *Client) GetAddon(ctx context.Context, clusterID, addon string) (*AddonSummary, error) {
+	var out AddonSummary
+	path := "/api/clusters/" + clusterID + "/addons/" + addon
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) InstallAddon(ctx context.Context, clusterID, addon string, body map[string]any) (*InstallAddonResponse, error) {
+	var out InstallAddonResponse
+	path := "/api/clusters/" + clusterID + "/addons/" + addon + "/install"
+	if err := c.doJSON(ctx, http.MethodPost, path, body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

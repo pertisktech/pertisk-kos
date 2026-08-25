@@ -7,11 +7,13 @@ resource "pertisk_node" "extra_worker" {
   mode       = "create"
 }
 
-# Or adopt an existing host:
-# resource "pertisk_node" "bare" {
+# Optional add-ons (NFS / cert-manager / cilium-lb / ingress). Uncomment after the cluster is ready.
+# resource "pertisk_addon" "nfs" {
 #   cluster_id = pertisk_cluster.lab.id
-#   role       = "worker"
-#   mode       = "adopt"
-#   ip         = "10.1.1.50"
-#   source     = "baremetal"
+#   addon      = "nfs"
+#   config = {
+#     server = "10.1.1.150"
+#     path   = "/mnt/nfs_share"
+#   }
 # }
+

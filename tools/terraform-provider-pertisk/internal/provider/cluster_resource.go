@@ -9,6 +9,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -54,6 +56,8 @@ type clusterModel struct {
 	ServiceSubnet     types.String `tfsdk:"service_subnet"`
 	PodSubnetIPv6     types.String `tfsdk:"pod_subnet_ipv6"`
 	ServiceSubnetIPv6 types.String `tfsdk:"service_subnet_ipv6"`
+	ReuseAddons       types.Bool   `tfsdk:"reuse_addons"`
+	AddonPreset       types.String `tfsdk:"addon_preset"`
 	Status            types.String `tfsdk:"status"`
 	Endpoint          types.String `tfsdk:"endpoint"`
 	Kubeconfig        types.String `tfsdk:"kubeconfig"`
@@ -260,6 +264,22 @@ func (r *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"reuse_addons": schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(true),
+				MarkdownDescription: "After create, restore add-on configs saved for this cluster name (or addon_preset) and reinstall. Default true.",
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
+				},
+			},
+			"addon_preset": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Cluster name to copy saved add-on configs from. Defaults to this cluster's name.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
 			"status": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Cluster status from mgmt (ready, pending, error, …).",
@@ -334,6 +354,10 @@ func (r *clusterResource) Create(ctx context.Context, req resource.CreateRequest
 		MaxPods:       plan.MaxPods.ValueInt64(),
 		PodSubnet:     plan.PodSubnet.ValueString(),
 		ServiceSubnet: plan.ServiceSubnet.ValueString(),
+		ReuseAddons:   true,
+	}
+	if !plan.ReuseAddons.IsNull() && !plan.ReuseAddons.IsUnknown() {
+		apiReq.ReuseAddons = plan.ReuseAddons.ValueBool()
 	}
 	if !plan.VIP.IsNull() && !plan.VIP.IsUnknown() && plan.VIP.ValueString() != "" {
 		v := plan.VIP.ValueString()
@@ -354,6 +378,10 @@ func (r *clusterResource) Create(ctx context.Context, req resource.CreateRequest
 	if !plan.ServiceSubnetIPv6.IsNull() && !plan.ServiceSubnetIPv6.IsUnknown() && plan.ServiceSubnetIPv6.ValueString() != "" {
 		v := plan.ServiceSubnetIPv6.ValueString()
 		apiReq.ServiceSubnetIPv6 = &v
+	}
+	if !plan.AddonPreset.IsNull() && !plan.AddonPreset.IsUnknown() && plan.AddonPreset.ValueString() != "" {
+		v := plan.AddonPreset.ValueString()
+		apiReq.AddonPreset = &v
 	}
 
 	created, err := r.client.CreateCluster(ctx, apiReq)
@@ -654,6 +682,12 @@ func (r *clusterResource) ensureComputedKnown(m *clusterModel) {
 	}
 	if m.ServiceSubnetIPv6.IsUnknown() {
 		m.ServiceSubnetIPv6 = types.StringNull()
+	}
+	if m.ReuseAddons.IsNull() || m.ReuseAddons.IsUnknown() {
+		m.ReuseAddons = types.BoolValue(true)
+	}
+	if m.AddonPreset.IsUnknown() {
+		m.AddonPreset = types.StringNull()
 	}
 }
 
