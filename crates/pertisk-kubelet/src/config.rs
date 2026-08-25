@@ -70,6 +70,9 @@ staticPodPath: "/etc/kubernetes/manifests"
 # Workers: rotateCertificates + bootstrap-kubeconfig → node client cert.
 # Control-plane: cert kubeconfig from pertiskctl bootstrap (no rotation needed).
 rotateCertificates: {rotate}
+# CIS 4.2.11 — request and rotate serving certs via CSR.
+# Core Kubernetes deliberately does not auto-approve kubelet-serving CSRs;
+# trusted provisioning must approve them (lab-up does this after node join).
 serverTLSBootstrap: true
 {max_pods_line}# Pods that set spec.hostUsers (Flannel/charts) need this; GA in 1.36 but
 # explicit so a mismatched/older kubelet binary does not reject the field.

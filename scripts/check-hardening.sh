@@ -46,6 +46,7 @@ check "4.2.6 protectKernelDefaults" file_has "${KCFG}" 'protectKernelDefaults: t
 check "4.2.7 makeIPTablesUtilChains" file_has "${KCFG}" 'makeIPTablesUtilChains: true'
 check "4.2.10 rotateCertificates" file_has "${KCFG}" 'rotateCertificates: true'
 check "4.2.11 serverTLSBootstrap" file_has "${KCFG}" 'serverTLSBootstrap: true'
+check "4.2.11 initial kubelet-serving CSR approval" file_has "scripts/proxmox-lab-up.sh" 'certificate approve'
 check "4.2.12 tlsCipherSuites" file_has "${KCFG}" 'tlsCipherSuites:'
 check "4.2.12 ECDHE AES-GCM suite" file_has "${KCFG}" 'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256'
 

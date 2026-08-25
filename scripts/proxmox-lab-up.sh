@@ -1309,6 +1309,48 @@ ensure_worker_roles() {
   done
 }
 
+# Core Kubernetes deliberately leaves kubelet-serving CSRs Pending. During this
+# trusted provisioning flow, approve Pending requests from registered nodes so
+# :10250 gets a serving cert. Long-term rotation needs an external CSR approver.
+ensure_kubelet_serving_certs() {
+  local kc="$1"
+  [[ -f "$kc" ]] || return 0
+  command -v kubectl >/dev/null 2>&1 || return 0
+  log "approve Pending kubelet-serving CSRs from registered nodes"
+  local names
+  names="$(kubectl --kubeconfig "$kc" get csr -o json 2>/dev/null | python3 -c '
+import json,sys
+try:
+    data=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for i in data.get("items") or []:
+    spec=i.get("spec") or {}
+    if spec.get("signerName") != "kubernetes.io/kubelet-serving":
+        continue
+    username=spec.get("username") or ""
+    groups=spec.get("groups") or []
+    if not username.startswith("system:node:") or "system:nodes" not in groups:
+        continue
+    types=[(c or {}).get("type") for c in (i.get("status") or {}).get("conditions") or []]
+    if "Approved" in types or "Denied" in types:
+        continue
+    print((i.get("metadata", {}).get("name") or "") + ":" + username.removeprefix("system:node:"))
+' 2>/dev/null || true)"
+  local item csr node
+  for item in $names; do
+    csr="${item%%:*}"
+    node="${item#*:}"
+    [[ -n "$csr" && -n "$node" ]] || continue
+    if ! kubectl --kubeconfig "$kc" get node "$node" >/dev/null 2>&1; then
+      log "WARNING: skip kubelet-serving CSR ${csr}; requester node ${node} is not registered"
+      continue
+    fi
+    log "approve kubelet-serving CSR ${csr}"
+    kubectl --kubeconfig "$kc" certificate approve "$csr" >/dev/null || true
+  done
+}
+
 # Dump node / CSR / Ready condition hints when a wait fails.
 diagnose_node_wait() {
   local kc="$1" node="$2"
@@ -1940,6 +1982,7 @@ Check registry.k8s.io pulls / static pods on ${ip}."
   # Wait for apiserver on a CP node IP first (VIP needs kube-vip leader election).
   wait_apiserver_ready "$CLUSTER_OUT/admin.conf" "$CP_IP" "$API_ENDPOINT"
   ensure_bootstrap_token_secret "$CLUSTER_OUT/admin.conf" "$CLUSTER_OUT/worker.yaml"
+  ensure_kubelet_serving_certs "$CLUSTER_OUT/admin.conf"
 
   # Install cluster CNI (cilium default) BEFORE waiting for Node Ready or joining
   # workers — machine config uses cni:none, so kubelet stays NotReady until CNI
@@ -1953,6 +1996,7 @@ Check registry.k8s.io pulls / static pods on ${ip}."
   done
   wait_nodes_ready "$CLUSTER_OUT/admin.conf" "${cp_hosts[@]}"
   ensure_control_plane_roles "$CLUSTER_OUT/admin.conf" "$CONTROLPLANES"
+  ensure_kubelet_serving_certs "$CLUSTER_OUT/admin.conf"
 
   WORKER_HOSTS=()
   local wyaml wvid i ip host
@@ -1985,6 +2029,7 @@ Check registry.k8s.io pulls / static pods on ${ip}."
     # Node object = TLS bootstrap OK. Ready often needs cluster CNI (cni:none).
     wait_nodes_registered "$CLUSTER_OUT/admin.conf" "${WORKER_HOSTS[@]}"
     ensure_worker_roles "$CLUSTER_OUT/admin.conf" "$WORKERS"
+    ensure_kubelet_serving_certs "$CLUSTER_OUT/admin.conf"
   fi
   # Re-check after workers (late CP node registration can miss join-time label).
   ensure_control_plane_roles "$CLUSTER_OUT/admin.conf" "$CONTROLPLANES"
@@ -2263,6 +2308,7 @@ step_workers_ready() {
   log "waiting for workers Ready after CNI=${CNI}"
   wait_nodes_ready "$kc" "${WORKER_HOSTS[@]}"
   ensure_worker_roles "$kc" "$WORKERS"
+  ensure_kubelet_serving_certs "$kc"
 }
 
 # kube-proxy for Flannel/Calico (Cilium uses kubeProxyReplacement instead).
