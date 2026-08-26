@@ -857,6 +857,7 @@ pub(crate) fn finalize_bootstrap_when_ready(
     // original window; CP3 join especially was left unlabeled (looked like a worker).
     let label_deadline = Instant::now() + Duration::from_secs(300);
     ensure_control_plane_node_role(&client, node_name, label_deadline)?;
+    approve_kubelet_serving_csrs(&client, node_name, deadline);
     // Basic addons need pod networking. With cluster.cni:none, lab-up/helm installs
     // Cilium/Calico/Flannel first, then CoreDNS + metrics-server.
     if defer_addons {
@@ -1043,6 +1044,111 @@ fn ensure_node_join_rbac(client: &api::KubeClient, deadline: Instant) -> Result<
         deadline,
     )?;
     Ok(())
+}
+
+fn approve_kubelet_serving_csrs(client: &api::KubeClient, node_name: &str, deadline: Instant) {
+    let csr_deadline = Instant::now()
+        + Duration::from_secs(120).min(deadline.saturating_duration_since(Instant::now()));
+    while Instant::now() < csr_deadline {
+        let Ok((status, body)) =
+            client.get("/apis/certificates.k8s.io/v1/certificatesigningrequests")
+        else {
+            tracing::warn!(node = %node_name, "unable to list certificate signing requests for kubelet serving approval");
+            thread::sleep(Duration::from_secs(2));
+            continue;
+        };
+        if status != 200 {
+            tracing::warn!(node = %node_name, status, "certificate signing request list failed");
+            thread::sleep(Duration::from_secs(2));
+            continue;
+        }
+        let Ok(list) = serde_json::from_str::<serde_json::Value>(&body) else {
+            tracing::warn!(node = %node_name, "certificate signing request list was not valid JSON");
+            thread::sleep(Duration::from_secs(2));
+            continue;
+        };
+        let Some(items) = list.get("items").and_then(serde_json::Value::as_array) else {
+            thread::sleep(Duration::from_secs(2));
+            continue;
+        };
+        for csr in items {
+            let Some(name) = csr
+                .get("metadata")
+                .and_then(|metadata| metadata.get("name"))
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let spec = csr.get("spec").unwrap_or(&serde_json::Value::Null);
+            let signer = spec.get("signerName").and_then(serde_json::Value::as_str);
+            let username = spec.get("username").and_then(serde_json::Value::as_str);
+            let valid_identity = username == Some(&format!("system:node:{node_name}"))
+                && spec
+                    .get("groups")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|groups| {
+                        groups
+                            .iter()
+                            .any(|group| group.as_str() == Some("system:nodes"))
+                    });
+            let has_terminal_condition = csr
+                .get("status")
+                .and_then(|status| status.get("conditions"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|conditions| {
+                    conditions.iter().any(|condition| {
+                        matches!(
+                            condition.get("type").and_then(serde_json::Value::as_str),
+                            Some("Approved") | Some("Denied")
+                        )
+                    })
+                });
+            if signer != Some("kubernetes.io/kubelet-serving")
+                || !valid_identity
+                || has_terminal_condition
+            {
+                continue;
+            }
+            let patch = serde_json::json!({
+                "status": {
+                    "conditions": [{
+                        "type": "Approved",
+                        "status": "True",
+                        "reason": "PertiskKubeletServing",
+                        "message": "Approved for a system:nodes kubelet serving certificate"
+                    }]
+                }
+            });
+            let path =
+                format!("/apis/certificates.k8s.io/v1/certificatesigningrequests/{name}/approval");
+            let mut approved = false;
+            while Instant::now() < deadline {
+                match client.patch_merge(&path, &patch.to_string()) {
+                    Ok((status, _)) if status == 200 => {
+                        approved = true;
+                        break;
+                    }
+                    Ok((status, response)) if status == 409 => {
+                        tracing::debug!(csr = %name, status, response, "CSR changed before approval");
+                        break;
+                    }
+                    Ok((status, response)) => {
+                        tracing::warn!(csr = %name, status, response, "kubelet serving CSR approval failed");
+                    }
+                    Err(err) => {
+                        tracing::warn!(csr = %name, error = %err, "kubelet serving CSR approval request failed")
+                    }
+                }
+                thread::sleep(Duration::from_secs(2));
+            }
+            if approved {
+                info!(csr = %name, node = %node_name, "approved kubelet serving CSR");
+                return;
+            }
+        }
+        thread::sleep(Duration::from_secs(2));
+    }
+    tracing::warn!(node = %node_name, "kubelet serving CSR was not available for approval");
 }
 
 fn ensure_control_plane_node_role(

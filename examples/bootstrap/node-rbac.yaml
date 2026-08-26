@@ -41,6 +41,14 @@ roleRef:
   kind: ClusterRole
   name: system:certificates.k8s.io:certificatesigningrequests:selfnodeclient
 ---
+# Serving CSRs are approved by Pertisk bootstrap after validating the node
+# identity and signer name. This binding grants the bootstrap admin only.
+# Keep this section as documentation for clusters using an external approver.
+#
+# A kubelet-serving CSR must not be auto-approved solely through system:nodes.
+# The bootstrap approver performs the identity and signer checks before patching
+# the CSR status.
+#
 # Apiserver kubelet-client cert CN is `kube-apiserver`. Required for
 # kubectl/ktail logs, exec, and port-forward (nodes/proxy).
 apiVersion: rbac.authorization.k8s.io/v1

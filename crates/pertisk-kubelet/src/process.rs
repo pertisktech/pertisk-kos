@@ -286,7 +286,9 @@ fn recover_issued_kubeconfig_from_pki(paths: &KubeletPaths, cluster: &Cluster) -
     let pem = pki.join("kubelet-client-current.pem");
     let crt = pki.join("kubelet-client.crt");
     let key = pki.join("kubelet-client.key");
-    let (cert_path, key_path) = if pem.is_file() {
+    let (cert_path, key_path) = if pem.is_file() && key.is_file() {
+        (pem.clone(), key)
+    } else if pem.is_file() {
         (pem.clone(), pem)
     } else if crt.is_file() && key.is_file() {
         (crt, key)
@@ -428,6 +430,7 @@ mod tests {
             "CERT\n",
         )
         .unwrap();
+        fs::write(paths.root_dir.join("pki/kubelet-client.key"), "KEY\n").unwrap();
         fs::write(&paths.ca_file, "CA\n").unwrap();
         let cluster = Cluster {
             name: Some("lab".into()),
@@ -453,6 +456,8 @@ mod tests {
         assert!(kubeconfig_has_client_cert(&kc));
         assert!(kc.contains("https://10.1.1.254:6443"));
         assert!(kc.contains("kubelet-client-current.pem"));
+        assert!(kc.contains("kubelet-client.key"));
+        assert!(!kc.contains("client-certificate: /var/lib/kubelet/pki/kubelet-client.key"));
         let _ = fs::remove_dir_all(&dir);
     }
 }
