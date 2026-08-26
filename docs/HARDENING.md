@@ -32,7 +32,7 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 | 4.2.8 | hostnameOverride only if needed | pass | From `machine.network.hostname` |
 | 4.2.9 | eventRecordQPS | pass | `5` |
 | 4.2.10 | rotateCertificates | pass | `true` |
-| 4.2.11 | Rotate kubelet server cert | partial | `serverTLSBootstrap: true`; trusted lab-up approves initial serving CSRs, while production rotation needs a validating CSR approver |
+| 4.2.11 | Rotate kubelet server cert | partial | `serverTLSBootstrap: true`; lab-up and pertisk-mgmt approve serving CSRs from **registered** nodes (create, add/adopt, kos-scaler); production still wants a dedicated validating CSR approver |
 | 4.2.12 | Strong TLS ciphers | pass | `tlsCipherSuites` pinned (ECDHE + AES-GCM / ChaCha20) |
 | — | kubeconfig / CA mode `0600` | pass | After write |
 
@@ -52,7 +52,7 @@ Status: **pass** · **partial** · **gap** · **n/a** (control-plane / not appli
 3. Always set `cluster.ca` for join configs (avoid insecure-skip).
 4. Prefer `cluster.cni: none` + audited CNI (Cilium) for multi-tenant clusters.
 5. Prefer metrics mTLS (`PERTISK_TLS_*` also covers `:50001`) and/or a bearer token (`PERTISK_METRICS_TOKEN` / STATE `secrets/metrics.token`); otherwise bind `--metrics-listen 127.0.0.1:50001`.
-6. Core Kubernetes deliberately leaves kubelet serving CSRs Pending. Lab-up approves initial `kubernetes.io/kubelet-serving` requests from registered nodes. Production needs a validating CSR approver for ongoing rotation.
+6. Core Kubernetes deliberately leaves kubelet serving CSRs Pending. Lab-up and pertisk-mgmt approve `kubernetes.io/kubelet-serving` requests only from registered `system:node:` identities (including workers added by kos-scaler). Production still needs a dedicated validating CSR approver for rotation policy.
 7. Keep SBOM (`scripts/generate-sbom.sh`) and CI green on release tags.
 
 ## Automated checks (CI)

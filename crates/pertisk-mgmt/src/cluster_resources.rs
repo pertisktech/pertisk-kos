@@ -468,6 +468,13 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
         );
     }
 
+    {
+        let kc_csr = kc.clone();
+        tokio::spawn(async move {
+            let _ = crate::k8s::approve_pending_kubelet_serving_csrs_throttled(&kc_csr).await;
+        });
+    }
+
     let top_fut = fetch_kubectl_top_all(&kc, server_override.as_deref());
     let disk_fut = fetch_disk_from_stats(&kc, &nodes, server_override.as_deref());
     let (top_res, disk_res) = tokio::join!(top_fut, disk_fut);

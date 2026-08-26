@@ -28,7 +28,7 @@ pub struct Inner {
     pub http: reqwest::Client,
     /// Dedicated client for guest `:50001/metrics` (HTTP or mTLS HTTPS).
     pub metrics_http: reqwest::Client,
-    /// In-flight jobs (exclusive create/upgrade plus parallel `install_addon`).
+    /// In-flight jobs (per-cluster exclusive create/upgrade plus parallel `install_addon`).
     pub running_jobs: Mutex<HashMap<String, RunningJob>>,
 }
 

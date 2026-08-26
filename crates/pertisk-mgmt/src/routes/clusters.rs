@@ -263,13 +263,15 @@ fn spawn_cluster_node_sync(state: &AppState, cluster_id: &str) {
             .await
             .ok()
             .flatten();
+            let kc_path = std::path::Path::new(&kc);
             let _ = crate::node_sync::sync_cluster_nodes(
                 state.pool(),
                 &cluster_id,
-                Some(std::path::Path::new(&kc)),
+                Some(kc_path),
                 log_path.as_deref(),
             )
             .await;
+            let _ = crate::k8s::approve_pending_kubelet_serving_csrs_throttled(kc_path).await;
         }
         let _ = crate::node_sync::sync_os_versions_from_machine_api(
             state.pool(),

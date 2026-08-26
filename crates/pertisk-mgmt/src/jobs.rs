@@ -212,11 +212,11 @@ fn rewrite_proxmox_ssh_for_provider(ssh: &str, provider_url: &str) -> Option<Str
     }
 }
 
-/// Exclusive jobs (create/delete/upgrade/node ops) still run one at a time globally
-/// so hypervisor clones do not pile up. `install_addon` runs in parallel with other
-/// clusters' jobs (and with other add-ons), but waits if *this* cluster already has
-/// an exclusive job running. Delete aborts that cluster's in-flight jobs so create
-/// is not stuck `queued`.
+/// Exclusive jobs (create/delete/upgrade/node ops) run one at a time **per cluster**.
+/// Different clusters do not wait on each other. `install_addon` can overlap with
+/// other clusters and with other add-ons, but waits if *this* cluster already has
+/// an exclusive job. Delete aborts that cluster's in-flight jobs so create is not
+/// stuck `queued`.
 pub fn spawn_worker(state: AppState) {
     tokio::spawn(async move {
         loop {
@@ -369,12 +369,23 @@ async fn start_available_jobs(state: &AppState) -> anyhow::Result<usize> {
     Ok(started)
 }
 
-/// Create/upgrade/node ops must not overlap globally. Add-on installs are the exception.
+/// Create/upgrade/node ops must not overlap on the same cluster. Add-on installs
+/// are the exception (and different clusters never block each other).
 fn job_is_exclusive(kind: &str) -> bool {
     kind != "install_addon"
 }
 
 const MAX_PARALLEL_ADDON_JOBS: usize = 8;
+
+fn same_cluster_has_exclusive(running: &[(Option<String>, String)], cid: &str) -> bool {
+    running
+        .iter()
+        .any(|(c, k)| c.as_deref() == Some(cid) && job_is_exclusive(k))
+}
+
+fn same_cluster_has_any(running: &[(Option<String>, String)], cid: &str) -> bool {
+    running.iter().any(|(c, _)| c.as_deref() == Some(cid))
+}
 
 /// Whether this queued job can start given the in-flight set.
 fn job_can_start(
@@ -383,13 +394,8 @@ fn job_can_start(
     running: &[(Option<String>, String)],
 ) -> bool {
     if kind == "delete_cluster" {
-        // Same-cluster exclusive work is aborted; wait only for *other* clusters.
-        let Some(cid) = cluster_id else {
-            return true;
-        };
-        return !running
-            .iter()
-            .any(|(c, k)| job_is_exclusive(k) && c.as_deref() != Some(cid));
+        // Same-cluster exclusive work is aborted; other clusters keep running.
+        return true;
     }
     if kind == "install_addon" {
         let Some(cid) = cluster_id else {
@@ -402,19 +408,12 @@ fn job_can_start(
         if addon_n >= MAX_PARALLEL_ADDON_JOBS {
             return false;
         }
-        return !running
-            .iter()
-            .any(|(c, k)| c.as_deref() == Some(cid) && job_is_exclusive(k));
+        return !same_cluster_has_exclusive(running, cid);
     }
-    if running.iter().any(|(_, k)| job_is_exclusive(k)) {
-        return false;
-    }
-    if let Some(cid) = cluster_id {
-        if running.iter().any(|(c, _)| c.as_deref() == Some(cid)) {
-            return false;
-        }
-    }
-    true
+    let Some(cid) = cluster_id else {
+        return !running.iter().any(|(_, k)| job_is_exclusive(k));
+    };
+    !same_cluster_has_any(running, cid)
 }
 
 async fn claim_next(state: &AppState) -> anyhow::Result<Option<ClaimedJob>> {
@@ -1034,6 +1033,21 @@ async fn run_create_cluster(
     let _ =
         crate::node_sync::sync_cluster_nodes(state.pool(), cid, Some(kc.as_path()), Some(log_path))
             .await;
+    match crate::k8s::approve_pending_kubelet_serving_csrs(kc.as_path()).await {
+        Ok(csrs) if !csrs.is_empty() => {
+            append_log(
+                log_path,
+                &format!("approved kubelet serving CSRs: {}\n", csrs.join(", ")),
+            )?;
+        }
+        Err(e) => {
+            append_log(
+                log_path,
+                &format!("warn: kubelet serving CSR approval: {e}\n"),
+            )?;
+        }
+        _ => {}
+    }
     match crate::addons::enqueue_restored_installs(state, cid).await {
         Ok(addons) if !addons.is_empty() => {
             append_log(
@@ -2145,9 +2159,34 @@ async fn run_add_node(
                     append_log(log_path, &format!("warn: wait addresses {name}: {e}\n"))?;
                 }
             }
+            append_log(
+                log_path,
+                &format!("approve kubelet serving certificate for {name}\n"),
+            )?;
+            match crate::k8s::wait_kubelet_serving_cert(
+                &kc,
+                name,
+                std::time::Duration::from_secs(120),
+            )
+            .await
+            {
+                Ok(()) => {
+                    append_log(
+                        log_path,
+                        &format!("kubelet serving cert issued for {name}\n"),
+                    )?;
+                }
+                Err(e) => {
+                    append_log(
+                        log_path,
+                        &format!("warn: kubelet serving cert {name}: {e}\n"),
+                    )?;
+                }
+            }
         }
         let _ = crate::node_sync::sync_cluster_nodes(state.pool(), cid, Some(&kc), Some(log_path))
             .await;
+        let _ = crate::k8s::approve_pending_kubelet_serving_csrs(&kc).await;
     }
 
     let now = db::now_rfc3339();
@@ -2460,8 +2499,29 @@ async fn run_adopt_node(
                 append_log(log_path, &format!("warn: wait addresses {name}: {e}\n"))?;
             }
         }
+        append_log(
+            log_path,
+            &format!("approve kubelet serving certificate for {name}\n"),
+        )?;
+        match crate::k8s::wait_kubelet_serving_cert(&kc, &name, std::time::Duration::from_secs(120))
+            .await
+        {
+            Ok(()) => {
+                append_log(
+                    log_path,
+                    &format!("kubelet serving cert issued for {name}\n"),
+                )?;
+            }
+            Err(e) => {
+                append_log(
+                    log_path,
+                    &format!("warn: kubelet serving cert {name}: {e}\n"),
+                )?;
+            }
+        }
         let _ = crate::node_sync::sync_cluster_nodes(state.pool(), cid, Some(&kc), Some(log_path))
             .await;
+        let _ = crate::k8s::approve_pending_kubelet_serving_csrs(&kc).await;
     }
 
     let now = db::now_rfc3339();
@@ -4994,7 +5054,8 @@ mod tests {
         let running = vec![(Some("a".into()), "create_cluster".into())];
         assert!(job_can_start("install_addon", Some("b"), &running));
         assert!(!job_can_start("install_addon", Some("a"), &running));
-        assert!(!job_can_start("create_cluster", Some("b"), &running));
+        assert!(job_can_start("create_cluster", Some("b"), &running));
+        assert!(!job_can_start("add_node", Some("a"), &running));
     }
 
     #[test]
@@ -5010,10 +5071,20 @@ mod tests {
     }
 
     #[test]
+    fn exclusive_jobs_run_in_parallel_across_clusters() {
+        let running = vec![(Some("a".into()), "create_cluster".into())];
+        assert!(job_can_start("create_cluster", Some("b"), &running));
+        assert!(job_can_start("add_node", Some("b"), &running));
+        assert!(job_can_start("upgrade_cluster", Some("c"), &running));
+        assert!(!job_can_start("upgrade_cluster", Some("a"), &running));
+        assert!(!job_can_start("add_node", Some("a"), &running));
+    }
+
+    #[test]
     fn delete_can_start_on_same_cluster_while_create_aborts() {
         let running = vec![(Some("a".into()), "create_cluster".into())];
         assert!(job_can_start("delete_cluster", Some("a"), &running));
-        assert!(!job_can_start("delete_cluster", Some("b"), &running));
+        assert!(job_can_start("delete_cluster", Some("b"), &running));
     }
 
     #[test]
