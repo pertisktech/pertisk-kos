@@ -335,204 +335,189 @@ export default function Dashboard() {
         </Link>
       </div>
 
-      <div className="dash-stats">
-        <div className="dash-stat-group dash-stat-group-clusters">
-          <div className="dash-stat-kicker">
-            <Icon name="clusters" size={14} /> Clusters
-          </div>
-          <div className="dash-stat-row">
-            <div className="stat">
-              <div className="label">Total</div>
-              <div className="value">{dashNum ? '—' : clusters.length}</div>
-            </div>
-            <div className="stat">
-              <div className="label">Ready</div>
-              <div className="value">{dashNum ? '—' : ready}</div>
-            </div>
-            <div className="stat">
-              <div className="label">Control planes</div>
-              <div className="value">{dashNum ? '—' : cps}</div>
-            </div>
-            <div className="stat">
-              <div className="label">Workers</div>
-              <div className="value">{dashNum ? '—' : wks}</div>
-            </div>
-          </div>
-        </div>
-        <div className="dash-stat-group dash-stat-group-providers">
-          <div className="dash-stat-kicker">
-            <Icon name="providers" size={14} /> Providers
-          </div>
-          <div className="dash-stat-row">
-            <div className="stat">
-              <div className="label">Total</div>
-              <div className="value">{provNum ? '—' : providers.length}</div>
-            </div>
-            <div className="stat">
-              <div className="label">Online</div>
-              <div className="value">{provNum ? '—' : providersOnline}</div>
-            </div>
-            <div className="stat">
-              <div className="label">Offline</div>
-              <div className="value">{provNum ? '—' : providersOffline}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="dash-boards">
-        <section className="dash-panel dash-panel-clusters">
-          <div className="section-head dash-resources-head">
-            <div>
-              <h2 className="card-title">
-                <Icon name="clusters" size={18} /> Clusters
-              </h2>
-              <p className="muted dash-section-sub">
-                Live CPU, memory, and disk · updates every {RESOURCES_POLL_MS / 1000}s
-                {resourcesLoading && (resources.length === 0 || awaitingLiveMetrics) ? ' · loading metrics…' : ''}
-              </p>
-            </div>
-            <div className="dash-resources-actions">
-              <Link className="secondary btn-icon" to="/clusters">
-                <Icon name="clusters" size={14} /> All clusters
-              </Link>
-              <button type="button" className="secondary btn-icon" onClick={loadResources} disabled={resourcesLoading}>
-                <Icon name="refresh" size={14} /> Refresh
-              </button>
-            </div>
-          </div>
-
-          {resourcesErr && <div className="error">{resourcesErr}</div>}
-
-          {listLoading && clusters.length === 0 ? (
-            <div className="cluster-resource-grid dash-cluster-grid">
-              {[0, 1].map((i) => (
-                <div key={i} className="card cluster-resource-card cluster-resource-card-large tone-cluster cluster-resource-skeleton" aria-hidden>
-                  <div className="skeleton-line w-40" />
-                  <div className="skeleton-line w-80" />
-                  <div className="resource-gauge-row">
-                    <div className="skeleton-line" />
-                    <div className="skeleton-line" />
-                    <div className="skeleton-line" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : clusters.length === 0 ? (
-            <div className="card dash-empty">
-              <p className="muted" style={{ margin: 0 }}>
-                No clusters yet. Add a provider, then create control planes and workers.
-              </p>
-              <div className="dash-empty-actions">
-                <Link className="btn btn-icon" to="/providers">
-                  <Icon name="providers" size={16} /> Providers
-                </Link>
-                <Link className="btn btn-icon" to="/clusters?new=1">
-                  <Icon name="plus" size={16} /> Create cluster
-                </Link>
-              </div>
-            </div>
-          ) : (
-            <div className="cluster-resource-grid dash-cluster-grid">
-              {displayResources.map((s) => (
-                <ClusterResourceCard
-                  key={s.cluster_id}
-                  summary={s}
-                  onOpen={() => nav(`/clusters/${s.cluster_id}`)}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="dash-panel dash-panel-providers">
-          <div className="section-head dash-resources-head">
-            <div>
-              <h2 className="card-title">
-                <Icon name="providers" size={18} /> Providers
-              </h2>
-              <p className="muted dash-section-sub">
-                Hypervisor CPU, memory, and disk (used / available / total)
-              </p>
-            </div>
-            <div className="dash-resources-actions">
-              <Link className="secondary btn-icon" to="/providers">
-                <Icon name="providers" size={14} /> All providers
-              </Link>
-              <button type="button" className="secondary btn-icon" onClick={loadProviderResources}>
-                <Icon name="refresh" size={14} /> Refresh
-              </button>
-            </div>
-          </div>
-          {displayProviders.length === 0 ? (
-            <div className="card dash-empty">
-              <p className="muted" style={{ margin: 0 }}>
-                No providers yet. Add Proxmox, vSphere, or Nutanix to create clusters.
-              </p>
-              <div className="dash-empty-actions">
-                <Link className="btn btn-icon" to="/providers">
-                  <Icon name="plus" size={16} /> Add provider
-                </Link>
-              </div>
-            </div>
-          ) : (
-            <div className="cluster-resource-grid dash-provider-grid">
-              {displayProviders.map((s) => (
-                <ProviderResourceCard
-                  key={s.provider_id}
-                  summary={s}
-                  onOpen={() => nav(`/providers/${s.provider_id}`)}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
-
-      {recent.length > 0 && (
-        <div className="card dash-recent">
-          <div className="section-head dash-recent-head">
+      <section className="dash-panel dash-panel-clusters">
+        <div className="section-head dash-resources-head">
+          <div>
             <h2 className="card-title">
-              <Icon name="clusters" size={18} /> Recent
+              <Icon name="clusters" size={18} /> Clusters
             </h2>
-            <Link className="linkish" to="/clusters">View all</Link>
+            <p className="muted dash-section-sub">
+              Live CPU, memory, and disk · updates every {RESOURCES_POLL_MS / 1000}s
+              {resourcesLoading && (resources.length === 0 || awaitingLiveMetrics) ? ' · loading metrics…' : ''}
+            </p>
           </div>
-          <table>
-            <thead>
-              <tr><th>Name</th><th>Status</th><th>Arch / Provider</th><th>Topology</th></tr>
-            </thead>
-            <tbody>
-              {recent.map((c) => {
-                const to = `/clusters/${c.id}`
-                return (
-                  <tr
-                    key={c.id}
-                    className="row-click"
-                    tabIndex={0}
-                    role="link"
-                    onClick={() => nav(to)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        nav(to)
-                      }
-                    }}
-                  >
-                    <td><span className="row-click-label">{c.name}</span></td>
-                    <td>
-                      <ClusterStatusBadges status={c.status} availability={c.availability} />
-                    </td>
-                    <td>
-                      <ClusterMetaBadges arch={c.arch} providerKind={c.provider_kind} />
-                    </td>
-                    <td>{c.controlplanes} CP / {c.workers} WK{c.vip ? ` · VIP ${c.vip}` : ''}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+          <div className="dash-resources-actions">
+            <Link className="secondary btn-icon" to="/clusters">
+              <Icon name="clusters" size={14} /> All clusters
+            </Link>
+            <button type="button" className="secondary btn-icon" onClick={loadResources} disabled={resourcesLoading}>
+              <Icon name="refresh" size={14} /> Refresh
+            </button>
+          </div>
         </div>
-      )}
+        <div className="dash-stat-row">
+          <div className="stat">
+            <div className="label">Total</div>
+            <div className="value">{dashNum ? '—' : clusters.length}</div>
+          </div>
+          <div className="stat">
+            <div className="label">Ready</div>
+            <div className="value">{dashNum ? '—' : ready}</div>
+          </div>
+          <div className="stat">
+            <div className="label">Control planes</div>
+            <div className="value">{dashNum ? '—' : cps}</div>
+          </div>
+          <div className="stat">
+            <div className="label">Workers</div>
+            <div className="value">{dashNum ? '—' : wks}</div>
+          </div>
+        </div>
+
+        {resourcesErr && <div className="error">{resourcesErr}</div>}
+
+        {listLoading && clusters.length === 0 ? (
+          <div className="cluster-resource-grid dash-cluster-grid">
+            {[0, 1].map((i) => (
+              <div key={i} className="card cluster-resource-card cluster-resource-card-large tone-cluster cluster-resource-skeleton" aria-hidden>
+                <div className="skeleton-line w-40" />
+                <div className="skeleton-line w-80" />
+                <div className="resource-gauge-row">
+                  <div className="skeleton-line" />
+                  <div className="skeleton-line" />
+                  <div className="skeleton-line" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : clusters.length === 0 ? (
+          <div className="card dash-empty">
+            <p className="muted" style={{ margin: 0 }}>
+              No clusters yet. Add a provider, then create control planes and workers.
+            </p>
+            <div className="dash-empty-actions">
+              <Link className="btn btn-icon" to="/providers">
+                <Icon name="providers" size={16} /> Providers
+              </Link>
+              <Link className="btn btn-icon" to="/clusters?new=1">
+                <Icon name="plus" size={16} /> Create cluster
+              </Link>
+            </div>
+          </div>
+        ) : (
+          <div className="cluster-resource-grid dash-cluster-grid">
+            {displayResources.map((s) => (
+              <ClusterResourceCard
+                key={s.cluster_id}
+                summary={s}
+                onOpen={() => nav(`/clusters/${s.cluster_id}`)}
+              />
+            ))}
+          </div>
+        )}
+
+        {recent.length > 0 && (
+          <div className="dash-recent">
+            <div className="section-head dash-recent-head">
+              <h2 className="card-title">
+                <Icon name="clusters" size={18} /> Recent
+              </h2>
+              <Link className="linkish" to="/clusters">View all</Link>
+            </div>
+            <table>
+              <thead>
+                <tr><th>Name</th><th>Status</th><th>Arch / Provider</th><th>Topology</th></tr>
+              </thead>
+              <tbody>
+                {recent.map((c) => {
+                  const to = `/clusters/${c.id}`
+                  return (
+                    <tr
+                      key={c.id}
+                      className="row-click"
+                      tabIndex={0}
+                      role="link"
+                      onClick={() => nav(to)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          nav(to)
+                        }
+                      }}
+                    >
+                      <td><span className="row-click-label">{c.name}</span></td>
+                      <td>
+                        <ClusterStatusBadges status={c.status} availability={c.availability} />
+                      </td>
+                      <td>
+                        <ClusterMetaBadges arch={c.arch} providerKind={c.provider_kind} />
+                      </td>
+                      <td>{c.controlplanes} CP / {c.workers} WK{c.vip ? ` · VIP ${c.vip}` : ''}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="dash-panel dash-panel-providers">
+        <div className="section-head dash-resources-head">
+          <div>
+            <h2 className="card-title">
+              <Icon name="providers" size={18} /> Providers
+            </h2>
+            <p className="muted dash-section-sub">
+              Hypervisor CPU, memory, and disk (used / available / total)
+            </p>
+          </div>
+          <div className="dash-resources-actions">
+            <Link className="secondary btn-icon" to="/providers">
+              <Icon name="providers" size={14} /> All providers
+            </Link>
+            <button type="button" className="secondary btn-icon" onClick={loadProviderResources}>
+              <Icon name="refresh" size={14} /> Refresh
+            </button>
+          </div>
+        </div>
+        <div className="dash-stat-row dash-stat-row-providers">
+          <div className="stat">
+            <div className="label">Total</div>
+            <div className="value">{provNum ? '—' : providers.length}</div>
+          </div>
+          <div className="stat">
+            <div className="label">Online</div>
+            <div className="value">{provNum ? '—' : providersOnline}</div>
+          </div>
+          <div className="stat">
+            <div className="label">Offline</div>
+            <div className="value">{provNum ? '—' : providersOffline}</div>
+          </div>
+        </div>
+        {displayProviders.length === 0 ? (
+          <div className="card dash-empty">
+            <p className="muted" style={{ margin: 0 }}>
+              No providers yet. Add Proxmox, vSphere, or Nutanix to create clusters.
+            </p>
+            <div className="dash-empty-actions">
+              <Link className="btn btn-icon" to="/providers">
+                <Icon name="plus" size={16} /> Add provider
+              </Link>
+            </div>
+          </div>
+        ) : (
+          <div className="cluster-resource-grid dash-provider-grid">
+            {displayProviders.map((s) => (
+              <ProviderResourceCard
+                key={s.provider_id}
+                summary={s}
+                onOpen={() => nav(`/providers/${s.provider_id}`)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   )
 }

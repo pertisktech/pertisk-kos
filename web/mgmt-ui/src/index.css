@@ -602,56 +602,20 @@ label {
   margin: 0.2rem 0 0;
   font-size: 0.85rem;
 }
-.dash-stats {
-  display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
-  gap: 1rem;
-}
-.dash-stat-group {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 0.75rem 0.85rem 0.85rem;
-  min-width: 0;
-}
-.dash-stat-group-clusters {
-  background: color-mix(in srgb, var(--accent) 7%, var(--bg-surface));
-  border-color: color-mix(in srgb, var(--accent) 18%, var(--border));
-}
-.dash-stat-group-providers {
-  background: color-mix(in srgb, var(--info) 8%, var(--bg-surface));
-  border-color: color-mix(in srgb, var(--info) 20%, var(--border));
-}
-.dash-stat-kicker {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  margin-bottom: 0.55rem;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--color-text-secondary);
-}
-.dash-stat-group-clusters .dash-stat-kicker { color: var(--accent); }
-.dash-stat-group-providers .dash-stat-kicker { color: var(--info); }
 .dash-stat-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.55rem;
+  margin: 0 0 1rem;
 }
-.dash-stat-group-providers .dash-stat-row {
+.dash-stat-row-providers {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
-.dash-stat-group .stat {
+.dash-panel .stat {
   background: color-mix(in srgb, var(--bg) 55%, transparent);
   border-color: color-mix(in srgb, var(--border) 80%, transparent);
   padding: 0.7rem 0.8rem;
   box-shadow: none;
-}
-.dash-boards {
-  display: flex;
-  flex-direction: column;
-  gap: 1.15rem;
 }
 .dash-resources-head {
   display: flex;
@@ -685,7 +649,9 @@ label {
   gap: 0.65rem;
 }
 .dash-recent {
-  margin: 0;
+  margin: 1rem 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
 }
 .dash-recent-head { margin-bottom: 0.75rem; }
 .dash-recent .card-title { margin: 0; }
@@ -986,29 +952,22 @@ label {
 @media (max-width: 1280px) {
   .cluster-resource-grid.dash-provider-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
-@media (min-width: 1200px) {
-  .dash-boards {
-    display: grid;
-    grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
-    gap: 1.15rem;
-    align-items: start;
-  }
-  .dash-boards .dash-cluster-grid {
+@media (min-width: 1400px) {
+  .cluster-resource-grid.dash-cluster-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .dash-boards .dash-provider-grid {
-    grid-template-columns: 1fr;
+  .cluster-resource-grid.dash-provider-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 @media (max-width: 1100px) {
-  .dash-stats { grid-template-columns: 1fr; }
   .cluster-resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cluster-resource-grid.dash-cluster-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cluster-resource-grid.dash-provider-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 720px) {
   .dash-stat-row,
-  .dash-stat-group-providers .dash-stat-row {
+  .dash-stat-row-providers {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .resource-gauge-row { grid-template-columns: 1fr; }
