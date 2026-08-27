@@ -592,6 +592,67 @@ label {
   font-variant-numeric: tabular-nums;
 }
 
+.dash-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+.dash-page > .page-head { margin-bottom: 0; }
+.dash-lead {
+  margin: 0.2rem 0 0;
+  font-size: 0.85rem;
+}
+.dash-stats {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  gap: 1rem;
+}
+.dash-stat-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 0.75rem 0.85rem 0.85rem;
+  min-width: 0;
+}
+.dash-stat-group-clusters {
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--border));
+}
+.dash-stat-group-providers {
+  background: color-mix(in srgb, var(--info) 8%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--info) 20%, var(--border));
+}
+.dash-stat-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.55rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+.dash-stat-group-clusters .dash-stat-kicker { color: var(--accent); }
+.dash-stat-group-providers .dash-stat-kicker { color: var(--info); }
+.dash-stat-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+.dash-stat-group-providers .dash-stat-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.dash-stat-group .stat {
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  border-color: color-mix(in srgb, var(--border) 80%, transparent);
+  padding: 0.7rem 0.8rem;
+  box-shadow: none;
+}
+.dash-boards {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
 .dash-resources-head {
   display: flex;
   align-items: flex-start;
@@ -614,6 +675,9 @@ label {
   flex-direction: column;
   gap: 1rem;
   align-items: flex-start;
+  margin-bottom: 0;
+  background: color-mix(in srgb, var(--bg) 50%, transparent);
+  border-style: dashed;
 }
 .dash-empty-actions {
   display: flex;
@@ -621,25 +685,33 @@ label {
   gap: 0.65rem;
 }
 .dash-recent {
-  margin-top: 0.25rem;
+  margin: 0;
 }
+.dash-recent-head { margin-bottom: 0.75rem; }
+.dash-recent .card-title { margin: 0; }
 .dash-panel {
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  padding: 0;
-  margin-bottom: 1.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.05rem 1.1rem;
+  margin: 0;
   box-shadow: none;
+  min-width: 0;
 }
 .dash-panel .dash-resources-head {
   margin-top: 0;
 }
+.dash-panel .card-title { margin-bottom: 0; }
 .dash-panel .cluster-resource-grid,
 .dash-panel .dash-empty {
   margin-bottom: 0;
 }
 .dash-panel-clusters {
-  padding-bottom: 0;
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--accent) 16%, var(--border));
+}
+.dash-panel-providers {
+  background: color-mix(in srgb, var(--info) 7%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--info) 18%, var(--border));
 }
 .cluster-resource-grid {
   display: grid;
@@ -674,6 +746,34 @@ label {
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
   background: color-mix(in srgb, var(--bg-hover) 45%, var(--bg-surface));
   outline: none;
+}
+.cluster-resource-card.tone-cluster {
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg));
+  border-color: color-mix(in srgb, var(--accent) 14%, var(--border));
+}
+.cluster-resource-card.tone-cluster:hover,
+.cluster-resource-card.tone-cluster:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg));
+}
+.cluster-resource-card.tone-cluster .cluster-resource-icon {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+}
+.cluster-resource-card.tone-provider {
+  background: color-mix(in srgb, var(--info) 6%, var(--bg));
+  border-color: color-mix(in srgb, var(--info) 16%, var(--border));
+}
+.cluster-resource-card.tone-provider:hover,
+.cluster-resource-card.tone-provider:focus-visible {
+  border-color: color-mix(in srgb, var(--info) 34%, var(--border));
+  background: color-mix(in srgb, var(--info) 11%, var(--bg));
+}
+.cluster-resource-card.tone-provider .cluster-resource-icon {
+  color: var(--info);
+  background: color-mix(in srgb, var(--info) 14%, transparent);
+  border-color: color-mix(in srgb, var(--info) 24%, var(--border));
 }
 .cluster-resource-head {
   display: flex;
@@ -716,12 +816,8 @@ label {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cluster-resource-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem 0.5rem;
-  color: var(--color-text-secondary);
-  font-size: 0.75rem;
+.cluster-resource-tags .cluster-meta-badges {
+  margin-left: 0.1rem;
 }
 .cluster-resource-chip {
   display: inline-flex;
@@ -890,12 +986,31 @@ label {
 @media (max-width: 1280px) {
   .cluster-resource-grid.dash-provider-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+@media (min-width: 1200px) {
+  .dash-boards {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
+    gap: 1.15rem;
+    align-items: start;
+  }
+  .dash-boards .dash-cluster-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .dash-boards .dash-provider-grid {
+    grid-template-columns: 1fr;
+  }
+}
 @media (max-width: 1100px) {
+  .dash-stats { grid-template-columns: 1fr; }
   .cluster-resource-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cluster-resource-grid.dash-cluster-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cluster-resource-grid.dash-provider-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 720px) {
+  .dash-stat-row,
+  .dash-stat-group-providers .dash-stat-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .resource-gauge-row { grid-template-columns: 1fr; }
   .cluster-resource-grid,
   .cluster-resource-grid.dash-cluster-grid,
@@ -1064,6 +1179,10 @@ tr.row-click:focus-visible {
 .badge.kind-vsphere {
   background: color-mix(in srgb, #3498db 22%, transparent);
   color: #85c1e9;
+}
+.badge.kind-nutanix {
+  background: color-mix(in srgb, #6f42c1 22%, transparent);
+  color: #c4b5fd;
 }
 .status-badges,
 .cluster-meta-badges {
