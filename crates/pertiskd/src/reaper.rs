@@ -237,9 +237,13 @@ mod unix_impl {
             .spawn(move || {
                 // Let kubelet start the etcd static pod after a DHCP rebase.
                 std::thread::sleep(std::time::Duration::from_secs(45));
-                match pertisk_bootstrap::heal_etcd_membership_blocking(&state_root) {
-                    Ok(msg) => info!(message = %msg, "etcd membership heal"),
-                    Err(err) => warn!(error = %err, "etcd membership heal failed"),
+                let healed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    pertisk_bootstrap::heal_etcd_membership_blocking(&state_root)
+                }));
+                match healed {
+                    Ok(Ok(msg)) => info!(message = %msg, "etcd membership heal"),
+                    Ok(Err(err)) => warn!(error = %err, "etcd membership heal failed"),
+                    Err(_) => warn!("etcd membership heal panicked"),
                 }
                 ETCD_HEAL_BUSY.store(false, Ordering::SeqCst);
             });

@@ -10,6 +10,7 @@ rust-version.workspace = true
 anyhow = { workspace = true }
 base64 = "0.22"
 pertisk-config = { workspace = true }
+pertisk-net = { workspace = true }
 rand = "0.8"
 etcd-client = { version = "0.14", default-features = false, features = ["tls"] }
 rcgen = { version = "0.14", features = ["pem", "x509-parser"] }

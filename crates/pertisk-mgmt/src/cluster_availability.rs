@@ -185,6 +185,23 @@ pub async fn probe_readyz(kc: &Path, server: Option<&str>) -> bool {
     }
 }
 
+/// `/readyz` or a namespace get — kube-vip can be down while a CP `:6443` still serves.
+pub async fn probe_api(kc: &Path, server: Option<&str>) -> bool {
+    if probe_readyz(kc, server).await {
+        return true;
+    }
+    let mut cmd = Command::new("kubectl");
+    cmd.arg("--kubeconfig").arg(kc);
+    if let Some(s) = server {
+        cmd.arg("--server").arg(s);
+    }
+    cmd.args(["--request-timeout=2s", "get", "ns", "kube-system"]);
+    match timeout(Duration::from_secs(3), cmd.output()).await {
+        Ok(Ok(out)) => out.status.success(),
+        _ => false,
+    }
+}
+
 /// Parallel /readyz against kubeconfig server + optional overrides; returns first working server override
 /// (`None` means kubeconfig default worked).
 pub async fn first_reachable_server(kc: &Path, extra_servers: &[String]) -> Option<Option<String>> {
@@ -203,6 +220,36 @@ pub async fn first_reachable_server(kc: &Path, extra_servers: &[String]) -> Opti
             let kc = kc_buf.clone();
             async move {
                 let ok = probe_readyz(&kc, server.as_deref()).await;
+                (ok, server)
+            }
+        })
+        .collect();
+
+    for (ok, server) in futures::future::join_all(futs).await {
+        if ok {
+            return Some(server);
+        }
+    }
+    None
+}
+
+/// Like [`first_reachable_server`] but also accepts an API that answers `get ns` when `/readyz` is false.
+pub async fn first_usable_server(kc: &Path, extra_servers: &[String]) -> Option<Option<String>> {
+    let mut candidates: Vec<Option<String>> = vec![None];
+    for s in extra_servers {
+        let t = s.trim();
+        if !t.is_empty() {
+            candidates.push(Some(t.to_string()));
+        }
+    }
+
+    let kc_buf: PathBuf = kc.to_path_buf();
+    let futs: Vec<_> = candidates
+        .into_iter()
+        .map(|server| {
+            let kc = kc_buf.clone();
+            async move {
+                let ok = probe_api(&kc, server.as_deref()).await;
                 (ok, server)
             }
         })

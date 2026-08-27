@@ -507,6 +507,11 @@ fn run() -> Result<()> {
     }
     let _ = std::fs::create_dir_all("/var/run/netns");
     let _ = std::fs::create_dir_all("/run/netns");
+    // DHCP/IPAM can lag on some hypervisors (isolated Proxmox bridge, slow virtio).
+    // Rebase static-pod advertise IPs *after* the NIC has an address, then start kubelet.
+    if cfg.as_ref().and_then(|c| c.cluster.as_ref()).is_some() {
+        crate::services::wait_for_guest_ipv4(std::time::Duration::from_secs(180));
+    }
     // Re-publish CP static pods + cert kubeconfigs before kubelet starts.
     // Without this, reboot loses /etc/kubernetes and kubelet exits immediately.
     match pertisk_bootstrap::restore_control_plane(&volume.root) {

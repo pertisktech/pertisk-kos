@@ -1956,6 +1956,13 @@ Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate th
         die "join-controlplane failed for ${host} after ${join_try} attempts"
       fi
       log "join-controlplane retry ${join_try}/${JOIN_TRIES} for ${host}..."
+      # Transport / HTTP/2 drops (guest panic, NIC blip) — retry the RPC quickly.
+      # Do not burn JOIN_READYZ_WAIT on :6443; this node has not joined yet.
+      if echo "$join_err" | grep -qiE 'h2 protocol|http2 error|transport error|stream no longer needed'; then
+        sleep 3
+        wait_api "$ip"
+        continue
+      fi
       wait_https_readyz "$ip" "$JOIN_READYZ_WAIT" || true
       wait_api "$ip"
     done

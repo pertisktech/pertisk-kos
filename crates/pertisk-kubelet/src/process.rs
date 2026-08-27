@@ -189,6 +189,9 @@ fn kubelet_command(
         }
     }
     // Dual-stack requires explicit --node-ip=v4,v6 or kubelet stays IPv4-only.
+    // IPv4-only still needs --node-ip when the guest has no default route
+    // (isolated Proxmox bridge / no gateway): kubelet otherwise never
+    // registers and static-pod apiserver looks down (`node not found`).
     if cluster.is_dual_stack() {
         if let Some(node_ip) = dual_stack_node_ip_for(cfg) {
             info!(%node_ip, "kubelet dual-stack --node-ip");
@@ -196,6 +199,9 @@ fn kubelet_command(
         } else {
             warn!("dual-stack enabled but no v4+v6 on primary iface; kubelet may stay IPv4-only");
         }
+    } else if let Some(node_ip) = ipv4_node_ip_for(cfg) {
+        info!(%node_ip, "kubelet --node-ip");
+        cmd.arg(format!("--node-ip={node_ip}"));
     }
     // Bridge mode needs an explicit pod CIDR; cluster CNI assigns via Node.Spec.PodCIDR.
     if cluster.cni == pertisk_config::CniMode::Bridge {
@@ -337,6 +343,51 @@ current-context: default-auth
             warn!(error = %err, "failed to recover kubelet kubeconfig from PKI");
             false
         }
+    }
+}
+
+fn ipv4_node_ip_for(cfg: &MachineConfig) -> Option<String> {
+    let skip = cluster_vip_skips(cfg);
+    let skip_refs: Vec<&str> = skip.iter().map(|s| s.as_str()).collect();
+    let iface = cfg
+        .machine
+        .network
+        .interfaces
+        .iter()
+        .map(|i| i.interface.as_str())
+        .find(|n| !n.is_empty() && *n != "lo")
+        .unwrap_or("eth0");
+    if !pertisk_net::is_virtual_iface(iface) {
+        if let Ok(addrs) = pertisk_net::list_addresses(iface) {
+            if let Some(ip) =
+                pertisk_net::pick_node_ipv4(addrs.iter().map(|s| s.as_str()), &skip_refs)
+            {
+                return Some(ip);
+            }
+        }
+    }
+    pertisk_net::first_global_ipv4_skip(&skip_refs)
+}
+
+fn cluster_vip_skips(cfg: &MachineConfig) -> Vec<String> {
+    let Some(cluster) = cfg.cluster.as_ref() else {
+        return Vec::new();
+    };
+    let rest = cluster
+        .endpoint
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let hostport = rest.split('/').next().unwrap_or(rest);
+    let host = if let Some(inner) = hostport.strip_prefix('[') {
+        inner.split(']').next().unwrap_or(inner)
+    } else {
+        hostport.split(':').next().unwrap_or(hostport)
+    };
+    if host.parse::<std::net::Ipv4Addr>().is_ok() {
+        vec![host.to_string()]
+    } else {
+        Vec::new()
     }
 }
 

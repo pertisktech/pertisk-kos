@@ -390,6 +390,8 @@ kubectl --kubeconfig ./out/cluster/admin.conf get nodes
 
 **HA VIP:** pick an IPv4 address that is **free on the L2** and **outside your DHCP pool** (not leased to any guest). kube-vip announces it with gratuitous ARP, which needs the `af_packet` module in the guest image (`make fetch-kernel` / rebuild cloud image). If DHCP assigns the VIP to a control-plane (lab-up will now hard-fail after IP resolve), join/finalize fails with `node … not registered`. A busy VIP or a guest without `af_packet` leaves `:6443` unreachable off-node even while CP apiservers are healthy on their node IPs.
 
+**NotReady after VM shutdown/reboot:** kubelet logs `node "…-cp-1" not found` and `127.0.0.1:6443 connection refused` while static-pod apiserver is still down. Isolated Proxmox bridges (DHCP, **no default route**) used to fail advertise-IP detection (`1.1.1.1`) so etcd/apiserver were not rebased and kubelet did not set `--node-ip`. Current guests wait for LAN IPv4, rebase from the NIC address, and pass `--node-ip`. Ship a new OS bundle (`make os-bundle`) or recreate VMs; until then stagger power-on (CP1, then other CPs, then workers) or `./scripts/recover-not-ready-nodes.sh ~/.kube/ptkos/<cluster>.yaml`.
+
 **ARM / HA create tip:** if create fails with `already bootstrapped` / `node not registered`, guests likely reused disks from a prior run. Lab-up now soft-resets CP1 and each joining CP before apply/join. Destroy VMs when deleting a cluster, or run `pertiskctl reset --force` on leftover guests.
 
 ### 4c. Worker-only join (existing external CP)

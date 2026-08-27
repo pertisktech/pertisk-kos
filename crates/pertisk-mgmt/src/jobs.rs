@@ -3423,6 +3423,7 @@ async fn run_upgrade(
         .cloned()
         .collect();
     cps.sort_by(|a, b| a.1.cmp(&b.1));
+    let extra = https_cp_servers(&nodes);
     for (i, (id, name, _role, ip)) in cps.iter().enumerate() {
         let first = i == 0;
         append_log(
@@ -3441,7 +3442,7 @@ async fn run_upgrade(
         )?;
         // After a CP bumps apiserver/kubelet, VIP may blip — wait before the next node.
         if let Some(path) = kc.as_ref().filter(|s| !s.is_empty()) {
-            wait_api_ready(path, log_path).await?;
+            wait_api_ready_ex(path, &extra, log_path).await?;
         }
         upgrade_node_zero_downtime(
             state,
@@ -3584,6 +3585,12 @@ async fn run_upgrade_os(
     .bind(cid)
     .fetch_all(state.pool())
     .await?;
+    let extra = https_cp_servers(&nodes);
+    let all_cps: Vec<_> = nodes
+        .iter()
+        .filter(|(_, _, role, _)| role == "controlplane")
+        .cloned()
+        .collect();
     if let Some(ids) = &filter {
         nodes.retain(|(id, _, _, _)| ids.iter().any(|x| x == id));
         if nodes.is_empty() {
@@ -3604,6 +3611,21 @@ async fn run_upgrade_os(
         .collect();
     cps.sort_by(|a, b| a.1.cmp(&b.1));
 
+    let api_server = match wait_api_ready_ex(kc, &extra, log_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            append_log(log_path, &format!("{e}\n"))?;
+            recover_etcd_on_cp1(&state.cfg().pertiskctl, &all_cps, log_path).await?;
+            wait_api_ready_ex(kc, &extra, log_path).await?
+        }
+    };
+    if let Some(ref s) = api_server {
+        append_log(
+            log_path,
+            &format!("using apiserver {s} for kubectl (kubeconfig VIP not required)\n"),
+        )?;
+    }
+
     for (i, (id, name, role, ip)) in workers.iter().enumerate() {
         append_log(
             log_path,
@@ -3621,6 +3643,7 @@ async fn run_upgrade_os(
             role,
             ip,
             kc,
+            &extra,
             bundle_path,
             verified.as_str(),
             reboot,
@@ -3642,6 +3665,7 @@ async fn run_upgrade_os(
             role,
             ip,
             kc,
+            &extra,
             bundle_path,
             verified.as_str(),
             reboot,
@@ -3667,6 +3691,7 @@ async fn upgrade_os_node(
     _role: &str,
     ip: &Option<String>,
     kubeconfig: &str,
+    extra_servers: &[String],
     bundle_dir: &std::path::Path,
     version: &str,
     reboot: bool,
@@ -3691,17 +3716,27 @@ async fn upgrade_os_node(
         );
     }
 
-    wait_api_ready(kubeconfig, log_path).await?;
+    let api_server = wait_api_ready_ex(kubeconfig, extra_servers, log_path).await?;
+    let api_srv = api_server.as_deref();
     append_log(
         log_path,
         &format!("stage OS bundle on {name} via hostPath\n"),
     )?;
-    stage_os_bundle_via_pod(kubeconfig, name, bundle_dir, log_path).await?;
+    stage_os_bundle_via_pod(
+        kubeconfig,
+        api_srv,
+        extra_servers,
+        name,
+        bundle_dir,
+        log_path,
+    )
+    .await?;
 
     if do_drain {
         append_log(log_path, &format!("drain {name}\n"))?;
-        let _ = kubectl(
+        let _ = kubectl_srv(
             kubeconfig,
+            api_srv,
             &[
                 "drain",
                 name,
@@ -3794,10 +3829,11 @@ async fn upgrade_os_node(
         }
     }
 
-    wait_api_ready(kubeconfig, log_path).await?;
+    let api_server = wait_api_ready_ex(kubeconfig, extra_servers, log_path).await?;
     append_log(log_path, &format!("wait Ready {name}\n"))?;
-    let _ = kubectl(
+    let _ = kubectl_srv(
         kubeconfig,
+        api_server.as_deref(),
         &[
             "wait",
             "--for=condition=Ready",
@@ -3809,7 +3845,13 @@ async fn upgrade_os_node(
     .await;
     if do_drain {
         append_log(log_path, &format!("uncordon {name}\n"))?;
-        let _ = kubectl(kubeconfig, &["uncordon", name], log_path).await;
+        let _ = kubectl_srv(
+            kubeconfig,
+            api_server.as_deref(),
+            &["uncordon", name],
+            log_path,
+        )
+        .await;
     }
 
     let now = db::now_rfc3339();
@@ -3831,6 +3873,8 @@ async fn upgrade_os_node(
 
 async fn stage_os_bundle_via_pod(
     kubeconfig: &str,
+    server: Option<&str>,
+    extra_servers: &[String],
     node_name: &str,
     bundle_dir: &std::path::Path,
     log_path: &str,
@@ -3883,16 +3927,9 @@ spec:
     let mut applied = false;
     let mut last_err = String::new();
     for attempt in 1..=6 {
-        wait_api_ready(kubeconfig, log_path).await?;
-        let apply = Command::new("kubectl")
-            .args([
-                "--kubeconfig",
-                kubeconfig,
-                "apply",
-                "--validate=false",
-                "--request-timeout=30s",
-                "-f",
-            ])
+        wait_api_ready_ex(kubeconfig, extra_servers, log_path).await?;
+        let apply = kubectl_cmd(kubeconfig, server)
+            .args(["apply", "--validate=false", "--request-timeout=30s", "-f"])
             .arg(&tmp)
             .output()
             .await?;
@@ -3913,10 +3950,8 @@ spec:
         anyhow::bail!("{last_err}");
     }
 
-    let wait = Command::new("kubectl")
+    let wait = kubectl_cmd(kubeconfig, server)
         .args([
-            "--kubeconfig",
-            kubeconfig,
             "wait",
             "--for=condition=Ready",
             &format!("pod/{pod}"),
@@ -3929,7 +3964,7 @@ spec:
     append_log(log_path, &String::from_utf8_lossy(&wait.stdout))?;
     append_log(log_path, &String::from_utf8_lossy(&wait.stderr))?;
     if !wait.status.success() {
-        let _ = delete_os_stage_pod(kubeconfig, &pod, false).await;
+        let _ = delete_os_stage_pod(kubeconfig, server, &pod, false).await;
         anyhow::bail!("staging pod {pod} not Ready on {node_name}");
     }
 
@@ -3952,10 +3987,8 @@ spec:
         .stdout
         .take()
         .ok_or_else(|| anyhow::anyhow!("tar stdout"))?;
-    let copy = Command::new("kubectl")
+    let copy = kubectl_cmd(kubeconfig, server)
         .args([
-            "--kubeconfig",
-            kubeconfig,
             "exec",
             "-i",
             "-n",
@@ -3975,7 +4008,7 @@ spec:
     append_log(log_path, &String::from_utf8_lossy(&copy.stdout))?;
     append_log(log_path, &String::from_utf8_lossy(&copy.stderr))?;
     if !copy.status.success() || !tar_status.success() {
-        let _ = delete_os_stage_pod(kubeconfig, &pod, false).await;
+        let _ = delete_os_stage_pod(kubeconfig, server, &pod, false).await;
         anyhow::bail!("copy OS bundle onto {node_name} failed");
     }
 
@@ -3988,10 +4021,8 @@ spec:
             crate::os_upgrade::HOST_TRUST_PK
         ),
     )?;
-    let install = Command::new("kubectl")
+    let install = kubectl_cmd(kubeconfig, server)
         .args([
-            "--kubeconfig",
-            kubeconfig,
             "exec",
             "-n",
             "kube-system",
@@ -4019,7 +4050,7 @@ echo "os-trust.pk present on STATE via /proc/1/root"
     append_log(log_path, &String::from_utf8_lossy(&install.stdout))?;
     append_log(log_path, &String::from_utf8_lossy(&install.stderr))?;
     if !install.status.success() {
-        let _ = delete_os_stage_pod(kubeconfig, &pod, false).await;
+        let _ = delete_os_stage_pod(kubeconfig, server, &pod, false).await;
         let detail = format!(
             "{}{}",
             String::from_utf8_lossy(&install.stdout),
@@ -4031,7 +4062,7 @@ echo "os-trust.pk present on STATE via /proc/1/root"
         );
     }
 
-    delete_os_stage_pod(kubeconfig, &pod, true).await?;
+    delete_os_stage_pod(kubeconfig, server, &pod, true).await?;
     append_log(
         log_path,
         &format!("staged bundle at {host} on {node_name}; trust key installed\n"),
@@ -4039,24 +4070,27 @@ echo "os-trust.pk present on STATE via /proc/1/root"
     Ok(())
 }
 
-async fn delete_os_stage_pod(kubeconfig: &str, pod: &str, wait: bool) -> anyhow::Result<()> {
-    let mut args = vec![
-        "--kubeconfig".into(),
-        kubeconfig.to_string(),
-        "delete".into(),
-        "pod".into(),
-        pod.to_string(),
-        "-n".into(),
-        "kube-system".into(),
-        "--ignore-not-found=true".into(),
-    ];
+async fn delete_os_stage_pod(
+    kubeconfig: &str,
+    server: Option<&str>,
+    pod: &str,
+    wait: bool,
+) -> anyhow::Result<()> {
+    let mut cmd = kubectl_cmd(kubeconfig, server);
+    cmd.args([
+        "delete",
+        "pod",
+        pod,
+        "-n",
+        "kube-system",
+        "--ignore-not-found=true",
+    ]);
     if wait {
-        args.push("--wait=true".into());
-        args.push("--timeout=60s".into());
+        cmd.args(["--wait=true", "--timeout=60s"]);
     } else {
-        args.push("--wait=false".into());
+        cmd.arg("--wait=false");
     }
-    let _ = Command::new("kubectl").args(&args).output().await;
+    let _ = cmd.output().await;
     Ok(())
 }
 
@@ -4711,8 +4745,21 @@ fn normalize_k8s_version(v: &str) -> String {
 }
 
 async fn kubectl(kubeconfig: &str, args: &[&str], log_path: &str) -> anyhow::Result<()> {
+    kubectl_srv(kubeconfig, None, args, log_path).await
+}
+
+async fn kubectl_srv(
+    kubeconfig: &str,
+    server: Option<&str>,
+    args: &[&str],
+    log_path: &str,
+) -> anyhow::Result<()> {
     let mut cmd = Command::new("kubectl");
-    cmd.arg("--kubeconfig").arg(kubeconfig).args(args);
+    cmd.arg("--kubeconfig").arg(kubeconfig);
+    if let Some(s) = server {
+        cmd.arg("--server").arg(s);
+    }
+    cmd.args(args);
     let out = cmd.output().await?;
     append_log(log_path, &String::from_utf8_lossy(&out.stdout))?;
     append_log(log_path, &String::from_utf8_lossy(&out.stderr))?;
@@ -4722,69 +4769,129 @@ async fn kubectl(kubeconfig: &str, args: &[&str], log_path: &str) -> anyhow::Res
     Ok(())
 }
 
-/// Wait until the API endpoint in kubeconfig answers (handles VIP blips while
-/// control-plane static pods / kubelet restart during rolling upgrades).
-/// Prefers /readyz; falls back to a simple namespace get so we can proceed when
-/// the API is up but not fully "ready" mid-upgrade.
+fn kubectl_cmd(kubeconfig: &str, server: Option<&str>) -> Command {
+    let mut cmd = Command::new("kubectl");
+    cmd.arg("--kubeconfig").arg(kubeconfig);
+    if let Some(s) = server {
+        cmd.arg("--server").arg(s);
+    }
+    cmd
+}
+
+fn https_cp_servers(nodes: &[(String, String, String, Option<String>)]) -> Vec<String> {
+    nodes
+        .iter()
+        .filter(|(_, _, role, _)| role == "controlplane")
+        .filter_map(|(_, _, _, ip)| ip.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|ip| format!("https://{ip}:6443"))
+        .collect()
+}
+
+/// Wait until kubeconfig (VIP) or a CP node IP answers. Returns `--server` override
+/// (`None` = kubeconfig default worked).
 async fn wait_api_ready(kubeconfig: &str, log_path: &str) -> anyhow::Result<()> {
+    wait_api_ready_ex(kubeconfig, &[], log_path)
+        .await
+        .map(|_| ())
+}
+
+async fn wait_api_ready_ex(
+    kubeconfig: &str,
+    extra_servers: &[String],
+    log_path: &str,
+) -> anyhow::Result<Option<String>> {
+    let kc = std::path::Path::new(kubeconfig);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
     let mut logged = false;
+    let mut last: Option<Option<String>> = None;
     let mut ok_streak = 0u32;
     while std::time::Instant::now() < deadline {
-        let readyz = Command::new("kubectl")
-            .args([
-                "--kubeconfig",
-                kubeconfig,
-                "get",
-                "--raw=/readyz",
-                "--request-timeout=5s",
-            ])
-            .output()
-            .await;
-        let reachable = match &readyz {
-            Ok(o) if o.status.success() => true,
-            _ => {
-                let probe = Command::new("kubectl")
-                    .args([
-                        "--kubeconfig",
-                        kubeconfig,
-                        "get",
-                        "ns",
-                        "kube-system",
-                        "--request-timeout=5s",
-                    ])
-                    .output()
-                    .await;
-                matches!(probe, Ok(o) if o.status.success())
+        let hit = crate::cluster_availability::first_usable_server(kc, extra_servers).await;
+        if let Some(server) = hit {
+            if last.as_ref() == Some(&server) {
+                ok_streak += 1;
+            } else {
+                ok_streak = 1;
+                last = Some(server.clone());
             }
-        };
-        if reachable {
-            ok_streak += 1;
-            // Require a short stable window so we don't apply into a flapping VIP.
             if ok_streak >= 2 {
                 if logged {
-                    append_log(log_path, "API reachable\n")?;
+                    match &server {
+                        None => append_log(log_path, "API reachable (kubeconfig / VIP)\n")?,
+                        Some(s) => append_log(
+                            log_path,
+                            &format!("API reachable via {s} (kube-vip down or settling)\n"),
+                        )?,
+                    }
                 }
-                return Ok(());
+                return Ok(server);
             }
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             continue;
         }
         ok_streak = 0;
+        last = None;
         if !logged {
-            let detail = match readyz {
-                Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
-                Err(e) => e.to_string(),
+            let extras = if extra_servers.is_empty() {
+                String::new()
+            } else {
+                format!("; also probing {}", extra_servers.join(" "))
             };
             append_log(
                 log_path,
-                &format!("wait API (VIP may be settling after CP upgrade)… {detail}\n"),
+                &format!("wait API (VIP + control-plane :6443{extras})…\n"),
             )?;
             logged = true;
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
-    anyhow::bail!("timed out waiting for API after control-plane upgrade blip")
+    anyhow::bail!("timed out waiting for API (kube-vip and control-plane :6443 unreachable)")
+}
+
+async fn recover_etcd_on_cp1(
+    pertiskctl: &std::path::Path,
+    cps: &[(String, String, String, Option<String>)],
+    log_path: &str,
+) -> anyhow::Result<()> {
+    let Some((_, name, _, ip)) = cps
+        .iter()
+        .find(|(_, n, _, _)| n.ends_with("-cp-1") || n.ends_with("-cp1"))
+    else {
+        anyhow::bail!("no *-cp-1 node to recover etcd");
+    };
+    let ip = ip
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("no IP for {name}"))?;
+    append_log(
+        log_path,
+        &format!(
+            "API down on VIP and CP IPs — etcd recover --force-new-cluster on {name} ({ip})\n"
+        ),
+    )?;
+    let out = Command::new(pertiskctl)
+        .args([
+            "-e",
+            &format!("{ip}:50000"),
+            "etcd",
+            "recover",
+            "--force-new-cluster",
+            "--force",
+        ])
+        .output()
+        .await?;
+    append_log(log_path, &String::from_utf8_lossy(&out.stdout))?;
+    append_log(log_path, &String::from_utf8_lossy(&out.stderr))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "etcd recover failed on {name} (guest may be too old for the RPC). \
+             Run ./scripts/recover-not-ready-nodes.sh against this cluster kubeconfig, then retry OS upgrade."
+        );
+    }
+    Ok(())
 }
 
 fn patch_kubernetes_version(yaml: &str, version: &str) -> String {

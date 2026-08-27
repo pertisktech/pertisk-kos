@@ -480,18 +480,22 @@ impl MachineService for MachineSvc {
         let adv = if req.advertise_address.is_empty() {
             None
         } else {
-            Some(req.advertise_address.as_str())
+            Some(req.advertise_address.clone())
         };
-        let result = join_control_plane(&state_root, &cfg, adv, &req.etcd_endpoints)
-            .await
-            .map_err(|e| {
-                // Even on finalize failure, credentials may already be on disk —
-                // restart kubelet so the Node can register for the next retry.
-                if let Ok(mut st) = self.state.lock() {
-                    st.kubelet_reload = true;
-                }
-                Status::internal(format!("{e:#}"))
-            })?;
+        let etcd_endpoints = req.etcd_endpoints.clone();
+        let result = tokio::spawn(async move {
+            join_control_plane(&state_root, &cfg, adv.as_deref(), &etcd_endpoints).await
+        })
+        .await
+        .map_err(|e| Status::internal(format!("join-controlplane task: {e}")))?
+        .map_err(|e| {
+            // Even on finalize failure, credentials may already be on disk —
+            // restart kubelet so the Node can register for the next retry.
+            if let Ok(mut st) = self.state.lock() {
+                st.kubelet_reload = true;
+            }
+            Status::internal(format!("{e:#}"))
+        })?;
         {
             let mut st = lock(&self.state)?;
             st.message = result.message.clone();

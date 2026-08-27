@@ -333,20 +333,33 @@ async fn heal_etcd_membership(state_root: &Path) -> Result<String> {
         return Ok(msg);
     }
 
+    let member_count = parse_etcd_initial_cluster(&initial).len();
+    let wait = etcd_heal_wait();
+    let deadline = Instant::now() + wait;
+    while Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        if let Some(msg) = try_sync_peer_via_leader(state_root, &name, &advertise, &initial).await {
+            return Ok(msg);
+        }
+    }
+
     if !is_etcd_heal_leader(&name, &initial) {
         return Ok(format!(
             "etcd has no leader; {name} waits for *-cp-1 to recover"
         ));
     }
 
+    let local_up = connect_local(state_root).await.is_ok();
     // HA join MemberAdd temporarily drops quorum (2 voting members, joiner not
-    // up yet). Treating that as "DHCP killed the cluster" ran --force-new-cluster
-    // and removed the joining peer; the joiner then crashloops (member count unequal).
+    // up yet). That must not look like "full cluster reboot lost quorum".
     let ip_changed = etcd_heal_ip_changed() || !initial_cluster_contains_ip(&initial, &advertise);
-    if !ip_changed {
+    if !should_force_new_cluster(member_count, ip_changed, local_up) {
+        if !local_up {
+            return Ok("skip force-new-cluster: local etcd :2379 is not up".into());
+        }
         return Ok(
-            "skip force-new-cluster: guest IP already in etcd initial-cluster \
-(likely in-progress control-plane join, not DHCP)"
+            "skip force-new-cluster: 2-member initial-cluster with stable IP \
+(likely in-progress control-plane join, not a full HA reboot)"
                 .into(),
         );
     }
@@ -354,11 +367,42 @@ async fn heal_etcd_membership(state_root: &Path) -> Result<String> {
     info!(
         name = %name,
         advertise_ip = %advertise,
-        "etcd has no leader after IP change; force-new-cluster on healer"
+        member_count,
+        ip_changed,
+        "etcd has no leader after wait; force-new-cluster on healer"
     );
     let out = etcd_force_new_cluster_inner(state_root, true, &name, &advertise).await;
     clear_etcd_heal_ip_changed();
     out
+}
+
+fn etcd_heal_wait() -> Duration {
+    let secs = std::env::var("PERTISK_ETCD_HEAL_WAIT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(180);
+    Duration::from_secs(secs.max(5).min(600))
+}
+
+/// Promote *-cp-1 with `--force-new-cluster` after a leader wait?
+///
+/// - Local etcd must already be accepting clients (otherwise this is a pull/start
+///   race, not lost quorum).
+/// - IP change: old peer URLs are stale — recover.
+/// - 3+ members, stable IP, no leader: full HA reboot lost quorum — recover.
+/// - 2 members, stable IP: 1→3 join window — do **not** recover.
+pub(crate) fn should_force_new_cluster(
+    member_count: usize,
+    ip_changed: bool,
+    local_etcd_up: bool,
+) -> bool {
+    if !local_etcd_up {
+        return false;
+    }
+    if ip_changed {
+        return true;
+    }
+    member_count >= 3
 }
 
 pub(crate) fn mark_etcd_heal_ip_changed() {
@@ -969,5 +1013,14 @@ command:
         ));
         assert!(initial_cluster_contains_ip(spec, "10.1.1.96"));
         assert!(!initial_cluster_contains_ip(spec, "10.1.1.99"));
+    }
+
+    #[test]
+    fn force_new_cluster_after_ha_reboot_not_during_join() {
+        assert!(!should_force_new_cluster(2, false, true));
+        assert!(!should_force_new_cluster(3, false, false));
+        assert!(should_force_new_cluster(3, false, true));
+        assert!(should_force_new_cluster(1, true, true));
+        assert!(should_force_new_cluster(2, true, true));
     }
 }

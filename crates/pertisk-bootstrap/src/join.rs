@@ -181,6 +181,9 @@ delete the cluster, and recreate (do not reuse this node)"
     let kubernetes_svc_ip = kubernetes_service_ip(&service_subnet);
 
     info!(%advertise, %hostname, "joining control-plane (shared CA)");
+    // Resolve NIC before MemberAdd so a netlink failure cannot leave a
+    // stuck etcd learner on CP1.
+    let vip_iface = kube_vip::detect_vip_interface(&advertise);
     let pki = pki::generate_pki_from_existing(
         ca,
         ca_key,
@@ -290,7 +293,8 @@ delete the cluster, and recreate (do not reuse this node)"
         vip,
         cluster.vip6.as_deref(),
         &advertise,
-        kube_vip::DEFAULT_KUBE_VIP_INTERFACE,
+        &vip_iface,
+        &hostname,
     )?;
     paths.link_live()?;
     if !pki_live.exists() {

@@ -230,12 +230,14 @@ pub fn bootstrap_control_plane(
         },
     )?;
     let vip = kube_vip::vip_from_endpoint_host(&endpoint_host);
+    let vip_iface = kube_vip::detect_vip_interface(&advertise);
     let _ = kube_vip::maybe_write_kube_vip(
         &paths.manifests(),
         vip,
         cluster.vip6.as_deref(),
         &advertise,
-        kube_vip::DEFAULT_KUBE_VIP_INTERFACE,
+        &vip_iface,
+        &hostname,
     )?;
     paths.link_live()?;
     // Ensure pki is present at live path (symlink or copy).
@@ -369,6 +371,9 @@ pub fn restore_control_plane(state_root: &Path) -> Result<bool> {
     if let Err(err) = maybe_rebase_advertise(state_root) {
         tracing::warn!(error = %err, "advertise rebase on restore failed");
     }
+    if let Err(err) = refresh_kube_vip(&paths) {
+        tracing::warn!(error = %err, "kube-vip refresh on restore failed");
+    }
     repair_kubeconfig_files(&paths)?;
     paths.link_live()?;
     let kubelet_conf = paths.kubeconfig_dir().join("kubelet.conf");
@@ -382,6 +387,38 @@ pub fn restore_control_plane(state_root: &Path) -> Result<bool> {
         "restored control-plane /etc/kubernetes + kubelet credentials from STATE"
     );
     Ok(true)
+}
+
+/// Rewrite kube-vip onto the live NIC + hostname after reboot (eth0 vs ens18,
+/// empty spec.nodeName race).
+fn refresh_kube_vip(paths: &BootstrapPaths) -> Result<()> {
+    if !paths.manifests().join("kube-vip.yaml").is_file() {
+        return Ok(());
+    }
+    let advertise = paths
+        .read_advertise()
+        .or_else(detect_advertise_ip)
+        .unwrap_or_default();
+    if advertise.is_empty() {
+        return Ok(());
+    }
+    let admin = fs::read_to_string(paths.admin_kubeconfig()).unwrap_or_default();
+    let host = kubeconfig::kubeconfig_server_host(&admin).unwrap_or_default();
+    let vip = kube_vip::vip_from_endpoint_host(&host);
+    let existing = fs::read_to_string(paths.manifests().join("kube-vip.yaml")).unwrap_or_default();
+    let vip6 = kube_vip::vip6_from_manifest(&existing);
+    let etcd_yaml = fs::read_to_string(paths.manifests().join("etcd.yaml")).unwrap_or_default();
+    let hostname = flag_value(&etcd_yaml, "--name=").unwrap_or_default();
+    let iface = kube_vip::detect_vip_interface(&advertise);
+    let _ = kube_vip::maybe_write_kube_vip(
+        &paths.manifests(),
+        vip,
+        vip6.as_deref(),
+        &advertise,
+        &iface,
+        &hostname,
+    )?;
+    Ok(())
 }
 
 const LIVE_KUBELET_DIR: &str = "/var/lib/kubelet";
@@ -674,13 +711,21 @@ pub(crate) fn endpoint_host(endpoint: &str) -> String {
 }
 
 pub fn detect_advertise_ip() -> Option<String> {
+    via_default_route("1.1.1.1:80")
+        .or_else(|| via_default_route("8.8.8.8:80"))
+        .or_else(pertisk_net::first_global_ipv4)
+}
+
+fn via_default_route(dest: &str) -> Option<String> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
-    sock.connect("1.1.1.1:80").ok()?;
-    let ip = sock.local_addr().ok()?.ip();
-    if ip.is_loopback() || ip.is_unspecified() {
-        return None;
+    sock.connect(dest).ok()?;
+    match sock.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(v) if v.is_loopback() || v.is_unspecified() || v.is_link_local() => {
+            None
+        }
+        std::net::IpAddr::V4(v) => Some(v.to_string()),
+        std::net::IpAddr::V6(_) => None,
     }
-    Some(ip.to_string())
 }
 
 /// First usable address in the service CIDR (kubeadm: `kubernetes` Service ClusterIP).

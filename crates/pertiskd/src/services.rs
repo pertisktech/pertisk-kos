@@ -13,25 +13,13 @@ use crate::guest_agent::{self, GuestAgentHandle};
 use crate::log_ring::LogRing;
 
 fn has_global_ipv4() -> bool {
-    let ifaces = pertisk_net::list_interfaces().unwrap_or_default();
-    for name in ifaces {
-        let Ok(addrs) = pertisk_net::list_addresses(&name) else {
-            continue;
-        };
-        if addrs.iter().any(|a| {
-            let ip = a.split('/').next().unwrap_or(a.as_str());
-            ip.contains('.') && !ip.starts_with("127.") && !ip.starts_with("169.254.")
-        }) {
-            return true;
-        }
-    }
-    false
+    pertisk_net::first_global_ipv4().is_some()
 }
 
 /// Static pods (etcd) advertise the DHCP address. Starting kubelet before the
 /// NIC has an address leaves HA members unable to form quorum after a cluster
 /// reboot (`127.0.0.1:6443 connection refused`, nodes never register).
-fn wait_for_ipv4(timeout: std::time::Duration) {
+pub(crate) fn wait_for_guest_ipv4(timeout: std::time::Duration) {
     let deadline = std::time::Instant::now() + timeout;
     if has_global_ipv4() {
         return;
@@ -105,7 +93,7 @@ impl NodeServices {
         }
 
         if services.containerd.is_some() && cfg.cluster.is_some() {
-            wait_for_ipv4(std::time::Duration::from_secs(90));
+            wait_for_guest_ipv4(std::time::Duration::from_secs(180));
             if !has_global_ipv4() {
                 warn!("deferring kubelet until guest IPv4 is up");
             } else {

@@ -9,17 +9,19 @@ import { NodeStatusBadges } from '../components/NodeStatusBadges'
 import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import { useConfirm } from '../components/Confirm'
 import Checkbox from '../components/Checkbox'
-import ColorLogViewer from '../components/ColorLogViewer'
 import Modal from '../components/Modal'
 import K8sVersionSelect from '../components/K8sVersionSelect'
 import OsBundlePicker, { osBundleReady } from '../components/OsBundlePicker'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
+import JobsTab from './JobsTab'
 import K8sTab from './cluster-k8s/K8sTab'
 import ShellTab from './cluster-k8s/ShellTab'
 import AddonsTab from './cluster-k8s/AddonsTab'
 import { listAddons } from './cluster-k8s/api'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 import { generateClusterTerraform, terraformFilename } from '../utils/terraformExport'
+import { formatDateTime } from '../utils/datetime'
+import { jobDurationLabel, jobKindLabel, jobStatusLabel } from '../utils/jobs'
 import UsageBar from '../components/UsageBar'
 
 const YamlEditor = lazy(() => import('../components/YamlEditor'))
@@ -1430,9 +1432,12 @@ export default function ClusterDetail() {
                     </button>
                   </div>
                   <div className="job-chip">
-                    <span className="mono-inline">{latestJob.kind}</span>
-                    <span className={`badge ${latestJob.status}`}>{latestJob.status}</span>
-                    <span className="muted">{latestJob.updated_at}</span>
+                    <span className="job-kind">{jobKindLabel(latestJob.kind)}</span>
+                    <span className={`badge ${latestJob.status}`}>{jobStatusLabel(latestJob.status)}</span>
+                    <time className="muted" dateTime={latestJob.created_at || undefined}>
+                      {formatDateTime(latestJob.created_at)}
+                    </time>
+                    <span className="job-duration">{jobDurationLabel(latestJob)}</span>
                   </div>
                 </section>
               )}
@@ -1725,68 +1730,16 @@ export default function ClusterDetail() {
           )}
 
           {tab === 'jobs' && (
-            <div className="tab-body jobs-tab tab-body-fill">
-              <div className="jobs-layout">
-                <div className="jobs-list">
-                  <h3 className="section-label">History</h3>
-                  {jobs.length === 0 && <p className="muted">No jobs yet.</p>}
-                  {jobs.map((j) => (
-                    <button
-                      key={j.id}
-                      type="button"
-                      className={`job-item ${selectedJob === j.id ? 'active' : ''}`}
-                      onClick={() => loadJobLog(j.id)}
-                    >
-                      <div className="job-item-top">
-                        <span className="mono-inline">{j.kind}</span>
-                        <span className={`badge ${j.status}`}>{j.status}</span>
-                      </div>
-                      <span className="muted">{j.updated_at}</span>
-                      {j.error && <span className="error job-err">{j.error}</span>}
-                    </button>
-                  ))}
-                </div>
-                <div className="jobs-log">
-                  <div className="section-head log-head">
-                    <h3 className="section-label">
-                      <Icon name="logs" size={16} /> Log
-                    </h3>
-                    <div className="row-actions node-log-actions">
-                      <button
-                        type="button"
-                        className="secondary btn-icon"
-                        onClick={() => selectedJob && loadJobLog(selectedJob, { follow: false })}
-                        disabled={!selectedJob}
-                        title="Refresh now"
-                      >
-                        Refresh
-                      </button>
-                      <button
-                        type="button"
-                        className={`secondary btn-icon ${followLog ? 'follow-on' : ''}`}
-                        onClick={() => setFollowLog(true)}
-                        title="Follow latest output"
-                      >
-                        {followLog ? 'Following' : 'Follow'}
-                      </button>
-                    </div>
-                  </div>
-                  {selectedJobRow && (
-                    <p className="muted chart-footnote">
-                      {selectedJobRow.kind} · {selectedJobRow.status}
-                    </p>
-                  )}
-                  <ColorLogViewer
-                    text={log}
-                    empty="(select a job)"
-                    follow={followLog}
-                    onFollowChange={setFollowLog}
-                    className="jobs-log-box"
-                    aria-label="Job log"
-                  />
-                </div>
-              </div>
-            </div>
+            <JobsTab
+              jobs={jobs}
+              selectedJob={selectedJob}
+              selectedJobRow={selectedJobRow}
+              log={log}
+              followLog={followLog}
+              onSelect={(jobId) => loadJobLog(jobId)}
+              onRefresh={(jobId) => loadJobLog(jobId, { follow: false })}
+              onFollowChange={setFollowLog}
+            />
           )}
         </div>
       </div>
