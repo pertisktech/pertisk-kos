@@ -648,7 +648,7 @@ fn rewrite_ip_in_dir(dir: &Path, old: &str, new: &str) -> Result<()> {
     Ok(())
 }
 
-fn ensure_etcd_listen_all(paths: &BootstrapPaths) -> Result<bool> {
+pub(crate) fn ensure_etcd_listen_all(paths: &BootstrapPaths) -> Result<bool> {
     let path = paths.manifests().join("etcd.yaml");
     if !path.is_file() {
         return Ok(false);

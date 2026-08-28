@@ -264,6 +264,10 @@ async fn etcd_force_new_cluster_inner(
         bail!("advertise address required for force-new-cluster");
     }
 
+    if let Ok(true) = crate::maybe_rebase_advertise(state_root) {
+        info!("rebased advertise IP before etcd force-new-cluster");
+    }
+
     let raw = read_etcd_manifest(state_root)?;
     let name = if member_name.trim().is_empty() {
         etcd_flag_value(&raw, "--name=").unwrap_or_else(|| "pertisk-cp-1".into())
@@ -271,26 +275,58 @@ async fn etcd_force_new_cluster_inner(
         member_name.trim().to_string()
     };
 
+    let advertise = crate::detect_advertise_ip()
+        .unwrap_or_else(|| advertise_ip.to_string());
+    let advertise = advertise.trim();
+    if advertise.is_empty() {
+        bail!("could not determine live advertise IP for force-new-cluster");
+    }
+
     disable_etcd_static_pod(state_root)?;
     kill_etcd_tasks();
     wait_etcd_down(Duration::from_secs(90))?;
 
-    let patched = patch_etcd_manifest_force_new_cluster(&raw, &name, advertise_ip);
+    let patched = patch_etcd_manifest_force_new_cluster(&raw, &name, advertise);
     write_etcd_manifest(state_root, &patched)
         .context("write etcd manifest with --force-new-cluster")?;
+    let paths = BootstrapPaths::default_state(state_root);
+    let _ = crate::ensure_etcd_listen_all(&paths);
     remove_etcd_disabled_sidecars(state_root);
-    info!(name = %name, advertise_ip, "etcd static pod enabled with --force-new-cluster");
+    crate::request_kubelet_reload();
+    info!(name = %name, advertise_ip = %advertise, "etcd static pod enabled with --force-new-cluster");
 
-    wait_etcd_up(state_root, Duration::from_secs(120)).await?;
+    let wait = Duration::from_secs(180);
+    if let Err(first) = wait_etcd_up(state_root, wait).await {
+        warn!(
+            error = %first,
+            "etcd force-new-cluster first wait failed; wiping data dir and retrying"
+        );
+        disable_etcd_static_pod(state_root)?;
+        kill_etcd_tasks();
+        wait_etcd_down(Duration::from_secs(60))?;
+        if Path::new(ETCD_DATA).exists() {
+            fs::remove_dir_all(ETCD_DATA).context("wipe /var/lib/etcd for force-new-cluster retry")?;
+        }
+        fs::create_dir_all(ETCD_DATA).context("mkdir /var/lib/etcd")?;
+        write_etcd_manifest(state_root, &patched)
+            .context("re-write etcd manifest after wipe")?;
+        let _ = crate::ensure_etcd_listen_all(&paths);
+        remove_etcd_disabled_sidecars(state_root);
+        crate::request_kubelet_reload();
+        wait_etcd_up(state_root, wait)
+            .await
+            .context("etcd not healthy after force-new-cluster wipe retry")?;
+    }
 
     let live = read_etcd_manifest(state_root).context("re-read etcd manifest")?;
-    let finalized = finalize_etcd_manifest_after_force_new(&live, &name, advertise_ip);
+    let finalized = finalize_etcd_manifest_after_force_new(&live, &name, advertise);
     write_etcd_manifest(state_root, &finalized)
         .context("strip --force-new-cluster from etcd manifest")?;
-    wait_etcd_up(state_root, Duration::from_secs(120)).await?;
+    crate::request_kubelet_reload();
+    wait_etcd_up(state_root, wait).await?;
 
     Ok(format!(
-        "etcd --force-new-cluster as {name}=https://{advertise_ip}:2380; flag stripped after healthy"
+        "etcd --force-new-cluster as {name}=https://{advertise}:2380; flag stripped after healthy"
     ))
 }
 

@@ -257,6 +257,8 @@ recover_etcd_cp1() {
   fi
   echo "no CP /readyz — recovering etcd on ${CLUSTER}-cp-1 (${cp1_ip}) (listen=${listen} down=${down})"
   echo "(promotes cp-1 to a single-member cluster; extra CPs must be reset + re-joined)"
+  echo "TIP: power OFF ${CLUSTER}-cp-2 and ${CLUSTER}-cp-3 in the hypervisor first, then retry."
+  echo "      Running CPs with stale etcd confuse recovery on cp-1."
   if ! "${CTL}" -e "${cp1_ip}:50000" etcd recover --force-new-cluster --force; then
     echo "etcd recover failed (guest may be too old for the RPC). Power on CP1 first after peers have IPv4, or ship a new OS bundle." >&2
     return 1
