@@ -482,13 +482,8 @@ pub fn restore_worker_kubelet_into(state_root: &Path, live: &Path) -> Result<boo
     }
     fs::create_dir_all(live)?;
     let live_kc = live.join("kubeconfig");
-    if live_kc.is_file() {
-        if let Ok(existing) = fs::read_to_string(&live_kc) {
-            if kubeconfig::kubeconfig_has_client_cert(&existing) {
-                return Ok(false);
-            }
-        }
-    }
+    // STATE is the durable snapshot of the issued identity; the live file can
+    // survive a partial reboot or belong to a previous cluster.
     fs::copy(&src_kc, &live_kc).with_context(|| format!("restore {}", live_kc.display()))?;
     let src_ca = src.join("ca.crt");
     if src_ca.is_file() {
@@ -1526,6 +1521,13 @@ cluster:
         assert_eq!(
             fs::read_to_string(empty.path().join("pki/kubelet-client-current.pem")).unwrap(),
             "CERT\n"
+        );
+
+        fs::write(empty.path().join("kubeconfig"), "stale client-certificate-data\n").unwrap();
+        assert!(restore_worker_kubelet_into(state.path(), empty.path()).unwrap());
+        assert_eq!(
+            fs::read_to_string(empty.path().join("kubeconfig")).unwrap(),
+            fs::read_to_string(live_dir.join("kubeconfig")).unwrap()
         );
     }
 }
