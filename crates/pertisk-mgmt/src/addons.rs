@@ -3875,26 +3875,18 @@ async fn install_cert_manager(
             ),
         )?;
         apply_yaml_retry(kc, log_path, &cert.to_string(), 8, Duration::from_secs(5)).await?;
-        crate::jobs::append_log(log_path, &format!("wait for Certificate {name} Ready\n"))?;
-        match kubectl_ok(
-            kc,
-            &[
-                "wait",
-                "--for=condition=Ready",
-                &format!("certificate/{name}"),
-                "-n",
-                CERT_NS,
-                "--timeout=180s",
-            ],
-        )
-        .await
-        {
-            Ok(()) => crate::jobs::append_log(log_path, "Certificate Ready\n")?,
-            Err(e) => crate::jobs::append_log(
-                log_path,
-                &format!("Certificate not Ready yet ({e}); check DNS-01 / ClusterIssuer\n"),
-            )?,
-        }
+        crate::jobs::append_log(
+            log_path,
+            &format!(
+                "Certificate {name} applied; ACME DNS-01 issuance continues in the background\n"
+            ),
+        )?;
+        crate::jobs::append_log(
+            log_path,
+            &format!(
+                "check later: kubectl -n {CERT_NS} get certificate {name} -o wide (and `describe` / challenges on failure)\n"
+            ),
+        )?;
     }
     Ok(())
 }
