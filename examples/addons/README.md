@@ -80,7 +80,7 @@ helm repo add pertisk https://chart.tools.pertisk.com
 helm install pertisk-kube pertisk/pertisk-kube
 ```
 
-From the management UI: cluster → **Add-ons** → **Dashboard** → Kubernetes Dashboard. Requires `helm` on the management host.
+From the management UI: cluster → **Add-ons** → **Dashboard** → Kubernetes Dashboard. Set the Dashboard image tag, login user, and a password (stored encrypted; blank on update keeps the current password). Set an optional Dashboard host to enable the `pertisk-proxy` Ingress, then select a cert-manager TLS Secret or **none** for HTTP only. Leave the host empty to install without an Ingress. Requires `helm` on the management host.
 
 ## Observability (host metrics)
 

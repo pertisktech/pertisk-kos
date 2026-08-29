@@ -58,6 +58,9 @@ const KUBERNETES_DASHBOARD_HELM_CHART: &str = "pertisk-kube";
 const KUBERNETES_DASHBOARD_RELEASE: &str = "pertisk-kube";
 const KUBERNETES_DASHBOARD_NAMESPACE: &str = "default";
 const KUBERNETES_DASHBOARD_DEPLOY: &str = "pertisk-kube";
+const KUBERNETES_DASHBOARD_IMAGE_REGISTRY: &str = "harbor.tools.pertisk.com";
+const KUBERNETES_DASHBOARD_IMAGE_REPO: &str = "pertisksoft/pertisk-kube/web";
+const KUBERNETES_DASHBOARD_IMAGE_TAG: &str = "v0.2.6";
 const CERT_NS: &str = "cert-manager";
 const REFLECTOR_MANIFEST_URL: &str =
     "https://github.com/emberstack/kubernetes-reflector/releases/latest/download/reflector.yaml";
@@ -236,6 +239,55 @@ const INGRESS_FIELDS: &[AddonField] = &[
     },
 ];
 
+const KUBERNETES_DASHBOARD_FIELDS: &[AddonField] = &[
+    AddonField {
+        name: "image_tag",
+        label: "Image tag",
+        kind: "text",
+        required: true,
+        placeholder: KUBERNETES_DASHBOARD_IMAGE_TAG,
+        options: None,
+        help: "Dashboard image tag from harbor.tools.pertisk.com/pertisksoft/pertisk-kube/web.",
+    },
+    AddonField {
+        name: "username",
+        label: "Dashboard user",
+        kind: "text",
+        required: true,
+        placeholder: "admin",
+        options: None,
+        help: "Username used to sign in to the Dashboard.",
+    },
+    AddonField {
+        name: "password",
+        label: "Dashboard password",
+        kind: "password",
+        required: true,
+        placeholder: "required",
+        options: None,
+        help: "Stored encrypted. Leave blank on update to keep the current password.",
+    },
+    AddonField {
+        name: "host",
+        label: "Dashboard host",
+        kind: "text",
+        required: false,
+        placeholder: "dashboard.example.com",
+        options: None,
+        help: "Hostname for the Dashboard Ingress. Leave empty to disable Ingress.",
+    },
+    AddonField {
+        name: "tls_secret",
+        label: "TLS secret",
+        kind: "select",
+        required: false,
+        placeholder: "none",
+        options: Some(&["none"]),
+        help:
+            "TLS Secret for the Dashboard Ingress (from cert-manager). Choose none for HTTP only.",
+    },
+];
+
 const KOS_SCALER_FIELDS: &[AddonField] = &[
     AddonField {
         name: "username",
@@ -349,7 +401,7 @@ pub fn catalog() -> &'static [AddonCatalogEntry] {
             name: "Kubernetes Dashboard",
             summary: "Pertisk Kubernetes web dashboard (Helm pertisk-kube) for monitoring and managing cluster resources.",
             section: "dashboard",
-            fields: &[],
+            fields: KUBERNETES_DASHBOARD_FIELDS,
             requires_cni: None,
         },
     ]
@@ -364,7 +416,7 @@ pub fn catalog_entry(id: &str) -> ApiResult<&'static AddonCatalogEntry> {
 
 fn catalog_fields_json(entry: &AddonCatalogEntry, live: &Value, config: &Value) -> Value {
     let mut fields = serde_json::to_value(entry.fields).unwrap_or(json!([]));
-    if entry.id != INGRESS_ID {
+    if entry.id != INGRESS_ID && entry.id != KUBERNETES_DASHBOARD_ID {
         return fields;
     }
     let mut opts: Vec<String> = vec!["none".into()];
@@ -513,6 +565,20 @@ pub struct IngressConfig {
     pub registry_user: String,
     #[serde(default)]
     pub registry_password: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct KubernetesDashboardConfig {
+    #[serde(default)]
+    pub image_tag: String,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub tls_secret: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -734,6 +800,42 @@ fn parse_ingress_stored(v: &Value) -> IngressConfig {
     }
 }
 
+fn parse_kubernetes_dashboard_stored(v: &Value) -> KubernetesDashboardConfig {
+    let image_tag = v
+        .get("image_tag")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim();
+    KubernetesDashboardConfig {
+        image_tag: if image_tag.is_empty() {
+            KUBERNETES_DASHBOARD_IMAGE_TAG.into()
+        } else {
+            image_tag.to_string()
+        },
+        username: v
+            .get("username")
+            .and_then(|x| x.as_str())
+            .filter(|x| !x.trim().is_empty())
+            .unwrap_or("admin")
+            .to_string(),
+        password: v
+            .get("password")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        host: v
+            .get("host")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        tls_secret: v
+            .get("tls_secret")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+    }
+}
+
 fn parse_ingress_secrets(raw: &str) -> IngressSecrets {
     let t = raw.trim();
     if t.starts_with('{') {
@@ -795,6 +897,61 @@ pub fn public_ingress_config(cfg: &IngressConfig) -> Value {
             }
         ),
     })
+}
+
+pub fn public_kubernetes_dashboard_config(cfg: &KubernetesDashboardConfig) -> Value {
+    json!({
+        "image_tag": if cfg.image_tag.trim().is_empty() {
+            KUBERNETES_DASHBOARD_IMAGE_TAG
+        } else {
+            cfg.image_tag.trim()
+        },
+        "username": if cfg.username.trim().is_empty() { "admin" } else { cfg.username.trim() },
+        "host": cfg.host.trim(),
+        "tls_secret": dashboard_tls_secret(cfg),
+        "image": format!(
+            "{KUBERNETES_DASHBOARD_IMAGE_REGISTRY}/{KUBERNETES_DASHBOARD_IMAGE_REPO}:{}",
+            if cfg.image_tag.trim().is_empty() {
+                KUBERNETES_DASHBOARD_IMAGE_TAG
+            } else {
+                cfg.image_tag.trim()
+            }
+        ),
+    })
+}
+
+fn kubernetes_dashboard_helm_values(cfg: &KubernetesDashboardConfig) -> Value {
+    let mut values = json!({
+        "app": {
+            "image": {
+                "registry": KUBERNETES_DASHBOARD_IMAGE_REGISTRY,
+                "repository": KUBERNETES_DASHBOARD_IMAGE_REPO,
+                "tag": cfg.image_tag.trim(),
+            },
+            "auth": {
+                "username": cfg.username.trim(),
+                "password": cfg.password.trim(),
+            },
+        },
+        "ingress": {
+            "enabled": !cfg.host.trim().is_empty(),
+            "className": "pertisk-proxy",
+        },
+    });
+    let host = cfg.host.trim();
+    if !host.is_empty() {
+        values["ingress"]["hosts"] = json!([{
+            "host": host,
+            "paths": [{ "path": "/", "pathType": "Prefix" }],
+        }]);
+        let tls_secret = dashboard_tls_secret(cfg);
+        values["ingress"]["tls"] = if tls_secret.is_empty() {
+            json!([])
+        } else {
+            json!([{ "secretName": tls_secret, "hosts": [host] }])
+        };
+    }
+    values
 }
 
 fn registry_user_ok(user: &str) -> bool {
@@ -861,6 +1018,65 @@ pub fn validate_ingress(cfg: &IngressConfig, require_registry: bool) -> Result<(
     }
     if user.is_empty() && !token.is_empty() {
         errors.push("Harbor user is required when a Harbor password is set".into());
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn dashboard_tls_secret(cfg: &KubernetesDashboardConfig) -> String {
+    let tls_secret = cfg.tls_secret.trim();
+    if tls_secret.is_empty() || tls_secret.eq_ignore_ascii_case("none") {
+        String::new()
+    } else {
+        tls_secret.to_string()
+    }
+}
+
+pub fn validate_kubernetes_dashboard(
+    cfg: &KubernetesDashboardConfig,
+    require_password: bool,
+) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    let image_tag = cfg.image_tag.trim();
+    if image_tag.is_empty()
+        || image_tag.len() > 128
+        || image_tag
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+')))
+    {
+        errors.push("image tag must be a Docker tag (letters, digits, . _ - +)".into());
+    }
+    let username = cfg.username.trim();
+    if username.is_empty() || username.len() > 128 || username.contains(['\n', '\r', '\0']) {
+        errors.push("dashboard user must be 1-128 characters without line breaks".into());
+    }
+    let password = cfg.password.trim();
+    if require_password && password.is_empty() {
+        errors.push("dashboard password is required".into());
+    } else if !password.is_empty() && (password.len() < 8 || password.contains(['\n', '\r', '\0']))
+    {
+        errors.push("dashboard password must be at least 8 characters without line breaks".into());
+    }
+    let host = cfg.host.trim();
+    if !host.is_empty()
+        && (host.len() > 253
+            || host.contains([' ', '\n', '\t', '/', '"', '\'', '$', '{', '}', '\\', ':'])
+            || !host
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-')))
+    {
+        errors.push("dashboard host must be a DNS hostname".into());
+    }
+    let tls_secret = dashboard_tls_secret(cfg);
+    if !tls_secret.is_empty() {
+        if host.is_empty() {
+            errors.push("TLS secret requires a dashboard host".into());
+        } else if !k8s_name_ok(&tls_secret) {
+            errors.push("TLS secret must be a Kubernetes resource name".into());
+        }
     }
     if errors.is_empty() {
         Ok(())
@@ -2095,7 +2311,7 @@ async fn live_ingress(kc: &Path) -> Value {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let tls_secrets = list_tls_secret_names(kc).await;
+    let tls_secrets = list_tls_secret_names(kc, &[INGRESS_NAMESPACE, CERT_NS]).await;
     json!({
         "installed": deploy.is_some() && svc.is_some(),
         "partial": deploy.is_some() || svc.is_some() || class.is_some(),
@@ -2169,18 +2385,36 @@ async fn live_kubernetes_dashboard(kc: &Path) -> Value {
     .await
     .ok()
     .flatten();
+    let ingress = kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "ingress",
+            KUBERNETES_DASHBOARD_DEPLOY,
+            "-n",
+            KUBERNETES_DASHBOARD_NAMESPACE,
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten();
     json!({
         "installed": deploy.as_ref().map(deploy_ready).unwrap_or(false) && service.is_some(),
         "partial": deploy.is_some() || service.is_some(),
         "ready": deploy.as_ref().map(deploy_ready).unwrap_or(false),
         "service": service.is_some(),
         "image": deploy.as_ref().and_then(container_image),
+        "host": ingress.as_ref().and_then(|v| v.pointer("/spec/rules/0/host")).and_then(|v| v.as_str()),
+        "tls_secret": ingress.as_ref().and_then(|v| v.pointer("/spec/tls/0/secretName")).and_then(|v| v.as_str()),
+        "tls_secrets": list_tls_secret_names(kc, &[KUBERNETES_DASHBOARD_NAMESPACE]).await,
     })
 }
 
-async fn list_tls_secret_names(kc: &Path) -> Vec<String> {
+async fn list_tls_secret_names(kc: &Path, namespaces: &[&str]) -> Vec<String> {
     let mut names = BTreeSet::new();
-    for ns in [INGRESS_NAMESPACE, CERT_NS] {
+    for ns in namespaces {
         let Ok(Some(list)) =
             kubectl_json_optional(kc, &["get", "secrets", "-n", ns, "-o", "json"]).await
         else {
@@ -2783,6 +3017,14 @@ pub async fn summarize_one(
                 }
                 public_config = public_kos_scaler_config(&cfg);
             }
+            KUBERNETES_DASHBOARD_ID => {
+                let mut cfg = parse_kubernetes_dashboard_stored(body);
+                cfg.password = json_str(body, "password");
+                if let Err(e) = validate_kubernetes_dashboard(&cfg, !token_set) {
+                    errors.extend(e);
+                }
+                public_config = public_kubernetes_dashboard_config(&cfg);
+            }
             _ => {}
         }
     } else if addon == NFS_ID
@@ -2820,6 +3062,10 @@ pub async fn summarize_one(
                 ));
             }
         }
+    }
+    if addon == KUBERNETES_DASHBOARD_ID {
+        public_config =
+            public_kubernetes_dashboard_config(&parse_kubernetes_dashboard_stored(&public_config));
     }
 
     let mut live = json!({ "available": false });
@@ -3328,21 +3574,45 @@ pub async fn upsert_install(
             Ok((NfsConfig::default(), CertManagerConfig::default(), public))
         }
         KUBERNETES_DASHBOARD_ID => {
-            let public = json!({});
+            let row = load_row(state, cluster_id, addon).await?;
+            let password_set = row
+                .as_ref()
+                .map(|r| r.secrets_enc.as_ref().is_some_and(|s| !s.is_empty()))
+                .unwrap_or(false);
+            let mut cfg = parse_kubernetes_dashboard_stored(&body);
+            cfg.password = json_str(&body, "password");
+            if let Err(e) =
+                validate_kubernetes_dashboard(&cfg, cfg.password.trim().is_empty() && !password_set)
+            {
+                return Err(AppError::bad(e.join("; ")));
+            }
+            let password = if cfg.password.trim().is_empty() {
+                crypto::decrypt(
+                    &state.cfg().secret_key,
+                    &row.and_then(|r| r.secrets_enc).unwrap_or_default(),
+                )
+                .map_err(|e| AppError::bad(format!("stored dashboard password: {e}")))?
+            } else {
+                cfg.password.trim().to_string()
+            };
+            let public = public_kubernetes_dashboard_config(&cfg);
+            let enc =
+                crypto::encrypt(&state.cfg().secret_key, &password).map_err(AppError::Anyhow)?;
             sqlx::query(
                 r#"INSERT INTO cluster_addons
                      (cluster_id, addon, status, config_json, secrets_enc, error, installed_at, updated_at)
-                   VALUES (?, ?, 'installing', ?, NULL, NULL, NULL, ?)
+                   VALUES (?, ?, 'installing', ?, ?, NULL, NULL, ?)
                    ON CONFLICT(cluster_id, addon) DO UPDATE SET
                      status = 'installing',
                      config_json = excluded.config_json,
-                     secrets_enc = NULL,
+                     secrets_enc = excluded.secrets_enc,
                      error = NULL,
                      updated_at = excluded.updated_at"#,
             )
             .bind(cluster_id)
             .bind(addon)
             .bind(public.to_string())
+            .bind(&enc)
             .bind(&now)
             .execute(state.pool())
             .await?;
@@ -3448,7 +3718,13 @@ pub async fn run_install_job(
             };
             install_kos_scaler(state, cid, &kc, log_path, &stored, &password).await
         }
-        KUBERNETES_DASHBOARD_ID => install_kubernetes_dashboard(&kc, log_path).await,
+        KUBERNETES_DASHBOARD_ID => {
+            let password = match row.secrets_enc.as_deref() {
+                Some(enc) if !enc.is_empty() => crypto::decrypt(&state.cfg().secret_key, enc)?,
+                _ => anyhow::bail!("dashboard password is not stored"),
+            };
+            install_kubernetes_dashboard(state, cid, &kc, log_path, &stored, &password).await
+        }
         other => anyhow::bail!("unknown addon {other}"),
     };
 
@@ -3466,30 +3742,60 @@ pub async fn run_install_job(
     }
 }
 
-async fn install_kubernetes_dashboard(kc: &Path, log_path: &str) -> anyhow::Result<()> {
+async fn install_kubernetes_dashboard(
+    state: &AppState,
+    cluster_id: &str,
+    kc: &Path,
+    log_path: &str,
+    stored: &Value,
+    password: &str,
+) -> anyhow::Result<()> {
+    let mut cfg = parse_kubernetes_dashboard_stored(stored);
+    cfg.password = password.to_string();
+    validate_kubernetes_dashboard(&cfg, true).map_err(|e| anyhow::anyhow!(e.join("; ")))?;
+    let values = kubernetes_dashboard_helm_values(&cfg);
+    let mut logged = values.clone();
+    logged["app"]["auth"]["password"] = json!("***");
+    let values_path = state
+        .cfg()
+        .jobs_dir()
+        .join(format!("{cluster_id}-kubernetes-dashboard-values.yaml"));
+    write_restricted_file(&values_path, &serde_json::to_string_pretty(&values)?)?;
+    let _cleanup = UnlinkOnDrop(values_path.clone());
+    let values_s = values_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("dashboard values path is not utf-8"))?;
+    crate::jobs::append_log(
+        log_path,
+        &format!(
+            "helm values:\n{}\n",
+            serde_json::to_string_pretty(&logged).unwrap_or_default()
+        ),
+    )?;
     crate::jobs::append_log(
         log_path,
         &format!(
             "helm upgrade --install {KUBERNETES_DASHBOARD_RELEASE} {KUBERNETES_DASHBOARD_HELM_CHART} --repo {INGRESS_HELM_REPO} -n {KUBERNETES_DASHBOARD_NAMESPACE}\n"
         ),
     )?;
-    let out = helm_output(
-        Some(kc),
-        &[
-            "upgrade",
-            "--install",
-            KUBERNETES_DASHBOARD_RELEASE,
-            KUBERNETES_DASHBOARD_HELM_CHART,
-            "--repo",
-            INGRESS_HELM_REPO,
-            "--namespace",
-            KUBERNETES_DASHBOARD_NAMESPACE,
-            "--timeout",
-            "5m",
-        ],
-    )
-    .await
-    .map_err(anyhow_api)?;
+    let helm_args = vec![
+        "upgrade".to_string(),
+        "--install".to_string(),
+        KUBERNETES_DASHBOARD_RELEASE.to_string(),
+        KUBERNETES_DASHBOARD_HELM_CHART.to_string(),
+        "--repo".to_string(),
+        INGRESS_HELM_REPO.to_string(),
+        "--namespace".to_string(),
+        KUBERNETES_DASHBOARD_NAMESPACE.to_string(),
+        "--timeout".to_string(),
+        "5m".to_string(),
+        "-f".to_string(),
+        values_s.to_string(),
+    ];
+    let helm_refs: Vec<&str> = helm_args.iter().map(String::as_str).collect();
+    let out = helm_output(Some(kc), &helm_refs)
+        .await
+        .map_err(anyhow_api)?;
     crate::jobs::append_log(log_path, &out)?;
     crate::jobs::append_log(log_path, "wait for Kubernetes Dashboard deployment\n")?;
     kubectl_ok(
@@ -4744,6 +5050,59 @@ mod tests {
             doc["spec"]["tls"][0]["hosts"][0],
             "admin.vsphere.pertisk.com"
         );
+    }
+
+    #[test]
+    fn dashboard_config_requires_host_for_tls_and_normalizes_none() {
+        let http = KubernetesDashboardConfig {
+            image_tag: "v0.2.6".into(),
+            username: "admin".into(),
+            password: "dashboard-password".into(),
+            host: "dashboard.example.com".into(),
+            tls_secret: "none".into(),
+        };
+        assert!(validate_kubernetes_dashboard(&http, true).is_ok());
+        let public = public_kubernetes_dashboard_config(&http);
+        assert_eq!(public["host"], "dashboard.example.com");
+        assert_eq!(public["tls_secret"], "");
+        assert_eq!(public["image_tag"], "v0.2.6");
+        assert_eq!(public["username"], "admin");
+        assert!(public.get("password").is_none());
+        assert!(validate_kubernetes_dashboard(
+            &KubernetesDashboardConfig {
+                host: String::new(),
+                tls_secret: "dashboard-tls".into(),
+                ..Default::default()
+            },
+            false
+        )
+        .is_err());
+        assert!(
+            validate_kubernetes_dashboard(&KubernetesDashboardConfig::default(), true).is_err()
+        );
+    }
+
+    #[test]
+    fn dashboard_helm_values_configure_image_login_and_ingress() {
+        let values = kubernetes_dashboard_helm_values(&KubernetesDashboardConfig {
+            image_tag: "v0.2.7".into(),
+            username: "operator".into(),
+            password: "dashboard-password".into(),
+            host: "dashboard.example.com".into(),
+            tls_secret: "dashboard-tls".into(),
+        });
+        assert_eq!(
+            values["app"]["image"]["registry"],
+            KUBERNETES_DASHBOARD_IMAGE_REGISTRY
+        );
+        assert_eq!(values["app"]["image"]["tag"], "v0.2.7");
+        assert_eq!(values["app"]["auth"]["username"], "operator");
+        assert_eq!(values["app"]["auth"]["password"], "dashboard-password");
+        assert_eq!(
+            values["ingress"]["hosts"][0]["host"],
+            "dashboard.example.com"
+        );
+        assert_eq!(values["ingress"]["tls"][0]["secretName"], "dashboard-tls");
     }
 
     #[test]

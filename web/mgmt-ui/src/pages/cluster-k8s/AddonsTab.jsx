@@ -50,8 +50,9 @@ function fieldVisible(addon, f, form) {
     if (f.name === 'ipv6' && addon.network_mode === 'ipv4') return false
     if (f.name === 'ipv4' && addon.network_mode === 'ipv6') return false
   }
-  if (addon.id === 'ingress' && f.name === 'tls_secret') {
-    return !!(form.admin_host || '').trim()
+  if (f.name === 'tls_secret') {
+    if (addon.id === 'ingress') return !!(form.admin_host || '').trim()
+    if (addon.id === 'kubernetes-dashboard') return !!(form.host || '').trim()
   }
   return true
 }
@@ -119,7 +120,7 @@ function AddonCard({ clusterId, addon, onInstalled }) {
   function setField(name, value) {
     setForm((prev) => {
       const next = { ...prev, [name]: value }
-      if (name === 'admin_host' && !value.trim()) next.tls_secret = 'none'
+      if ((name === 'admin_host' || name === 'host') && !value.trim()) next.tls_secret = 'none'
       return next
     })
   }
@@ -285,7 +286,10 @@ function AddonCard({ clusterId, addon, onInstalled }) {
             <dl className="kv addon-live">
               <div><dt>Deployment</dt><dd>{deploymentStatus(live.ready, live.partial)}</dd></div>
               <div><dt>Service</dt><dd>{live.service ? 'present' : 'absent'}</dd></div>
-              <div><dt>Image</dt><dd className="mono-inline">{live.image || '—'}</dd></div>
+              <div><dt>Dashboard user</dt><dd className="mono-inline">{addon.config?.username || 'admin'}</dd></div>
+              <div><dt>Host</dt><dd className="mono-inline">{live.host || addon.config?.host || '—'}</dd></div>
+              <div><dt>TLS</dt><dd className="mono-inline">{live.host ? (live.tls_secret || 'none') : '—'}</dd></div>
+              <div><dt>Image</dt><dd className="mono-inline">{live.image || addon.config?.image || '—'}</dd></div>
             </dl>
           )}
         </div>
