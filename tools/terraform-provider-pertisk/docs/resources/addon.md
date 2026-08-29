@@ -111,7 +111,7 @@ resource "pertisk_cluster" "lab" {
   * **cilium-lb:** `ipv4`, optional `ipv6` (required on dual-stack)
   * **ingress:** `image_tag`, optional `admin_host`, `tls_secret`, `registry_user`
   * **kos-scaler:** `username`, `min_size`, `max_size`, optional `image_tag`, `storage_class`, `mgmt_url`
-  * **kubernetes-dashboard:** `image_tag`, `username`, optional `host`, `tls_secret` (`none` for HTTP only)
+  * **kubernetes-dashboard:** `namespace` (default `pertisk-dashboard`), `image_tag`, `username`, optional `host`, `tls_secret` (`none` for HTTP only)
 * `secrets` - (Map of String, Sensitive) `api_token` (cert-manager); `admin_password` / `registry_password` (ingress); `password` (kos-scaler and kubernetes-dashboard).
 * `timeout_minutes` - (Number) Job wait timeout (default `20`).
 

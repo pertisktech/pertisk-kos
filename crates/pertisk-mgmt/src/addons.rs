@@ -56,7 +56,7 @@ pub const KOS_SCALER_IMAGE_TAG: &str = "0.1.0";
 const KUBERNETES_DASHBOARD_ID: &str = "kubernetes-dashboard";
 const KUBERNETES_DASHBOARD_HELM_CHART: &str = "pertisk-kube";
 const KUBERNETES_DASHBOARD_RELEASE: &str = "pertisk-kube";
-const KUBERNETES_DASHBOARD_NAMESPACE: &str = "default";
+const KUBERNETES_DASHBOARD_NAMESPACE: &str = "pertisk-dashboard";
 const KUBERNETES_DASHBOARD_DEPLOY: &str = "pertisk-kube";
 const KUBERNETES_DASHBOARD_IMAGE_REGISTRY: &str = "harbor.tools.pertisk.com";
 const KUBERNETES_DASHBOARD_IMAGE_REPO: &str = "pertisksoft/pertisk-kube/web";
@@ -240,6 +240,15 @@ const INGRESS_FIELDS: &[AddonField] = &[
 ];
 
 const KUBERNETES_DASHBOARD_FIELDS: &[AddonField] = &[
+    AddonField {
+        name: "namespace",
+        label: "Namespace",
+        kind: "text",
+        required: true,
+        placeholder: KUBERNETES_DASHBOARD_NAMESPACE,
+        options: None,
+        help: "Namespace for the Dashboard Helm release. It is created automatically.",
+    },
     AddonField {
         name: "image_tag",
         label: "Image tag",
@@ -570,6 +579,8 @@ pub struct IngressConfig {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct KubernetesDashboardConfig {
     #[serde(default)]
+    pub namespace: String,
+    #[serde(default)]
     pub image_tag: String,
     #[serde(default)]
     pub username: String,
@@ -807,6 +818,12 @@ fn parse_kubernetes_dashboard_stored(v: &Value) -> KubernetesDashboardConfig {
         .unwrap_or("")
         .trim();
     KubernetesDashboardConfig {
+        namespace: v
+            .get("namespace")
+            .and_then(|x| x.as_str())
+            .filter(|x| !x.trim().is_empty())
+            .unwrap_or(KUBERNETES_DASHBOARD_NAMESPACE)
+            .to_string(),
         image_tag: if image_tag.is_empty() {
             KUBERNETES_DASHBOARD_IMAGE_TAG.into()
         } else {
@@ -901,6 +918,11 @@ pub fn public_ingress_config(cfg: &IngressConfig) -> Value {
 
 pub fn public_kubernetes_dashboard_config(cfg: &KubernetesDashboardConfig) -> Value {
     json!({
+        "namespace": if cfg.namespace.trim().is_empty() {
+            KUBERNETES_DASHBOARD_NAMESPACE
+        } else {
+            cfg.namespace.trim()
+        },
         "image_tag": if cfg.image_tag.trim().is_empty() {
             KUBERNETES_DASHBOARD_IMAGE_TAG
         } else {
@@ -1040,6 +1062,9 @@ pub fn validate_kubernetes_dashboard(
     require_password: bool,
 ) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
+    if !k8s_name_ok(cfg.namespace.trim()) {
+        errors.push("dashboard namespace must be a Kubernetes resource name".into());
+    }
     let image_tag = cfg.image_tag.trim();
     if image_tag.is_empty()
         || image_tag.len() > 128
@@ -2354,7 +2379,7 @@ async fn live_kos_scaler(kc: &Path) -> Value {
     })
 }
 
-async fn live_kubernetes_dashboard(kc: &Path) -> Value {
+async fn live_kubernetes_dashboard(kc: &Path, namespace: &str) -> Value {
     let deploy = kubectl_json_optional(
         kc,
         &[
@@ -2362,7 +2387,7 @@ async fn live_kubernetes_dashboard(kc: &Path) -> Value {
             "deploy",
             KUBERNETES_DASHBOARD_DEPLOY,
             "-n",
-            KUBERNETES_DASHBOARD_NAMESPACE,
+            namespace,
             "-o",
             "json",
         ],
@@ -2377,7 +2402,7 @@ async fn live_kubernetes_dashboard(kc: &Path) -> Value {
             "svc",
             KUBERNETES_DASHBOARD_DEPLOY,
             "-n",
-            KUBERNETES_DASHBOARD_NAMESPACE,
+            namespace,
             "-o",
             "json",
         ],
@@ -2392,7 +2417,7 @@ async fn live_kubernetes_dashboard(kc: &Path) -> Value {
             "ingress",
             KUBERNETES_DASHBOARD_DEPLOY,
             "-n",
-            KUBERNETES_DASHBOARD_NAMESPACE,
+            namespace,
             "-o",
             "json",
         ],
@@ -2408,7 +2433,8 @@ async fn live_kubernetes_dashboard(kc: &Path) -> Value {
         "image": deploy.as_ref().and_then(container_image),
         "host": ingress.as_ref().and_then(|v| v.pointer("/spec/rules/0/host")).and_then(|v| v.as_str()),
         "tls_secret": ingress.as_ref().and_then(|v| v.pointer("/spec/tls/0/secretName")).and_then(|v| v.as_str()),
-        "tls_secrets": list_tls_secret_names(kc, &[KUBERNETES_DASHBOARD_NAMESPACE]).await,
+        "namespace": namespace,
+        "tls_secrets": list_tls_secret_names(kc, &[namespace]).await,
     })
 }
 
@@ -3088,7 +3114,10 @@ pub async fn summarize_one(
                     CILIUM_LB_ID => live_cilium_lb(&kc).await,
                     INGRESS_ID => live_ingress(&kc).await,
                     KOS_SCALER_ID => live_kos_scaler(&kc).await,
-                    KUBERNETES_DASHBOARD_ID => live_kubernetes_dashboard(&kc).await,
+                    KUBERNETES_DASHBOARD_ID => {
+                        let cfg = parse_kubernetes_dashboard_stored(&public_config);
+                        live_kubernetes_dashboard(&kc, cfg.namespace.trim()).await
+                    }
                     _ => json!({}),
                 };
                 live["available"] = json!(true);
@@ -3775,7 +3804,8 @@ async fn install_kubernetes_dashboard(
     crate::jobs::append_log(
         log_path,
         &format!(
-            "helm upgrade --install {KUBERNETES_DASHBOARD_RELEASE} {KUBERNETES_DASHBOARD_HELM_CHART} --repo {INGRESS_HELM_REPO} -n {KUBERNETES_DASHBOARD_NAMESPACE}\n"
+            "helm upgrade --install {KUBERNETES_DASHBOARD_RELEASE} {KUBERNETES_DASHBOARD_HELM_CHART} --repo {INGRESS_HELM_REPO} -n {}\n",
+            cfg.namespace.trim()
         ),
     )?;
     let helm_args = vec![
@@ -3786,7 +3816,8 @@ async fn install_kubernetes_dashboard(
         "--repo".to_string(),
         INGRESS_HELM_REPO.to_string(),
         "--namespace".to_string(),
-        KUBERNETES_DASHBOARD_NAMESPACE.to_string(),
+        cfg.namespace.trim().to_string(),
+        "--create-namespace".to_string(),
         "--timeout".to_string(),
         "5m".to_string(),
         "-f".to_string(),
@@ -3805,7 +3836,7 @@ async fn install_kubernetes_dashboard(
             "--for=condition=Available",
             &format!("deploy/{KUBERNETES_DASHBOARD_DEPLOY}"),
             "-n",
-            KUBERNETES_DASHBOARD_NAMESPACE,
+            cfg.namespace.trim(),
             "--timeout=180s",
         ],
     )
@@ -5055,6 +5086,7 @@ mod tests {
     #[test]
     fn dashboard_config_requires_host_for_tls_and_normalizes_none() {
         let http = KubernetesDashboardConfig {
+            namespace: KUBERNETES_DASHBOARD_NAMESPACE.into(),
             image_tag: "v0.2.6".into(),
             username: "admin".into(),
             password: "dashboard-password".into(),
@@ -5065,6 +5097,7 @@ mod tests {
         let public = public_kubernetes_dashboard_config(&http);
         assert_eq!(public["host"], "dashboard.example.com");
         assert_eq!(public["tls_secret"], "");
+        assert_eq!(public["namespace"], KUBERNETES_DASHBOARD_NAMESPACE);
         assert_eq!(public["image_tag"], "v0.2.6");
         assert_eq!(public["username"], "admin");
         assert!(public.get("password").is_none());
@@ -5080,11 +5113,16 @@ mod tests {
         assert!(
             validate_kubernetes_dashboard(&KubernetesDashboardConfig::default(), true).is_err()
         );
+        assert_eq!(
+            parse_kubernetes_dashboard_stored(&json!({})).namespace,
+            KUBERNETES_DASHBOARD_NAMESPACE
+        );
     }
 
     #[test]
     fn dashboard_helm_values_configure_image_login_and_ingress() {
         let values = kubernetes_dashboard_helm_values(&KubernetesDashboardConfig {
+            namespace: KUBERNETES_DASHBOARD_NAMESPACE.into(),
             image_tag: "v0.2.7".into(),
             username: "operator".into(),
             password: "dashboard-password".into(),

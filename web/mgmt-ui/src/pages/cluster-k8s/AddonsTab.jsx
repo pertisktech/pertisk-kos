@@ -285,6 +285,7 @@ function AddonCard({ clusterId, addon, onInstalled }) {
           {addon.id === 'kubernetes-dashboard' && live.available && (
             <dl className="kv addon-live">
               <div><dt>Deployment</dt><dd>{deploymentStatus(live.ready, live.partial)}</dd></div>
+              <div><dt>Namespace</dt><dd className="mono-inline">{live.namespace || addon.config?.namespace || '—'}</dd></div>
               <div><dt>Service</dt><dd>{live.service ? 'present' : 'absent'}</dd></div>
               <div><dt>Dashboard user</dt><dd className="mono-inline">{addon.config?.username || 'admin'}</dd></div>
               <div><dt>Host</dt><dd className="mono-inline">{live.host || addon.config?.host || '—'}</dd></div>
