@@ -325,6 +325,7 @@ pub fn relax_rp_filter(iface: &str) {
 /// `Address family not supported` and used to abort the lease install, leaving
 /// eth0 with `(no ip)`.
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub async fn flush_addresses(iface: &str) -> Result<(), NetError> {
     use netlink_packet_route::AddressFamily;
     use rtnetlink::new_connection;

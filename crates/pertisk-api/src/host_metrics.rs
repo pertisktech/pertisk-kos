@@ -344,6 +344,24 @@ fn filesystems_from_inspect() -> Vec<FsUsage> {
         .collect()
 }
 
+/// `/proc/loadavg` → (1m, 5m, 15m).
+#[allow(dead_code)]
+pub fn parse_loadavg(text: &str) -> (f64, f64, f64) {
+    let mut it = text.split_whitespace();
+    let a = it.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let b = it.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let c = it.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    (a, b, c)
+}
+
+#[allow(dead_code)]
+pub fn parse_uptime(text: &str) -> f64 {
+    text.split_whitespace()
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0)
+}
+
 #[allow(dead_code)]
 pub fn parse_meminfo(text: &str) -> MemoryBytes {
     let mut total = 0u64;
