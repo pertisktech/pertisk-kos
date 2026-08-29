@@ -29,8 +29,11 @@ pub struct VsphereVm {
     pub moref: String,
     pub name: String,
     pub power_state: Option<String>,
+    #[allow(dead_code)]
     pub num_cpu: Option<i64>,
+    #[allow(dead_code)]
     pub memory_mb: Option<i64>,
+    #[allow(dead_code)]
     pub mac: Option<String>,
 }
 
@@ -46,20 +49,27 @@ struct HostCap {
 
 #[derive(Debug, Clone)]
 struct Inventory {
+    #[allow(dead_code)]
     version: String,
     hosts: Vec<ProxmoxNode>,
     host_caps: Vec<HostCap>,
     datastores: Vec<ProxmoxStorage>,
+    #[allow(dead_code)]
     networks: Vec<String>,
     vms: Vec<VsphereVm>,
     /// Datacenter inventory path for datastore browser (usually `ha-datacenter`).
+    #[allow(dead_code)]
     dc_path: String,
+    #[allow(dead_code)]
     vm_folder: String,
+    #[allow(dead_code)]
     resource_pool: String,
+    #[allow(dead_code)]
     host_moref: String,
 }
 
 impl VsphereClient {
+    #[allow(dead_code)]
     pub fn new(url: String, username: String, password: String, insecure: bool) -> Self {
         Self {
             url,
@@ -419,6 +429,7 @@ impl VsphereClient {
         Ok(cap)
     }
 
+    #[allow(dead_code)]
     pub async fn list_networks(&self) -> ApiResult<Vec<String>> {
         Ok(self.inventory().await?.networks)
     }
@@ -895,6 +906,7 @@ impl VsphereClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn vm_mac(&self, name: &str) -> ApiResult<Option<String>> {
         self.ensure_login().await?;
         let Some(vm) = self.find_vm(name).await? else {
@@ -1183,6 +1195,7 @@ fn obj_props(obj: &str) -> std::collections::HashMap<String, String> {
     map
 }
 
+#[allow(dead_code)]
 fn extract_mac_from_devices(xml: &str) -> Option<String> {
     // Look for macAddress elements in VirtualEthernetCard devices.
     let mut rest = xml;
@@ -1347,6 +1360,7 @@ const TRAVERSAL_RETRIEVE: &str = r#"<RetrievePropertiesEx xmlns="urn:vim25">
 </RetrievePropertiesEx>"#;
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 pub struct VsphereProbeExtra {
     pub networks: Vec<String>,
 }

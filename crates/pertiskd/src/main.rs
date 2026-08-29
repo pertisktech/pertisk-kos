@@ -369,7 +369,7 @@ fn run() -> Result<()> {
 
     // Start qemu-ga before STATE/EPHEMERAL so Proxmox QGA can report DHCP IPs
     // while lab-up is still waiting (no L2 ARP required).
-    let mut guest_agent = guest_agent::start();
+    let guest_agent = guest_agent::start();
 
     if let Ok(mut st) = api_state.lock() {
         st.set_message("mounting STATE");

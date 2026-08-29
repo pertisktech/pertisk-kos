@@ -40,6 +40,7 @@ struct MachineOut {
     availability: String,
 }
 
+#[allow(dead_code)]
 fn default_availability() -> String {
     "unknown".into()
 }

@@ -68,6 +68,7 @@ pub struct NodeOut {
     pub disk_usage: Option<crate::cluster_resources::ResourceMetric>,
     /// Stored AK public (TPM2B_PUBLIC bytes, base64). Not serialized to API clients.
     #[serde(skip_serializing)]
+    #[allow(dead_code)]
     pub ak_public_b64: Option<String>,
     pub ak_enrolled_at: Option<String>,
     /// proxmox | vsphere | nutanix | adopted | baremetal

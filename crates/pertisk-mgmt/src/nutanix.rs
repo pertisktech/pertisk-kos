@@ -27,22 +27,28 @@ pub struct NutanixVm {
     pub uuid: String,
     pub name: String,
     pub power_state: Option<String>,
+    #[allow(dead_code)]
     pub num_vcpus: Option<i64>,
+    #[allow(dead_code)]
     pub memory_mb: Option<i64>,
+    #[allow(dead_code)]
     pub mac: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct Inventory {
+    #[allow(dead_code)]
     version: String,
     hosts: Vec<ProxmoxNode>,
     containers: Vec<ProxmoxStorage>,
+    #[allow(dead_code)]
     networks: Vec<(String, String)>, // (name, uuid)
     vms: Vec<NutanixVm>,
     cluster_name: String,
 }
 
 impl NutanixClient {
+    #[allow(dead_code)]
     pub fn new(url: String, username: String, password: String, insecure: bool) -> Self {
         Self {
             url,
@@ -427,6 +433,7 @@ impl NutanixClient {
         Ok(cap)
     }
 
+    #[allow(dead_code)]
     pub async fn list_networks(&self) -> ApiResult<Vec<String>> {
         Ok(self
             .inventory()
@@ -880,6 +887,7 @@ impl NutanixClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn vm_mac(&self, name: &str) -> ApiResult<Option<String>> {
         let Some(vm) = self.find_vm(name).await? else {
             return Ok(None);

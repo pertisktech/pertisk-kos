@@ -343,6 +343,7 @@ fn best_winsize() -> Option<(u16, u16, &'static str)> {
 }
 
 /// Re-query the pane size while the dashboard is running.
+#[allow(dead_code)]
 pub fn detect_size() -> Option<(u16, u16)> {
     if std::env::var_os("PERTISK_DASHBOARD_COLS").is_some()
         || std::env::var_os("PERTISK_DASHBOARD_ROWS").is_some()

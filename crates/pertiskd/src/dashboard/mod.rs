@@ -34,7 +34,9 @@ use crate::log_ring::LogRing;
 /// Built-in dashboard when config.yaml omits `machine.dashboard`.
 pub const DEFAULT_THEME: &str = pertisk_config::Dashboard::DEFAULT_THEME;
 pub const DEFAULT_BORDER: &str = pertisk_config::Dashboard::DEFAULT_BORDER;
+#[allow(dead_code)]
 pub const DEFAULT_COLS: u16 = pertisk_config::Dashboard::DEFAULT_COLS;
+#[allow(dead_code)]
 pub const DEFAULT_ROWS: u16 = pertisk_config::Dashboard::DEFAULT_ROWS;
 
 /// Push dashboard settings into the process env.

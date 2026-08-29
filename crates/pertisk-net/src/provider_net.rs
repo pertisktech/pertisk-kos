@@ -13,6 +13,7 @@
 use pertisk_config::{Interface, Network};
 
 /// Parse a `PERTISK-NET` blob. Ignores trailing NUL / padding.
+#[allow(dead_code)]
 pub fn parse_pertisk_net(bytes: &[u8]) -> Option<Network> {
     let end = bytes
         .iter()

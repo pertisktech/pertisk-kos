@@ -62,6 +62,7 @@ impl NodeServices {
     }
 
     /// Attempt to start runtime services. Missing binaries are soft-warned.
+    #[allow(dead_code)]
     pub fn start(cfg: &MachineConfig, logs: &LogRing) -> Result<Self> {
         Self::start_with_guest_agent(cfg, logs, guest_agent::start())
     }

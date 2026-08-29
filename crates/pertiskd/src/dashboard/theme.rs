@@ -164,6 +164,7 @@ pub const MONO: Theme = Theme {
 };
 
 /// Every named palette (for docs + tests).
+#[allow(dead_code)]
 pub const ALL: &[Theme] = &[
     DRACULA,
     NORD,

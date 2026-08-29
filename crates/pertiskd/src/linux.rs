@@ -48,6 +48,7 @@ pub fn prepare_var() -> Result<()> {
 }
 
 /// kubelet `status.nodeInfo.osImage` (`kubectl get nodes -o wide` OS-IMAGE).
+#[allow(dead_code)]
 pub fn os_image_pretty_name(version: &str) -> String {
     let v = version.trim();
     if v.is_empty() {
@@ -58,6 +59,7 @@ pub fn os_image_pretty_name(version: &str) -> String {
 }
 
 /// `/etc/os-release` body. `PRETTY_NAME` is what kubelet stamps on the node.
+#[allow(dead_code)]
 pub fn os_release_contents(version: &str) -> String {
     let ver = version.trim();
     let pretty = os_image_pretty_name(ver);

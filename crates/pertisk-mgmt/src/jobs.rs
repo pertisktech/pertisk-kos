@@ -3316,6 +3316,7 @@ async fn provider_row_for_cluster(state: &AppState, cid: &str) -> anyhow::Result
     Ok(provider)
 }
 
+#[allow(dead_code)]
 async fn provider_client_for_cluster(
     state: &AppState,
     cid: &str,
@@ -3330,6 +3331,7 @@ async fn provider_client_for_cluster(
     })
 }
 
+#[allow(dead_code)]
 async fn provider_node_for_cluster(state: &AppState, cid: &str) -> anyhow::Result<String> {
     Ok(provider_row_for_cluster(state, cid).await?.node)
 }
@@ -5089,6 +5091,7 @@ struct ClusterRow {
 
 #[derive(Debug, sqlx::FromRow)]
 struct ProviderRow {
+    #[allow(dead_code)]
     id: String,
     kind: String,
     url: String,

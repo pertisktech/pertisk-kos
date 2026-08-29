@@ -469,6 +469,7 @@ pub fn is_ula_ipv6(ip: &str) -> bool {
 }
 
 /// Stable ULA derived from IPv4 (`10.1.1.173` → `fd00:a:1:1::ad/64`).
+#[allow(dead_code)]
 pub fn ula_cidr_from_ipv4(v4: std::net::Ipv4Addr) -> String {
     let o = v4.octets();
     format!("fd00:{:x}:{:x}:{:x}::{:x}/64", o[0], o[1], o[2], o[3])

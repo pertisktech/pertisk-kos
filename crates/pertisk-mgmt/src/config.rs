@@ -198,6 +198,7 @@ impl Config {
         })
     }
 
+    #[allow(dead_code)]
     pub fn smtp_configured(&self) -> bool {
         self.smtp.is_some()
     }

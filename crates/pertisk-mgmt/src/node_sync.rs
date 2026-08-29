@@ -135,6 +135,7 @@ pub async fn persist_snapshot_by_id(
 }
 
 /// Cloud-image seed / Cargo workspace default — not the running A/B slot.
+#[allow(dead_code)]
 pub fn is_placeholder_os_version(v: Option<&str>) -> bool {
     matches!(
         v.map(str::trim),
@@ -796,7 +797,6 @@ fn patch_yaml_hostname(yaml: &str, hostname: &str) -> String {
 
 fn patch_yaml_kubernetes_version(yaml: &str, version: &str) -> String {
     let mut out = String::with_capacity(yaml.len() + 32);
-    let mut patched = false;
     for line in yaml.lines() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("kubernetesVersion:") {
@@ -805,7 +805,6 @@ fn patch_yaml_kubernetes_version(yaml: &str, version: &str) -> String {
             out.push_str("kubernetesVersion: ");
             out.push_str(version);
             out.push('\n');
-            patched = true;
         } else {
             out.push_str(line);
             out.push('\n');
