@@ -53,6 +53,11 @@ const KOS_SCALER_RELEASE: &str = "kos-scaler";
 const KOS_SCALER_NAMESPACE: &str = "kos-scaler";
 const KOS_SCALER_DEPLOY: &str = "kos-scaler";
 pub const KOS_SCALER_IMAGE_TAG: &str = "0.1.0";
+const KUBERNETES_DASHBOARD_ID: &str = "kubernetes-dashboard";
+const KUBERNETES_DASHBOARD_HELM_CHART: &str = "pertisk-kube";
+const KUBERNETES_DASHBOARD_RELEASE: &str = "pertisk-kube";
+const KUBERNETES_DASHBOARD_NAMESPACE: &str = "default";
+const KUBERNETES_DASHBOARD_DEPLOY: &str = "pertisk-kube";
 const CERT_NS: &str = "cert-manager";
 const REFLECTOR_MANIFEST_URL: &str =
     "https://github.com/emberstack/kubernetes-reflector/releases/latest/download/reflector.yaml";
@@ -339,6 +344,14 @@ pub fn catalog() -> &'static [AddonCatalogEntry] {
             fields: KOS_SCALER_FIELDS,
             requires_cni: None,
         },
+        AddonCatalogEntry {
+            id: KUBERNETES_DASHBOARD_ID,
+            name: "Kubernetes Dashboard",
+            summary: "Pertisk Kubernetes web dashboard (Helm pertisk-kube) for monitoring and managing cluster resources.",
+            section: "dashboard",
+            fields: &[],
+            requires_cni: None,
+        },
     ]
 }
 
@@ -533,6 +546,7 @@ pub fn parse_addon_id(raw: &str) -> ApiResult<String> {
         CILIUM_LB_ID => Ok(CILIUM_LB_ID.into()),
         INGRESS_ID => Ok(INGRESS_ID.into()),
         KOS_SCALER_ID => Ok(KOS_SCALER_ID.into()),
+        KUBERNETES_DASHBOARD_ID => Ok(KUBERNETES_DASHBOARD_ID.into()),
         other => Err(AppError::bad(format!("unknown addon {other}"))),
     }
 }
@@ -2124,6 +2138,46 @@ async fn live_kos_scaler(kc: &Path) -> Value {
     })
 }
 
+async fn live_kubernetes_dashboard(kc: &Path) -> Value {
+    let deploy = kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "deploy",
+            KUBERNETES_DASHBOARD_DEPLOY,
+            "-n",
+            KUBERNETES_DASHBOARD_NAMESPACE,
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten();
+    let service = kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "svc",
+            KUBERNETES_DASHBOARD_DEPLOY,
+            "-n",
+            KUBERNETES_DASHBOARD_NAMESPACE,
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten();
+    json!({
+        "installed": deploy.as_ref().map(deploy_ready).unwrap_or(false) && service.is_some(),
+        "partial": deploy.is_some() || service.is_some(),
+        "ready": deploy.as_ref().map(deploy_ready).unwrap_or(false),
+        "service": service.is_some(),
+        "image": deploy.as_ref().and_then(container_image),
+    })
+}
+
 async fn list_tls_secret_names(kc: &Path) -> Vec<String> {
     let mut names = BTreeSet::new();
     for ns in [INGRESS_NAMESPACE, CERT_NS] {
@@ -2788,6 +2842,7 @@ pub async fn summarize_one(
                     CILIUM_LB_ID => live_cilium_lb(&kc).await,
                     INGRESS_ID => live_ingress(&kc).await,
                     KOS_SCALER_ID => live_kos_scaler(&kc).await,
+                    KUBERNETES_DASHBOARD_ID => live_kubernetes_dashboard(&kc).await,
                     _ => json!({}),
                 };
                 live["available"] = json!(true);
@@ -2982,6 +3037,17 @@ pub async fn summarize_one(
         && !live.get("ready").and_then(|v| v.as_bool()).unwrap_or(false)
     {
         warnings.push("kos-scaler is installed but the deployment is not ready".into());
+    }
+    if addon == KUBERNETES_DASHBOARD_ID
+        && live.get("available") == Some(&json!(true))
+        && live_partial
+        && (!live.get("ready").and_then(|v| v.as_bool()).unwrap_or(false)
+            || !live
+                .get("service")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false))
+    {
+        warnings.push("Kubernetes Dashboard is installed but not ready".into());
     }
 
     Ok(json!({
@@ -3261,6 +3327,27 @@ pub async fn upsert_install(
             .await?;
             Ok((NfsConfig::default(), CertManagerConfig::default(), public))
         }
+        KUBERNETES_DASHBOARD_ID => {
+            let public = json!({});
+            sqlx::query(
+                r#"INSERT INTO cluster_addons
+                     (cluster_id, addon, status, config_json, secrets_enc, error, installed_at, updated_at)
+                   VALUES (?, ?, 'installing', ?, NULL, NULL, NULL, ?)
+                   ON CONFLICT(cluster_id, addon) DO UPDATE SET
+                     status = 'installing',
+                     config_json = excluded.config_json,
+                     secrets_enc = NULL,
+                     error = NULL,
+                     updated_at = excluded.updated_at"#,
+            )
+            .bind(cluster_id)
+            .bind(addon)
+            .bind(public.to_string())
+            .bind(&now)
+            .execute(state.pool())
+            .await?;
+            Ok((NfsConfig::default(), CertManagerConfig::default(), public))
+        }
         other => Err(AppError::bad(format!("unknown addon {other}"))),
     }?;
     remember_addon(state, cluster_id, addon).await?;
@@ -3361,6 +3448,7 @@ pub async fn run_install_job(
             };
             install_kos_scaler(state, cid, &kc, log_path, &stored, &password).await
         }
+        KUBERNETES_DASHBOARD_ID => install_kubernetes_dashboard(&kc, log_path).await,
         other => anyhow::bail!("unknown addon {other}"),
     };
 
@@ -3376,6 +3464,48 @@ pub async fn run_install_job(
             Err(e)
         }
     }
+}
+
+async fn install_kubernetes_dashboard(kc: &Path, log_path: &str) -> anyhow::Result<()> {
+    crate::jobs::append_log(
+        log_path,
+        &format!(
+            "helm upgrade --install {KUBERNETES_DASHBOARD_RELEASE} {KUBERNETES_DASHBOARD_HELM_CHART} --repo {INGRESS_HELM_REPO} -n {KUBERNETES_DASHBOARD_NAMESPACE}\n"
+        ),
+    )?;
+    let out = helm_output(
+        Some(kc),
+        &[
+            "upgrade",
+            "--install",
+            KUBERNETES_DASHBOARD_RELEASE,
+            KUBERNETES_DASHBOARD_HELM_CHART,
+            "--repo",
+            INGRESS_HELM_REPO,
+            "--namespace",
+            KUBERNETES_DASHBOARD_NAMESPACE,
+            "--timeout",
+            "5m",
+        ],
+    )
+    .await
+    .map_err(anyhow_api)?;
+    crate::jobs::append_log(log_path, &out)?;
+    crate::jobs::append_log(log_path, "wait for Kubernetes Dashboard deployment\n")?;
+    kubectl_ok(
+        kc,
+        &[
+            "wait",
+            "--for=condition=Available",
+            &format!("deploy/{KUBERNETES_DASHBOARD_DEPLOY}"),
+            "-n",
+            KUBERNETES_DASHBOARD_NAMESPACE,
+            "--timeout=180s",
+        ],
+    )
+    .await
+    .map_err(anyhow_api)?;
+    Ok(())
 }
 
 async fn install_cilium_lb(
@@ -4149,12 +4279,20 @@ mod tests {
         let ids: Vec<_> = catalog().iter().map(|e| e.id).collect();
         assert_eq!(
             ids,
-            ["nfs", "cert-manager", "cilium-lb", "ingress", "kos-scaler"]
+            [
+                "nfs",
+                "cert-manager",
+                "cilium-lb",
+                "ingress",
+                "kos-scaler",
+                "kubernetes-dashboard",
+            ]
         );
         assert_eq!(catalog()[1].section, "certificates");
         assert_eq!(catalog()[2].requires_cni, Some("cilium"));
         assert_eq!(catalog()[3].id, "ingress");
         assert_eq!(catalog()[3].section, "ingress");
+        assert_eq!(catalog()[5].section, "dashboard");
     }
 
     #[test]

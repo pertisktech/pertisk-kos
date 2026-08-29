@@ -48,7 +48,7 @@ func (r *addonResource) Metadata(_ context.Context, req resource.MetadataRequest
 
 func (r *addonResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Install or update a cluster add-on via pertisk-mgmt (`nfs`, `cert-manager`, `cilium-lb`, `ingress`, `kos-scaler`). Destroy only drops Terraform state; the add-on stays on the cluster (mgmt has no uninstall API).",
+		MarkdownDescription: "Install or update a cluster add-on via pertisk-mgmt (`nfs`, `cert-manager`, `cilium-lb`, `ingress`, `kos-scaler`, `kubernetes-dashboard`). Destroy only drops Terraform state; the add-on stays on the cluster (mgmt has no uninstall API).",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -66,7 +66,7 @@ func (r *addonResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			},
 			"addon": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Catalog id: `nfs` | `cert-manager` | `cilium-lb` | `ingress` | `kos-scaler`. Forces new resource.",
+				MarkdownDescription: "Catalog id: `nfs` | `cert-manager` | `cilium-lb` | `ingress` | `kos-scaler` | `kubernetes-dashboard`. Forces new resource.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -190,9 +190,9 @@ func (r *addonResource) installAndWait(ctx context.Context, plan *addonModel) er
 	}
 	addon := plan.Addon.ValueString()
 	switch addon {
-	case "nfs", "cert-manager", "cilium-lb", "ingress", "kos-scaler":
+	case "nfs", "cert-manager", "cilium-lb", "ingress", "kos-scaler", "kubernetes-dashboard":
 	default:
-		return fmt.Errorf("addon must be nfs, cert-manager, cilium-lb, or ingress")
+		return fmt.Errorf("addon must be nfs, cert-manager, cilium-lb, ingress, kos-scaler, or kubernetes-dashboard")
 	}
 
 	body, err := addonInstallBody(plan)

@@ -71,6 +71,17 @@ Helm chart `pertisk/kos-scaler` — scale workers through pertisk-mgmt when pods
 
 From the management UI: cluster → **Add-ons** → **Autoscaling**. Set mgmt username/password and worker min/max. The cluster UUID and management public URL are filled in automatically.
 
+## Kubernetes Dashboard
+
+Pertisk Kubernetes web dashboard from Helm chart `pertisk/pertisk-kube`:
+
+```bash
+helm repo add pertisk https://chart.tools.pertisk.com
+helm install pertisk-kube pertisk/pertisk-kube
+```
+
+From the management UI: cluster → **Add-ons** → **Dashboard** → Kubernetes Dashboard. Requires `helm` on the management host.
+
 ## Observability (host metrics)
 
 Node OS metrics (CPU, RAM, network, disk I/O) are on `pertiskd` `:50001/metrics` — not this addon. See [../observability/README.md](../observability/README.md). metrics-server stays for `kubectl top` / HPA.

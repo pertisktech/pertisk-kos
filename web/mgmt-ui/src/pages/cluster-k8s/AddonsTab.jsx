@@ -27,6 +27,12 @@ function badgeClass(status) {
   return 'badge'
 }
 
+function deploymentStatus(ready, present) {
+  if (ready) return 'ready'
+  if (present) return 'not ready'
+  return 'absent'
+}
+
 function emptyForm(addon) {
   const next = {}
   for (const f of addon.fields || []) {
@@ -82,6 +88,11 @@ const ADDON_SECTIONS = [
     id: 'cluster',
     title: 'Storage & network',
     blurb: 'NFS volumes and Cilium LoadBalancer IPs.',
+  },
+  {
+    id: 'dashboard',
+    title: 'Dashboard',
+    blurb: 'Web interface for monitoring and managing Kubernetes resources.',
   },
 ]
 
@@ -268,6 +279,13 @@ function AddonCard({ clusterId, addon, onInstalled }) {
               <div><dt>Pull secret</dt><dd>{live.pull_secret ? 'present' : 'absent'}</dd></div>
               <div><dt>Admin host</dt><dd className="mono-inline">{live.admin_host || '—'}</dd></div>
               <div><dt>Admin TLS</dt><dd className="mono-inline">{live.admin_host ? (live.admin_tls_secret || (live.admin_tls ? 'yes' : 'none')) : '—'}</dd></div>
+            </dl>
+          )}
+          {addon.id === 'kubernetes-dashboard' && live.available && (
+            <dl className="kv addon-live">
+              <div><dt>Deployment</dt><dd>{deploymentStatus(live.ready, live.partial)}</dd></div>
+              <div><dt>Service</dt><dd>{live.service ? 'present' : 'absent'}</dd></div>
+              <div><dt>Image</dt><dd className="mono-inline">{live.image || '—'}</dd></div>
             </dl>
           )}
         </div>

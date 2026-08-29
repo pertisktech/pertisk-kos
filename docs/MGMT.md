@@ -142,7 +142,7 @@ When a cluster is **ready** (kubeconfig stored under `{data_dir}/kubeconfigs/{na
 
 ## Cluster Add-ons tab
 
-When a cluster is **ready**, **Add-ons** uses group tabs (**Certificates**, **Ingress**, **Storage & network**). It checks live install state and applies optional cluster apps via `kubectl` (and Helm for Pertisk Ingress) on the management host. CoreDNS and metrics-server stay bootstrap basics (not this tab).
+When a cluster is **ready**, **Add-ons** uses group tabs (**Autoscaling**, **Certificates**, **Ingress**, **Storage & network**, **Dashboard**). It checks live install state and applies optional cluster apps via `kubectl` (and Helm for Helm-based add-ons) on the management host. CoreDNS and metrics-server stay bootstrap basics (not this tab).
 
 | Add-on | Config | What install applies |
 |--------|--------|----------------------|
@@ -150,13 +150,14 @@ When a cluster is **ready**, **Add-ons** uses group tabs (**Certificates**, **In
 | cert-manager | DNS provider (`cloudflare`), ACME email, API token, production/staging, optional wildcard domain | cert-manager `v1.21.1` + webhook `hostNetwork` (port 10260) + Cloudflare token Secret + `ClusterIssuer` `letsencrypt-cloudflare` + kubernetes-reflector + wildcard `Certificate` (apex + `*.domain`, Secret copied to all namespaces) |
 | Cilium LoadBalancer | ELB IPv4; IPv6 when dual-stack | `CiliumLoadBalancerIPPool` + `CiliumL2AnnouncementPolicy` (listed only when cluster CNI is `cilium`) |
 | Pertisk Ingress | image tag (default `v0.1.83`); optional admin host; TLS secret list (or HTTP only); optional admin password | Helm `pertisk-ingress` from `--repo https://chart.tools.pertisk.com` into `pertisk-proxy`, public Harbor image pinned to cluster arch (`linux/arm64` or `linux/amd64`) |
+| Kubernetes Dashboard | none | Helm `pertisk-kube` from `--repo https://chart.tools.pertisk.com` into `default` |
 
 **Check config** validates the form (and for NFS, TCP 2049 from the mgmt host) and reports live resources. **Install** / **Update** enqueues job `install_addon` (cluster stays ready on failure). Add-on configs (including encrypted tokens) are saved by **cluster name**. Delete keeps that preset; creating the same name again restores the forms and reinstalls after the cluster is ready (wizard **Reuse add-on config**, on by default). You can also copy presets from another cluster name. Add-on installs run **in parallel** with other clusters’ jobs (and with other add-ons on the same cluster); they wait only if *this* cluster already has a create/upgrade/node job running. Cloudflare tokens and optional ingress admin/registry passwords are encrypted at rest (`MGMT_SECRET_KEY`) and never returned by the API. Ingress install needs `helm` on the mgmt host PATH (same as the Shell tab). `harbor.tools.pertisk.com/pertisk-proxy` is public (no pull secret unless you set Harbor user/password).
 
 API (Bearer JWT; install needs **operator/admin**):
 
 - `GET /api/clusters/{id}/addons` — catalog + stored config + live status
-- `GET /api/clusters/{id}/addons/{name}` — one add-on (`nfs` \| `cert-manager` \| `cilium-lb` \| `ingress`)
+- `GET /api/clusters/{id}/addons/{name}` — one add-on (`nfs` \| `cert-manager` \| `cilium-lb` \| `ingress` \| `kos-scaler` \| `kubernetes-dashboard`)
 - `POST /api/clusters/{id}/addons/{name}/check` — validate submitted config + live probe
 - `POST /api/clusters/{id}/addons/{name}/install` — persist config and enqueue `install_addon`
 - `GET /api/addon-presets` — saved add-on configs by cluster name (for recreate / copy)

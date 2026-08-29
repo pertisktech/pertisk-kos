@@ -2,7 +2,7 @@
 page_title: "pertisk_addon Resource - pertisk"
 subcategory: ""
   description: |-
-    Install or update a Pertisk cluster add-on (NFS, cert-manager, Cilium LB, Ingress, KOS scaler).
+    Install or update a Pertisk cluster add-on (NFS, cert-manager, Cilium LB, Ingress, KOS scaler, Kubernetes Dashboard).
 ---
 
 # pertisk_addon (Resource)
@@ -77,6 +77,11 @@ resource "pertisk_addon" "scaler" {
     password = var.mgmt_password
   }
 }
+
+resource "pertisk_addon" "dashboard" {
+  cluster_id = pertisk_cluster.lab.id
+  addon      = "kubernetes-dashboard"
+}
 ```
 
 Recreate a cluster and restore the last add-on configs for that name (mgmt default):
@@ -96,7 +101,7 @@ resource "pertisk_cluster" "lab" {
 ### Required
 
 * `cluster_id` - (String) Cluster UUID. Forces new resource.
-* `addon` - (String) `nfs` | `cert-manager` | `cilium-lb` | `ingress` | `kos-scaler`. Forces new resource.
+* `addon` - (String) `nfs` | `cert-manager` | `cilium-lb` | `ingress` | `kos-scaler` | `kubernetes-dashboard`. Forces new resource.
 
 ### Optional
 
