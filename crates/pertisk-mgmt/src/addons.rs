@@ -10,6 +10,8 @@ use serde_json::{json, Value};
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use rand::rngs::OsRng;
+use rand::RngCore;
 
 use crate::crypto;
 use crate::db;
@@ -598,6 +600,12 @@ struct IngressSecrets {
     registry_password: String,
 }
 
+#[derive(Debug, Clone, Default)]
+struct KubernetesDashboardSecrets {
+    password: String,
+    jwt_secret: String,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct KosScalerConfig {
     #[serde(default)]
@@ -895,6 +903,44 @@ fn decrypt_ingress_secrets(state: &AppState, enc: Option<&str>) -> IngressSecret
     }
 }
 
+fn parse_kubernetes_dashboard_secrets(raw: &str) -> KubernetesDashboardSecrets {
+    let raw = raw.trim();
+    if raw.starts_with('{') {
+        if let Ok(value) = serde_json::from_str::<Value>(raw) {
+            return KubernetesDashboardSecrets {
+                password: value
+                    .get("password")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                jwt_secret: value
+                    .get("jwt_secret")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            };
+        }
+    }
+    KubernetesDashboardSecrets {
+        password: raw.to_string(),
+        jwt_secret: String::new(),
+    }
+}
+
+fn encode_kubernetes_dashboard_secrets(secrets: &KubernetesDashboardSecrets) -> String {
+    json!({
+        "password": secrets.password,
+        "jwt_secret": secrets.jwt_secret,
+    })
+    .to_string()
+}
+
+fn generate_dashboard_jwt_secret() -> String {
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
 pub fn public_ingress_config(cfg: &IngressConfig) -> Value {
     json!({
         "image_tag": if cfg.image_tag.trim().is_empty() {
@@ -942,7 +988,7 @@ pub fn public_kubernetes_dashboard_config(cfg: &KubernetesDashboardConfig) -> Va
     })
 }
 
-fn kubernetes_dashboard_helm_values(cfg: &KubernetesDashboardConfig) -> Value {
+fn kubernetes_dashboard_helm_values(cfg: &KubernetesDashboardConfig, jwt_secret: &str) -> Value {
     let mut values = json!({
         "app": {
             "image": {
@@ -953,6 +999,7 @@ fn kubernetes_dashboard_helm_values(cfg: &KubernetesDashboardConfig) -> Value {
             "auth": {
                 "username": cfg.username.trim(),
                 "password": cfg.password.trim(),
+                "jwtSecret": jwt_secret,
             },
         },
         "ingress": {
@@ -3604,29 +3651,37 @@ pub async fn upsert_install(
         }
         KUBERNETES_DASHBOARD_ID => {
             let row = load_row(state, cluster_id, addon).await?;
-            let password_set = row
+            let mut secrets = row
                 .as_ref()
-                .map(|r| r.secrets_enc.as_ref().is_some_and(|s| !s.is_empty()))
-                .unwrap_or(false);
+                .and_then(|r| r.secrets_enc.as_deref())
+                .map(|enc| crypto::decrypt(&state.cfg().secret_key, enc))
+                .transpose()
+                .map_err(|e| AppError::bad(format!("stored dashboard secrets: {e}")))?
+                .map(|raw| parse_kubernetes_dashboard_secrets(&raw))
+                .unwrap_or_default();
             let mut cfg = parse_kubernetes_dashboard_stored(&body);
             cfg.password = json_str(&body, "password");
-            if let Err(e) =
-                validate_kubernetes_dashboard(&cfg, cfg.password.trim().is_empty() && !password_set)
-            {
+            if let Err(e) = validate_kubernetes_dashboard(
+                &cfg,
+                cfg.password.trim().is_empty() && secrets.password.trim().is_empty(),
+            ) {
                 return Err(AppError::bad(e.join("; ")));
             }
             let password = if cfg.password.trim().is_empty() {
-                crypto::decrypt(
-                    &state.cfg().secret_key,
-                    &row.and_then(|r| r.secrets_enc).unwrap_or_default(),
-                )
-                .map_err(|e| AppError::bad(format!("stored dashboard password: {e}")))?
+                secrets.password.clone()
             } else {
                 cfg.password.trim().to_string()
             };
+            if secrets.jwt_secret.trim().is_empty() {
+                secrets.jwt_secret = generate_dashboard_jwt_secret();
+            }
+            secrets.password = password;
             let public = public_kubernetes_dashboard_config(&cfg);
-            let enc =
-                crypto::encrypt(&state.cfg().secret_key, &password).map_err(AppError::Anyhow)?;
+            let enc = crypto::encrypt(
+                &state.cfg().secret_key,
+                &encode_kubernetes_dashboard_secrets(&secrets),
+            )
+            .map_err(AppError::Anyhow)?;
             sqlx::query(
                 r#"INSERT INTO cluster_addons
                      (cluster_id, addon, status, config_json, secrets_enc, error, installed_at, updated_at)
@@ -3748,11 +3803,18 @@ pub async fn run_install_job(
             install_kos_scaler(state, cid, &kc, log_path, &stored, &password).await
         }
         KUBERNETES_DASHBOARD_ID => {
-            let password = match row.secrets_enc.as_deref() {
-                Some(enc) if !enc.is_empty() => crypto::decrypt(&state.cfg().secret_key, enc)?,
+            let secrets = match row.secrets_enc.as_deref() {
+                Some(enc) if !enc.is_empty() => parse_kubernetes_dashboard_secrets(
+                    &crypto::decrypt(&state.cfg().secret_key, enc)?,
+                ),
                 _ => anyhow::bail!("dashboard password is not stored"),
             };
-            install_kubernetes_dashboard(state, cid, &kc, log_path, &stored, &password).await
+            if secrets.password.trim().is_empty() || secrets.jwt_secret.trim().is_empty() {
+                anyhow::bail!(
+                    "dashboard credentials or JWT secret are not stored; update the add-on"
+                )
+            }
+            install_kubernetes_dashboard(state, cid, &kc, log_path, &stored, &secrets).await
         }
         other => anyhow::bail!("unknown addon {other}"),
     };
@@ -3777,14 +3839,15 @@ async fn install_kubernetes_dashboard(
     kc: &Path,
     log_path: &str,
     stored: &Value,
-    password: &str,
+    secrets: &KubernetesDashboardSecrets,
 ) -> anyhow::Result<()> {
     let mut cfg = parse_kubernetes_dashboard_stored(stored);
-    cfg.password = password.to_string();
+    cfg.password = secrets.password.clone();
     validate_kubernetes_dashboard(&cfg, true).map_err(|e| anyhow::anyhow!(e.join("; ")))?;
-    let values = kubernetes_dashboard_helm_values(&cfg);
+    let values = kubernetes_dashboard_helm_values(&cfg, &secrets.jwt_secret);
     let mut logged = values.clone();
     logged["app"]["auth"]["password"] = json!("***");
+    logged["app"]["auth"]["jwtSecret"] = json!("***");
     let values_path = state
         .cfg()
         .jobs_dir()
@@ -5121,14 +5184,17 @@ mod tests {
 
     #[test]
     fn dashboard_helm_values_configure_image_login_and_ingress() {
-        let values = kubernetes_dashboard_helm_values(&KubernetesDashboardConfig {
-            namespace: KUBERNETES_DASHBOARD_NAMESPACE.into(),
-            image_tag: "v0.2.7".into(),
-            username: "operator".into(),
-            password: "dashboard-password".into(),
-            host: "dashboard.example.com".into(),
-            tls_secret: "dashboard-tls".into(),
-        });
+        let values = kubernetes_dashboard_helm_values(
+            &KubernetesDashboardConfig {
+                namespace: KUBERNETES_DASHBOARD_NAMESPACE.into(),
+                image_tag: "v0.2.7".into(),
+                username: "operator".into(),
+                password: "dashboard-password".into(),
+                host: "dashboard.example.com".into(),
+                tls_secret: "dashboard-tls".into(),
+            },
+            "jwt-secret",
+        );
         assert_eq!(
             values["app"]["image"]["registry"],
             KUBERNETES_DASHBOARD_IMAGE_REGISTRY
@@ -5136,11 +5202,27 @@ mod tests {
         assert_eq!(values["app"]["image"]["tag"], "v0.2.7");
         assert_eq!(values["app"]["auth"]["username"], "operator");
         assert_eq!(values["app"]["auth"]["password"], "dashboard-password");
+        assert_eq!(values["app"]["auth"]["jwtSecret"], "jwt-secret");
         assert_eq!(
             values["ingress"]["hosts"][0]["host"],
             "dashboard.example.com"
         );
         assert_eq!(values["ingress"]["tls"][0]["secretName"], "dashboard-tls");
+    }
+
+    #[test]
+    fn dashboard_secrets_migrate_password_only_data() {
+        let legacy = parse_kubernetes_dashboard_secrets("dashboard-password");
+        assert_eq!(legacy.password, "dashboard-password");
+        assert!(legacy.jwt_secret.is_empty());
+        let jwt_secret = generate_dashboard_jwt_secret();
+        assert_eq!(jwt_secret.len(), 64);
+        let encoded = encode_kubernetes_dashboard_secrets(&KubernetesDashboardSecrets {
+            password: legacy.password,
+            jwt_secret: jwt_secret.clone(),
+        });
+        let decoded = parse_kubernetes_dashboard_secrets(&encoded);
+        assert_eq!(decoded.jwt_secret, jwt_secret);
     }
 
     #[test]
