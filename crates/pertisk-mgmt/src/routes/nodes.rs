@@ -190,6 +190,7 @@ async fn list(
     .fetch_all(state.pool())
     .await?;
     crate::node_availability::fill(&mut rows).await;
+    crate::node_availability::spawn_rediscover_if_offline(&state, &id, &rows);
     let _ = crate::cluster_resources::gather_one_cached(&state, &id).await;
     attach_resource_metrics(&id, &mut rows);
     Ok(Json(rows))
@@ -210,6 +211,7 @@ async fn get_one(
         return Err(AppError::NotFound);
     };
     node.availability = crate::node_availability::probe_node(&node).await;
+    crate::node_availability::spawn_rediscover_if_offline(&state, &cid, std::slice::from_ref(&node));
     let _ = crate::cluster_resources::gather_one_cached(&state, &cid).await;
     attach_resource_metrics(&cid, std::slice::from_mut(&mut node));
     Ok(Json(node))

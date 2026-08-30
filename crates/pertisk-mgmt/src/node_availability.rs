@@ -122,6 +122,24 @@ pub async fn fill(nodes: &mut [NodeOut]) {
     }
 }
 
+/// A node can go stale (mgmt has the pre-reboot DHCP/IPAM IP) even while the
+/// rest of an HA cluster answers `/readyz` fine, so `cluster_availability`'s
+/// rediscovery never fires. Kick it here too, keyed off individual node
+/// unreachability; `node_sync::rediscover_cluster_ips` has its own 60s throttle.
+pub fn spawn_rediscover_if_offline(state: &crate::state::AppState, cluster_id: &str, nodes: &[NodeOut]) {
+    let stale = nodes
+        .iter()
+        .any(|n| n.availability == "offline" && n.ip.as_deref().is_some_and(|s| !s.trim().is_empty()));
+    if !stale {
+        return;
+    }
+    let state = state.clone();
+    let cluster_id = cluster_id.to_string();
+    tokio::spawn(async move {
+        let _ = crate::node_sync::rediscover_cluster_ips(&state, &cluster_id).await;
+    });
+}
+
 async fn tcp_open(ip: &str, port: u16) -> bool {
     let Ok(addr) = format!("{ip}:{port}").parse::<SocketAddr>() else {
         return false;

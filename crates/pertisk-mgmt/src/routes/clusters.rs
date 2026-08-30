@@ -345,6 +345,7 @@ async fn get_one(
     .await?;
 
     crate::node_availability::fill(&mut nodes).await;
+    crate::node_availability::spawn_rediscover_if_offline(&state, &id, &nodes);
     let _ = crate::cluster_resources::gather_one_cached(&state, &id).await;
     crate::routes::nodes::attach_resource_metrics(&id, &mut nodes);
 
