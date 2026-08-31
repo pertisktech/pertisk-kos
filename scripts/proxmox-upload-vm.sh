@@ -914,10 +914,15 @@ fi
 attach_static_netcfg() {
   [[ -n "${STATIC_IP}" ]] || return 0
   local ns="${STATIC_NAMESERVER:-${STATIC_GATEWAY}}"
-  echo "==> static IP ${STATIC_IP} gw=${STATIC_GATEWAY} (no DHCP) → netcfg disk"
+  local cidr="${STATIC_IP}"
+  # If STATIC_IP is raw IP (no slash), add CIDR prefix (default /24)
+  if [[ "${STATIC_IP}" != */* ]]; then
+    cidr="${STATIC_IP}/24"
+  fi
+  echo "==> static IP ${cidr} gw=${STATIC_GATEWAY} (no DHCP) → netcfg disk"
   local raw upload_storage vol import_ref up up_body up_code upid att imp_upid
   raw="$(mktemp /tmp/pertisk-netcfg.XXXXXX.raw)"
-  python3 - "${raw}" "${STATIC_IP}" "${STATIC_GATEWAY}" "${ns}" <<'PY'
+  python3 - "${raw}" "${cidr}" "${STATIC_GATEWAY}" "${ns}" <<'PY'
 import sys
 path, cidr, gw, ns = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 blob = f"PERTISK-NET\nIPV4={cidr}\nGATEWAY={gw}\nNAMESERVER={ns}\nINTERFACE=eth0\n".encode()
