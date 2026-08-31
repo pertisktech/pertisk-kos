@@ -20,6 +20,7 @@ pub fn routes() -> Router<AppState> {
         .route("/clusters/check-vmids", axum::routing::post(check_vmids))
         .route("/clusters/suggest-vmid", axum::routing::post(suggest_vmid))
         .route("/clusters/check-vip", axum::routing::post(check_vip))
+        .route("/clusters/scan-ips", axum::routing::post(scan_ips))
         .route("/clusters/{id}", get(get_one).delete(delete))
         .route("/clusters/{id}/resources", get(resources))
         .route("/clusters/{id}/kubeconfig", get(kubeconfig))
@@ -1701,6 +1702,171 @@ async fn address_has_apiserver(addr: &str) -> bool {
         Err(_) => return false,
     };
     matches!(client.get(&url).send().await, Ok(resp) if resp.status().is_success())
+}
+
+// --- IP scan endpoint ---
+
+#[derive(Debug, Deserialize)]
+struct ScanIpsIn {
+    provider_id: String,
+    #[serde(default = "one")]
+    controlplanes: i64,
+    #[serde(default = "one")]
+    workers: i64,
+    /// Optional VIP to exclude from scan results.
+    vip: Option<String>,
+    /// Optional IPv6 VIP to exclude.
+    vip6: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct IpScanResult {
+    ip: String,
+    in_use: bool,
+    status: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ScanIpsOut {
+    ok: bool,
+    subnet: String,
+    gateway: String,
+    /// IPs that will be assigned (free IPs found by TCP scan).
+    assigned: Vec<String>,
+    /// All scanned IPs with their status.
+    scanned: Vec<IpScanResult>,
+    message: String,
+}
+
+/// Scan provider's subnet for available IPs (TCP-based, not ICMP).
+async fn scan_ips(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Json(body): Json<ScanIpsIn>,
+) -> ApiResult<Json<ScanIpsOut>> {
+    use crate::jobs::{ip_from_provider_url, scan_subnet_for_free_ips, subnet_from_provider_ip};
+
+    let need_count = body.controlplanes + body.workers;
+    if need_count < 1 {
+        return Err(AppError::bad("controlplanes + workers must be >= 1"));
+    }
+
+    // Get provider URL
+    let row = sqlx::query_as::<_, (String,)>("SELECT url FROM providers WHERE id = ?")
+        .bind(&body.provider_id)
+        .fetch_optional(state.pool())
+        .await?
+        .ok_or_else(|| AppError::bad("provider not found"))?;
+
+    let provider_ip = ip_from_provider_url(&row.0)
+        .ok_or_else(|| AppError::bad("cannot extract IP from provider URL"))?;
+    let subnet = subnet_from_provider_ip(&provider_ip)
+        .ok_or_else(|| AppError::bad("cannot infer subnet from provider IP"))?;
+
+    // Build exclusion list: all providers + existing nodes + VIPs
+    let mut exclude_ips: Vec<String> = Vec::new();
+
+    let urls: Vec<String> = sqlx::query_scalar("SELECT url FROM providers")
+        .fetch_all(state.pool())
+        .await
+        .unwrap_or_default();
+    exclude_ips.extend(urls.iter().filter_map(|u| ip_from_provider_url(u)));
+
+    let node_ips: Vec<Option<String>> =
+        sqlx::query_scalar("SELECT ip FROM nodes WHERE ip IS NOT NULL")
+            .fetch_all(state.pool())
+            .await
+            .unwrap_or_default();
+    exclude_ips.extend(node_ips.into_iter().flatten());
+
+    // Exclude VIPs if provided
+    if let Some(ref vip) = body.vip {
+        if !vip.trim().is_empty() {
+            exclude_ips.push(vip.trim().to_string());
+        }
+    }
+    if let Some(ref vip6) = body.vip6 {
+        if !vip6.trim().is_empty() {
+            exclude_ips.push(vip6.trim().to_string());
+        }
+    }
+
+    exclude_ips.sort();
+    exclude_ips.dedup();
+
+    // Auto-detect gateway
+    let gateway = std::env::var("LAB_GATEWAY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            // Parse `ip route show default` output
+            let output = std::process::Command::new("ip")
+                .args(["route", "show", "default"])
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.contains("default") && line.contains("via") {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    for (i, part) in parts.iter().enumerate() {
+                        if *part == "via" && i + 1 < parts.len() {
+                            return Some(parts[i + 1].to_string());
+                        }
+                    }
+                }
+            }
+            None
+        })
+        .unwrap_or_else(|| format!("{}.1", provider_ip.rsplit_once('.').map(|(p, _)| p).unwrap_or("10.1.1")));
+
+    // Scan for free IPs
+    let scan_result = scan_subnet_for_free_ips(&subnet, need_count, &exclude_ips).await;
+
+    match scan_result {
+        Ok(free_ips) if !free_ips.is_empty() => {
+            let assigned: Vec<String> = free_ips
+                .iter()
+                .take(need_count as usize)
+                .map(|ip| ip.split('/').next().unwrap_or(ip).to_string())
+                .collect();
+
+            let scanned: Vec<IpScanResult> = assigned
+                .iter()
+                .map(|ip| IpScanResult {
+                    ip: ip.clone(),
+                    in_use: false,
+                    status: "free".to_string(),
+                })
+                .collect();
+
+            let message = format!(
+                "Found {} free IPs in {} (gateway {})",
+                assigned.len(),
+                subnet,
+                gateway
+            );
+
+            Ok(Json(ScanIpsOut {
+                ok: true,
+                subnet,
+                gateway,
+                assigned,
+                scanned,
+                message,
+            }))
+        }
+        _ => Ok(Json(ScanIpsOut {
+            ok: false,
+            subnet: subnet.clone(),
+            gateway,
+            assigned: vec![],
+            scanned: vec![],
+            message: format!("No free IPs found in {} (all scanned hosts responded to TCP)", subnet),
+        })),
+    }
 }
 
 async fn provider_check_vmids(

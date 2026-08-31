@@ -161,6 +161,30 @@ struct Args {
     dashboard_preview: bool,
 }
 
+/// Wait up to 10 seconds for network interfaces to be created (udev delay).
+/// This is critical for cloud VMs where virtio devices may not appear immediately.
+fn wait_for_network_interface() {
+    for attempt in 1..=20 {
+        // Check common interface names: eth0, ens0, enp*, etc.
+        if let Ok(ifaces) = std::fs::read_dir("/sys/class/net") {
+            for entry in ifaces.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                // Skip loopback and local tunnel interfaces
+                if !name.starts_with("lo") && !name.starts_with("tunl") {
+                    info!("network interface appeared: {}", name);
+                    return;
+                }
+            }
+        }
+        if attempt == 1 || attempt % 5 == 0 {
+            info!("waiting for network interface to appear (attempt {}/20)", attempt);
+        }
+        thread::sleep(std::time::Duration::from_millis(500));
+    }
+    warn!("timeout waiting for network interface after 10 seconds");
+}
+
 fn main() {
     let pid = process::id();
     // Fan out panic text to every console path before stdio redirect — otherwise
@@ -336,6 +360,9 @@ fn run() -> Result<()> {
         }
     }
     if !args.skip_network {
+        // Wait up to 10 seconds for network interfaces to appear (udev delay)
+        wait_for_network_interface();
+        
         match pertisk_net::apply_provider_netcfg() {
             Ok(true) => info!("provider netcfg applied (AHV IPAM disk)"),
             other => {

@@ -63,6 +63,8 @@ STATIC_NAMESERVER="${PROXMOX_STATIC_NAMESERVER:-}"
 # Comma-separated IPs to always skip (e.g. a Nutanix CVM sharing this LAN) even
 # if it does not answer ICMP.
 STATIC_EXCLUDE="${PROXMOX_STATIC_EXCLUDE:-}"
+# Space-separated static IPs (e.g. "10.1.1.2/24 10.1.1.3/24 …") from auto-detection or operator override.
+STATIC_IPS_ENV="${PROXMOX_STATIC_IPS:-}"
 # Guest arch: ARCH / PERTISK_ARCH (amd64|arm64). Default amd64.
 ARCH="${PERTISK_ARCH:-${ARCH:-amd64}}"
 case "$(printf '%s' "$ARCH" | tr '[:upper:]' '[:lower:]')" in
@@ -263,25 +265,41 @@ PY
 
 echo "==> Proxmox create-cluster arch=${ARCH} prefix=${NAME_PREFIX}"
 
-STATIC_IPS=()
-if [[ -n "$STATIC_SUBNET" ]]; then
+pertisk_parallel_init
+
+# Parse static IPs from env (space-separated list for all nodes) or CLI flags.
+# Priority: PROXMOX_STATIC_IPS (auto-detected or operator-set) > CLI --static-subnet/--static-base
+STATIC_IPS_ARRAY=()
+if [[ -n "$STATIC_IPS_ENV" ]]; then
+  read -ra STATIC_IPS_ARRAY <<<"$STATIC_IPS_ENV"
+  echo "==> using auto-detected static IPs: ${STATIC_IPS_ARRAY[*]} gateway=${STATIC_GATEWAY:-<unset>}"
+  if [[ -z "$STATIC_GATEWAY" ]]; then
+    echo "ERROR: PROXMOX_STATIC_IPS requires PROXMOX_STATIC_GATEWAY to be set" >&2
+    exit 1
+  fi
+elif [[ -n "$STATIC_SUBNET" ]]; then
   total=$((CONTROLPLANES + WORKERS))
   echo "==> scanning ${STATIC_SUBNET} for ${total} free static IP(s)"
-  mapfile -t STATIC_IPS < <(scan_free_ips "$STATIC_SUBNET" "$total") || exit 1
-  echo "    found: ${STATIC_IPS[*]}"
+  mapfile -t STATIC_IPS_ARRAY < <(scan_free_ips "$STATIC_SUBNET" "$total") || exit 1
+  echo "    found: ${STATIC_IPS_ARRAY[*]}"
+elif [[ -n "$STATIC_BASE" ]]; then
+  # Will be computed per-VM below
+  :
 fi
+STATIC_IP_IDX=0
 
-pertisk_parallel_init
 for i in $(seq 1 "$CONTROLPLANES"); do
   cvid=$((CP_VMID + i - 1))
   echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${CP_DISK} mem=${CP_MEMORY} cores=${CP_CORES} disk-gb=${CP_DISK_GB:-image}"
   UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$CP_DISK" --arch "$ARCH" --memory "$CP_MEMORY" --cores "$CP_CORES")
   [[ -n "$CP_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$CP_DISK_GB")
-  if [[ -n "$STATIC_SUBNET" ]]; then
-    ip="${STATIC_IPS[$((i - 1))]}"
+  # Prefer env PROXMOX_STATIC_IPS; else use CLI static-subnet/static-base flags
+  if [[ $STATIC_IP_IDX -lt ${#STATIC_IPS_ARRAY[@]} ]]; then
+    ip="${STATIC_IPS_ARRAY[$STATIC_IP_IDX]}"
     UPLOAD_ARGS+=(--ip "$ip" --gateway "$STATIC_GATEWAY")
     [[ -n "$STATIC_NAMESERVER" ]] && UPLOAD_ARGS+=(--nameserver "$STATIC_NAMESERVER")
     echo "    static ip=${ip}"
+    STATIC_IP_IDX=$((STATIC_IP_IDX + 1))
   elif [[ -n "$STATIC_BASE" ]]; then
     ip="$(static_ip_at "$STATIC_BASE" $((i - 1)))" || exit 1
     UPLOAD_ARGS+=(--ip "$ip" --gateway "$STATIC_GATEWAY")
@@ -296,11 +314,13 @@ for i in $(seq 1 "$WORKERS"); do
   echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i} disk=${WORKER_DISK} mem=${WORKER_MEMORY} cores=${WORKER_CORES} disk-gb=${WORKER_DISK_GB:-image}"
   UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$WORKER_DISK" --arch "$ARCH" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
   [[ -n "$WORKER_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$WORKER_DISK_GB")
-  if [[ -n "$STATIC_SUBNET" ]]; then
-    ip="${STATIC_IPS[$((CONTROLPLANES + i - 1))]}"
+  # Prefer env PROXMOX_STATIC_IPS; else use CLI static-subnet/static-base flags
+  if [[ $STATIC_IP_IDX -lt ${#STATIC_IPS_ARRAY[@]} ]]; then
+    ip="${STATIC_IPS_ARRAY[$STATIC_IP_IDX]}"
     UPLOAD_ARGS+=(--ip "$ip" --gateway "$STATIC_GATEWAY")
     [[ -n "$STATIC_NAMESERVER" ]] && UPLOAD_ARGS+=(--nameserver "$STATIC_NAMESERVER")
     echo "    static ip=${ip}"
+    STATIC_IP_IDX=$((STATIC_IP_IDX + 1))
   elif [[ -n "$STATIC_BASE" ]]; then
     ip="$(static_ip_at "$STATIC_BASE" $((CONTROLPLANES + i - 1)))" || exit 1
     UPLOAD_ARGS+=(--ip "$ip" --gateway "$STATIC_GATEWAY")

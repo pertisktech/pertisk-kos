@@ -49,6 +49,11 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) -> Opt
         "PROXMOX_STATIC_GATEWAY",
         "PROXMOX_STATIC_NAMESERVER",
         "PROXMOX_STATIC_EXCLUDE",
+        "PROXMOX_STATIC_IPS",
+        // Nutanix IPAM reserved IPs (space-separated list of addresses).
+        "NUTANIX_STATIC_IPS",
+        // vSphere guest static IPs (space-separated list of addresses).
+        "VSPHERE_STATIC_IPS",
     ] {
         if let Ok(v) = std::env::var(key) {
             if !v.is_empty() {
@@ -183,7 +188,7 @@ fn proxmox_ssh_user(ssh: &str) -> &str {
 }
 
 /// Extract IP from provider URL (https://10.1.1.111:9440 → 10.1.1.111).
-fn ip_from_provider_url(url: &str) -> Option<String> {
+pub(crate) fn ip_from_provider_url(url: &str) -> Option<String> {
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
@@ -195,7 +200,7 @@ fn ip_from_provider_url(url: &str) -> Option<String> {
 }
 
 /// Infer /24 subnet from provider IP. E.g., 10.1.1.111 → 10.1.1.0/24.
-fn subnet_from_provider_ip(ip: &str) -> Option<String> {
+pub(crate) fn subnet_from_provider_ip(ip: &str) -> Option<String> {
     let octets: Vec<&str> = ip.split('.').collect();
     if octets.len() == 4 {
         Some(format!("{}.{}.{}.0/24", octets[0], octets[1], octets[2]))
@@ -215,77 +220,113 @@ fn gateway_from_subnet(subnet: &str) -> Option<String> {
     }
 }
 
-/// Spawn subprocess (via python3) to scan a subnet for N free IPs, skipping
-/// excluded addresses and any host that answers ping.
-async fn run_check_free_ips_subprocess(
+/// Auto-detect the default gateway from the mgmt server's routing table.
+/// Runs `ip route` and parses `default via X.X.X.X`.
+fn detect_default_gateway() -> Option<String> {
+    let output = std::process::Command::new("ip")
+        .args(["route", "show", "default"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // Parse: "default via 10.1.1.10 dev eth0 ..."
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("default via ") {
+            let gw = rest.split_whitespace().next()?;
+            if !gw.is_empty() && gw.contains('.') {
+                return Some(gw.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Check if an IP is in-use via TCP connection to common ports (more reliable than ICMP ping).
+pub(crate) async fn ip_is_in_use(ip: String, timeout_ms: u64) -> bool {
+    use std::net::{IpAddr, SocketAddr};
+    use std::str::FromStr;
+    use std::time::Duration;
+
+    // Common ports: HTTP, HTTPS, SSH, management
+    let ports = [80u16, 443, 22, 8006, 9440, 443];
+    let timeout_dur = Duration::from_millis(timeout_ms);
+    let ip_addr = match IpAddr::from_str(&ip) {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+
+    // Try any port; if one connects, the host is in use.
+    for &port in &ports {
+        let addr = SocketAddr::new(ip_addr, port);
+        match tokio::time::timeout(timeout_dur, tokio::net::TcpStream::connect(addr)).await {
+            Ok(Ok(_)) => return true,
+            _ => continue,
+        }
+    }
+    false
+}
+
+/// Scan a subnet for N free IPs (native async; no subprocess or ping).
+/// Returns up to N IPs that don't respond to TCP on common ports.
+pub(crate) async fn scan_subnet_for_free_ips(
     subnet: &str,
     count: i64,
     exclude: &[String],
 ) -> anyhow::Result<Vec<String>> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    use tokio::task;
+    use std::net::IpAddr;
+    use std::str::FromStr;
 
-    let subnet = subnet.to_string();
-    let count = count as usize;
-    let exclude = exclude.to_vec();
+    // Parse subnet (e.g., "10.1.1.0/24")
+    let net = ipnetwork::IpNetwork::from_str(subnet)
+        .map_err(|e| anyhow::anyhow!("invalid subnet {}: {}", subnet, e))?;
 
-    // Spawn blocking subprocess in a tokio task.
-    let result = task::spawn_blocking(move || {
-        let mut child = Command::new("python3")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-
-        let exclude_str = exclude.join(",");
-        {
-            let stdin = child.stdin.as_mut().ok_or_else(|| anyhow::anyhow!("no stdin"))?;
-            write!(
-                stdin,
-                r#"import ipaddress, subprocess, sys
-from concurrent.futures import ThreadPoolExecutor
-
-net = ipaddress.ip_network("{subnet}", strict=False)
-count = {count}
-excluded = {{ipaddress.ip_address(s.strip()) for s in "{exclude_str}".split(",") if s.strip()}}
-gateway = net.network_address + 1
-
-def alive(ip):
-    return subprocess.call(
-        ["ping", "-c", "1", "-W", "1", str(ip)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ) == 0
-
-candidates = [h for h in net.hosts() if h != gateway and h not in excluded]
-with ThreadPoolExecutor(max_workers=32) as ex:
-    results = list(zip(candidates, ex.map(alive, candidates)))
-
-free = [str(ip) for ip, used in results if not used]
-for ip in free[:count]:
-    print(ip + "/" + str(net.prefixlen))
-"#,
-                subnet = subnet,
-                count = count,
-                exclude_str = exclude_str
-            )?;
+    // Build exclusion set
+    let mut excluded: std::collections::HashSet<IpAddr> = std::collections::HashSet::new();
+    for exc in exclude {
+        if let Ok(ip) = IpAddr::from_str(exc.trim()) {
+            excluded.insert(ip);
         }
-        let output = child.wait_with_output()?;
-        if !output.status.success() {
-            return Err(anyhow::anyhow!(
-                "scan failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-        let ips: Vec<String> = String::from_utf8(output.stdout)?
-            .lines()
-            .map(|s| s.to_string())
+    }
+
+    // Gateway (typically .1) is always unavailable
+    let gateway = net.network();
+    excluded.insert(gateway);
+
+    // Collect candidate IPs
+    let mut candidates: Vec<IpAddr> = net
+        .iter()
+        .filter(|ip| !excluded.contains(ip) && *ip != gateway)
+        .collect();
+
+    // Randomize to avoid always scanning the same IPs first
+    use rand::seq::SliceRandom;
+    candidates.shuffle(&mut rand::thread_rng());
+
+    // Scan candidates concurrently (32 at a time)
+    let scan_count = std::cmp::min(count as usize * 2, candidates.len());
+    let mut free_ips = Vec::new();
+
+    for chunk in candidates.iter().take(scan_count).collect::<Vec<_>>().chunks(32) {
+        let futures: Vec<_> = chunk
+            .iter()
+            .map(|&&ip| ip_is_in_use(ip.to_string(), 500))
             .collect();
-        Ok(ips)
-    })
-    .await??;
 
-    Ok(result)
+        let results = futures::future::join_all(futures).await;
+        for (idx, in_use) in results.iter().enumerate() {
+            if !in_use {
+                let ip = chunk[idx];
+                free_ips.push(format!("{}/{}", ip, net.prefix()));
+                if free_ips.len() >= count as usize {
+                    return Ok(free_ips);
+                }
+            }
+        }
+    }
+
+    Ok(free_ips)
 }
 
 
@@ -996,71 +1037,160 @@ async fn run_create_cluster(
         }
     }
 
-    // Auto-detect static IP range if not already set. Extract provider IP,
-    // infer /24 subnet, scan for free IPs, and auto-assign.
-    let has_static = std::env::var("PROXMOX_STATIC_BASE")
-        .or_else(|_| std::env::var("PROXMOX_STATIC_SUBNET"))
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false);
-    if !has_static {
-        if let Some(provider_ip) = ip_from_provider_url(&provider.url) {
-            if let Some(subnet) = subnet_from_provider_ip(&provider_ip) {
-                // Collect all provider IPs + all existing node IPs for exclusion.
-                let mut exclude_ips: Vec<String> = Vec::new();
-                let urls: Vec<String> = sqlx::query_scalar("SELECT url FROM providers")
+    // Auto-detect static IPs for provider if not already operator-configured.
+    // Extract provider IP, infer /24 subnet, scan for free IPs.
+    let need_ips = (cluster.controlplanes + cluster.workers) as i64;
+    if let Some(provider_ip) = ip_from_provider_url(&provider.url) {
+        if let Some(subnet) = subnet_from_provider_ip(&provider_ip) {
+            // Collect all provider IPs + all existing node IPs for exclusion.
+            let mut exclude_ips: Vec<String> = Vec::new();
+            let urls: Vec<String> = sqlx::query_scalar("SELECT url FROM providers")
+                .fetch_all(state.pool())
+                .await
+                .unwrap_or_default();
+            exclude_ips.extend(urls.iter().filter_map(|u| ip_from_provider_url(u)));
+
+            let node_ips: Vec<Option<String>> =
+                sqlx::query_scalar("SELECT ip FROM nodes WHERE ip IS NOT NULL")
                     .fetch_all(state.pool())
                     .await
                     .unwrap_or_default();
-                exclude_ips.extend(urls.iter().filter_map(|u| ip_from_provider_url(u)));
+            exclude_ips.extend(node_ips.into_iter().flatten());
 
-                let node_ips: Vec<Option<String>> =
-                    sqlx::query_scalar("SELECT ip FROM nodes WHERE ip IS NOT NULL")
-                        .fetch_all(state.pool())
-                        .await
-                        .unwrap_or_default();
-                exclude_ips.extend(node_ips.into_iter().flatten());
+            let node_ip6s: Vec<Option<String>> =
+                sqlx::query_scalar("SELECT ip6 FROM nodes WHERE ip6 IS NOT NULL")
+                    .fetch_all(state.pool())
+                    .await
+                    .unwrap_or_default();
+            exclude_ips.extend(node_ip6s.into_iter().flatten());
 
-                let node_ip6s: Vec<Option<String>> =
-                    sqlx::query_scalar("SELECT ip6 FROM nodes WHERE ip6 IS NOT NULL")
-                        .fetch_all(state.pool())
-                        .await
-                        .unwrap_or_default();
-                exclude_ips.extend(node_ip6s.into_iter().flatten());
+            // Also exclude this cluster's VIP and VIP6 (reserved for kube-vip).
+            if let Some(vip) = &cluster.vip {
+                if !vip.is_empty() {
+                    exclude_ips.push(vip.clone());
+                }
+            }
+            if let Some(vip6) = &cluster.vip6 {
+                if !vip6.is_empty() {
+                    exclude_ips.push(vip6.clone());
+                }
+            }
 
-                exclude_ips.sort();
-                exclude_ips.dedup();
+            exclude_ips.sort();
+            exclude_ips.dedup();
 
-                let need_ips = (cluster.controlplanes + cluster.workers) as i64;
-                // Silently skip auto-assign if scan fails; fall back to DHCP.
-                match run_check_free_ips_subprocess(&subnet, need_ips, &exclude_ips).await {
-                    Ok(free_ips) if !free_ips.is_empty() => {
-                        cmd.env("PROXMOX_STATIC_BASE", &free_ips[0]);
-                        if let Some(gw) = gateway_from_subnet(&subnet) {
-                            cmd.env("PROXMOX_STATIC_GATEWAY", &gw);
+            match provider.kind.as_str() {
+                "nutanix" | "ahv" | "prism" => {
+                    // For Nutanix, check if operator set NUTANIX_STATIC_IPS; else auto-detect.
+                    let has_nutanix_static = std::env::var("NUTANIX_STATIC_IPS")
+                        .map(|v| !v.trim().is_empty())
+                        .unwrap_or(false);
+                    if !has_nutanix_static {
+                        // Use IPAM's requested_ip_address to reserve specific IPs.
+                        match scan_subnet_for_free_ips(&subnet, need_ips, &exclude_ips).await {
+                            Ok(free_ips) if !free_ips.is_empty() => {
+                                let ips_to_use = free_ips[..std::cmp::min(need_ips as usize, free_ips.len())].to_vec();
+                                cmd.env("NUTANIX_STATIC_IPS", ips_to_use.join(" "));
+                                append_log(
+                                    log_path,
+                                    &format!(
+                                        "=> auto-assigned Nutanix IPAM reserved IPs: {}\n",
+                                        ips_to_use.join(", ")
+                                    ),
+                                )?;
+                            }
+                            _ => {
+                                append_log(
+                                    log_path,
+                                    &format!(
+                                        "=> could not auto-assign IPs in {}, falling back to DHCP\n",
+                                        subnet
+                                    ),
+                                )?;
+                            }
                         }
-                        append_log(
-                            log_path,
-                            &format!(
-                                "=> auto-assigned static IPs: {}\n",
-                                free_ips[..std::cmp::min(need_ips as usize, free_ips.len())]
-                                    .join(", ")
-                            ),
-                        )?;
                     }
-                    _ => {
-                        // Scan failed or no free IPs; fall back to DHCP (no error).
-                        append_log(
-                            log_path,
-                            &format!(
-                                "=> could not auto-assign static IPs in {}, falling back to DHCP\n",
-                                subnet
-                            ),
-                        )?;
+                }
+                "vsphere" | "esxi" => {
+                    // For vSphere, check if operator set VSPHERE_STATIC_IPS; else auto-detect.
+                    let has_vsphere_static = std::env::var("VSPHERE_STATIC_IPS")
+                        .map(|v| !v.trim().is_empty())
+                        .unwrap_or(false);
+                    if !has_vsphere_static {
+                        // Scan and pass IPs to create-cluster-vms via VSPHERE_STATIC_IPS.
+                        match scan_subnet_for_free_ips(&subnet, need_ips, &exclude_ips).await {
+                            Ok(free_ips) if !free_ips.is_empty() => {
+                                let ips_to_use = free_ips[..std::cmp::min(need_ips as usize, free_ips.len())].to_vec();
+                                cmd.env("VSPHERE_STATIC_IPS", ips_to_use.join(" "));
+                                append_log(
+                                    log_path,
+                                    &format!(
+                                        "=> auto-assigned vSphere guest IPs: {}\n",
+                                        ips_to_use.join(", ")
+                                    ),
+                                )?;
+                            }
+                            _ => {
+                                append_log(
+                                    log_path,
+                                    &format!(
+                                        "=> could not auto-assign IPs in {}, falling back to DHCP\n",
+                                        subnet
+                                    ),
+                                )?;
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Proxmox: Auto-scan for free IPs and use static assignment (if not operator-configured).
+                    let has_proxmox_static = std::env::var("PROXMOX_STATIC_BASE")
+                        .or_else(|_| std::env::var("PROXMOX_STATIC_SUBNET"))
+                        .or_else(|_| std::env::var("PROXMOX_STATIC_IPS"))
+                        .map(|v| !v.trim().is_empty())
+                        .unwrap_or(false);
+                    if !has_proxmox_static {
+                        // Scan subnet for free IPs and assign directly (avoids rejection loop when DHCP limited).
+                        match scan_subnet_for_free_ips(&subnet, need_ips, &exclude_ips).await {
+                            Ok(free_ips) if !free_ips.is_empty() => {
+                                let ips_to_use = free_ips[..std::cmp::min(need_ips as usize, free_ips.len())].to_vec();
+                                cmd.env("PROXMOX_STATIC_IPS", ips_to_use.join(" "));
+                                // Auto-detect gateway: operator env > detect from system route > derive from subnet.
+                                let gw = std::env::var("PROXMOX_STATIC_GATEWAY")
+                                    .or_else(|_| std::env::var("LAB_GATEWAY"))
+                                    .ok()
+                                    .filter(|s| !s.is_empty())
+                                    .or_else(detect_default_gateway)
+                                    .or_else(|| gateway_from_subnet(&subnet))
+                                    .unwrap_or_else(|| "10.1.1.1".to_string());
+                                cmd.env("PROXMOX_STATIC_GATEWAY", &gw);
+                                append_log(
+                                    log_path,
+                                    &format!(
+                                        "=> auto-assigned Proxmox static IPs (TCP-scanned free): {} gateway={}\n",
+                                        ips_to_use.join(", "),
+                                        gw
+                                    ),
+                                )?;
+                            }
+                            _ => {
+                                // Fallback to exclusion-based approach if scan fails.
+                                cmd.env("PROXMOX_STATIC_EXCLUDE", exclude_ips.join(","));
+                                append_log(
+                                    log_path,
+                                    &format!(
+                                        "=> could not auto-scan, falling back to exclusion-based DHCP: {}\n",
+                                        exclude_ips.join(", ")
+                                    ),
+                                )?;
+                            }
+                        }
                     }
                 }
             }
         }
     }
+
 
     if let Some(note) = apply_lab_env(&mut cmd, state, &provider.url) {
         append_log(log_path, &note)?;

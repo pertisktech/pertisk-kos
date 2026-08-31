@@ -86,21 +86,23 @@ pub fn apply_provider_netcfg() -> Result<bool, super::NetError> {
 mod linux {
     use super::*;
     use crate::apply::apply_network;
-    use tracing::info;
+    use tracing::{debug, info};
 
     const CANDIDATES: &[&str] = &[
         "/dev/sr0",
         "/dev/sr1",
         "/dev/vdb",
         "/dev/vdc",
-        "/dev/sdb",
+        "/dev/sdb",  // Proxmox attaches netcfg as scsi1 → /dev/sdb
         "/dev/sdc",
         "/dev/xvdb",
         "/dev/nvme0n2",
+        "/dev/disk/by-label/PERTISK-NET",
     ];
 
     pub fn apply() -> Result<bool, crate::NetError> {
         let Some(net) = load() else {
+            info!("no provider netcfg disk found after scanning all candidates");
             return Ok(false);
         };
         let addr = net
@@ -115,12 +117,19 @@ mod linux {
     }
 
     fn load() -> Option<Network> {
-        for _ in 0..3 {
+        // Retry up to 30 times (15 seconds total) - virtio disk may take time to appear + udev
+        for attempt in 1..=30 {
+            info!(attempt, "scanning for provider netcfg disk (attempt {}/30)", attempt);
             if let Some(net) = scan() {
+                info!("provider netcfg disk found on attempt {}", attempt);
                 return Some(net);
             }
-            std::thread::sleep(std::time::Duration::from_millis(400));
+            if attempt % 5 == 0 {
+                info!("still scanning for provider netcfg disk (attempt {})", attempt);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
+        info!("provider netcfg disk not found after 30 attempts (15 seconds)");
         None
     }
 
@@ -137,14 +146,22 @@ mod linux {
     }
 
     fn scan() -> Option<Network> {
+        info!("scanning CANDIDATES for provider netcfg disk");
         for path in CANDIDATES {
+            info!("checking candidate device: {}", path);
             if let Some(net) = read_dev(path) {
                 return Some(net);
             }
         }
-        let Ok(rd) = std::fs::read_dir("/sys/block") else {
-            return None;
+        // Also scan all block devices in /sys/block
+        let rd = match std::fs::read_dir("/sys/block") {
+            Ok(rd) => rd,
+            Err(e) => {
+                info!(error = %e, "cannot read /sys/block");
+                return None;
+            }
         };
+        let mut scanned: Vec<String> = Vec::new();
         for e in rd.flatten() {
             let name = e.file_name();
             let name = name.to_string_lossy();
@@ -155,9 +172,16 @@ mod linux {
             if CANDIDATES.iter().any(|c| *c == path.as_str()) {
                 continue;
             }
+            scanned.push(path.clone());
+            info!("checking dynamic block device: {}", path);
             if let Some(net) = read_dev(&path) {
                 return Some(net);
             }
+        }
+        if !scanned.is_empty() {
+            info!(count = scanned.len(), "scanned {} extra block devices (no netcfg found)", scanned.len());
+        } else {
+            info!("no extra block devices found in /sys/block");
         }
         None
     }
@@ -165,10 +189,23 @@ mod linux {
     fn read_dev(path: &str) -> Option<Network> {
         use std::fs::File;
         use std::io::Read;
-        let mut f = File::open(path).ok()?;
+        let mut f = match File::open(path) {
+            Ok(f) => f,
+            Err(e) => {
+                info!(path, error = %e, "cannot open device");
+                return None;
+            }
+        };
         let mut buf = [0u8; 4096];
-        let n = f.read(&mut buf).ok()?;
+        let n = match f.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) => {
+                info!(path, error = %e, "cannot read device");
+                return None;
+            }
+        };
         if n == 0 {
+            info!(path, "read 0 bytes from device");
             return None;
         }
         match parse_pertisk_net(&buf[..n]) {
@@ -176,7 +213,10 @@ mod linux {
                 info!(device = path, "provider netcfg disk found");
                 Some(net)
             }
-            None => None,
+            None => {
+                info!(path, bytes = n, "device read but no PERTISK-NET header found");
+                None
+            }
         }
     }
 }

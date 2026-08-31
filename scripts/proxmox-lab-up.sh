@@ -67,6 +67,9 @@ STATIC_SUBNET="${STATIC_SUBNET:-${PROXMOX_STATIC_SUBNET:-}}"
 STATIC_GATEWAY="${STATIC_GATEWAY:-${PROXMOX_STATIC_GATEWAY:-}}"
 STATIC_NAMESERVER="${STATIC_NAMESERVER:-${PROXMOX_STATIC_NAMESERVER:-}}"
 STATIC_EXCLUDE="${STATIC_EXCLUDE:-${PROXMOX_STATIC_EXCLUDE:-}}"
+# Auto-detected static IPs from mgmt (space-separated list): build VMID→IP map.
+STATIC_IPS_ENV="${PROXMOX_STATIC_IPS:-}"
+declare -A STATIC_IPS_MAP=()
 if [[ -n "${NAME_PREFIX:-}" ]]; then
   PREFIX_SET=1
 else
@@ -852,6 +855,15 @@ nudge_arp_subnet() {
   fi
 }
 
+# Check if an IP is in the exclude list. E.g., is_ip_excluded 10.1.1.111
+# STATIC_EXCLUDE="10.1.1.111,10.1.1.194" → true for .111 and .194.
+is_ip_excluded() {
+  local ip="$1" exclude_list="${STATIC_EXCLUDE:-}"
+  [[ -z "$exclude_list" ]] && return 1
+  [[ ",${exclude_list}," == *",${ip},"* ]] && return 0
+  return 1
+}
+
 # Parallel :50000 probe (≈few seconds). TCP connects populate ARP, then match MAC.
 # Avoids the old sequential 254×2s scan that looked like a hang on the last VM.
 scan_api_subnet_for_mac() {
@@ -928,16 +940,60 @@ nutanix_start_ipam_dhcp() {
   "$helper" "$mac" "$ip" "${gw:-}" "$prefix" || log "warn: IPAM DHCP helper failed (need root for UDP/67?)"
 }
 
+# Build VMID→IP map from auto-detected static IPs (space-separated list).
+# Call early so wait_ip() can use them directly.
+build_static_ips_map() {
+  [[ -z "$STATIC_IPS_ENV" ]] && return 0
+  local ip_idx=0 vmid cp_idx wk_idx
+  for ip in $STATIC_IPS_ENV; do
+    # Skip CIDR suffix (e.g., 10.1.1.13/24 → 10.1.1.13)
+    ip="${ip%/*}"
+    if (( ip_idx < CONTROLPLANES )); then
+      vmid=$((CP_VMID + ip_idx))
+      STATIC_IPS_MAP[$vmid]="$ip"
+      (( ip_idx++ ))
+    elif (( ip_idx < CONTROLPLANES + WORKERS )); then
+      vmid=$((CP_VMID + CONTROLPLANES + ip_idx - CONTROLPLANES))
+      STATIC_IPS_MAP[$vmid]="$ip"
+      (( ip_idx++ ))
+    fi
+  done
+  if [[ ${#STATIC_IPS_MAP[@]} -gt 0 ]]; then
+    local map_str=""
+    for vmid in "${!STATIC_IPS_MAP[@]}"; do
+      map_str+="vmid=$vmid:${STATIC_IPS_MAP[$vmid]} "
+    done
+    log "using pre-assigned static IPs: $map_str"
+  fi
+}
+
 wait_ip() {
-  local vmid="$1" label="$2" mac ip="" nxip="" alt="" nudged=0 saw_ip=0 last_log=0 live=0 issued=0 dhcp_helper=0
+  local vmid="$1" label="$2" mac ip="" static_ip="" nxip="" alt="" nudged=0 saw_ip=0 last_log=0 live=0 issued=0 dhcp_helper=0
   local ip_deadline api_deadline=0 deadline left
   mac="$(vm_mac "$vmid" "$label")"
-  if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
-    log "VM ${vmid} (${label}) MAC=${mac} — waiting for IPAM/DHCP IP (timeout ${IP_TIMEOUT}s; +${API_AFTER_IP_TIMEOUT}s after issued IP for :50000)"
+  
+  # If static IP is pre-assigned for this VMID, save it (don't lose it in the loop).
+  if [[ -n "${STATIC_IPS_MAP[$vmid]:-}" ]]; then
+    static_ip="${STATIC_IPS_MAP[$vmid]}"
+    log "VM ${vmid} (${label}) MAC=${mac} — using pre-assigned static IP ${static_ip}"
+    if api_reachable "$static_ip"; then
+      log "VM ${vmid} → ${static_ip} (API :50000 up, pre-assigned static IP)"
+      echo "$static_ip"
+      return 0
+    else
+      log "VM ${vmid} static IP ${static_ip} not yet reachable; waiting for Machine API :50000 (timeout ${API_AFTER_IP_TIMEOUT}s)"
+      saw_ip=1
+      api_deadline=$((SECONDS + API_AFTER_IP_TIMEOUT))
+      ip="$static_ip"
+    fi
   else
-    log "VM ${vmid} (${label}) MAC=${mac} — waiting for DHCP IP (timeout ${IP_TIMEOUT}s; +${API_AFTER_IP_TIMEOUT}s after live IP for :50000)"
+    if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
+      log "VM ${vmid} (${label}) MAC=${mac} — waiting for IPAM/DHCP IP (timeout ${IP_TIMEOUT}s; +${API_AFTER_IP_TIMEOUT}s after issued IP for :50000)"
+    else
+      log "VM ${vmid} (${label}) MAC=${mac} — waiting for DHCP IP (timeout ${IP_TIMEOUT}s; +${API_AFTER_IP_TIMEOUT}s after live IP for :50000)"
+    fi
+    ip_deadline=$((SECONDS + IP_TIMEOUT))
   fi
-  ip_deadline=$((SECONDS + IP_TIMEOUT))
   while true; do
     if (( saw_ip )); then
       deadline=$api_deadline
@@ -946,10 +1002,13 @@ wait_ip() {
     fi
     (( SECONDS < deadline )) || break
 
-    ip="$(arp_ip_for_mac "$mac" || true)"
-    # Proxmox QGA: guest IPv4 without sharing L2 / ARP with mgmt.
+    # If we have a static IP, keep using it; only discover via ARP/QGA if not set.
     if [[ -z "$ip" ]]; then
-      ip="$(qemu_agent_ipv4 "$vmid" || true)"
+      ip="$(arp_ip_for_mac "$mac" || true)"
+      # Proxmox QGA: guest IPv4 without sharing L2 / ARP with mgmt.
+      if [[ -z "$ip" ]]; then
+        ip="$(qemu_agent_ipv4 "$vmid" || true)"
+      fi
     fi
     # Nutanix: Prism IPAM assignment is the issued address (authoritative even
     # when mgmt is not on guest L2). AHV may ARP that MAC→IP before ICMP.
@@ -971,8 +1030,15 @@ wait_ip() {
         ip="$(ping_sweep_find "$mac" "$LAB_SUBNET" || true)"
       fi
     fi
+    # Skip excluded IPs (provider hosts, existing nodes, etc). If this IP is
+    # excluded, clear it and keep waiting (or sweep for another IP).
+    if [[ -n "$ip" ]] && is_ip_excluded "$ip"; then
+      log "VM ${vmid} found IP=${ip} for ${mac} but it's in STATIC_EXCLUDE (provider/existing node) — ignoring, still waiting…"
+      ip=""
+    fi
     # Ghost IPAM reservation: guest DHCP may land on a different address.
-    if [[ -n "$ip" && -n "$LAB_SUBNET" ]] && ! api_reachable "$ip"; then
+    # BUT: don't scan for alternatives if we have a pre-assigned static IP — stick with it.
+    if [[ -n "$ip" && -n "$LAB_SUBNET" && -z "$static_ip" ]] && ! api_reachable "$ip"; then
       if (( SECONDS % 60 < 5 )); then
         alt="$(scan_api_subnet_for_mac "$mac" "$LAB_SUBNET" || true)"
         if [[ -n "$alt" ]] && api_reachable "$alt"; then
@@ -1702,6 +1768,10 @@ step_vms() {
   if [[ "$DUAL_STACK" == "1" ]]; then
     export DUAL_STACK=1 PERTISK_DUAL_STACK=1
   fi
+  # Export auto-detected static IPs and gateway if set (from mgmt jobs.rs TCP scan).
+  [[ -n "${PROXMOX_STATIC_IPS:-}" ]] && export PROXMOX_STATIC_IPS
+  [[ -n "${PROXMOX_STATIC_GATEWAY:-}" ]] && export PROXMOX_STATIC_GATEWAY
+  [[ -n "${PROXMOX_STATIC_NAMESERVER:-}" ]] && export PROXMOX_STATIC_NAMESERVER
   if [[ "${PROVIDER_KIND}" == "vsphere" ]]; then
     VSPHERE_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
   elif [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
@@ -1759,6 +1829,9 @@ EOF
 }
 
 step_resolve_ips() {
+  # Build static IP map from pre-assigned IPs (if any).
+  build_static_ips_map
+  
   CP_IPS=()
   local i cvid
   for i in $(seq 1 "$CONTROLPLANES"); do

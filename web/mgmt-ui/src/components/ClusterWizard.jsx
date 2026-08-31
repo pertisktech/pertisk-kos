@@ -75,6 +75,8 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
   const [vmidChecking, setVmidChecking] = useState(false)
   const [vipCheck, setVipCheck] = useState(null)
   const [vipChecking, setVipChecking] = useState(false)
+  const [ipScan, setIpScan] = useState(null)
+  const [ipScanning, setIpScanning] = useState(false)
   const [images, setImages] = useState(null)
   const [form, setForm] = useState({ ...defaultForm })
   const [addonPresets, setAddonPresets] = useState([])
@@ -89,6 +91,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
     setSaving(false)
     setVmidCheck(null)
     setVipCheck(null)
+    setIpScan(null)
     setImages(null)
     setForm({ ...defaultForm })
     setAddonPresets([])
@@ -240,6 +243,48 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
       clearTimeout(t)
     }
   }, [open, form.controlplanes, form.network_mode, form.vip, form.vip6])
+
+  // Scan for available IPs when provider/count changes
+  useEffect(() => {
+    if (!open) return
+    const providerId = form.provider_id
+    const cps = Number(form.controlplanes)
+    const workers = Number(form.workers)
+    if (!providerId || cps + workers < 1) {
+      setIpScan(null)
+      setIpScanning(false)
+      return
+    }
+    let cancelled = false
+    setIpScanning(true)
+    const t = setTimeout(() => {
+      api('/clusters/scan-ips', {
+        method: 'POST',
+        body: {
+          provider_id: providerId,
+          controlplanes: cps,
+          workers,
+          vip: form.vip || null,
+          vip6: form.vip6 || null,
+        },
+      })
+        .then((r) => {
+          if (!cancelled) setIpScan(r)
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setIpScan({ ok: false, message: err.message, assigned: [], subnet: '', gateway: '' })
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setIpScanning(false)
+        })
+    }, 600)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [open, form.provider_id, form.controlplanes, form.workers, form.vip, form.vip6])
 
   const clusterName = String(form.name || '').trim()
   useEffect(() => {
@@ -723,6 +768,64 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
               {vipCheck.message}
             </p>
           )}
+
+          {/* Auto-detected static IPs */}
+          <div className="ip-scan-section" style={{ marginTop: '1.5rem' }}>
+            <p className="wizard-section-title" style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}>
+              Auto-detected Node IPs
+              {ipScanning && <span className="spinner" style={{ marginLeft: '0.5rem' }} aria-hidden />}
+            </p>
+            {ipScan && (
+              <div className="ip-scan-result" style={{
+                background: 'var(--card-bg, #1a1a1a)',
+                borderRadius: '6px',
+                padding: '0.75rem',
+                fontSize: '0.85rem',
+              }}>
+                <div style={{ marginBottom: '0.5rem', opacity: 0.7 }}>
+                  Subnet: <code style={{ background: 'var(--input-bg)', padding: '2px 6px', borderRadius: '3px' }}>{ipScan.subnet}</code>
+                  {' '}Gateway: <code style={{ background: 'var(--input-bg)', padding: '2px 6px', borderRadius: '3px' }}>{ipScan.gateway}</code>
+                </div>
+                {ipScan.ok && ipScan.assigned?.length > 0 ? (
+                  <div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      {ipScan.assigned.map((ip, idx) => (
+                        <span key={ip} style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          background: 'var(--success-bg, #166534)',
+                          color: 'var(--success-fg, #4ade80)',
+                          padding: '4px 8px',
+                          borderRadius: '4px',
+                          fontFamily: 'monospace',
+                        }}>
+                          <Icon name="check" size={12} />
+                          {ip}
+                          <span style={{ opacity: 0.7, fontSize: '0.75rem' }}>
+                            {idx < form.controlplanes ? 'cp' : 'wk'}-{idx < form.controlplanes ? idx + 1 : idx - form.controlplanes + 1}
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                    <p style={{ marginTop: '0.5rem', opacity: 0.6, fontSize: '0.8rem' }}>
+                      {ipScan.message}
+                    </p>
+                  </div>
+                ) : (
+                  <p style={{ color: 'var(--warning, #f59e0b)' }}>
+                    <Icon name="alert" size={14} style={{ marginRight: '4px' }} />
+                    {ipScan.message || 'Scanning...'}
+                  </p>
+                )}
+              </div>
+            )}
+            {!ipScan && !ipScanning && (
+              <p style={{ opacity: 0.5, fontSize: '0.8rem' }}>
+                Select a provider to scan for available IPs
+              </p>
+            )}
+          </div>
         </>
       )}
 

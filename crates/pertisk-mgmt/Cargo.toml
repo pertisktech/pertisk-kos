@@ -22,6 +22,7 @@ futures = "0.3"
 hex = "0.4"
 hmac = "0.12"
 http = "1"
+ipnetwork = "0.20"
 # jsonwebtoken 10.x requires exactly one of rust_crypto | aws_lc_rs (or a manual CryptoProvider).
 jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"] }
 mime_guess = "2"

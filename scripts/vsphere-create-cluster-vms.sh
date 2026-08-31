@@ -104,11 +104,24 @@ fi
 
 # Naming: {prefix}-cp-N / {prefix}-wk-N (same as Proxmox; matches mgmt seed stubs + k8s node names).
 pertisk_parallel_init
+
+# Parse static IPs from env (space-separated list for all nodes).
+# If provided, assign one to each VM in order via --ip flag.
+STATIC_IPS_ARRAY=()
+if [[ -n "${VSPHERE_STATIC_IPS:-}" ]]; then
+  read -ra STATIC_IPS_ARRAY <<<"${VSPHERE_STATIC_IPS}"
+fi
+STATIC_IP_IDX=0
+
 for i in $(seq 1 "$CONTROLPLANES"); do
   cvid=$((CP_VMID + i - 1))
   echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${CP_DISK} mem=${CP_MEMORY} cores=${CP_CORES}"
   UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$CP_DISK" --memory "$CP_MEMORY" --cores "$CP_CORES")
   [[ -n "$CP_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$CP_DISK_GB")
+  if [[ $STATIC_IP_IDX -lt ${#STATIC_IPS_ARRAY[@]} ]]; then
+    UPLOAD_ARGS+=(--ip "${STATIC_IPS_ARRAY[$STATIC_IP_IDX]}")
+    ((STATIC_IP_IDX++))
+  fi
   pertisk_parallel_add "${NAME_PREFIX}-cp-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
 
@@ -117,6 +130,10 @@ for i in $(seq 1 "$WORKERS"); do
   echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i} disk=${WORKER_DISK} mem=${WORKER_MEMORY} cores=${WORKER_CORES}"
   UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$WORKER_DISK" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
   [[ -n "$WORKER_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$WORKER_DISK_GB")
+  if [[ $STATIC_IP_IDX -lt ${#STATIC_IPS_ARRAY[@]} ]]; then
+    UPLOAD_ARGS+=(--ip "${STATIC_IPS_ARRAY[$STATIC_IP_IDX]}")
+    ((STATIC_IP_IDX++))
+  fi
   pertisk_parallel_add "${NAME_PREFIX}-wk-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
 pertisk_parallel_wait

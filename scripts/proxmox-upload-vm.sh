@@ -909,8 +909,8 @@ fi
 # --- Static IP netcfg disk (Talos-style: guest never DHCPs, address is fixed
 # in the machine config and survives reboot/shutdown; no external DHCP/router
 # reservation needed). Same PERTISK-NET format the guest already reads on
-# Nutanix AHV (crates/pertisk-net/src/provider_net.rs) — attach before first
-# boot so pertiskd applies it before it would otherwise try DHCP.
+# Nutanix AHV (crates/pertisk-net/src/provider_net.rs) — attach as scsi1 before
+# first boot so pertiskd applies it before it would otherwise try DHCP.
 attach_static_netcfg() {
   [[ -n "${STATIC_IP}" ]] || return 0
   local ns="${STATIC_NAMESERVER:-${STATIC_GATEWAY}}"
@@ -950,9 +950,9 @@ PY
     echo "WARN: netcfg upload task failed; guest will fall back to DHCP" >&2
     return 0
   }
-  echo "    attaching virtio1 via import-from=${import_ref} → ${STORAGE}"
+  echo "    attaching scsi1 via import-from=${import_ref} → ${STORAGE}"
   att="$(api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
-    --data-urlencode "virtio1=${STORAGE}:0,import-from=${import_ref}")"
+    --data-urlencode "scsi1=${STORAGE}:0,import-from=${import_ref}")"
   if ! api_response_ok "${att}"; then
     echo "WARN: netcfg disk attach failed; guest will fall back to DHCP: ${att}" >&2
     return 0
@@ -961,7 +961,7 @@ PY
   if [[ "${imp_upid}" == UPID:* ]]; then
     wait_task "${imp_upid}" "netcfg-import" || true
   fi
-  echo "    netcfg disk attached (virtio1, static IP ${STATIC_IP})"
+  echo "    netcfg disk attached (scsi1, static IP ${STATIC_IP})"
 }
 attach_static_netcfg
 
