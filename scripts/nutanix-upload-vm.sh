@@ -999,6 +999,10 @@ pin_nic() {
 
 netcfg_gateway_for() {
   local ip="$1" via=""
+  if [[ -n "${NUTANIX_STATIC_GATEWAY:-}" ]]; then
+    echo "${NUTANIX_STATIC_GATEWAY}"
+    return 0
+  fi
   if [[ -n "${NUTANIX_GATEWAY:-}" ]]; then
     echo "${NUTANIX_GATEWAY}"
     return 0
@@ -1424,7 +1428,11 @@ if [[ -z "${NET0_MAC:-}" ]]; then
   NET0_MAC="$(mac_for_vmid "${VMID}")"
 fi
 pin_nic "$VM_UUID" "${NET0_MAC}" ""
-if [[ -n "${NETWORK_GATEWAY:-}" ]]; then
+# Use NETWORK_GATEWAY from Prism config OR NUTANIX_STATIC_GATEWAY from jobs.rs auto-detection
+GATEWAY_TO_USE="${NETWORK_GATEWAY:-${NUTANIX_STATIC_GATEWAY:-}}"
+if [[ -n "${GATEWAY_TO_USE}" ]]; then
+  # Override NETWORK_GATEWAY so attach_ipam_netcfg() uses the correct gateway
+  NETWORK_GATEWAY="$GATEWAY_TO_USE"
   attach_ipam_netcfg "$VM_UUID"
 else
   echo "==> skip IPAM netcfg disk (unmanaged ${NETWORK}; guest DHCP from LAN)" >&2
