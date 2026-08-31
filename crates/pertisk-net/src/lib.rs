@@ -15,7 +15,7 @@ pub use apply::{apply_network, NetError};
 pub use link::{
     ipv6_enabled, is_ula_ipv6, is_usable_global_ipv6, prefer_global_ipv6, set_ipv6_enabled,
 };
-pub use provider_net::apply_provider_netcfg;
+pub use provider_net::{apply_provider_netcfg, try_apply_provider_netcfg};
 
 /// Point DHCP lease persistence at STATE (`machine/dhcp`). No-op off Linux.
 #[cfg(target_os = "linux")]

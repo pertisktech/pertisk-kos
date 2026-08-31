@@ -209,15 +209,219 @@ pub(crate) fn subnet_from_provider_ip(ip: &str) -> Option<String> {
     }
 }
 
+/// Network, broadcast, `.1` and `.254` — never assign these to guests.
+pub(crate) fn subnet_reserved_ips(subnet: &str) -> Vec<std::net::IpAddr> {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let Ok(net) = subnet.parse::<ipnetwork::IpNetwork>() else {
+        return Vec::new();
+    };
+    match net {
+        ipnetwork::IpNetwork::V4(n) => {
+            let network = IpAddr::V4(n.network());
+            let broadcast = IpAddr::V4(n.broadcast());
+            let mut v = vec![network, broadcast];
+            let mut o = n.network().octets();
+            o[3] = o[3].saturating_add(1);
+            let dot1 = IpAddr::V4(Ipv4Addr::from(o));
+            if dot1 != network && dot1 != broadcast {
+                v.push(dot1);
+            }
+            let mut o254 = n.network().octets();
+            o254[3] = 254;
+            let dot254 = IpAddr::V4(Ipv4Addr::from(o254));
+            if n.contains(Ipv4Addr::from(o254)) && dot254 != network && dot254 != broadcast {
+                v.push(dot254);
+            }
+            v
+        }
+        ipnetwork::IpNetwork::V6(n) => vec![IpAddr::V6(n.network())],
+    }
+}
+
 /// Extract gateway IP from subnet. E.g., 10.1.1.0/24 → 10.1.1.1.
 fn gateway_from_subnet(subnet: &str) -> Option<String> {
-    let net_part = subnet.split('/').next()?;
-    let octets: Vec<&str> = net_part.split('.').collect();
-    if octets.len() == 4 {
-        Some(format!("{}.{}.{}.1", octets[0], octets[1], octets[2]))
-    } else {
-        None
+    ipv4_last_octet(subnet, 1)
+}
+
+fn ipv4_last_octet(subnet: &str, last: u8) -> Option<String> {
+    let net: ipnetwork::Ipv4Network = subnet.parse().ok()?;
+    let mut o = net.network().octets();
+    o[3] = last;
+    let ip = std::net::Ipv4Addr::from(o);
+    net.contains(ip).then_some(ip.to_string())
+}
+
+fn ipv4_in_subnet(subnet: &str, ip: &str) -> bool {
+    let Ok(net) = subnet.parse::<ipnetwork::IpNetwork>() else {
+        return false;
+    };
+    ip.parse::<std::net::IpAddr>()
+        .ok()
+        .map(|a| net.contains(a))
+        .unwrap_or(false)
+}
+
+fn env_first_nonempty(keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Ok(v) = std::env::var(key) {
+            let t = v.trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
     }
+    None
+}
+
+/// Sync fallback when probing is unavailable: operator env, else subnet `.1`.
+/// Cluster create uses [`detect_guest_gateway`], which prefers an alive route hop
+/// (e.g. 10.1.1.10) over a silent `.1`.
+pub(crate) fn guest_gateway_for_subnet(subnet: &str, env_keys: &[&str]) -> String {
+    if let Some(v) = env_first_nonempty(env_keys) {
+        return v;
+    }
+    gateway_from_subnet(subnet).unwrap_or_else(|| "10.1.1.1".into())
+}
+
+/// Typical LAN routers (`.1`, `.254`) plus every `via` hop on this subnet.
+pub(crate) fn guest_gateway_candidates_with(subnet: &str, extra_hops: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for last in [1u8, 254] {
+        if let Some(ip) = ipv4_last_octet(subnet, last) {
+            if !out.contains(&ip) {
+                out.push(ip);
+            }
+        }
+    }
+    for hop in extra_hops {
+        let hop = hop.trim();
+        if hop.is_empty() || !ipv4_in_subnet(subnet, hop) {
+            continue;
+        }
+        if !out.iter().any(|c| c == hop) {
+            out.push(hop.to_string());
+        }
+    }
+    out
+}
+
+/// Rank probed gateways: env override, then an alive on-subnet hop that is not
+/// conventional `.1`/`.254` (the live default, e.g. 10.1.1.10), then alive `.1`,
+/// then alive `.254`. Do not skip the mgmt default hop — that is the LAN router
+/// on this network. `local` is unused for ranking (kept for call-site compat).
+pub(crate) fn pick_guest_gateway(
+    subnet: &str,
+    env_override: Option<&str>,
+    alive: &[String],
+    _local: &[String],
+) -> String {
+    if let Some(v) = env_override.map(str::trim).filter(|s| !s.is_empty()) {
+        return v.to_string();
+    }
+    let is_alive = |ip: &str| alive.iter().any(|a| a == ip);
+    let last_octet = |ip: &str| -> Option<u8> {
+        ip.split('.').nth(3)?.parse().ok()
+    };
+    for a in alive {
+        match last_octet(a) {
+            Some(1) | Some(254) => continue,
+            Some(_) => return a.clone(),
+            None => continue,
+        }
+    }
+    if let Some(ip) = ipv4_last_octet(subnet, 1) {
+        if is_alive(&ip) {
+            return ip;
+        }
+    }
+    if let Some(ip) = ipv4_last_octet(subnet, 254) {
+        if is_alive(&ip) {
+            return ip;
+        }
+    }
+    if let Some(a) = alive.first() {
+        return a.clone();
+    }
+    gateway_from_subnet(subnet).unwrap_or_else(|| "10.1.1.1".into())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GuestGatewayDetect {
+    pub chosen: String,
+    pub candidates: Vec<String>,
+    pub summary: String,
+}
+
+/// Probe `.1`, `.254`, and routing-table hops; pick an alive hop (e.g. 10.1.1.10).
+pub(crate) async fn detect_guest_gateway(subnet: &str, env_keys: &[&str]) -> GuestGatewayDetect {
+    let env_override = env_first_nonempty(env_keys);
+    let mut candidates = guest_gateway_candidates_with(subnet, &detect_route_hops());
+    if let Some(ref env_gw) = env_override {
+        if !candidates.iter().any(|c| c == env_gw) {
+            candidates.insert(0, env_gw.clone());
+        }
+    }
+    let local = local_ipv4_addrs();
+    let probed = futures::future::join_all(candidates.iter().cloned().map(|ip| async move {
+        let up = ping_alive(&ip).await;
+        (ip, up)
+    }))
+    .await;
+    let alive: Vec<String> = probed
+        .iter()
+        .filter(|(_, up)| *up)
+        .map(|(ip, _)| ip.clone())
+        .collect();
+    let chosen = pick_guest_gateway(subnet, env_override.as_deref(), &alive, &local);
+    let detail = probed
+        .iter()
+        .map(|(ip, up)| {
+            let mut tag = if *up { "up" } else { "down" }.to_string();
+            if local.iter().any(|l| l == ip) {
+                tag.push_str(",local");
+            }
+            if Some(ip.as_str()) == env_override.as_deref() {
+                tag.push_str(",env");
+            }
+            format!("{ip}={tag}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    GuestGatewayDetect {
+        summary: format!("{chosen} (probed {detail})"),
+        chosen,
+        candidates,
+    }
+}
+
+/// Every IPv4 `via` hop in the routing table (defaults + more-specific routes).
+fn detect_route_hops() -> Vec<String> {
+    let output = std::process::Command::new("ip")
+        .args(["-4", "route", "show"])
+        .output()
+        .ok();
+    let Some(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut hops = Vec::new();
+    for line in stdout.lines() {
+        let mut parts = line.split_whitespace();
+        while let Some(tok) = parts.next() {
+            if tok != "via" {
+                continue;
+            }
+            let Some(gw) = parts.next() else { break };
+            if gw.contains('.') && !hops.iter().any(|h| h == gw) {
+                hops.push(gw.to_string());
+            }
+        }
+    }
+    hops
 }
 
 /// Auto-detect the default gateway from the mgmt server's routing table.
@@ -230,7 +434,6 @@ fn detect_default_gateway() -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    // Parse: "default via 10.1.1.10 dev eth0 ..."
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
         if let Some(rest) = line.strip_prefix("default via ") {
@@ -243,33 +446,74 @@ fn detect_default_gateway() -> Option<String> {
     None
 }
 
-/// Check if an IP is in-use via TCP connection to common ports (more reliable than ICMP ping).
+fn local_ipv4_addrs() -> Vec<String> {
+    let output = std::process::Command::new("ip")
+        .args(["-4", "-o", "addr", "show"])
+        .output()
+        .ok();
+    let Some(output) = output else {
+        return Vec::new();
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut ips = Vec::new();
+    for line in stdout.lines() {
+        let mut parts = line.split_whitespace();
+        while let Some(tok) = parts.next() {
+            if tok != "inet" {
+                continue;
+            }
+            let Some(cidr) = parts.next() else { break };
+            let ip = cidr.split('/').next().unwrap_or("").trim();
+            if ip.contains('.') && !ips.iter().any(|x| x == ip) {
+                ips.push(ip.to_string());
+            }
+        }
+    }
+    ips
+}
+
+/// ICMP first (k8s nodes often have no 80/443/22), then TCP on hypervisor + Pertisk + kube ports.
 pub(crate) async fn ip_is_in_use(ip: String, timeout_ms: u64) -> bool {
     use std::net::{IpAddr, SocketAddr};
     use std::str::FromStr;
     use std::time::Duration;
 
-    // Common ports: HTTP, HTTPS, SSH, management
-    let ports = [80u16, 443, 22, 8006, 9440, 443];
+    if ping_alive(&ip).await {
+        return true;
+    }
+
+    let ports = [22u16, 80, 443, 50000, 6443, 8006, 8443, 9440, 10250];
     let timeout_dur = Duration::from_millis(timeout_ms);
     let ip_addr = match IpAddr::from_str(&ip) {
         Ok(a) => a,
         Err(_) => return false,
     };
 
-    // Try any port; if one connects, the host is in use.
-    for &port in &ports {
+    let futs = ports.iter().map(|&port| {
         let addr = SocketAddr::new(ip_addr, port);
-        match tokio::time::timeout(timeout_dur, tokio::net::TcpStream::connect(addr)).await {
-            Ok(Ok(_)) => return true,
-            _ => continue,
+        async move {
+            matches!(
+                tokio::time::timeout(timeout_dur, tokio::net::TcpStream::connect(addr)).await,
+                Ok(Ok(_))
+            )
         }
-    }
-    false
+    });
+    futures::future::join_all(futs).await.into_iter().any(|hit| hit)
 }
 
-/// Scan a subnet for N free IPs (native async; no subprocess or ping).
-/// Returns up to N IPs that don't respond to TCP on common ports.
+async fn ping_alive(ip: &str) -> bool {
+    let mut cmd = tokio::process::Command::new("ping");
+    if ip.contains(':') {
+        cmd.args(["-c", "1", "-W", "1", "-6", ip]);
+    } else {
+        cmd.args(["-c", "1", "-W", "1", ip]);
+    }
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    matches!(cmd.status().await, Ok(s) if s.success())
+}
+
+/// Scan a subnet for N free IPs. Skips network/broadcast/.1, then ICMP+TCP.
+/// Prefers high addresses (DHCP pools usually fill from the bottom).
 pub(crate) async fn scan_subnet_for_free_ips(
     subnet: &str,
     count: i64,
@@ -278,47 +522,39 @@ pub(crate) async fn scan_subnet_for_free_ips(
     use std::net::IpAddr;
     use std::str::FromStr;
 
-    // Parse subnet (e.g., "10.1.1.0/24")
     let net = ipnetwork::IpNetwork::from_str(subnet)
         .map_err(|e| anyhow::anyhow!("invalid subnet {}: {}", subnet, e))?;
 
-    // Build exclusion set
     let mut excluded: std::collections::HashSet<IpAddr> = std::collections::HashSet::new();
     for exc in exclude {
-        if let Ok(ip) = IpAddr::from_str(exc.trim()) {
+        let s = exc.trim().split('/').next().unwrap_or("").trim();
+        if let Ok(ip) = IpAddr::from_str(s) {
+            excluded.insert(ip);
+        }
+    }
+    for ip in subnet_reserved_ips(subnet) {
+        excluded.insert(ip);
+    }
+    // Mgmt's default-route hop (e.g. 10.1.1.10) is not a guest IP.
+    if let Some(gw) = detect_default_gateway() {
+        if let Ok(ip) = IpAddr::from_str(gw.trim()) {
             excluded.insert(ip);
         }
     }
 
-    // Gateway (typically .1) is always unavailable
-    let gateway = net.network();
-    excluded.insert(gateway);
+    let mut candidates: Vec<IpAddr> = net.iter().filter(|ip| !excluded.contains(ip)).collect();
+    candidates.sort_by(|a, b| b.cmp(a));
 
-    // Collect candidate IPs
-    let mut candidates: Vec<IpAddr> = net
-        .iter()
-        .filter(|ip| !excluded.contains(ip) && *ip != gateway)
-        .collect();
-
-    // Randomize to avoid always scanning the same IPs first
-    use rand::seq::SliceRandom;
-    candidates.shuffle(&mut rand::thread_rng());
-
-    // Scan candidates concurrently (32 at a time)
-    let scan_count = std::cmp::min(count as usize * 2, candidates.len());
     let mut free_ips = Vec::new();
-
-    for chunk in candidates.iter().take(scan_count).collect::<Vec<_>>().chunks(32) {
+    for chunk in candidates.chunks(32) {
         let futures: Vec<_> = chunk
             .iter()
-            .map(|&&ip| ip_is_in_use(ip.to_string(), 500))
+            .map(|&ip| ip_is_in_use(ip.to_string(), 500))
             .collect();
-
         let results = futures::future::join_all(futures).await;
         for (idx, in_use) in results.iter().enumerate() {
             if !in_use {
-                let ip = chunk[idx];
-                free_ips.push(ip.to_string());
+                free_ips.push(chunk[idx].to_string());
                 if free_ips.len() >= count as usize {
                     return Ok(free_ips);
                 }
@@ -1075,6 +1311,18 @@ async fn run_create_cluster(
                     exclude_ips.push(vip6.clone());
                 }
             }
+            let gw_keys: &[&str] = match provider.kind.as_str() {
+                "nutanix" | "ahv" | "prism" => &["NUTANIX_STATIC_GATEWAY", "LAB_GATEWAY"],
+                "vsphere" | "esxi" => &["VSPHERE_STATIC_GATEWAY", "LAB_GATEWAY"],
+                _ => &["PROXMOX_STATIC_GATEWAY", "LAB_GATEWAY"],
+            };
+            let gw_probe = detect_guest_gateway(&subnet, gw_keys).await;
+            exclude_ips.push(gw_probe.chosen.clone());
+            for hop in detect_route_hops() {
+                if ipv4_in_subnet(&subnet, &hop) {
+                    exclude_ips.push(hop);
+                }
+            }
 
             exclude_ips.sort();
             exclude_ips.dedup();
@@ -1091,21 +1339,13 @@ async fn run_create_cluster(
                             Ok(free_ips) if !free_ips.is_empty() => {
                                 let ips_to_use = free_ips[..std::cmp::min(need_ips as usize, free_ips.len())].to_vec();
                                 cmd.env("NUTANIX_STATIC_IPS", ips_to_use.join(" "));
-                                // Auto-detect gateway: operator env > detect from system route > derive from subnet.
-                                let gw = std::env::var("NUTANIX_STATIC_GATEWAY")
-                                    .or_else(|_| std::env::var("LAB_GATEWAY"))
-                                    .ok()
-                                    .filter(|s| !s.is_empty())
-                                    .or_else(detect_default_gateway)
-                                    .or_else(|| gateway_from_subnet(&subnet))
-                                    .unwrap_or_else(|| "10.1.1.1".to_string());
-                                cmd.env("NUTANIX_STATIC_GATEWAY", &gw);
+                                cmd.env("NUTANIX_STATIC_GATEWAY", &gw_probe.chosen);
                                 append_log(
                                     log_path,
                                     &format!(
                                         "=> auto-assigned Nutanix IPAM reserved IPs: {} gateway={}\n",
                                         ips_to_use.join(", "),
-                                        gw
+                                        gw_probe.summary
                                     ),
                                 )?;
                             }
@@ -1132,21 +1372,13 @@ async fn run_create_cluster(
                             Ok(free_ips) if !free_ips.is_empty() => {
                                 let ips_to_use = free_ips[..std::cmp::min(need_ips as usize, free_ips.len())].to_vec();
                                 cmd.env("VSPHERE_STATIC_IPS", ips_to_use.join(" "));
-                                // Auto-detect gateway: operator env > detect from system route > derive from subnet.
-                                let gw = std::env::var("VSPHERE_STATIC_GATEWAY")
-                                    .or_else(|_| std::env::var("LAB_GATEWAY"))
-                                    .ok()
-                                    .filter(|s| !s.is_empty())
-                                    .or_else(detect_default_gateway)
-                                    .or_else(|| gateway_from_subnet(&subnet))
-                                    .unwrap_or_else(|| "10.1.1.1".to_string());
-                                cmd.env("VSPHERE_STATIC_GATEWAY", &gw);
+                                cmd.env("VSPHERE_STATIC_GATEWAY", &gw_probe.chosen);
                                 append_log(
                                     log_path,
                                     &format!(
                                         "=> auto-assigned vSphere guest IPs: {} gateway={}\n",
                                         ips_to_use.join(", "),
-                                        gw
+                                        gw_probe.summary
                                     ),
                                 )?;
                             }
@@ -1175,21 +1407,13 @@ async fn run_create_cluster(
                             Ok(free_ips) if !free_ips.is_empty() => {
                                 let ips_to_use = free_ips[..std::cmp::min(need_ips as usize, free_ips.len())].to_vec();
                                 cmd.env("PROXMOX_STATIC_IPS", ips_to_use.join(" "));
-                                // Auto-detect gateway: operator env > detect from system route > derive from subnet.
-                                let gw = std::env::var("PROXMOX_STATIC_GATEWAY")
-                                    .or_else(|_| std::env::var("LAB_GATEWAY"))
-                                    .ok()
-                                    .filter(|s| !s.is_empty())
-                                    .or_else(detect_default_gateway)
-                                    .or_else(|| gateway_from_subnet(&subnet))
-                                    .unwrap_or_else(|| "10.1.1.1".to_string());
-                                cmd.env("PROXMOX_STATIC_GATEWAY", &gw);
+                                cmd.env("PROXMOX_STATIC_GATEWAY", &gw_probe.chosen);
                                 append_log(
                                     log_path,
                                     &format!(
-                                        "=> auto-assigned Proxmox static IPs (TCP-scanned free): {} gateway={}\n",
+                                        "=> auto-assigned Proxmox static IPs (ICMP+TCP free): {} gateway={}\n",
                                         ips_to_use.join(", "),
-                                        gw
+                                        gw_probe.summary
                                     ),
                                 )?;
                             }
@@ -5599,6 +5823,80 @@ mod tests {
         assert_eq!(
             rewrite_proxmox_ssh_for_provider("root@pve-a", "https://pve-b:8006"),
             Some("root@pve-b".into())
+        );
+    }
+
+    #[test]
+    fn subnet_reserved_skips_network_broadcast_dot1_and_dot254() {
+        let reserved: Vec<String> = subnet_reserved_ips("10.1.1.0/24")
+            .into_iter()
+            .map(|ip| ip.to_string())
+            .collect();
+        assert!(reserved.contains(&"10.1.1.0".into()), "{reserved:?}");
+        assert!(reserved.contains(&"10.1.1.1".into()), "{reserved:?}");
+        assert!(reserved.contains(&"10.1.1.254".into()), "{reserved:?}");
+        assert!(reserved.contains(&"10.1.1.255".into()), "{reserved:?}");
+        assert!(!reserved.contains(&"10.1.1.10".into()));
+    }
+
+    #[test]
+    fn guest_gateway_sync_fallback_is_subnet_dot1() {
+        assert_eq!(
+            guest_gateway_for_subnet("10.1.1.0/24", &[]),
+            "10.1.1.1"
+        );
+    }
+
+    #[test]
+    fn gateway_candidates_include_dot1_dot254_and_on_subnet_hops() {
+        let hops = vec!["10.1.1.10".into(), "8.8.8.8".into(), "10.1.1.1".into()];
+        let c = guest_gateway_candidates_with("10.1.1.0/24", &hops);
+        assert_eq!(c, vec!["10.1.1.1", "10.1.1.254", "10.1.1.10"]);
+    }
+
+    #[test]
+    fn pick_guest_gateway_prefers_alive_route_hop() {
+        assert_eq!(
+            pick_guest_gateway("10.1.1.0/24", None, &["10.1.1.10".into()], &[]),
+            "10.1.1.10"
+        );
+        assert_eq!(
+            pick_guest_gateway(
+                "10.1.1.0/24",
+                None,
+                &["10.1.1.1".into(), "10.1.1.10".into()],
+                &[]
+            ),
+            "10.1.1.10"
+        );
+    }
+
+    #[test]
+    fn pick_guest_gateway_uses_dot1_when_only_that_is_alive() {
+        assert_eq!(
+            pick_guest_gateway("10.1.1.0/24", None, &["10.1.1.1".into()], &[]),
+            "10.1.1.1"
+        );
+    }
+
+    #[test]
+    fn pick_guest_gateway_uses_dot254_when_only_that_is_alive() {
+        assert_eq!(
+            pick_guest_gateway("10.1.1.0/24", None, &["10.1.1.254".into()], &[]),
+            "10.1.1.254"
+        );
+    }
+
+    #[test]
+    fn pick_guest_gateway_env_override_wins() {
+        assert_eq!(
+            pick_guest_gateway(
+                "10.1.1.0/24",
+                Some("10.1.1.9"),
+                &["10.1.1.1".into()],
+                &[]
+            ),
+            "10.1.1.9"
         );
     }
 }

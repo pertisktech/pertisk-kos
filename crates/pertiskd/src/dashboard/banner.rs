@@ -53,6 +53,11 @@ pub fn run_banner_loop(
         } else {
             out.push_str(&format!("node {} {}\r\n", snap.node_iface, snap.node_ip));
         }
+        out.push_str(&format!(
+            "gw {}  dns {}\r\n",
+            snap.gateway_display(),
+            snap.dns_display()
+        ));
         for row in &snap.net_rows {
             let name = row.split_whitespace().next().unwrap_or("");
             if name == snap.node_iface {

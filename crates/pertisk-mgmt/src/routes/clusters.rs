@@ -443,6 +443,9 @@ async fn create(
     if name.is_empty() {
         return Err(AppError::bad("name is required"));
     }
+    if let Err(msg) = validate_cluster_name(name) {
+        return Err(AppError::bad(msg));
+    }
     let existing: Option<(String, String)> =
         sqlx::query_as("SELECT id, status FROM clusters WHERE name = ?")
             .bind(name)
@@ -1731,6 +1734,9 @@ struct ScanIpsOut {
     ok: bool,
     subnet: String,
     gateway: String,
+    /// All probed gateway IPs (`.1`, `.254`, routing-table hops).
+    #[serde(default)]
+    gateway_candidates: Vec<String>,
     /// IPs that will be assigned (free IPs found by TCP scan).
     assigned: Vec<String>,
     /// All scanned IPs with their status.
@@ -1744,7 +1750,10 @@ async fn scan_ips(
     CurrentUser(_): CurrentUser,
     Json(body): Json<ScanIpsIn>,
 ) -> ApiResult<Json<ScanIpsOut>> {
-    use crate::jobs::{ip_from_provider_url, scan_subnet_for_free_ips, subnet_from_provider_ip};
+    use crate::jobs::{
+        detect_guest_gateway, ip_from_provider_url, scan_subnet_for_free_ips,
+        subnet_from_provider_ip,
+    };
 
     let need_count = body.controlplanes + body.workers;
     if need_count < 1 {
@@ -1794,33 +1803,22 @@ async fn scan_ips(
     exclude_ips.sort();
     exclude_ips.dedup();
 
-    // Auto-detect gateway
-    let gateway = std::env::var("LAB_GATEWAY")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            // Parse `ip route show default` output
-            let output = std::process::Command::new("ip")
-                .args(["route", "show", "default"])
-                .output()
-                .ok()?;
-            if !output.status.success() {
-                return None;
-            }
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                if line.contains("default") && line.contains("via") {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    for (i, part) in parts.iter().enumerate() {
-                        if *part == "via" && i + 1 < parts.len() {
-                            return Some(parts[i + 1].to_string());
-                        }
-                    }
-                }
-            }
-            None
-        })
-        .unwrap_or_else(|| format!("{}.1", provider_ip.rsplit_once('.').map(|(p, _)| p).unwrap_or("10.1.1")));
+    // Probe `.1`, `.254`, and routing-table hops; pick the LAN router (not mgmt default).
+    let gw_probe = detect_guest_gateway(
+        &subnet,
+        &[
+            "PROXMOX_STATIC_GATEWAY",
+            "NUTANIX_STATIC_GATEWAY",
+            "VSPHERE_STATIC_GATEWAY",
+            "LAB_GATEWAY",
+        ],
+    )
+    .await;
+    let gateway = gw_probe.chosen.clone();
+
+    exclude_ips.push(gateway.clone());
+    exclude_ips.sort();
+    exclude_ips.dedup();
 
     // Scan for free IPs
     let scan_result = scan_subnet_for_free_ips(&subnet, need_count, &exclude_ips).await;
@@ -1846,13 +1844,14 @@ async fn scan_ips(
                 "Found {} free IPs in {} (gateway {})",
                 assigned.len(),
                 subnet,
-                gateway
+                gw_probe.summary
             );
 
             Ok(Json(ScanIpsOut {
                 ok: true,
                 subnet,
                 gateway,
+                gateway_candidates: gw_probe.candidates.clone(),
                 assigned,
                 scanned,
                 message,
@@ -1862,6 +1861,7 @@ async fn scan_ips(
             ok: false,
             subnet: subnet.clone(),
             gateway,
+            gateway_candidates: gw_probe.candidates,
             assigned: vec![],
             scanned: vec![],
             message: format!("No free IPs found in {} (all scanned hosts responded to TCP)", subnet),
@@ -1903,6 +1903,30 @@ async fn provider_check_vmids(
     }
 }
 
+/// Cluster name is the Proxmox/K8s hostname prefix (`{name}-cp-1`). RFC 1123
+/// labels only: letters, digits, hyphen. `lab-ha+orion` is rejected (`+`).
+fn validate_cluster_name(name: &str) -> Result<(), String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("name is required".into());
+    }
+    if n.len() > 50 {
+        return Err("name must be at most 50 characters (VM names are {name}-cp-N)".into());
+    }
+    let ok = n
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && n.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && n.chars().last().is_some_and(|c| c.is_ascii_alphanumeric());
+    if !ok {
+        return Err(
+            "name must be a DNS hostname (letters, digits, hyphen). Use lab-ha-orion, not lab-ha+orion"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Basic IPv4 CIDR check (e.g. `10.244.0.0/16`) — rejects IPv6 / empty.
 fn looks_like_ipv4_cidr(s: &str) -> bool {
     let Some((ip, prefix)) = s.split_once('/') else {
@@ -1933,4 +1957,30 @@ fn looks_like_ipv6_cidr(s: &str) -> bool {
         return false;
     };
     pfx <= 128
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_cluster_name;
+
+    #[test]
+    fn cluster_name_allows_hyphenated_dns() {
+        assert!(validate_cluster_name("lab-ha").is_ok());
+        assert!(validate_cluster_name("lab-ha-orion").is_ok());
+        assert!(validate_cluster_name("a").is_ok());
+    }
+
+    #[test]
+    fn cluster_name_rejects_plus() {
+        let err = validate_cluster_name("lab-ha+orion").unwrap_err();
+        assert!(err.contains("DNS hostname"), "{err}");
+    }
+
+    #[test]
+    fn cluster_name_rejects_underscore_and_space() {
+        assert!(validate_cluster_name("lab_ha").is_err());
+        assert!(validate_cluster_name("lab ha").is_err());
+        assert!(validate_cluster_name("-lab").is_err());
+        assert!(validate_cluster_name("lab-").is_err());
+    }
 }

@@ -425,6 +425,9 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
   function validateStep(i) {
     if (i === 0) {
       if (!form.name.trim()) return 'Name is required'
+      if (!/^[A-Za-z0-9]([A-Za-z0-9-]{0,48}[A-Za-z0-9])?$/.test(form.name.trim())) {
+        return 'Name must be a DNS hostname (letters, digits, hyphen). Use lab-ha-orion, not lab-ha+orion'
+      }
       if (!form.provider_id) return 'Select a provider'
       if (!String(form.k8s_version || '').trim()) return 'Select a Kubernetes version'
       if (!armAllowed && form.arch === 'arm64') {
@@ -591,6 +594,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
             <div className="field">
               <label>Name</label>
               <input value={form.name} onChange={(e) => set('name', e.target.value)} autoFocus />
+              <p className="hint muted">DNS hostname used as the VM prefix (lab-ha-orion-cp-1). Hyphens only — no + or spaces.</p>
             </div>
             <div className="field">
               <label>Provider</label>
@@ -785,6 +789,11 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
                 <div style={{ marginBottom: '0.5rem', opacity: 0.7 }}>
                   Subnet: <code style={{ background: 'var(--input-bg)', padding: '2px 6px', borderRadius: '3px' }}>{ipScan.subnet}</code>
                   {' '}Gateway: <code style={{ background: 'var(--input-bg)', padding: '2px 6px', borderRadius: '3px' }}>{ipScan.gateway}</code>
+                  {Array.isArray(ipScan.gateway_candidates) && ipScan.gateway_candidates.length > 1 && (
+                    <span>
+                      {' '}probed {ipScan.gateway_candidates.join(', ')}
+                    </span>
+                  )}
                 </div>
                 {ipScan.ok && ipScan.assigned?.length > 0 ? (
                   <div>

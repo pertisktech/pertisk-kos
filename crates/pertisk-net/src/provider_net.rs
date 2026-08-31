@@ -15,12 +15,19 @@ use pertisk_config::{Interface, Network};
 /// Parse a `PERTISK-NET` blob. Ignores trailing NUL / padding.
 #[allow(dead_code)]
 pub fn parse_pertisk_net(bytes: &[u8]) -> Option<Network> {
-    let end = bytes
+    const MAGIC: &[u8] = b"PERTISK-NET";
+    let window = &bytes[..bytes.len().min(65536)];
+    let start = window
+        .windows(MAGIC.len())
+        .position(|w| w.eq_ignore_ascii_case(MAGIC))
+        .unwrap_or(0);
+    let slice = &window[start..];
+    let end = slice
         .iter()
         .position(|&b| b == 0)
-        .unwrap_or(bytes.len())
+        .unwrap_or(slice.len())
         .min(4096);
-    let text = std::str::from_utf8(&bytes[..end]).ok()?;
+    let text = std::str::from_utf8(&slice[..end]).ok()?;
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
     let magic = lines.next()?;
     if !magic.eq_ignore_ascii_case("PERTISK-NET") {
@@ -82,11 +89,23 @@ pub fn apply_provider_netcfg() -> Result<bool, super::NetError> {
     }
 }
 
+/// Single scan (no 15s wait). Used by the supervise loop to replace DHCP later.
+pub fn try_apply_provider_netcfg() -> Result<bool, super::NetError> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::apply_once()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(false)
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
     use crate::apply::apply_network;
-    use tracing::{debug, info};
+    use tracing::info;
 
     const CANDIDATES: &[&str] = &[
         "/dev/sr0",
@@ -101,8 +120,18 @@ mod linux {
     ];
 
     pub fn apply() -> Result<bool, crate::NetError> {
-        let Some(net) = load() else {
-            info!("no provider netcfg disk found after scanning all candidates");
+        apply_attempts(30)
+    }
+
+    pub fn apply_once() -> Result<bool, crate::NetError> {
+        apply_attempts(1)
+    }
+
+    fn apply_attempts(attempts: u32) -> Result<bool, crate::NetError> {
+        let Some(net) = load(attempts) else {
+            if attempts > 1 {
+                info!("no provider netcfg disk found after scanning all candidates");
+            }
             return Ok(false);
         };
         let addr = net
@@ -116,20 +145,26 @@ mod linux {
         Ok(true)
     }
 
-    fn load() -> Option<Network> {
-        // Retry up to 30 times (15 seconds total) - virtio disk may take time to appear + udev
-        for attempt in 1..=30 {
-            info!(attempt, "scanning for provider netcfg disk (attempt {}/30)", attempt);
+    fn load(attempts: u32) -> Option<Network> {
+        let _ = std::process::Command::new("modprobe")
+            .args(["sr_mod"])
+            .status();
+        let attempts = attempts.max(1);
+        for attempt in 1..=attempts {
+            if attempts > 1 {
+                info!(attempt, "scanning for provider netcfg disk (attempt {}/{attempts})", attempt);
+            }
             if let Some(net) = scan() {
                 info!("provider netcfg disk found on attempt {}", attempt);
                 return Some(net);
             }
-            if attempt % 5 == 0 {
-                info!("still scanning for provider netcfg disk (attempt {})", attempt);
+            if attempt < attempts {
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
         }
-        info!("provider netcfg disk not found after 30 attempts (15 seconds)");
+        if attempts > 1 {
+            info!("provider netcfg disk not found after {attempts} attempts");
+        }
         None
     }
 
@@ -139,10 +174,6 @@ mod linux {
             || name.starts_with("zram")
             || name.starts_with("dm-")
             || name.starts_with("fd")
-            || name == "vda"
-            || name == "sda"
-            || name == "nvme0n1"
-            || name == "xvda"
     }
 
     fn scan() -> Option<Network> {
@@ -196,7 +227,7 @@ mod linux {
                 return None;
             }
         };
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 65536];
         let n = match f.read(&mut buf) {
             Ok(n) => n,
             Err(e) => {
@@ -255,5 +286,16 @@ mod tests {
         .unwrap();
         assert_eq!(net.nameservers, vec!["10.1.1.10"]);
         assert_eq!(net.interfaces[0].gateway.as_deref(), Some("10.1.1.10"));
+    }
+
+    #[test]
+    fn finds_magic_after_iso_system_area() {
+        let mut raw = vec![0u8; 4096];
+        raw[0] = 1;
+        raw[1..6].copy_from_slice(b"CD001");
+        let body = b"PERTISK-NET\nIPV4=10.1.1.19/24\nGATEWAY=10.1.1.10\n";
+        raw[2048..2048 + body.len()].copy_from_slice(body);
+        let net = parse_pertisk_net(&raw).unwrap();
+        assert_eq!(net.interfaces[0].addresses, vec!["10.1.1.19/24"]);
     }
 }

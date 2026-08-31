@@ -54,6 +54,9 @@ mod unix_impl {
         let mut dhcp_retry_at = std::time::Instant::now();
         let mut last_rebase_at = std::time::Instant::now() - std::time::Duration::from_secs(30);
         let mut dhcp_ok = iface_has_address(cfg.as_ref());
+        let mut provider_netcfg_done = false;
+        let mut netcfg_retry_at = std::time::Instant::now();
+        let mut netcfg_tries: u32 = 0;
 
         while !STOP.load(Ordering::SeqCst) {
             reap_zombies();
@@ -97,6 +100,14 @@ mod unix_impl {
                         }
                         if let Err(err) = pertisk_net::apply_network(&new_cfg.machine.network) {
                             warn!(error = %err, "network apply on config reload failed");
+                        }
+                        match pertisk_net::try_apply_provider_netcfg() {
+                            Ok(true) => {
+                                provider_netcfg_done = true;
+                                info!("re-applied provider netcfg after config reload (keep static IP)");
+                            }
+                            Ok(false) => {}
+                            Err(err) => warn!(error = %err, "provider netcfg after config reload failed"),
                         }
                         services.on_config_reload(&new_cfg, crate::log_ring());
                         apply_loki_push(Some(&new_cfg), &state_root);
@@ -159,6 +170,29 @@ mod unix_impl {
                     }
                     if let Err(err) = pertisk_bootstrap::snapshot_worker_kubelet(&state_root) {
                         warn!(error = %err, "worker kubelet snapshot failed");
+                    }
+                }
+            }
+            if !provider_netcfg_done && std::time::Instant::now() >= netcfg_retry_at {
+                match pertisk_net::try_apply_provider_netcfg() {
+                    Ok(true) => {
+                        provider_netcfg_done = true;
+                        dhcp_ok = iface_has_address(cfg.as_ref());
+                        info!("provider netcfg applied (replaced DHCP if any)");
+                    }
+                    Ok(false) => {
+                        netcfg_tries = netcfg_tries.saturating_add(1);
+                        if netcfg_tries >= 90 {
+                            provider_netcfg_done = true;
+                        } else {
+                            netcfg_retry_at =
+                                std::time::Instant::now() + std::time::Duration::from_secs(2);
+                        }
+                    }
+                    Err(err) => {
+                        warn!(error = %err, "provider netcfg retry failed");
+                        netcfg_retry_at =
+                            std::time::Instant::now() + std::time::Duration::from_secs(2);
                     }
                 }
             }

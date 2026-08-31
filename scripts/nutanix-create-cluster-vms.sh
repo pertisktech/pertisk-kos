@@ -131,7 +131,7 @@ for i in $(seq 1 "$CONTROLPLANES"); do
   [[ -n "$CP_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$CP_DISK_GB")
   if [[ $STATIC_IP_IDX -lt ${#STATIC_IPS_ARRAY[@]} ]]; then
     UPLOAD_ARGS+=(--ip "${STATIC_IPS_ARRAY[$STATIC_IP_IDX]}")
-    ((STATIC_IP_IDX++))
+    STATIC_IP_IDX=$((STATIC_IP_IDX + 1))
   fi
   pertisk_parallel_add "${NAME_PREFIX}-cp-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
@@ -143,7 +143,7 @@ for i in $(seq 1 "$WORKERS"); do
   [[ -n "$WORKER_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$WORKER_DISK_GB")
   if [[ $STATIC_IP_IDX -lt ${#STATIC_IPS_ARRAY[@]} ]]; then
     UPLOAD_ARGS+=(--ip "${STATIC_IPS_ARRAY[$STATIC_IP_IDX]}")
-    ((STATIC_IP_IDX++))
+    STATIC_IP_IDX=$((STATIC_IP_IDX + 1))
   fi
   pertisk_parallel_add "${NAME_PREFIX}-wk-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done

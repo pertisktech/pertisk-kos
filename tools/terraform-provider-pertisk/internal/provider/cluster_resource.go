@@ -85,7 +85,7 @@ func (r *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"name": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Cluster name (VM prefix: {name}-cp-N / {name}-wk-N).",
+				MarkdownDescription: "Cluster name (VM prefix: `{name}-cp-N` / `{name}-wk-N`). DNS hostname: letters, digits, hyphen only (not `lab-ha+orion`).",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},

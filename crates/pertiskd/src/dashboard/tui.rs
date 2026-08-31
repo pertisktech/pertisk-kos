@@ -587,6 +587,8 @@ fn preview_snapshot() -> crate::dashboard::snapshot::StatusSnapshot {
         ],
         node_iface: "eth0".into(),
         node_ip: "192.168.1.50/24 2405:9800:b901:194c:be24:11ff:fe91:e066 fd00:a:1:1::32".into(),
+        gateway: "192.168.1.1".into(),
+        dns: "192.168.1.1 1.1.1.1".into(),
         machine_type: "controlplane".into(),
         cluster_endpoint: "https://10.0.0.1:6443".into(),
         cni: "flannel".into(),
@@ -756,6 +758,10 @@ mod tests {
             "service subnet hidden: {rendered}"
         );
         assert!(
+            rendered.contains("192.168.1.1") && rendered.contains("DNS"),
+            "gw/dns hidden: {rendered}"
+        );
+        assert!(
             rendered.contains(" SYSTEM ") && rendered.contains('-'),
             "missing SYSTEM line border: {rendered}"
         );
@@ -857,13 +863,21 @@ mod tests {
         );
         assert!(body.contains("10.244.0.0/16"), "POD truncated: {body}");
         assert!(body.contains("10.96.0.0/12"), "SVC truncated: {body}");
+        assert!(
+            body.contains("gw 192.168.1.1"),
+            "gateway missing from NETWORK: {body}"
+        );
+        assert!(
+            body.contains("dns 192.168.1.1 1.1.1.1"),
+            "dns missing from NETWORK: {body}"
+        );
         let gua = "2405:9800:b901:194c:be24:11ff:fe91:e066";
         assert!(
             body.contains(gua),
             "full IPv6 GUA must be visible (not clipped): {body}"
         );
-        // Summary occupies rows 1..=9, logs start at row 10.
-        let log_top = strip_escapes(&rows[10]);
+        // Summary occupies rows 1..=10, logs start at row 11.
+        let log_top = strip_escapes(&rows[11]);
         assert!(
             log_top.contains(" logs "),
             "logs should start after summary: {log_top:?}"

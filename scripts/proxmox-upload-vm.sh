@@ -37,6 +37,7 @@ ARCH="${PERTISK_ARCH:-${ARCH:-}}"
 STATIC_IP="${PROXMOX_STATIC_IP:-}"
 STATIC_GATEWAY="${PROXMOX_STATIC_GATEWAY:-}"
 STATIC_NAMESERVER="${PROXMOX_STATIC_NAMESERVER:-}"
+NETCFG_ONLY=0
 
 usage() {
   cat <<'EOF'
@@ -61,6 +62,7 @@ Options:
                     (env PROXMOX_STATIC_IP)
   --gateway IP      static gateway for --ip (env PROXMOX_STATIC_GATEWAY)
   --nameserver IP   static DNS for --ip (default: gateway; env PROXMOX_STATIC_NAMESERVER)
+  --netcfg-only     existing VM: attach static-IP netcfg and reboot (needs --vmid --ip --gateway)
 EOF
   exit 1
 }
@@ -81,20 +83,39 @@ while [[ $# -gt 0 ]]; do
     --ip) STATIC_IP="$2"; shift 2 ;;
     --gateway) STATIC_GATEWAY="$2"; shift 2 ;;
     --nameserver) STATIC_NAMESERVER="$2"; shift 2 ;;
+    --netcfg-only) NETCFG_ONLY=1; shift ;;
     -h | --help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
 done
 
-[[ -n "${VMID}" && -n "${DISK}" ]] || usage
+[[ -n "${VMID}" ]] || usage
+if [[ "${NETCFG_ONLY}" == "1" ]]; then
+  [[ -n "${STATIC_IP}" && -n "${STATIC_GATEWAY}" ]] || {
+    echo "--netcfg-only requires --ip and --gateway" >&2
+    exit 1
+  }
+  ARCH="${ARCH:-amd64}"
+else
+  [[ -n "${DISK}" ]] || usage
+fi
+# Proxmox `name` is a DNS hostname. Cluster names like lab-ha+orion become
+# lab-ha+orion-cp-1 and the API returns "invalid format - value does not look like a valid DNS name".
+if [[ "${NETCFG_ONLY}" != "1" && ! "${NAME}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+  echo "ERROR: VM name '${NAME}' is not a valid DNS name (Proxmox rejects '+', '_', spaces)." >&2
+  echo "  Use a cluster name like lab-ha-orion (letters, digits, hyphen)." >&2
+  exit 1
+fi
 if [[ -n "${STATIC_IP}" && -z "${STATIC_GATEWAY}" ]]; then
   echo "--ip requires --gateway (or PROXMOX_STATIC_GATEWAY)" >&2
   exit 1
 fi
-[[ -f "${DISK}" ]] || {
-  echo "disk not found: ${DISK}" >&2
-  exit 1
-}
+if [[ "${NETCFG_ONLY}" != "1" ]]; then
+  [[ -f "${DISK}" ]] || {
+    echo "disk not found: ${DISK}" >&2
+    exit 1
+  }
+fi
 
 # Stable MAC in Proxmox OUI space (survives recreate on the same host).
 # Mix a host salt into the first octet so the same VMID on two Proxmox nodes
@@ -130,13 +151,17 @@ normalize_arch() {
   esac
 }
 if [[ -z "$ARCH" ]]; then
-  base="$(basename "$DISK")"
-  if [[ "$base" == *arm64* || "$base" == *aarch64* ]]; then
-    ARCH=arm64
-  elif [[ "$base" == *amd64* || "$base" == *x86_64* ]]; then
+  if [[ "${NETCFG_ONLY}" == "1" ]]; then
     ARCH=amd64
   else
-    ARCH=amd64
+    base="$(basename "$DISK")"
+    if [[ "$base" == *arm64* || "$base" == *aarch64* ]]; then
+      ARCH=arm64
+    elif [[ "$base" == *amd64* || "$base" == *x86_64* ]]; then
+      ARCH=amd64
+    else
+      ARCH=amd64
+    fi
   fi
 fi
 ARCH="$(normalize_arch "$ARCH")"
@@ -239,16 +264,25 @@ api_response_ok() {
 }
 
 vm_has_scsi0() {
-  local conf i
+  vm_has_scsi_slot scsi0
+}
+
+vm_has_scsi1() {
+  vm_has_scsi_slot scsi1
+}
+
+vm_has_scsi_slot() {
+  local slot="$1" conf i
   for i in 1 2 3 4 5 6; do
     conf="$(api_get "/nodes/${NODE}/qemu/${VMID}/config" 2>/dev/null || echo '{}')"
-    if echo "${conf}" | jq -e '.data.scsi0 != null and (.data.scsi0|type=="string") and (.data.scsi0|length>0)' >/dev/null 2>&1; then
+    if echo "${conf}" | jq -e --arg s "$slot" \
+      '.data[$s] != null and (.data[$s]|type=="string") and (.data[$s]|length>0)' >/dev/null 2>&1; then
       return 0
     fi
     # API can lag right after qm importdisk / config PUT.
     if [[ -n "${PROXMOX_SSH:-}" ]]; then
       if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "${PROXMOX_SSH}" \
-        "qm config ${VMID} | grep -q '^scsi0:'" >/dev/null 2>&1; then
+        "qm config ${VMID} | grep -q '^${slot}:'" >/dev/null 2>&1; then
         return 0
       fi
     fi
@@ -299,6 +333,166 @@ vm_stop() {
   fi
 }
 
+# Static IP for the guest: PERTISK-NET blob on scsi1 (same import-from as scsi0).
+# ide2 + content=import fails on Proxmox ("content type needs to be 'images' or 'iso'").
+# Fallback: upload a tiny ISO to directory storage and attach ide2=…,media=cdrom.
+write_pertisk_net_blob() {
+  local dest="$1" cidr="$2" gw="$3" ns="$4"
+  python3 - "$dest" "$cidr" "$gw" "$ns" <<'PY'
+import sys
+path, cidr, gw, ns = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+blob = f"PERTISK-NET\nIPV4={cidr}\nGATEWAY={gw}\nNAMESERVER={ns}\nINTERFACE=eth0\n".encode()
+size = 16 * 1024 * 1024
+open(path, "wb").write(blob + b"\x00" * (size - len(blob)))
+PY
+}
+
+write_pertisk_net_iso() {
+  local dest="$1" cidr="$2" gw="$3" ns="$4"
+  python3 - "$dest" "$cidr" "$gw" "$ns" <<'PY'
+import struct, sys
+path, cidr, gw, ns = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+blob = f"PERTISK-NET\nIPV4={cidr}\nGATEWAY={gw}\nNAMESERVER={ns}\nINTERFACE=eth0\n".encode()
+size = 64 * 1024
+data = bytearray(size)
+data[: len(blob)] = blob
+pvd = 32768
+data[pvd] = 1
+data[pvd + 1 : pvd + 6] = b"CD001"
+data[pvd + 6] = 1
+vid = b"PERTISKNET"
+data[pvd + 40 : pvd + 40 + len(vid)] = vid
+sectors = size // 2048
+struct.pack_into("<I", data, pvd + 80, sectors)
+struct.pack_into(">I", data, pvd + 84, sectors)
+struct.pack_into("<H", data, pvd + 128, 2048)
+struct.pack_into(">H", data, pvd + 130, 2048)
+t = pvd + 2048
+data[t] = 255
+data[t + 1 : t + 6] = b"CD001"
+data[t + 6] = 1
+open(path, "wb").write(data)
+PY
+}
+
+netcfg_upload_storage() {
+  local upload_storage="${PROXMOX_UPLOAD_STORAGE:-}"
+  if [[ -z "${upload_storage}" ]]; then
+    case "${STORAGE}" in
+      *zfs*|*lvm*|local-lvm) upload_storage=local ;;
+      *) upload_storage="${STORAGE}" ;;
+    esac
+  fi
+  echo "${upload_storage}"
+}
+
+attach_netcfg_scsi1() {
+  local cidr="$1" gw="$2" ns="$3"
+  local raw upload_storage vol import_ref up up_body up_code upid att imp_upid
+  raw="$(mktemp /tmp/pertisk-netcfg.XXXXXX.raw)"
+  write_pertisk_net_blob "${raw}" "${cidr}" "${gw}" "${ns}"
+  upload_storage="$(netcfg_upload_storage)"
+  vol="pertisk-${VMID}-netcfg.raw"
+  import_ref="${upload_storage}:import/${vol}"
+  echo "    API upload content=import → storage=${upload_storage} as ${vol}"
+  up="$("${CURL[@]}" -w "\n%{http_code}" -X POST -H "${AUTH}" \
+    -F "content=import" \
+    -F "filename=@${raw};type=application/octet-stream;filename=${vol}" \
+    "${BASE}/nodes/${NODE}/storage/${upload_storage}/upload" || true)"
+  rm -f "${raw}"
+  up_body="$(echo "${up}" | sed '$d')"
+  up_code="$(echo "${up}" | tail -n1)"
+  if [[ "${up_code}" != "200" ]] || ! echo "${up_body}" | jq -e '.data != null' >/dev/null 2>&1; then
+    echo "    scsi1 upload failed (HTTP ${up_code}): ${up_body}" >&2
+    return 1
+  fi
+  upid="$(echo "${up_body}" | jq -r '.data')"
+  wait_task "${upid}" "netcfg-upload" || return 1
+  api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+    --data-urlencode "delete=scsi1" >/dev/null 2>&1 || true
+  echo "    attaching scsi1 via import-from=${import_ref} → ${STORAGE}"
+  att="$(
+    api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+      --data-urlencode "scsi1=${STORAGE}:0,import-from=${import_ref}" \
+      --data-urlencode "boot=order=scsi0"
+  )"
+  if ! api_response_ok "${att}"; then
+    echo "    scsi1 import-from failed: ${att}" >&2
+    return 1
+  fi
+  imp_upid="$(echo "${att}" | jq -r '.data // empty')"
+  if [[ "${imp_upid}" == UPID:* ]]; then
+    wait_task "${imp_upid}" "netcfg-import-from" || return 1
+  fi
+  if ! vm_has_scsi1; then
+    echo "    scsi1 missing after import-from" >&2
+    return 1
+  fi
+  api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+    --data-urlencode "boot=order=scsi0" >/dev/null 2>&1 || true
+  echo "    netcfg attached (scsi1 /dev/sdb, static IP ${STATIC_IP})"
+  return 0
+}
+
+attach_netcfg_ide2_iso() {
+  local cidr="$1" gw="$2" ns="$3"
+  local iso upload_storage vol iso_ref up up_body up_code upid att
+  iso="$(mktemp /tmp/pertisk-netcfg.XXXXXX.iso)"
+  write_pertisk_net_iso "${iso}" "${cidr}" "${gw}" "${ns}"
+  upload_storage="$(netcfg_upload_storage)"
+  vol="pertisk-${VMID}-netcfg.iso"
+  iso_ref="${upload_storage}:iso/${vol}"
+  echo "    API upload content=iso → storage=${upload_storage} as ${vol}"
+  up="$("${CURL[@]}" -w "\n%{http_code}" -X POST -H "${AUTH}" \
+    -F "content=iso" \
+    -F "filename=@${iso};type=application/octet-stream;filename=${vol}" \
+    "${BASE}/nodes/${NODE}/storage/${upload_storage}/upload" || true)"
+  rm -f "${iso}"
+  up_body="$(echo "${up}" | sed '$d')"
+  up_code="$(echo "${up}" | tail -n1)"
+  if [[ "${up_code}" != "200" ]] || ! echo "${up_body}" | jq -e '.data != null' >/dev/null 2>&1; then
+    echo "    iso upload failed (HTTP ${up_code}): ${up_body}" >&2
+    return 1
+  fi
+  upid="$(echo "${up_body}" | jq -r '.data')"
+  wait_task "${upid}" "netcfg-iso-upload" || return 1
+  api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+    --data-urlencode "delete=ide2" >/dev/null 2>&1 || true
+  echo "    attaching ide2 CD-ROM ${iso_ref}"
+  att="$(
+    api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+      --data-urlencode "ide2=${iso_ref},media=cdrom" \
+      --data-urlencode "boot=order=scsi0"
+  )"
+  if ! api_response_ok "${att}"; then
+    echo "    ide2 iso attach failed: ${att}" >&2
+    return 1
+  fi
+  api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+    --data-urlencode "boot=order=scsi0" >/dev/null 2>&1 || true
+  echo "    netcfg attached (ide2 CD-ROM /dev/sr0, static IP ${STATIC_IP})"
+  return 0
+}
+
+attach_static_netcfg() {
+  [[ -n "${STATIC_IP}" ]] || return 0
+  local ns="${STATIC_NAMESERVER:-${STATIC_GATEWAY}}"
+  local cidr="${STATIC_IP}"
+  if [[ "${STATIC_IP}" != */* ]]; then
+    cidr="${STATIC_IP}/24"
+  fi
+  echo "==> static IP ${cidr} gw=${STATIC_GATEWAY} (no DHCP) → guest netcfg"
+  if attach_netcfg_scsi1 "${cidr}" "${STATIC_GATEWAY}" "${ns}"; then
+    return 0
+  fi
+  echo "    scsi1 failed; trying ISO CD-ROM (Proxmox requires content=iso for ide2)"
+  if attach_netcfg_ide2_iso "${cidr}" "${STATIC_GATEWAY}" "${ns}"; then
+    return 0
+  fi
+  echo "ERROR: could not attach static-IP netcfg; refusing DHCP fallback" >&2
+  exit 1
+}
+
 # Remove scsi0 so a fresh import-from can replace the guest disk.
 detach_scsi0() {
   if ! vm_has_scsi0; then
@@ -315,6 +509,15 @@ detach_scsi0() {
 }
 
 echo "==> Proxmox ${PROXMOX_URL} node=${NODE} storage=${STORAGE} vmid=${VMID} arch=${ARCH} (${PVE_ARCH}/${PVE_MACHINE})"
+
+if [[ "${NETCFG_ONLY}" == "1" ]]; then
+  vm_stop
+  attach_static_netcfg
+  echo "==> starting VM ${VMID}"
+  api_post_form "/nodes/${NODE}/qemu/${VMID}/status/start" >/dev/null 2>&1 || true
+  echo "==> netcfg-only done — static IP=${STATIC_IP} (guest applies PERTISK-NET on boot)"
+  exit 0
+fi
 
 # Tokens cannot set a *non-default* arch. Native aarch64 PVE already defaults to
 # aarch64, so API create (omit arch=) works like amd64-on-amd64. Cross-arch
@@ -906,73 +1109,6 @@ if [[ -n "${DISK_GB}" ]]; then
   fi
 fi
 
-# --- Static IP netcfg disk (Talos-style: guest never DHCPs, address is fixed
-# in the machine config and survives reboot/shutdown; no external DHCP/router
-# reservation needed). Same PERTISK-NET format the guest already reads on
-# Nutanix AHV (crates/pertisk-net/src/provider_net.rs) — attach as scsi1 before
-# first boot so pertiskd applies it before it would otherwise try DHCP.
-attach_static_netcfg() {
-  [[ -n "${STATIC_IP}" ]] || return 0
-  local ns="${STATIC_NAMESERVER:-${STATIC_GATEWAY}}"
-  local cidr="${STATIC_IP}"
-  # If STATIC_IP is raw IP (no slash), add CIDR prefix (default /24)
-  if [[ "${STATIC_IP}" != */* ]]; then
-    cidr="${STATIC_IP}/24"
-  fi
-  echo "==> static IP ${cidr} gw=${STATIC_GATEWAY} (no DHCP) → netcfg disk"
-  local raw upload_storage vol import_ref up up_body up_code upid att imp_upid
-  raw="$(mktemp /tmp/pertisk-netcfg.XXXXXX.raw)"
-  python3 - "${raw}" "${cidr}" "${STATIC_GATEWAY}" "${ns}" <<'PY'
-import sys
-path, cidr, gw, ns = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-blob = f"PERTISK-NET\nIPV4={cidr}\nGATEWAY={gw}\nNAMESERVER={ns}\nINTERFACE=eth0\n".encode()
-size = 16 * 1024 * 1024
-open(path, "wb").write(blob + b"\x00" * (size - len(blob)))
-PY
-  upload_storage="${PROXMOX_UPLOAD_STORAGE:-}"
-  if [[ -z "${upload_storage}" ]]; then
-    case "${STORAGE}" in
-      *zfs*|*lvm*|local-lvm) upload_storage=local ;;
-      *) upload_storage="${STORAGE}" ;;
-    esac
-  fi
-  vol="pertisk-${VMID}-netcfg.raw"
-  import_ref="${upload_storage}:import/${vol}"
-  echo "    API upload content=import → storage=${upload_storage} as ${vol}"
-  up="$("${CURL[@]}" -w "\n%{http_code}" -X POST -H "${AUTH}" \
-    -F "content=import" \
-    -F "filename=@${raw};type=application/octet-stream;filename=${vol}" \
-    "${BASE}/nodes/${NODE}/storage/${upload_storage}/upload" || true)"
-  rm -f "${raw}"
-  up_body="$(echo "${up}" | sed '$d')"
-  up_code="$(echo "${up}" | tail -n1)"
-  if [[ "${up_code}" != "200" ]] || ! echo "${up_body}" | jq -e '.data != null' >/dev/null 2>&1; then
-    echo "WARN: netcfg upload failed (HTTP ${up_code}); guest will fall back to DHCP: ${up_body}" >&2
-    return 0
-  fi
-  upid="$(echo "${up_body}" | jq -r '.data')"
-  wait_task "${upid}" "netcfg-upload" || {
-    echo "WARN: netcfg upload task failed; guest will fall back to DHCP" >&2
-    return 0
-  }
-  # Attach netcfg as ide2 CD-ROM via Proxmox API (works without SSH, no timeout issues).
-  # IDE CD-ROM is stable and guest already scans /dev/sr0, /dev/sr1 for netcfg.
-  echo "    attaching netcfg as ide2 CD-ROM via API"
-  
-  # Use the imported content directly as CD-ROM.
-  # Format: ide2=storage:import/filename,media=cdrom (as single parameter)
-  local att_resp
-  att_resp="$(api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
-    --data-urlencode "ide2=${import_ref},media=cdrom" 2>/dev/null || true)"
-  
-  if ! echo "${att_resp:-}" | jq -e '.data != null' >/dev/null 2>&1 \
-    && ! api_response_ok "${att_resp:-{}}"; then
-    echo "WARN: netcfg ide2 attach failed; guest will fall back to DHCP: ${att_resp}" >&2
-    return 0
-  fi
-  
-  echo "    netcfg disk attached (ide2 CD-ROM, static IP ${STATIC_IP})"
-}
 attach_static_netcfg
 
 if [[ "${START}" == "1" ]]; then

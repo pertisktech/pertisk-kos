@@ -629,6 +629,32 @@ pub async fn del_address(iface: &str, cidr: &str) -> Result<(), NetError> {
 }
 
 #[cfg(target_os = "linux")]
+fn is_already_exists(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("file exists") || m.contains("eexist") || m.contains("os error 17")
+}
+
+#[cfg(target_os = "linux")]
+fn try_ip_route_replace(gateway: &str) -> Result<(), NetError> {
+    use std::process::Command;
+    for bin in ["/sbin/ip", "/usr/sbin/ip", "ip"] {
+        let status = Command::new(bin)
+            .args(["route", "replace", "default", "via", gateway])
+            .status();
+        match status {
+            Ok(s) if s.success() => return Ok(()),
+            Ok(s) => {
+                return Err(NetError::Msg(format!(
+                    "{bin} route replace default via {gateway} status={s}"
+                )));
+            }
+            Err(_) => continue,
+        }
+    }
+    Err(NetError::Msg("no ip binary".into()))
+}
+
+#[cfg(target_os = "linux")]
 pub async fn add_default_route(gateway: &str) -> Result<(), NetError> {
     use std::net::IpAddr;
     use std::str::FromStr;
@@ -637,20 +663,52 @@ pub async fn add_default_route(gateway: &str) -> Result<(), NetError> {
 
     let gw = IpAddr::from_str(gateway)
         .map_err(|e| NetError::Msg(format!("bad gateway {gateway}: {e}")))?;
+
+    if let IpAddr::V4(v4) = gw {
+        if try_ip_route_replace(gateway).is_ok() {
+            tracing::info!(gateway, "default route replaced via ip");
+            return Ok(());
+        }
+        match add_default_route_v4_ioctl(v4) {
+            Ok(()) => {
+                tracing::info!(gateway, "default route added");
+                return Ok(());
+            }
+            Err(ioctl_err) => {
+                tracing::warn!(
+                    gateway,
+                    error = %ioctl_err,
+                    "ioctl default route failed; trying netlink"
+                );
+            }
+        }
+    }
+
     let (connection, handle, _) = new_connection().map_err(|e| NetError::Msg(e.to_string()))?;
     tokio::spawn(connection);
 
     match gw {
         IpAddr::V4(v4) => {
-            handle
+            match handle
                 .route()
                 .add()
                 .v4()
                 .destination_prefix(std::net::Ipv4Addr::UNSPECIFIED, 0)
                 .gateway(v4)
+                .replace()
                 .execute()
                 .await
-                .map_err(|e| NetError::Msg(e.to_string()))?;
+            {
+                Ok(()) => {}
+                Err(err) => {
+                    let msg = err.to_string();
+                    if is_already_exists(&msg) {
+                        tracing::info!(gateway, "default route already present");
+                        return Ok(());
+                    }
+                    return Err(NetError::Msg(msg));
+                }
+            }
         }
         IpAddr::V6(v6) => {
             match handle
@@ -659,6 +717,7 @@ pub async fn add_default_route(gateway: &str) -> Result<(), NetError> {
                 .v6()
                 .destination_prefix(std::net::Ipv6Addr::UNSPECIFIED, 0)
                 .gateway(v6)
+                .replace()
                 .execute()
                 .await
             {
@@ -671,6 +730,10 @@ pub async fn add_default_route(gateway: &str) -> Result<(), NetError> {
                             error = %msg,
                             "IPv6 default route skipped (stack absent)"
                         );
+                        return Ok(());
+                    }
+                    if is_already_exists(&msg) {
+                        tracing::info!(gateway, "IPv6 default route already present");
                         return Ok(());
                     }
                     return Err(NetError::Msg(msg));

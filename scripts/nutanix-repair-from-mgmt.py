@@ -70,7 +70,7 @@ def main() -> int:
     os.environ["NUTANIX_STORAGE"] = storage
     os.environ["NUTANIX_NETWORK"] = network
     os.environ["NUTANIX_INSECURE"] = "1" if insecure else os.environ.get("NUTANIX_INSECURE", "1")
-    os.environ["LAB_GATEWAY"] = os.environ.get("LAB_GATEWAY") or env.get("LAB_GATEWAY") or "10.1.1.10"
+    os.environ["LAB_GATEWAY"] = os.environ.get("LAB_GATEWAY") or env.get("LAB_GATEWAY") or "10.1.1.1"
 
     names = sys.argv[1:]
     if not names:

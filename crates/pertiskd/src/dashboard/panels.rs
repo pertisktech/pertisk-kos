@@ -24,8 +24,8 @@ pub struct Skin {
 }
 
 const HEADER_HEIGHT: u16 = 1;
-/// Summary: PERTISK|KUBERNETES band + NETWORK (2 body lines: IPv4 + IPv6).
-const SUMMARY_HEIGHT: u16 = 9;
+/// Summary: PERTISK|KUBERNETES band + NETWORK (v4 + v6 + gw/dns).
+const SUMMARY_HEIGHT: u16 = 10;
 const FOOTER_HEIGHT: u16 = 1;
 /// Below this width, collapse the three info columns into one SYSTEM box.
 /// Keep three columns at classic 80-col console sizes.
@@ -301,13 +301,16 @@ fn draw_kubernetes(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &
 
 fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Skin) {
     let theme = &skin.theme;
-    // Default body: 2 lines (IPv4 + one IPv6). TOP border only (no bottom rule).
-    let max_h = area.height.saturating_sub(1).min(2) as usize;
+    let body_h = area.height.saturating_sub(1) as usize;
     let max_w = area.width.max(1) as usize;
     let mut lines: Vec<Line> = Vec::new();
 
+    let gw_dns = format!("gw {}  dns {}", snap.gateway_display(), snap.dns_display());
+    let reserve_gw = if body_h >= 3 { 1 } else { 0 };
+    let addr_budget = body_h.saturating_sub(reserve_gw);
+
     if snap.node_iface.is_empty() && snap.node_ip == "-" {
-        if max_h > 0 {
+        if addr_budget > 0 {
             lines.push(Line::from(Span::styled("(no node ip)", theme.warn_style())));
         }
     } else {
@@ -321,10 +324,13 @@ fn draw_network(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, skin: &Ski
         };
         for text in wrap_addr_block(pick_dual_stack_lines(expanded), max_w)
             .into_iter()
-            .take(max_h)
+            .take(addr_budget.max(1))
         {
             lines.push(Line::from(value(text, theme)));
         }
+    }
+    if reserve_gw > 0 && lines.len() < body_h {
+        lines.push(Line::from(vec![value(gw_dns, theme)]));
     }
 
     // TOP only — logs title rule separates the bands (no orphan `---`).
@@ -484,7 +490,7 @@ fn draw_compact_summary(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, sk
         format!("{} {}", snap.node_iface, snap.node_ip)
     };
     let boot = if snap.boot_ok { "ok" } else { "pending" };
-    // Five body lines fit SUMMARY_HEIGHT (7) with borders.
+    // Six body lines fit SUMMARY_HEIGHT (10) with top+bottom rules.
     let lines = vec![
         Line::from(vec![
             label("TYPE       ", theme),
@@ -493,6 +499,12 @@ fn draw_compact_summary(frame: &mut Frame, area: Rect, snap: &StatusSnapshot, sk
             value(format!("slot {} [{boot}]", snap.boot_slot), theme),
         ]),
         Line::from(vec![label("NODE       ", theme), value(node, theme)]),
+        Line::from(vec![
+            label("GW         ", theme),
+            value(snap.gateway_display(), theme),
+            label("  DNS ", theme),
+            value(snap.dns_display(), theme),
+        ]),
         Line::from(vec![
             label("ENDPOINT   ", theme),
             value(snap.cluster_endpoint.clone(), theme),
@@ -685,10 +697,10 @@ pub fn render_themed(frame: &mut Frame, snap: &StatusSnapshot, recent: &[String]
     if area.width < WIDE_SUMMARY_MIN_COLS {
         draw_compact_summary(frame, rows[1], snap, skin);
     } else {
-        // PERTISK | KUBERNETES on top; NETWORK fixed at 2 address lines (v4+v6).
+        // PERTISK | KUBERNETES on top; NETWORK is v4 + v6 + gw/dns.
         let summary = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(6), Constraint::Length(3)])
+            .constraints([Constraint::Min(6), Constraint::Length(4)])
             .split(rows[1]);
         let columns = Layout::default()
             .direction(Direction::Horizontal)
@@ -723,11 +735,11 @@ mod tests {
 
     #[test]
     fn layout_reserves_header_summary_and_footer() {
-        // 24: header1 + summary9 + logs13 + footer1
-        assert_eq!(dashboard_heights(24), (1, 9, 13, 1));
+        // 24: header1 + summary10 + logs12 + footer1
+        assert_eq!(dashboard_heights(24), (1, 10, 12, 1));
         // 8: header1 + summary4 + logs2 + footer1 (min panes with top-only logs)
         assert_eq!(dashboard_heights(8), (1, 4, 2, 1));
-        assert_eq!(log_inner_height(24), 12);
+        assert_eq!(log_inner_height(24), 11);
         assert_eq!(log_inner_height(8), 1);
     }
 

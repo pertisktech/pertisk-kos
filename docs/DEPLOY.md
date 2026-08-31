@@ -98,7 +98,7 @@ Edit `/etc/pertisk-mgmt/pertisk-mgmt.env` **before** first start in production:
 | `MGMT_PUBLIC_URL` | Public HTTPS URL (OIDC callback + serial `mgmt_url`). Never leave `http://0.0.0.0:8080` |
 | `PROXMOX_NO_SSH` | `1` unless you need arm64 / ZFS SSH import |
 | `LAB_SUBNET` | Guest VLAN CIDR (e.g. `10.0.0.0/24`) |
-| `LAB_GATEWAY` | Optional guest default route override for AHV IPAM netcfg (auto: Prism subnet, else mgmt default route) |
+| `LAB_GATEWAY` | Optional guest default-route override (auto: alive LAN hop from `ip route`, e.g. `10.1.1.10`) |
 | `AUTH_MODE` | `local`, `auth0`, or `both` |
 
 ```bash

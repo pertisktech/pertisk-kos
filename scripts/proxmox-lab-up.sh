@@ -268,6 +268,12 @@ unset _disk_arch_ok
 if [[ "$PREFIX_SET" -eq 0 ]]; then
   NAME_PREFIX="$CLUSTER_NAME"
 fi
+# `{prefix}-cp-1` is the Proxmox VM name and Kubernetes node hostname (RFC 1123).
+if [[ ! "$NAME_PREFIX" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,48}[A-Za-z0-9])?$ ]]; then
+  echo "error: cluster/prefix '${NAME_PREFIX}' is not a valid DNS name (Proxmox rejects '+')." >&2
+  echo "  Use lab-ha-orion (letters, digits, hyphen), not lab-ha+orion." >&2
+  exit 1
+fi
 
 CP_MEMORY="${CP_MEMORY:-$MEMORY}"
 CP_CORES="${CP_CORES:-$CORES}"
@@ -951,11 +957,11 @@ build_static_ips_map() {
     if (( ip_idx < CONTROLPLANES )); then
       vmid=$((CP_VMID + ip_idx))
       STATIC_IPS_MAP[$vmid]="$ip"
-      (( ip_idx++ ))
+      ip_idx=$((ip_idx + 1))
     elif (( ip_idx < CONTROLPLANES + WORKERS )); then
-      vmid=$((CP_VMID + CONTROLPLANES + ip_idx - CONTROLPLANES))
+      vmid=$((CP_VMID + ip_idx))
       STATIC_IPS_MAP[$vmid]="$ip"
-      (( ip_idx++ ))
+      ip_idx=$((ip_idx + 1))
     fi
   done
   if [[ ${#STATIC_IPS_MAP[@]} -gt 0 ]]; then
@@ -969,7 +975,7 @@ build_static_ips_map() {
 
 wait_ip() {
   local vmid="$1" label="$2" mac ip="" static_ip="" nxip="" alt="" nudged=0 saw_ip=0 last_log=0 live=0 issued=0 dhcp_helper=0
-  local ip_deadline api_deadline=0 deadline left
+  local ip_deadline=$((SECONDS + IP_TIMEOUT)) api_deadline=0 deadline left
   mac="$(vm_mac "$vmid" "$label")"
   
   # If static IP is pre-assigned for this VMID, save it (don't lose it in the loop).
@@ -1010,9 +1016,13 @@ wait_ip() {
         ip="$(qemu_agent_ipv4 "$vmid" || true)"
       fi
     fi
-    # Nutanix: Prism IPAM assignment is the issued address (authoritative even
-    # when mgmt is not on guest L2). AHV may ARP that MAC→IP before ICMP.
     issued=0
+    # Static netcfg: the address is already pinned. ICMP is optional (same as
+    # Nutanix IPAM); :50000 is the live signal.
+    if [[ -n "$static_ip" ]]; then
+      issued=1
+      ip="$static_ip"
+    fi
     if [[ "${PROVIDER_KIND}" == "nutanix" && -n "$label" ]]; then
       nxip="$(nutanix_vm_ips "$label" 2>/dev/null | head -1 || true)"
       if [[ -z "$nxip" ]]; then
@@ -1030,9 +1040,9 @@ wait_ip() {
         ip="$(ping_sweep_find "$mac" "$LAB_SUBNET" || true)"
       fi
     fi
-    # Skip excluded IPs (provider hosts, existing nodes, etc). If this IP is
-    # excluded, clear it and keep waiting (or sweep for another IP).
-    if [[ -n "$ip" ]] && is_ip_excluded "$ip"; then
+    # Skip excluded IPs (provider hosts, existing nodes, etc). Never drop a
+    # pre-assigned static address — that is the address we pinned on the guest.
+    if [[ -n "$ip" && -z "$static_ip" ]] && is_ip_excluded "$ip"; then
       log "VM ${vmid} found IP=${ip} for ${mac} but it's in STATIC_EXCLUDE (provider/existing node) — ignoring, still waiting…"
       ip=""
     fi
@@ -1046,6 +1056,17 @@ wait_ip() {
           issued=1
         fi
       fi
+    fi
+    # Guest may have fallen back to DHCP (netcfg disk late). QGA is the live address.
+    qga="$(qemu_agent_ipv4 "$vmid" || true)"
+    if [[ -n "$qga" ]] && api_reachable "$qga"; then
+      if [[ -n "$static_ip" && "$qga" != "$static_ip" ]]; then
+        log "VM ${vmid} → ${qga} (API :50000 up; QGA DHCP, netcfg wanted ${static_ip})"
+      else
+        log "VM ${vmid} → ${qga} (API :50000 up${static_ip:+, pre-assigned static IP})"
+      fi
+      echo "$qga"
+      return 0
     fi
     if [[ -n "$ip" ]] && api_reachable "$ip"; then
       log "VM ${vmid} → ${ip} (API :50000 up)"
@@ -1066,6 +1087,8 @@ wait_ip() {
           last_log=$SECONDS
           if (( live )); then
             log "VM ${vmid} live=${ip} (ICMP ok) — waiting for Machine API :50000 (timeout ${API_AFTER_IP_TIMEOUT}s)"
+          elif [[ -n "$static_ip" ]]; then
+            log "VM ${vmid} static=${ip} — waiting for Machine API :50000 (timeout ${API_AFTER_IP_TIMEOUT}s; ICMP optional)"
           else
             log "VM ${vmid} IPAM issued ${ip} — waiting for Machine API :50000 (timeout ${API_AFTER_IP_TIMEOUT}s; ICMP optional on AHV)"
             if [[ "${PROVIDER_KIND}" == "nutanix" && "$dhcp_helper" == "0" ]]; then
@@ -1077,8 +1100,15 @@ wait_ip() {
           last_log=$SECONDS
           left=$((api_deadline - SECONDS))
           (( left < 0 )) && left=0
+          qga="$(qemu_agent_ipv4 "$vmid" || true)"
           if (( live )); then
             log "VM ${vmid} live=${ip} but :50000 not ready yet... (${left}s left)"
+          elif [[ -n "$qga" && "$qga" != "$ip" ]]; then
+            log "VM ${vmid} expected ${ip} but QGA reports ${qga} — :50000 not up (${left}s left)"
+          elif [[ -n "$qga" ]]; then
+            log "VM ${vmid} QGA has ${ip} but :50000 not reachable from mgmt (${left}s left; duplicate IP or firewall?)"
+          elif [[ -n "$static_ip" ]]; then
+            log "VM ${vmid} static=${ip} — waiting for guest :50000 (${left}s left; QGA not up yet)"
           else
             log "VM ${vmid} issued=${ip} but :50000 not ready yet... (${left}s left)"
             if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
@@ -1087,8 +1117,11 @@ wait_ip() {
           fi
         fi
       else
-        # Candidate from ARP only — do not start the long API timer.
-        saw_ip=0
+        # ARP/QGA candidate without ICMP: do not start the long API timer.
+        # Pre-assigned static IPs are issued=1 above (never land here).
+        if [[ -z "$static_ip" ]]; then
+          saw_ip=0
+        fi
         if (( SECONDS - last_log >= 15 )); then
           last_log=$SECONDS
           log "VM ${vmid} candidate IP=${ip} for ${mac} but no ICMP — still waiting for live guest…"
@@ -1118,8 +1151,9 @@ hint: Prism → ${label} → Serial Console for pertiskd logs (VGA EFI stub is n
       then Prism power-cycle ${label} so it DISCOVERs again.
       from mgmt: nc -zv ${ip:-?} 50000"
     fi
-    die "timed out waiting for Machine API :50000 on ${ip:-?} (VM ${vmid} MAC=${mac}; ICMP was up but guest services slow — try IP_TIMEOUT/API_AFTER_IP_TIMEOUT)
-hint: Prism → ${label} → Serial Console for pertiskd logs"
+    die "timed out waiting for Machine API :50000 on ${ip:-?} (VM ${vmid} MAC=${mac}; guest address was known but :50000 never became reachable from mgmt)
+hint: Proxmox → VM ${vmid} → Console / QGA Summary IP. Duplicate IP and firewall both look like this.
+      ping -c2 ${ip:-?}; nc -zv ${ip:-?} 50000"
   fi
   if [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
     die "timed out waiting for IP/API for VM ${vmid} MAC=${mac} (subnet=${LAB_SUBNET:-unset})
@@ -2182,21 +2216,15 @@ ensure_vip_usable() {
   for ip in "${CP_IPS[@]:-}" "${WORKER_IPS[@]:-}"; do
     [[ -n "${ip:-}" && "$ip" == "$vip" ]] && reason="guest DHCP ${ip}" && break
   done
+  # Keep the operator VIP even if leftover kube-vip still answers ICMP/:6443.
+  # Only move it when a cluster node already owns that address.
   if [[ -z "$reason" ]]; then
     if ping -c 1 -W 1 "$vip" >/dev/null 2>&1 \
       || ping -c 1 -W 1 -6 "$vip" >/dev/null 2>&1; then
-      reason="answers ICMP on LAN"
+      log "${family} VIP ${vip} answers ICMP (keeping operator VIP)"
+    else
+      log "${family} VIP ${vip} looks free (still keep it outside the DHCP pool)"
     fi
-  fi
-  if [[ -z "$reason" ]]; then
-    local host="$vip"
-    [[ "$vip" == *:* ]] && host="[${vip}]"
-    if curl -sk --connect-timeout 1 "https://${host}:6443/readyz" >/dev/null 2>&1; then
-      reason=":6443 already serves an apiserver"
-    fi
-  fi
-  if [[ -z "$reason" ]]; then
-    log "${family} VIP ${vip} looks free (still keep it outside the DHCP pool)"
     return 0
   fi
   used=""

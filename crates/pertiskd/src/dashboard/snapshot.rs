@@ -30,6 +30,10 @@ pub struct StatusSnapshot {
     pub node_iface: String,
     /// First IPv4 CIDR on the primary host iface (e.g. `10.1.1.198/24`), or `-`.
     pub node_ip: String,
+    /// Default IPv4 gateway (live `/proc/net/route`, else machine config).
+    pub gateway: String,
+    /// DNS servers (live `/etc/resolv.conf`, else machine config nameservers).
+    pub dns: String,
     pub machine_type: String,
     pub cluster_endpoint: String,
     pub cni: String,
@@ -46,6 +50,24 @@ pub struct StatusSnapshot {
     pub boot_slot: String,
     pub boot_ok: bool,
     pub boot_attempts: u32,
+}
+
+impl StatusSnapshot {
+    pub fn gateway_display(&self) -> &str {
+        if self.gateway.is_empty() {
+            "-"
+        } else {
+            &self.gateway
+        }
+    }
+
+    pub fn dns_display(&self) -> &str {
+        if self.dns.is_empty() {
+            "-"
+        } else {
+            &self.dns
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -133,6 +155,45 @@ impl StatusSnapshot {
         snap.node_iface = prioritized.node_iface;
         snap.node_ip = prioritized.node_ip;
 
+        let cfg_gw = effective.and_then(|c| {
+            c.machine
+                .network
+                .interfaces
+                .iter()
+                .find_map(|i| i.gateway.clone().filter(|s| !s.trim().is_empty()))
+        });
+        let cfg_dns = effective
+            .map(|c| {
+                c.machine
+                    .network
+                    .nameservers
+                    .iter()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        snap.gateway = pick_display_gateway(
+            cfg_gw.as_deref(),
+            read_default_gateway_v4().as_deref(),
+        );
+        let live_dns = read_nameservers();
+        snap.dns = live_dns
+            .or_else(|| {
+                if cfg_dns.is_empty() {
+                    None
+                } else {
+                    Some(cfg_dns.join(" "))
+                }
+            })
+            .or_else(|| {
+                let g = snap.gateway.clone();
+                (g != "-").then_some(g)
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "-".into());
+
         let (model, cores) = parse_cpuinfo(&read_to_string("/proc/cpuinfo").unwrap_or_default());
         snap.cpu_model = model;
         snap.cpu_cores = cores;
@@ -191,6 +252,64 @@ fn display_cidrs(raw: &str) -> String {
 
 fn read_to_string(path: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
+}
+
+/// Default IPv4 gateway from `/proc/net/route` (Destination 00000000).
+fn read_default_gateway_v4() -> Option<String> {
+    parse_proc_net_route(&read_to_string("/proc/net/route")?)
+}
+
+/// `Gateway` in `/proc/net/route` is the address as 8 hex digits in host byte order.
+pub(crate) fn parse_proc_net_route(text: &str) -> Option<String> {
+    for line in text.lines().skip(1) {
+        let mut parts = line.split_whitespace();
+        let _iface = parts.next()?;
+        let dest = parts.next()?;
+        let gateway = parts.next()?;
+        if dest != "00000000" || gateway == "00000000" {
+            continue;
+        }
+        let n = u32::from_str_radix(gateway, 16).ok()?;
+        let b = n.to_ne_bytes();
+        return Some(format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]));
+    }
+    None
+}
+
+fn read_nameservers() -> Option<String> {
+    parse_resolv_conf(&read_to_string("/etc/resolv.conf")?)
+}
+
+pub(crate) fn parse_resolv_conf(text: &str) -> Option<String> {
+    let ns: Vec<String> = text
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let rest = line.strip_prefix("nameserver")?;
+            let ip = rest.trim();
+            if ip.is_empty() || ip.starts_with('#') {
+                None
+            } else {
+                Some(ip.to_string())
+            }
+        })
+        .collect();
+    if ns.is_empty() {
+        None
+    } else {
+        Some(ns.join(" "))
+    }
+}
+
+/// Kernel default route first (what the node actually uses), then netcfg.
+pub(crate) fn pick_display_gateway(configured: Option<&str>, live: Option<&str>) -> String {
+    if let Some(g) = live.map(str::trim).filter(|s| !s.is_empty()) {
+        return g.to_string();
+    }
+    if let Some(g) = configured.map(str::trim).filter(|s| !s.is_empty()) {
+        return g.to_string();
+    }
+    "-".into()
 }
 
 /// Collect interfaces + display rows (ptkube-style). Prefer `ip -br addr`, else getifaddrs.
@@ -1055,5 +1174,45 @@ Cached:          2048000 kB
             "ipv6 must not include subnet: {}",
             p.node_ip
         );
+    }
+
+    #[test]
+    fn parse_proc_net_route_default_via_dot1() {
+        let table = "\
+Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT
+eth0\t00000000\t0101010A\t0003\t0\t0\t100\t00000000\t0\t0\t0
+eth0\t0001010A\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0
+";
+        assert_eq!(parse_proc_net_route(table).as_deref(), Some("10.1.1.1"));
+    }
+
+    #[test]
+    fn parse_resolv_conf_nameservers() {
+        let conf = "# generated\nnameserver 10.1.1.1\nnameserver 1.1.1.1\nsearch lan\n";
+        assert_eq!(
+            parse_resolv_conf(conf).as_deref(),
+            Some("10.1.1.1 1.1.1.1")
+        );
+    }
+
+    #[test]
+    fn display_gateway_prefers_live_default_route() {
+        assert_eq!(
+            pick_display_gateway(None, Some("10.1.1.10")),
+            "10.1.1.10"
+        );
+        assert_eq!(
+            pick_display_gateway(Some("10.1.1.1"), Some("10.1.1.10")),
+            "10.1.1.10"
+        );
+        assert_eq!(
+            pick_display_gateway(None, Some("10.1.1.1")),
+            "10.1.1.1"
+        );
+        assert_eq!(
+            pick_display_gateway(Some("10.1.1.10"), None),
+            "10.1.1.10"
+        );
+        assert_eq!(pick_display_gateway(None, None), "-");
     }
 }
