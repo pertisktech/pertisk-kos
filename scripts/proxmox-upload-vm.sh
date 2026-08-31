@@ -950,39 +950,49 @@ PY
     echo "WARN: netcfg upload task failed; guest will fall back to DHCP" >&2
     return 0
   }
-  # Create scsi1 disk on target STORAGE (Proxmox's import-from doesn't work
-  # for raw files to ZFS; we'll populate it via dd instead).
-  echo "    creating scsi1 disk (16M, raw) on ${STORAGE}"
-  # Format: local-zfs:vm-210-disk-2,size=16M (for ZFS); pve:vm-210-disk-2,size=16M (for LVM)
-  local storage_pool="${STORAGE%%:*}"  # Get pool name from "local-zfs" or "pve" prefix
-  att="$(api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
-    --data-urlencode "scsi1=${storage_pool}:vm-${VMID}-disk-2,size=16M")"
-  if ! api_response_ok "${att}"; then
-    echo "WARN: netcfg disk create failed; guest will fall back to DHCP: ${att}" >&2
-    return 0
-  fi
-  # Wait briefly for disk to be provisioned
-  sleep 1
-  
-  # Copy content via dd (Proxmox import-from silently fails for raw files).
-  # Use SSH to query actual device path and copy content.
+  # Use SSH + qm to create scsi1 disk and dd content (API times out for raw disk creation).
+  # Proxmox API disk creation for ZFS times out; qm set handles device links properly.
   if ! ssh_ok; then
-    echo "WARN: no SSH access for netcfg dd copy; guest will fall back to DHCP" >&2
+    echo "WARN: no SSH access for netcfg disk; guest will fall back to DHCP" >&2
     return 0
   fi
   
-  # Query Proxmox to find the actual device path
-  echo "    copying netcfg content to scsi1 via SSH dd"
+  echo "    attaching scsi1 disk (16M) via SSH qm + dd"
   local zvol_path
+  
+  # Create empty scsi1 disk on target STORAGE via qm command (handles device links properly).
+  # Format: -scsi1 'storage:size-in-GiB' → creates vm-NNN-disk-2
+  if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" \
+    "qm set ${VMID} -scsi1 '${STORAGE}:0.016' 2>&1 >/dev/null" ; then
+    echo "WARN: netcfg disk create via qm failed; guest will fall back to DHCP" >&2
+    return 0
+  fi
+  
+  # Wait for ZFS device to be created and device link to appear
+  sleep 2
+  
+  # Find the actual ZFS device path by querying the node
   zvol_path=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" \
-    "zfs list 2>/dev/null | grep 'vm-${VMID}-disk-2' | awk '{print \"/dev/zvol/\" \$1}' | head -1" 2>/dev/null) || true
+    "zfs list -o name 2>/dev/null | grep \"vm-${VMID}-disk-2\" | sed 's|^|/dev/zvol/|' | head -1" 2>/dev/null) || true
+  
+  # Fallback: try common ZFS pool names if query didn't work
+  if [[ -z "${zvol_path}" ]]; then
+    for pool in rpool/data pve data; do
+      zvol_path="/dev/zvol/${pool}/vm-${VMID}-disk-2"
+      if ssh -o BatchMode=yes -o ConnectTimeout=5 "${PROXMOX_SSH}" \
+        "test -e ${zvol_path}" 2>/dev/null; then
+        break
+      fi
+      zvol_path=""
+    done
+  fi
   
   if [[ -z "${zvol_path}" ]]; then
-    echo "WARN: could not find device for scsi1 disk; guest will fall back to DHCP" >&2
+    echo "WARN: could not locate scsi1 device for VM ${VMID}; guest will fall back to DHCP" >&2
     return 0
   fi
   
-  # Copy netcfg content to device
+  # Copy netcfg content to device via dd
   if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" \
     "dd if=/var/lib/vz/import/${vol} of=${zvol_path} bs=1M 2>/dev/null" >/dev/null 2>&1; then
     echo "WARN: netcfg dd copy failed; guest will fall back to DHCP" >&2
