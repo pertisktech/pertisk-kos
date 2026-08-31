@@ -950,16 +950,41 @@ PY
     echo "WARN: netcfg upload task failed; guest will fall back to DHCP" >&2
     return 0
   }
-  echo "    attaching scsi1 via import-from=${import_ref} → ${STORAGE}"
+  # Create scsi1 disk on target STORAGE (Proxmox's import-from doesn't work
+  # for raw files to ZFS; we'll populate it via dd instead).
+  echo "    creating scsi1 disk (16M, raw) on ${STORAGE}"
   att="$(api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
-    --data-urlencode "scsi1=${STORAGE}:0,import-from=${import_ref}")"
+    --data-urlencode "scsi1=${STORAGE}:16M")"
   if ! api_response_ok "${att}"; then
-    echo "WARN: netcfg disk attach failed; guest will fall back to DHCP: ${att}" >&2
+    echo "WARN: netcfg disk create failed; guest will fall back to DHCP: ${att}" >&2
     return 0
   fi
-  imp_upid="$(echo "${att}" | jq -r '.data // empty')"
-  if [[ "${imp_upid}" == UPID:* ]]; then
-    wait_task "${imp_upid}" "netcfg-import" || true
+  # Wait briefly for disk to be provisioned
+  sleep 1
+  
+  # Copy content via dd (Proxmox import-from silently fails for raw files).
+  # Get the ZFS device path from the disk ID.
+  local zvol_path
+  if [[ "${STORAGE}" == *"zfs"* ]]; then
+    zvol_path="/dev/zvol/${STORAGE#*:}/${VMID}-disk-2"
+  elif [[ "${STORAGE}" == *"lvm"* ]]; then
+    zvol_path="/dev/${STORAGE%-*}/${VMID}-disk-2"
+  else
+    echo "WARN: netcfg disk format unsupported for ${STORAGE}; guest will fall back to DHCP" >&2
+    return 0
+  fi
+  
+  # Use SSH to copy file to device (most reliable method).
+  if ssh_ok; then
+    echo "    copying netcfg content to ${zvol_path} via SSH"
+    if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" \
+      "dd if=/var/lib/vz/import/${vol} of=${zvol_path} bs=1M 2>/dev/null" >/dev/null 2>&1; then
+      echo "WARN: netcfg dd copy failed; guest will fall back to DHCP" >&2
+      return 0
+    fi
+  else
+    echo "WARN: no SSH access for netcfg dd copy; guest will fall back to DHCP" >&2
+    return 0
   fi
   echo "    netcfg disk attached (scsi1, static IP ${STATIC_IP})"
 }
