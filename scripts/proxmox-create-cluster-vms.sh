@@ -51,6 +51,18 @@ CP_VMID="${CP_VMID:-210}"
 CONTROLPLANES="${CONTROLPLANES:-1}"
 WORKERS="${WORKERS:-2}"
 NAME_PREFIX="${NAME_PREFIX:-pertisk}"
+# Static IPs (Talos-style, no DHCP): --static-base is cp-1's address (e.g.
+# 10.1.1.111/24); each following node (cp-2.. then wk-1..) gets base+1, +2, ….
+# Requires --static-gateway. Skips addresses that answer ICMP (already used).
+# --static-subnet scans a CIDR (e.g. 10.1.1.0/24) for free addresses instead
+# of requiring a manually-picked base — use this when you don't know a safe one.
+STATIC_BASE="${PROXMOX_STATIC_BASE:-}"
+STATIC_SUBNET="${PROXMOX_STATIC_SUBNET:-}"
+STATIC_GATEWAY="${PROXMOX_STATIC_GATEWAY:-}"
+STATIC_NAMESERVER="${PROXMOX_STATIC_NAMESERVER:-}"
+# Comma-separated IPs to always skip (e.g. a Nutanix CVM sharing this LAN) even
+# if it does not answer ICMP.
+STATIC_EXCLUDE="${PROXMOX_STATIC_EXCLUDE:-}"
 # Guest arch: ARCH / PERTISK_ARCH (amd64|arm64). Default amd64.
 ARCH="${PERTISK_ARCH:-${ARCH:-amd64}}"
 case "$(printf '%s' "$ARCH" | tr '[:upper:]' '[:lower:]')" in
@@ -99,6 +111,11 @@ while [[ $# -gt 0 ]]; do
       LAB_UP_EXTRA+=(--subnet "$2")
       shift 2
       ;;
+    --static-base) STATIC_BASE="$2"; shift 2 ;;
+    --static-subnet) STATIC_SUBNET="$2"; shift 2 ;;
+    --static-gateway) STATIC_GATEWAY="$2"; shift 2 ;;
+    --static-nameserver) STATIC_NAMESERVER="$2"; shift 2 ;;
+    --static-exclude) STATIC_EXCLUDE="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,16p' "$0"
       cat <<EOF
@@ -113,6 +130,18 @@ Sizing (prefer role-sized qcow2 via --cp-disk/--worker-disk; --*-disk-gb only gr
   --disk-gb N                          grow scsi0 after import (env PROXMOX_DISK_GB)
   --cp-disk-gb N                       control-plane grow GiB (env PROXMOX_CP_DISK_GB)
   --worker-disk-gb N                   worker grow GiB (env PROXMOX_WORKER_DISK_GB)
+
+Static IPs (no DHCP; stable across reboot/shutdown):
+  --static-base IP/PREFIX               cp-1 address (e.g. 10.1.1.111/24); each
+                                         later node gets +1 (env PROXMOX_STATIC_BASE)
+  --static-subnet CIDR                  scan this subnet (e.g. 10.1.1.0/24) for free
+                                         addresses instead of a manual base
+                                         (env PROXMOX_STATIC_SUBNET)
+  --static-gateway IP                    required with --static-base/--static-subnet
+  --static-nameserver IP                 default: gateway
+  --static-exclude IP[,IP...]            always skip these IPs (e.g. a Nutanix
+                                         CVM), even if they don't answer ICMP
+                                         (env PROXMOX_STATIC_EXCLUDE)
 
 arm64: uses machine=virt + arch=aarch64 (AAVMF). Build: make cloud ARCH=arm64
 EOF
@@ -163,8 +192,84 @@ if [[ "$CONTROLPLANES" -lt 1 ]]; then
   echo "ERROR: --controlplanes must be >= 1" >&2
   exit 1
 fi
+if [[ -n "$STATIC_BASE" && -z "$STATIC_GATEWAY" ]]; then
+  echo "ERROR: --static-base requires --static-gateway" >&2
+  exit 1
+fi
+if [[ -n "$STATIC_SUBNET" && -z "$STATIC_GATEWAY" ]]; then
+  echo "ERROR: --static-subnet requires --static-gateway" >&2
+  exit 1
+fi
+if [[ -n "$STATIC_BASE" && -n "$STATIC_SUBNET" ]]; then
+  echo "ERROR: use --static-base or --static-subnet, not both" >&2
+  exit 1
+fi
+
+# Print base_ip + offset within its /prefix, skipping ICMP-live and excluded addresses.
+static_ip_at() {
+  local base="$1" offset="$2"
+  python3 - "$base" "$offset" "$STATIC_EXCLUDE" <<'PY'
+import ipaddress, subprocess, sys
+iface = ipaddress.ip_interface(sys.argv[1])
+offset = int(sys.argv[2])
+excluded = {ipaddress.ip_address(s.strip()) for s in sys.argv[3].split(",") if s.strip()}
+net = iface.network
+cand = ipaddress.ip_address(int(iface.ip) + offset)
+if cand not in net:
+    print(f"static IP offset out of subnet: {cand}", file=sys.stderr)
+    raise SystemExit(1)
+if cand in excluded:
+    print(f"static IP is in --static-exclude: {cand}", file=sys.stderr)
+    raise SystemExit(1)
+if subprocess.call(["ping", "-c", "1", "-W", "1", str(cand)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+    print(f"static IP already in use (answers ICMP): {cand}", file=sys.stderr)
+    raise SystemExit(1)
+print(f"{cand}/{net.prefixlen}")
+PY
+}
+
+# Scan a CIDR for $2 free addresses (skip network/gateway/broadcast, excluded
+# IPs, and any host that answers ICMP), print one "ip/prefix" per line.
+scan_free_ips() {
+  local cidr="$1" count="$2"
+  python3 - "$cidr" "$count" "$STATIC_EXCLUDE" <<'PY'
+import ipaddress, subprocess, sys
+from concurrent.futures import ThreadPoolExecutor
+
+net = ipaddress.ip_network(sys.argv[1], strict=False)
+count = int(sys.argv[2])
+excluded = {ipaddress.ip_address(s.strip()) for s in sys.argv[3].split(",") if s.strip()}
+gateway = net.network_address + 1
+
+def alive(ip):
+    return subprocess.call(
+        ["ping", "-c", "1", "-W", "1", str(ip)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ) == 0
+
+candidates = [h for h in net.hosts() if h != gateway and h not in excluded]
+with ThreadPoolExecutor(max_workers=32) as ex:
+    results = list(zip(candidates, ex.map(alive, candidates)))
+
+free = [str(ip) for ip, used in results if not used]
+if len(free) < count:
+    print(f"only {len(free)} free address(es) in {net} (need {count}, excluded={sorted(str(e) for e in excluded)})", file=sys.stderr)
+    raise SystemExit(1)
+for ip in free[:count]:
+    print(f"{ip}/{net.prefixlen}")
+PY
+}
 
 echo "==> Proxmox create-cluster arch=${ARCH} prefix=${NAME_PREFIX}"
+
+STATIC_IPS=()
+if [[ -n "$STATIC_SUBNET" ]]; then
+  total=$((CONTROLPLANES + WORKERS))
+  echo "==> scanning ${STATIC_SUBNET} for ${total} free static IP(s)"
+  mapfile -t STATIC_IPS < <(scan_free_ips "$STATIC_SUBNET" "$total") || exit 1
+  echo "    found: ${STATIC_IPS[*]}"
+fi
 
 pertisk_parallel_init
 for i in $(seq 1 "$CONTROLPLANES"); do
@@ -172,6 +277,17 @@ for i in $(seq 1 "$CONTROLPLANES"); do
   echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${CP_DISK} mem=${CP_MEMORY} cores=${CP_CORES} disk-gb=${CP_DISK_GB:-image}"
   UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$CP_DISK" --arch "$ARCH" --memory "$CP_MEMORY" --cores "$CP_CORES")
   [[ -n "$CP_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$CP_DISK_GB")
+  if [[ -n "$STATIC_SUBNET" ]]; then
+    ip="${STATIC_IPS[$((i - 1))]}"
+    UPLOAD_ARGS+=(--ip "$ip" --gateway "$STATIC_GATEWAY")
+    [[ -n "$STATIC_NAMESERVER" ]] && UPLOAD_ARGS+=(--nameserver "$STATIC_NAMESERVER")
+    echo "    static ip=${ip}"
+  elif [[ -n "$STATIC_BASE" ]]; then
+    ip="$(static_ip_at "$STATIC_BASE" $((i - 1)))" || exit 1
+    UPLOAD_ARGS+=(--ip "$ip" --gateway "$STATIC_GATEWAY")
+    [[ -n "$STATIC_NAMESERVER" ]] && UPLOAD_ARGS+=(--nameserver "$STATIC_NAMESERVER")
+    echo "    static ip=${ip}"
+  fi
   pertisk_parallel_add "${NAME_PREFIX}-cp-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
 
@@ -180,6 +296,17 @@ for i in $(seq 1 "$WORKERS"); do
   echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i} disk=${WORKER_DISK} mem=${WORKER_MEMORY} cores=${WORKER_CORES} disk-gb=${WORKER_DISK_GB:-image}"
   UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$WORKER_DISK" --arch "$ARCH" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
   [[ -n "$WORKER_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$WORKER_DISK_GB")
+  if [[ -n "$STATIC_SUBNET" ]]; then
+    ip="${STATIC_IPS[$((CONTROLPLANES + i - 1))]}"
+    UPLOAD_ARGS+=(--ip "$ip" --gateway "$STATIC_GATEWAY")
+    [[ -n "$STATIC_NAMESERVER" ]] && UPLOAD_ARGS+=(--nameserver "$STATIC_NAMESERVER")
+    echo "    static ip=${ip}"
+  elif [[ -n "$STATIC_BASE" ]]; then
+    ip="$(static_ip_at "$STATIC_BASE" $((CONTROLPLANES + i - 1)))" || exit 1
+    UPLOAD_ARGS+=(--ip "$ip" --gateway "$STATIC_GATEWAY")
+    [[ -n "$STATIC_NAMESERVER" ]] && UPLOAD_ARGS+=(--nameserver "$STATIC_NAMESERVER")
+    echo "    static ip=${ip}"
+  fi
   pertisk_parallel_add "${NAME_PREFIX}-wk-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
 done
 pertisk_parallel_wait

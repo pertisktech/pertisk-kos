@@ -34,6 +34,9 @@ START=1
 STORAGE="${PROXMOX_STORAGE:-local}"
 NODE="${PROXMOX_NODE:-}"
 ARCH="${PERTISK_ARCH:-${ARCH:-}}"
+STATIC_IP="${PROXMOX_STATIC_IP:-}"
+STATIC_GATEWAY="${PROXMOX_STATIC_GATEWAY:-}"
+STATIC_NAMESERVER="${PROXMOX_STATIC_NAMESERVER:-}"
 
 usage() {
   cat <<'EOF'
@@ -52,6 +55,12 @@ Options:
   --storage NAME    datastore (default $PROXMOX_STORAGE or local)
   --node NAME       node (default $PROXMOX_NODE)
   --no-start        do not start after create
+  --ip CIDR         static IPv4 (e.g. 10.1.1.111/24); requires --gateway.
+                    Written to a small netcfg disk (PERTISK-NET) so the guest
+                    never DHCPs and the address survives reboot/shutdown
+                    (env PROXMOX_STATIC_IP)
+  --gateway IP      static gateway for --ip (env PROXMOX_STATIC_GATEWAY)
+  --nameserver IP   static DNS for --ip (default: gateway; env PROXMOX_STATIC_NAMESERVER)
 EOF
   exit 1
 }
@@ -69,12 +78,19 @@ while [[ $# -gt 0 ]]; do
     --storage) STORAGE="$2"; shift 2 ;;
     --node) NODE="$2"; shift 2 ;;
     --no-start) START=0; shift ;;
+    --ip) STATIC_IP="$2"; shift 2 ;;
+    --gateway) STATIC_GATEWAY="$2"; shift 2 ;;
+    --nameserver) STATIC_NAMESERVER="$2"; shift 2 ;;
     -h | --help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
 done
 
 [[ -n "${VMID}" && -n "${DISK}" ]] || usage
+if [[ -n "${STATIC_IP}" && -z "${STATIC_GATEWAY}" ]]; then
+  echo "--ip requires --gateway (or PROXMOX_STATIC_GATEWAY)" >&2
+  exit 1
+fi
 [[ -f "${DISK}" ]] || {
   echo "disk not found: ${DISK}" >&2
   exit 1
@@ -890,6 +906,65 @@ if [[ -n "${DISK_GB}" ]]; then
   fi
 fi
 
+# --- Static IP netcfg disk (Talos-style: guest never DHCPs, address is fixed
+# in the machine config and survives reboot/shutdown; no external DHCP/router
+# reservation needed). Same PERTISK-NET format the guest already reads on
+# Nutanix AHV (crates/pertisk-net/src/provider_net.rs) — attach before first
+# boot so pertiskd applies it before it would otherwise try DHCP.
+attach_static_netcfg() {
+  [[ -n "${STATIC_IP}" ]] || return 0
+  local ns="${STATIC_NAMESERVER:-${STATIC_GATEWAY}}"
+  echo "==> static IP ${STATIC_IP} gw=${STATIC_GATEWAY} (no DHCP) → netcfg disk"
+  local raw upload_storage vol import_ref up up_body up_code upid att imp_upid
+  raw="$(mktemp /tmp/pertisk-netcfg.XXXXXX.raw)"
+  python3 - "${raw}" "${STATIC_IP}" "${STATIC_GATEWAY}" "${ns}" <<'PY'
+import sys
+path, cidr, gw, ns = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+blob = f"PERTISK-NET\nIPV4={cidr}\nGATEWAY={gw}\nNAMESERVER={ns}\nINTERFACE=eth0\n".encode()
+size = 16 * 1024 * 1024
+open(path, "wb").write(blob + b"\x00" * (size - len(blob)))
+PY
+  upload_storage="${PROXMOX_UPLOAD_STORAGE:-}"
+  if [[ -z "${upload_storage}" ]]; then
+    case "${STORAGE}" in
+      *zfs*|*lvm*|local-lvm) upload_storage=local ;;
+      *) upload_storage="${STORAGE}" ;;
+    esac
+  fi
+  vol="pertisk-${VMID}-netcfg.raw"
+  import_ref="${upload_storage}:import/${vol}"
+  echo "    API upload content=import → storage=${upload_storage} as ${vol}"
+  up="$("${CURL[@]}" -w "\n%{http_code}" -X POST -H "${AUTH}" \
+    -F "content=import" \
+    -F "filename=@${raw};type=application/octet-stream;filename=${vol}" \
+    "${BASE}/nodes/${NODE}/storage/${upload_storage}/upload" || true)"
+  rm -f "${raw}"
+  up_body="$(echo "${up}" | sed '$d')"
+  up_code="$(echo "${up}" | tail -n1)"
+  if [[ "${up_code}" != "200" ]] || ! echo "${up_body}" | jq -e '.data != null' >/dev/null 2>&1; then
+    echo "WARN: netcfg upload failed (HTTP ${up_code}); guest will fall back to DHCP: ${up_body}" >&2
+    return 0
+  fi
+  upid="$(echo "${up_body}" | jq -r '.data')"
+  wait_task "${upid}" "netcfg-upload" || {
+    echo "WARN: netcfg upload task failed; guest will fall back to DHCP" >&2
+    return 0
+  }
+  echo "    attaching virtio1 via import-from=${import_ref} → ${STORAGE}"
+  att="$(api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+    --data-urlencode "virtio1=${STORAGE}:0,import-from=${import_ref}")"
+  if ! api_response_ok "${att}"; then
+    echo "WARN: netcfg disk attach failed; guest will fall back to DHCP: ${att}" >&2
+    return 0
+  fi
+  imp_upid="$(echo "${att}" | jq -r '.data // empty')"
+  if [[ "${imp_upid}" == UPID:* ]]; then
+    wait_task "${imp_upid}" "netcfg-import" || true
+  fi
+  echo "    netcfg disk attached (virtio1, static IP ${STATIC_IP})"
+}
+attach_static_netcfg
+
 if [[ "${START}" == "1" ]]; then
   # Re-check EFI before start (Proxmox warns and uses a temp efivars disk otherwise).
   ensure_efidisk
@@ -927,6 +1002,9 @@ fi
 MAC="$(api_get "/nodes/${NODE}/qemu/${VMID}/config" | jq -r '.data.net0 // empty' | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1 || true)"
 echo "==> done — open Console for ${NAME} (vmid ${VMID})"
 [[ -n "${MAC}" ]] && echo "    MAC=${MAC}"
+if [[ -n "${STATIC_IP}" ]]; then
+  echo "    static IP=${STATIC_IP} gw=${STATIC_GATEWAY} (netcfg disk, no DHCP)"
+fi
 echo "    Console uses serial (vga=serial0 / xterm.js). Host: qm terminal ${VMID}"
 echo "    QEMU guest agent enabled on the VM (Options → QEMU Guest Agent)."
 echo "    Guest image runs qemu-ga (Summary IP + Shutdown). Rebuild cloud image if missing."

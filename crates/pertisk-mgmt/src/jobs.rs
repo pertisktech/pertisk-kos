@@ -41,6 +41,14 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) -> Opt
         "PROXMOX_ARM64_TEMPLATE",
         "BOOTSTRAP_TIMEOUT",
         "PERTISK_VM_JOBS",
+        // Talos-style static IPs (no DHCP; Proxmox only). Set on the mgmt
+        // process env to steer new clusters away from known-conflicting
+        // addresses (e.g. a Nutanix CVM sharing the same LAN/DHCP pool).
+        "PROXMOX_STATIC_BASE",
+        "PROXMOX_STATIC_SUBNET",
+        "PROXMOX_STATIC_GATEWAY",
+        "PROXMOX_STATIC_NAMESERVER",
+        "PROXMOX_STATIC_EXCLUDE",
     ] {
         if let Ok(v) = std::env::var(key) {
             if !v.is_empty() {
@@ -94,6 +102,57 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) -> Opt
     note
 }
 
+/// Merge every registered provider's host (Proxmox/Nutanix/vSphere — not just
+/// this cluster's), any existing cluster node IPs, plus any operator-set
+/// `PROXMOX_STATIC_EXCLUDE` into the job's exclude list, so a static-IP scan
+/// never hands out a hypervisor's own management address or an existing node.
+async fn auto_exclude_provider_hosts(cmd: &mut Command, state: &AppState) {
+    let want_static = std::env::var("PROXMOX_STATIC_BASE")
+        .or_else(|_| std::env::var("PROXMOX_STATIC_SUBNET"))
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if !want_static {
+        return;
+    }
+    let mut hosts: Vec<String> = Vec::new();
+
+    // Provider hosts (hypervisor management addresses).
+    let urls: Vec<String> = sqlx::query_scalar("SELECT url FROM providers")
+        .fetch_all(state.pool())
+        .await
+        .unwrap_or_default();
+    hosts.extend(urls.iter().filter_map(|u| pve_host_from_url(u)));
+
+    // Existing cluster node IPs (both IPv4 and IPv6).
+    let node_ips: Vec<Option<String>> = sqlx::query_scalar("SELECT ip FROM nodes WHERE ip IS NOT NULL")
+        .fetch_all(state.pool())
+        .await
+        .unwrap_or_default();
+    hosts.extend(node_ips.into_iter().flatten());
+
+    let node_ip6s: Vec<Option<String>> = sqlx::query_scalar("SELECT ip6 FROM nodes WHERE ip6 IS NOT NULL")
+        .fetch_all(state.pool())
+        .await
+        .unwrap_or_default();
+    hosts.extend(node_ip6s.into_iter().flatten());
+
+    // Operator-specified exclusions.
+    if let Ok(extra) = std::env::var("PROXMOX_STATIC_EXCLUDE") {
+        hosts.extend(
+            extra
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+        );
+    }
+
+    hosts.sort();
+    hosts.dedup();
+    if !hosts.is_empty() {
+        cmd.env("PROXMOX_STATIC_EXCLUDE", hosts.join(","));
+    }
+}
+
 fn pve_host_from_url(url: &str) -> Option<String> {
     let rest = url
         .strip_prefix("https://")
@@ -122,6 +181,113 @@ fn proxmox_ssh_user(ssh: &str) -> &str {
         _ => "root",
     }
 }
+
+/// Extract IP from provider URL (https://10.1.1.111:9440 → 10.1.1.111).
+fn ip_from_provider_url(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let host = rest.split(['/', ':']).next()?.trim();
+    if host.is_empty() || !host.chars().any(|c| c.is_numeric()) {
+        return None;
+    }
+    Some(host.to_string())
+}
+
+/// Infer /24 subnet from provider IP. E.g., 10.1.1.111 → 10.1.1.0/24.
+fn subnet_from_provider_ip(ip: &str) -> Option<String> {
+    let octets: Vec<&str> = ip.split('.').collect();
+    if octets.len() == 4 {
+        Some(format!("{}.{}.{}.0/24", octets[0], octets[1], octets[2]))
+    } else {
+        None
+    }
+}
+
+/// Extract gateway IP from subnet. E.g., 10.1.1.0/24 → 10.1.1.1.
+fn gateway_from_subnet(subnet: &str) -> Option<String> {
+    let net_part = subnet.split('/').next()?;
+    let octets: Vec<&str> = net_part.split('.').collect();
+    if octets.len() == 4 {
+        Some(format!("{}.{}.{}.1", octets[0], octets[1], octets[2]))
+    } else {
+        None
+    }
+}
+
+/// Spawn subprocess (via python3) to scan a subnet for N free IPs, skipping
+/// excluded addresses and any host that answers ping.
+async fn run_check_free_ips_subprocess(
+    subnet: &str,
+    count: i64,
+    exclude: &[String],
+) -> anyhow::Result<Vec<String>> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    use tokio::task;
+
+    let subnet = subnet.to_string();
+    let count = count as usize;
+    let exclude = exclude.to_vec();
+
+    // Spawn blocking subprocess in a tokio task.
+    let result = task::spawn_blocking(move || {
+        let mut child = Command::new("python3")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        let exclude_str = exclude.join(",");
+        {
+            let stdin = child.stdin.as_mut().ok_or_else(|| anyhow::anyhow!("no stdin"))?;
+            write!(
+                stdin,
+                r#"import ipaddress, subprocess, sys
+from concurrent.futures import ThreadPoolExecutor
+
+net = ipaddress.ip_network("{subnet}", strict=False)
+count = {count}
+excluded = {{ipaddress.ip_address(s.strip()) for s in "{exclude_str}".split(",") if s.strip()}}
+gateway = net.network_address + 1
+
+def alive(ip):
+    return subprocess.call(
+        ["ping", "-c", "1", "-W", "1", str(ip)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ) == 0
+
+candidates = [h for h in net.hosts() if h != gateway and h not in excluded]
+with ThreadPoolExecutor(max_workers=32) as ex:
+    results = list(zip(candidates, ex.map(alive, candidates)))
+
+free = [str(ip) for ip, used in results if not used]
+for ip in free[:count]:
+    print(ip + "/" + str(net.prefixlen))
+"#,
+                subnet = subnet,
+                count = count,
+                exclude_str = exclude_str
+            )?;
+        }
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            return Err(anyhow::anyhow!(
+                "scan failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let ips: Vec<String> = String::from_utf8(output.stdout)?
+            .lines()
+            .map(|s| s.to_string())
+            .collect();
+        Ok(ips)
+    })
+    .await??;
+
+    Ok(result)
+}
+
 
 /// Arm64 guests on a native aarch64 PVE use API create (default arch). Cross-arch
 /// (x86 PVE + aarch64 guest) still needs `PROXMOX_ARM64_TEMPLATE` or root SSH.
@@ -829,9 +995,77 @@ async fn run_create_cluster(
             cmd.env("PROXMOX_INSECURE", "1");
         }
     }
+
+    // Auto-detect static IP range if not already set. Extract provider IP,
+    // infer /24 subnet, scan for free IPs, and auto-assign.
+    let has_static = std::env::var("PROXMOX_STATIC_BASE")
+        .or_else(|_| std::env::var("PROXMOX_STATIC_SUBNET"))
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if !has_static {
+        if let Some(provider_ip) = ip_from_provider_url(&provider.url) {
+            if let Some(subnet) = subnet_from_provider_ip(&provider_ip) {
+                // Collect all provider IPs + all existing node IPs for exclusion.
+                let mut exclude_ips: Vec<String> = Vec::new();
+                let urls: Vec<String> = sqlx::query_scalar("SELECT url FROM providers")
+                    .fetch_all(state.pool())
+                    .await
+                    .unwrap_or_default();
+                exclude_ips.extend(urls.iter().filter_map(|u| ip_from_provider_url(u)));
+
+                let node_ips: Vec<Option<String>> =
+                    sqlx::query_scalar("SELECT ip FROM nodes WHERE ip IS NOT NULL")
+                        .fetch_all(state.pool())
+                        .await
+                        .unwrap_or_default();
+                exclude_ips.extend(node_ips.into_iter().flatten());
+
+                let node_ip6s: Vec<Option<String>> =
+                    sqlx::query_scalar("SELECT ip6 FROM nodes WHERE ip6 IS NOT NULL")
+                        .fetch_all(state.pool())
+                        .await
+                        .unwrap_or_default();
+                exclude_ips.extend(node_ip6s.into_iter().flatten());
+
+                exclude_ips.sort();
+                exclude_ips.dedup();
+
+                let need_ips = (cluster.controlplanes + cluster.workers) as i64;
+                // Silently skip auto-assign if scan fails; fall back to DHCP.
+                match run_check_free_ips_subprocess(&subnet, need_ips, &exclude_ips).await {
+                    Ok(free_ips) if !free_ips.is_empty() => {
+                        cmd.env("PROXMOX_STATIC_BASE", &free_ips[0]);
+                        if let Some(gw) = gateway_from_subnet(&subnet) {
+                            cmd.env("PROXMOX_STATIC_GATEWAY", &gw);
+                        }
+                        append_log(
+                            log_path,
+                            &format!(
+                                "=> auto-assigned static IPs: {}\n",
+                                free_ips[..std::cmp::min(need_ips as usize, free_ips.len())]
+                                    .join(", ")
+                            ),
+                        )?;
+                    }
+                    _ => {
+                        // Scan failed or no free IPs; fall back to DHCP (no error).
+                        append_log(
+                            log_path,
+                            &format!(
+                                "=> could not auto-assign static IPs in {}, falling back to DHCP\n",
+                                subnet
+                            ),
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+
     if let Some(note) = apply_lab_env(&mut cmd, state, &provider.url) {
         append_log(log_path, &note)?;
     }
+    auto_exclude_provider_hosts(&mut cmd, state).await;
 
     let mode = cluster.network_mode.to_ascii_lowercase();
     let dual = mode == "dual-stack" || mode == "ipv6";
@@ -2017,6 +2251,7 @@ async fn run_add_node(
         if let Some(note) = apply_lab_env(&mut cmd, state, &provider.url) {
             append_log(log_path, &note)?;
         }
+        auto_exclude_provider_hosts(&mut cmd, state).await;
 
         if provider.kind == "nutanix" || provider.kind == "ahv" || provider.kind == "prism" {
             cmd.env("PROVIDER_KIND", "nutanix")

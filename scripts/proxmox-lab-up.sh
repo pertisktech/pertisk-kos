@@ -61,6 +61,12 @@ CP_IPS=()
 WORKER_IPS=()
 DUAL_STACK="${DUAL_STACK:-0}"
 WORKERS="${WORKERS:-2}"
+# Static IPs (Proxmox only; no DHCP, stable across reboot/shutdown).
+STATIC_BASE="${STATIC_BASE:-${PROXMOX_STATIC_BASE:-}}"
+STATIC_SUBNET="${STATIC_SUBNET:-${PROXMOX_STATIC_SUBNET:-}}"
+STATIC_GATEWAY="${STATIC_GATEWAY:-${PROXMOX_STATIC_GATEWAY:-}}"
+STATIC_NAMESERVER="${STATIC_NAMESERVER:-${PROXMOX_STATIC_NAMESERVER:-}}"
+STATIC_EXCLUDE="${STATIC_EXCLUDE:-${PROXMOX_STATIC_EXCLUDE:-}}"
 if [[ -n "${NAME_PREFIX:-}" ]]; then
   PREFIX_SET=1
 else
@@ -161,6 +167,16 @@ Flags:
   --subnet CIDR       ping-sweep fallback when ARP miss (e.g. 10.1.1.0/24)
   -h, --help
 
+Static IPs (Proxmox only; no DHCP, stable across reboot/shutdown):
+  --static-base IP/PREFIX  cp-1 address (e.g. 10.1.1.120/24); each later node
+                           gets +1 (env STATIC_BASE / PROXMOX_STATIC_BASE)
+  --static-subnet CIDR    scan this subnet (e.g. 10.1.1.0/24) for free addresses
+                           instead of a manual base (env STATIC_SUBNET / PROXMOX_STATIC_SUBNET)
+  --static-gateway IP      required with --static-base/--static-subnet
+  --static-nameserver IP   default: gateway
+  --static-exclude IP[,IP...]  always skip these IPs (e.g. a Nutanix CVM),
+                           even if they don't answer ICMP (env STATIC_EXCLUDE)
+
 Env: PROXMOX_*, PROXMOX_SSH, APPS (space/comma-separated kubectl apply paths)
      CALICO_VERSION (default ${CALICO_VERSION})
      CONTROLPLANES, VIP, VIP6, DUAL_STACK=1
@@ -206,6 +222,11 @@ while [[ $# -gt 0 ]]; do
     --skip-vms) SKIP_VMS=1; shift ;;
     --skip-addons) SKIP_ADDONS=1; shift ;;
     --subnet) LAB_SUBNET="$2"; shift 2 ;;
+    --static-base) STATIC_BASE="$2"; shift 2 ;;
+    --static-subnet) STATIC_SUBNET="$2"; shift 2 ;;
+    --static-gateway) STATIC_GATEWAY="$2"; shift 2 ;;
+    --static-nameserver) STATIC_NAMESERVER="$2"; shift 2 ;;
+    --static-exclude) STATIC_EXCLUDE="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
@@ -1668,6 +1689,16 @@ step_vms() {
   # upload-vm skips resize when the image virtual size already matches.
   [[ -n "$CP_DISK_GB" ]] && CREATE_ARGS+=(--cp-disk-gb "$CP_DISK_GB")
   [[ -n "$WORKER_DISK_GB" ]] && CREATE_ARGS+=(--worker-disk-gb "$WORKER_DISK_GB")
+  if [[ "${PROVIDER_KIND}" != "vsphere" && "${PROVIDER_KIND}" != "nutanix" && ( -n "$STATIC_BASE" || -n "$STATIC_SUBNET" ) ]]; then
+    [[ -n "$STATIC_GATEWAY" ]] || die "--static-base/--static-subnet requires --static-gateway"
+    if [[ -n "$STATIC_SUBNET" ]]; then
+      CREATE_ARGS+=(--static-subnet "$STATIC_SUBNET" --static-gateway "$STATIC_GATEWAY")
+    else
+      CREATE_ARGS+=(--static-base "$STATIC_BASE" --static-gateway "$STATIC_GATEWAY")
+    fi
+    [[ -n "$STATIC_NAMESERVER" ]] && CREATE_ARGS+=(--static-nameserver "$STATIC_NAMESERVER")
+    [[ -n "$STATIC_EXCLUDE" ]] && CREATE_ARGS+=(--static-exclude "$STATIC_EXCLUDE")
+  fi
   if [[ "$DUAL_STACK" == "1" ]]; then
     export DUAL_STACK=1 PERTISK_DUAL_STACK=1
   fi

@@ -26,6 +26,7 @@ IMAGE_NAME="${NUTANIX_IMAGE_NAME:-}"
 REPAIR_NAME=""
 IMPORT_ONLY=0
 PIN_BOOT_NAME=""
+STATIC_IP="${NUTANIX_STATIC_IP:-}"
 
 usage() {
   cat <<'EOF'
@@ -45,6 +46,10 @@ Options:
   --repair-name NAME  existing VM: power off, attach IPAM netcfg, power on
   --pin-boot NAME     existing VM: power off, pin UEFI to OS disk 0, detach extra disks, power on
   --import-only     fingerprint + import qcow2 into Prism; do not create a VM
+  --ip IPV4         pin this address instead of auto-learning from Prism IPAM
+                    (use to avoid a known-conflicting IP, e.g. the CVM's own
+                    address; env NUTANIX_STATIC_IP). Still pinned via
+                    requested_ip_address + netcfg disk, so it survives reboot.
 
 Env:
   NUTANIX_FORCE_IMPORT=1   re-import even when the qcow2 fingerprint already exists
@@ -68,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --repair-name) REPAIR_NAME="$2"; shift 2 ;;
     --pin-boot) PIN_BOOT_NAME="$2"; shift 2 ;;
     --import-only) IMPORT_ONLY=1; shift ;;
+    --ip) STATIC_IP="$2"; shift 2 ;;
     -h | --help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
@@ -1198,6 +1204,12 @@ wait_ipam_ip() {
 
 learn_ipam_ip() {
   local uuid="$1" ip
+  if [[ -n "${STATIC_IP}" ]]; then
+    echo "==> using pinned --ip ${STATIC_IP} (skip Prism IPAM auto-learn)" >&2
+    pin_nic "$uuid" "${NET0_MAC:-}" "${STATIC_IP}"
+    echo "${STATIC_IP}"
+    return 0
+  fi
   ip="$(wait_ipam_ip "$uuid" 12 || true)"
   if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     pin_nic "$uuid" "${NET0_MAC:-}" "$ip"
