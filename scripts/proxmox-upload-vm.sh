@@ -91,6 +91,11 @@ if [[ -n "${STATIC_IP}" && -z "${STATIC_GATEWAY}" ]]; then
   echo "--ip requires --gateway (or PROXMOX_STATIC_GATEWAY)" >&2
   exit 1
 fi
+if [[ -n "${STATIC_IP}" && -z "${PROXMOX_SSH}" ]]; then
+  echo "ERROR: static IP (--ip) requires PROXMOX_SSH env var set for scsi1 attachment" >&2
+  echo "       (e.g., export PROXMOX_SSH=root@proxmox.example)" >&2
+  exit 1
+fi
 [[ -f "${DISK}" ]] || {
   echo "disk not found: ${DISK}" >&2
   exit 1
@@ -958,8 +963,9 @@ PY
   # Use SSH + qm to create scsi1 disk and dd content (API times out for raw disk creation).
   # Proxmox API disk creation for ZFS times out; qm set handles device links properly.
   if ! ssh_ok; then
-    echo "WARN: no SSH access for netcfg disk; guest will fall back to DHCP" >&2
-    return 0
+    echo "ERROR: SSH not available but required for static IP netcfg disk attachment" >&2
+    echo "       Set PROXMOX_SSH env var (e.g., root@proxmox.example)" >&2
+    return 1
   fi
   
   echo "    attaching scsi1 disk (16M) via SSH qm + dd"
