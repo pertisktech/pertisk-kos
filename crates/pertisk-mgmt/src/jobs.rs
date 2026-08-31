@@ -318,7 +318,7 @@ pub(crate) async fn scan_subnet_for_free_ips(
         for (idx, in_use) in results.iter().enumerate() {
             if !in_use {
                 let ip = chunk[idx];
-                free_ips.push(format!("{}/{}", ip, net.prefix()));
+                free_ips.push(ip.to_string());
                 if free_ips.len() >= count as usize {
                     return Ok(free_ips);
                 }
@@ -1091,11 +1091,21 @@ async fn run_create_cluster(
                             Ok(free_ips) if !free_ips.is_empty() => {
                                 let ips_to_use = free_ips[..std::cmp::min(need_ips as usize, free_ips.len())].to_vec();
                                 cmd.env("NUTANIX_STATIC_IPS", ips_to_use.join(" "));
+                                // Auto-detect gateway: operator env > detect from system route > derive from subnet.
+                                let gw = std::env::var("NUTANIX_STATIC_GATEWAY")
+                                    .or_else(|_| std::env::var("LAB_GATEWAY"))
+                                    .ok()
+                                    .filter(|s| !s.is_empty())
+                                    .or_else(detect_default_gateway)
+                                    .or_else(|| gateway_from_subnet(&subnet))
+                                    .unwrap_or_else(|| "10.1.1.1".to_string());
+                                cmd.env("NUTANIX_STATIC_GATEWAY", &gw);
                                 append_log(
                                     log_path,
                                     &format!(
-                                        "=> auto-assigned Nutanix IPAM reserved IPs: {}\n",
-                                        ips_to_use.join(", ")
+                                        "=> auto-assigned Nutanix IPAM reserved IPs: {} gateway={}\n",
+                                        ips_to_use.join(", "),
+                                        gw
                                     ),
                                 )?;
                             }
@@ -1122,11 +1132,21 @@ async fn run_create_cluster(
                             Ok(free_ips) if !free_ips.is_empty() => {
                                 let ips_to_use = free_ips[..std::cmp::min(need_ips as usize, free_ips.len())].to_vec();
                                 cmd.env("VSPHERE_STATIC_IPS", ips_to_use.join(" "));
+                                // Auto-detect gateway: operator env > detect from system route > derive from subnet.
+                                let gw = std::env::var("VSPHERE_STATIC_GATEWAY")
+                                    .or_else(|_| std::env::var("LAB_GATEWAY"))
+                                    .ok()
+                                    .filter(|s| !s.is_empty())
+                                    .or_else(detect_default_gateway)
+                                    .or_else(|| gateway_from_subnet(&subnet))
+                                    .unwrap_or_else(|| "10.1.1.1".to_string());
+                                cmd.env("VSPHERE_STATIC_GATEWAY", &gw);
                                 append_log(
                                     log_path,
                                     &format!(
-                                        "=> auto-assigned vSphere guest IPs: {}\n",
-                                        ips_to_use.join(", ")
+                                        "=> auto-assigned vSphere guest IPs: {} gateway={}\n",
+                                        ips_to_use.join(", "),
+                                        gw
                                     ),
                                 )?;
                             }
