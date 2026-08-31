@@ -959,11 +959,11 @@ PY
   # IDE CD-ROM is stable and guest already scans /dev/sr0, /dev/sr1 for netcfg.
   echo "    attaching netcfg as ide2 CD-ROM via API"
   
-  # Use the imported content directly as CD-ROM (no need to query image UUID).
-  # Format: storage:import/filename,media=cdrom
+  # Use the imported content directly as CD-ROM.
+  # Format: ide2=storage:import/filename,media=cdrom (as single parameter)
   local att_resp
   att_resp="$(api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
-    "ide2=${import_ref},media=cdrom" 2>/dev/null || true)"
+    --data-urlencode "ide2=${import_ref},media=cdrom" 2>/dev/null || true)"
   
   if ! echo "${att_resp:-}" | jq -e '.data != null' >/dev/null 2>&1 \
     && ! api_response_ok "${att_resp:-{}}"; then
