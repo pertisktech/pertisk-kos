@@ -91,11 +91,6 @@ if [[ -n "${STATIC_IP}" && -z "${STATIC_GATEWAY}" ]]; then
   echo "--ip requires --gateway (or PROXMOX_STATIC_GATEWAY)" >&2
   exit 1
 fi
-if [[ -n "${STATIC_IP}" && -z "${PROXMOX_SSH}" ]]; then
-  echo "ERROR: static IP (--ip) requires PROXMOX_SSH env var set for scsi1 attachment" >&2
-  echo "       (e.g., export PROXMOX_SSH=root@proxmox.example)" >&2
-  exit 1
-fi
 [[ -f "${DISK}" ]] || {
   echo "disk not found: ${DISK}" >&2
   exit 1
@@ -960,56 +955,23 @@ PY
     echo "WARN: netcfg upload task failed; guest will fall back to DHCP" >&2
     return 0
   }
-  # Use SSH + qm to create scsi1 disk and dd content (API times out for raw disk creation).
-  # Proxmox API disk creation for ZFS times out; qm set handles device links properly.
-  if ! ssh_ok; then
-    echo "ERROR: SSH not available but required for static IP netcfg disk attachment" >&2
-    echo "       Set PROXMOX_SSH env var (e.g., root@proxmox.example)" >&2
-    return 1
-  fi
+  # Attach netcfg as ide2 CD-ROM via Proxmox API (works without SSH, no timeout issues).
+  # IDE CD-ROM is stable and guest already scans /dev/sr0, /dev/sr1 for netcfg.
+  echo "    attaching netcfg as ide2 CD-ROM via API"
   
-  echo "    attaching scsi1 disk (16M) via SSH qm + dd"
-  local zvol_path
+  # Use the imported content directly as CD-ROM (no need to query image UUID).
+  # Format: storage:import/filename,media=cdrom
+  local att_resp
+  att_resp="$(api_put_form "/nodes/${NODE}/qemu/${VMID}/config" \
+    "ide2=${import_ref},media=cdrom" 2>/dev/null || true)"
   
-  # Create empty scsi1 disk on target STORAGE via qm command (handles device links properly).
-  # Format: -scsi1 'storage:size-in-GiB' → creates vm-NNN-disk-2
-  if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" \
-    "qm set ${VMID} -scsi1 '${STORAGE}:0.016' 2>&1 >/dev/null" ; then
-    echo "WARN: netcfg disk create via qm failed; guest will fall back to DHCP" >&2
+  if ! echo "${att_resp:-}" | jq -e '.data != null' >/dev/null 2>&1 \
+    && ! api_response_ok "${att_resp:-{}}"; then
+    echo "WARN: netcfg ide2 attach failed; guest will fall back to DHCP: ${att_resp}" >&2
     return 0
   fi
   
-  # Wait for ZFS device to be created and device link to appear
-  sleep 2
-  
-  # Find the actual ZFS device path by querying the node
-  zvol_path=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" \
-    "zfs list -o name 2>/dev/null | grep \"vm-${VMID}-disk-2\" | sed 's|^|/dev/zvol/|' | head -1" 2>/dev/null) || true
-  
-  # Fallback: try common ZFS pool names if query didn't work
-  if [[ -z "${zvol_path}" ]]; then
-    for pool in rpool/data pve data; do
-      zvol_path="/dev/zvol/${pool}/vm-${VMID}-disk-2"
-      if ssh -o BatchMode=yes -o ConnectTimeout=5 "${PROXMOX_SSH}" \
-        "test -e ${zvol_path}" 2>/dev/null; then
-        break
-      fi
-      zvol_path=""
-    done
-  fi
-  
-  if [[ -z "${zvol_path}" ]]; then
-    echo "WARN: could not locate scsi1 device for VM ${VMID}; guest will fall back to DHCP" >&2
-    return 0
-  fi
-  
-  # Copy netcfg content to device via dd
-  if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${PROXMOX_SSH}" \
-    "dd if=/var/lib/vz/import/${vol} of=${zvol_path} bs=1M 2>/dev/null" >/dev/null 2>&1; then
-    echo "WARN: netcfg dd copy failed; guest will fall back to DHCP" >&2
-    return 0
-  fi
-  echo "    netcfg disk attached (scsi1, static IP ${STATIC_IP})"
+  echo "    netcfg disk attached (ide2 CD-ROM, static IP ${STATIC_IP})"
 }
 attach_static_netcfg
 
