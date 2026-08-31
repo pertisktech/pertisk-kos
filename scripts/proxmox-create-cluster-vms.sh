@@ -280,7 +280,10 @@ if [[ -n "$STATIC_IPS_ENV" ]]; then
 elif [[ -n "$STATIC_SUBNET" ]]; then
   total=$((CONTROLPLANES + WORKERS))
   echo "==> scanning ${STATIC_SUBNET} for ${total} free static IP(s)"
-  mapfile -t STATIC_IPS_ARRAY < <(scan_free_ips "$STATIC_SUBNET" "$total") || exit 1
+  # Use while loop instead of mapfile (bash-only) for zsh/sh compatibility
+  while IFS= read -r ip; do
+    STATIC_IPS_ARRAY+=("$ip")
+  done < <(scan_free_ips "$STATIC_SUBNET" "$total") || exit 1
   echo "    found: ${STATIC_IPS_ARRAY[*]}"
 elif [[ -n "$STATIC_BASE" ]]; then
   # Will be computed per-VM below
