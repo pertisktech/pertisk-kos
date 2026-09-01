@@ -23,6 +23,9 @@ NETWORK="${VSPHERE_NETWORK:-VM Network}"
 DATASTORE="${VSPHERE_DATASTORE:-datastore1}"
 START=1
 DC_PATH="${VSPHERE_DC_PATH:-ha-datacenter}"
+STATIC_IP="${VSPHERE_STATIC_IP:-}"
+STATIC_GATEWAY="${VSPHERE_STATIC_GATEWAY:-}"
+STATIC_NAMESERVER="${VSPHERE_STATIC_NAMESERVER:-}"
 
 usage() {
   cat <<'EOF'
@@ -38,6 +41,11 @@ Options:
   --disk-gb N       grow primary disk to N GiB after create (env VSPHERE_DISK_GB)
   --network NAME    portgroup (default $VSPHERE_NETWORK or VM Network)
   --datastore NAME  datastore (default $VSPHERE_DATASTORE or datastore1)
+  --ip CIDR|IP      static IPv4 (e.g. 10.1.1.111/24 or 10.1.1.111); requires --gateway.
+                    Written to a small netcfg disk (PERTISK-NET) as scsi0:1 (/dev/sdb).
+                    (env VSPHERE_STATIC_IP)
+  --gateway IP      static gateway for --ip (env VSPHERE_STATIC_GATEWAY)
+  --nameserver IP   static DNS for --ip (default: gateway; env VSPHERE_STATIC_NAMESERVER)
   --no-start        do not power on after create
 EOF
   exit 1
@@ -53,6 +61,9 @@ while [[ $# -gt 0 ]]; do
     --disk-gb) DISK_GB="$2"; shift 2 ;;
     --network) NETWORK="$2"; shift 2 ;;
     --datastore) DATASTORE="$2"; shift 2 ;;
+    --ip) STATIC_IP="$2"; shift 2 ;;
+    --gateway) STATIC_GATEWAY="$2"; shift 2 ;;
+    --nameserver) STATIC_NAMESERVER="$2"; shift 2 ;;
     --no-start) START=0; shift ;;
     -h | --help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
@@ -64,6 +75,10 @@ done
   echo "disk not found: ${DISK}" >&2
   exit 1
 }
+if [[ -n "${STATIC_IP}" && -z "${STATIC_GATEWAY}" ]]; then
+  echo "--ip requires --gateway (or VSPHERE_STATIC_GATEWAY)" >&2
+  exit 1
+fi
 
 : "${VSPHERE_URL:?set VSPHERE_URL}"
 : "${VSPHERE_USER:?set VSPHERE_USER}"
@@ -366,6 +381,8 @@ delete_vmdk_if_present() {
 
 delete_vmdk_if_present "${NAME}.vmdk"
 delete_vmdk_if_present "${NAME}-upload.vmdk"
+delete_vmdk_if_present "${NAME}-netcfg.vmdk"
+delete_vmdk_if_present "${NAME}-netcfg-upload.vmdk"
 
 upload_file() {
   local src="$1" dest_name="$2"
@@ -380,28 +397,94 @@ upload_file() {
     "${url}" >/dev/null
 }
 
-upload_file "${UPLOAD_VMDK}" "${NAME}-upload.vmdk"
-
-SRC_DISK="[${DATASTORE}] ${NAME}/${NAME}-upload.vmdk"
-DST_DISK="[${DATASTORE}] ${NAME}/${NAME}.vmdk"
-echo "==> CopyVirtualDisk ${SRC_DISK} → ${DST_DISK} (thin VMFS)"
-COPY_RESP="$(soap "urn:vim25/8.0.3.0" "<CopyVirtualDisk_Task xmlns=\"urn:vim25\">
+copy_uploaded_vmdk() {
+  local src_name="$1" dest_name="$2" label="$3"
+  local src_disk dest_disk copy_resp copy_task
+  src_disk="[${DATASTORE}] ${NAME}/${src_name}"
+  dest_disk="[${DATASTORE}] ${NAME}/${dest_name}"
+  echo "==> CopyVirtualDisk ${src_disk} → ${dest_disk} (${label})"
+  copy_resp="$(soap "urn:vim25/8.0.3.0" "<CopyVirtualDisk_Task xmlns=\"urn:vim25\">
   <_this type=\"VirtualDiskManager\">ha-vdiskmanager</_this>
-  <sourceName>$(xml_escape "$SRC_DISK")</sourceName>
-  <destName>$(xml_escape "$DST_DISK")</destName>
+  <sourceName>$(xml_escape "$src_disk")</sourceName>
+  <destName>$(xml_escape "$dest_disk")</destName>
   <destSpec>
     <diskType>thin</diskType>
     <adapterType>lsiLogic</adapterType>
   </destSpec>
 </CopyVirtualDisk_Task>")"
-COPY_TASK="$(echo "$COPY_RESP" | task_moref)"
-[[ -n "$COPY_TASK" ]] || {
-  echo "CopyVirtualDisk failed: $COPY_RESP" >&2
-  exit 1
+  copy_task="$(echo "$copy_resp" | task_moref)"
+  [[ -n "$copy_task" ]] || {
+    echo "CopyVirtualDisk (${label}) failed: $copy_resp" >&2
+    exit 1
+  }
+  wait_task "$copy_task" "CopyVirtualDisk-${label}"
+  delete_vmdk_if_present "${src_name}"
 }
-wait_task "$COPY_TASK" "CopyVirtualDisk"
-# Drop streamOptimized upload source (single file; DeleteVirtualDisk, no FileManager).
-delete_vmdk_if_present "${NAME}-upload.vmdk"
+
+# Tiny raw → streamOptimized VMDK (no 1MiB floor; netcfg is ~1KiB of payload).
+convert_raw_to_vmdk() {
+  local src="$1" dst="$2"
+  if command -v qemu-img >/dev/null 2>&1; then
+    qemu-img convert -f raw -O vmdk \
+      -o subformat=streamOptimized,adapter_type=lsilogic \
+      "${src}" "${dst}"
+  elif command -v docker >/dev/null 2>&1; then
+    local src_dir src_base dst_dir dst_base vol_opts=""
+    src_dir="$(cd "$(dirname "$src")" && pwd)"
+    src_base="$(basename "$src")"
+    mkdir -p "$(dirname "$dst")"
+    dst_dir="$(cd "$(dirname "$dst")" && pwd)"
+    dst_base="$(basename "$dst")"
+    if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]]; then
+      vol_opts=",Z"
+    fi
+    docker run --rm \
+      -v "${src_dir}:/src:ro${vol_opts}" \
+      -v "${dst_dir}:/dst:rw${vol_opts}" \
+      alpine sh -c "apk add --no-cache qemu-img >/dev/null && qemu-img convert -f raw -O vmdk -o subformat=streamOptimized,adapter_type=lsilogic /src/${src_base} /dst/${dst_base} && sync"
+  else
+    echo "qemu-img required (or docker) to convert netcfg raw → vmdk" >&2
+    exit 1
+  fi
+  [[ -f "$dst" ]] || {
+    echo "netcfg convert failed: ${dst} missing" >&2
+    exit 1
+  }
+}
+
+# Build + upload PERTISK-NET disk for static guest IP (scsi0:1 → /dev/sdb).
+NETCFG_DISK=""
+NETCFG_CAP_KB=0
+prepare_netcfg_disk() {
+  [[ -n "${STATIC_IP}" ]] || return 0
+  local cidr ns raw upload_vmdk
+  cidr="${STATIC_IP}"
+  if [[ "${STATIC_IP}" != */* ]]; then
+    cidr="${STATIC_IP}/24"
+  fi
+  ns="${STATIC_NAMESERVER:-${STATIC_GATEWAY}}"
+  echo "==> static IP ${cidr} gw=${STATIC_GATEWAY} ns=${ns} → guest netcfg (scsi0:1)"
+  raw="${WORKDIR}/netcfg.raw"
+  python3 - "$raw" "$cidr" "$STATIC_GATEWAY" "$ns" <<'PY'
+import sys
+path, cidr, gw, ns = sys.argv[1:5]
+blob = f"PERTISK-NET\nIPV4={cidr}\nGATEWAY={gw}\nNAMESERVER={ns}\nINTERFACE=eth0\n".encode()
+with open(path, "wb") as f:
+    f.write(blob)
+    f.write(b"\0" * (1024 * 1024 - len(blob)))
+PY
+  upload_vmdk="${WORKDIR}/${NAME}-netcfg-upload.vmdk"
+  convert_raw_to_vmdk "$raw" "$upload_vmdk"
+  upload_file "$upload_vmdk" "${NAME}-netcfg-upload.vmdk"
+  copy_uploaded_vmdk "${NAME}-netcfg-upload.vmdk" "${NAME}-netcfg.vmdk" "netcfg"
+  NETCFG_DISK="[${DATASTORE}] ${NAME}/${NAME}-netcfg.vmdk"
+  NETCFG_CAP_KB=1024
+}
+
+upload_file "${UPLOAD_VMDK}" "${NAME}-upload.vmdk"
+copy_uploaded_vmdk "${NAME}-upload.vmdk" "${NAME}.vmdk" "thin VMFS"
+DST_DISK="[${DATASTORE}] ${NAME}/${NAME}.vmdk"
+prepare_netcfg_disk
 
 # Resolve network MoRef by name.
 NET_MOREF="$(soap "urn:vim25/8.0.3.0" "<RetrievePropertiesEx xmlns=\"urn:vim25\">
@@ -452,6 +535,24 @@ fi
 DISK_PATH="$DST_DISK"
 echo "==> CreateVM_Task name=${NAME} memory=${MEMORY} cores=${CORES} disk=${DISK_PATH} capacityKB=${CAP_KB}"
 
+NETCFG_DEVICE_XML=""
+if [[ -n "${NETCFG_DISK}" ]]; then
+  NETCFG_DEVICE_XML="
+    <deviceChange>
+      <operation>add</operation>
+      <device xsi:type=\"VirtualDisk\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">
+        <key>2001</key>
+        <backing xsi:type=\"VirtualDiskFlatVer2BackingInfo\">
+          <fileName>$(xml_escape "$NETCFG_DISK")</fileName>
+          <diskMode>persistent</diskMode>
+        </backing>
+        <controllerKey>1000</controllerKey>
+        <unitNumber>1</unitNumber>
+        <capacityInKB>${NETCFG_CAP_KB}</capacityInKB>
+      </device>
+    </deviceChange>"
+fi
+
 CREATE_BODY="<CreateVM_Task xmlns=\"urn:vim25\">
   <_this type=\"Folder\">ha-folder-vm</_this>
   <config>
@@ -482,7 +583,7 @@ CREATE_BODY="<CreateVM_Task xmlns=\"urn:vim25\">
         <unitNumber>0</unitNumber>
         <capacityInKB>${CAP_KB}</capacityInKB>
       </device>
-    </deviceChange>
+    </deviceChange>${NETCFG_DEVICE_XML}
     <deviceChange>
       <operation>add</operation>
       <device xsi:type=\"VirtualE1000e\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">
@@ -650,6 +751,9 @@ fi
 
 echo "==> done: ${NAME}"
 echo "    NIC MAC ${NET0_MAC} (manual) — DHCP should keep the same IPv4 across power-off/on."
+if [[ -n "${STATIC_IP}" ]]; then
+  echo "    static IP=${STATIC_IP} gw=${STATIC_GATEWAY} (netcfg disk scsi0:1, no DHCP)"
+fi
 echo "    Autostart: enabled (powers on after ESXi host reboot)."
 echo "    Host Client often stays on 'EFI stub: Loaded initrd...' until vmwgfx/simpledrm load — that alone is not failure."
 echo "    Serial (if ESXi firewall allows): telnet <esxi-ip> $((${SERIAL_PORT:-$((23000 + VMID))}))"

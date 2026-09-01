@@ -1153,6 +1153,20 @@ vm_disk_count() {
   fi
 }
 
+# True if v2 disk inventory has device_bus + device_index (case-insensitive bus).
+vm_has_disk_at() {
+  local uuid="$1" bus="$2" idx="$3" det
+  det="$(api_get "vms/${uuid}?include_vm_disk_config=true" 2>/dev/null || api_get "vms/${uuid}" 2>/dev/null || true)"
+  echo "${det:-}" | jq -e --arg bus "$bus" --argjson idx "$idx" '
+    ([.vm_disks // .vm_disk_info // [] | .[]?
+      | select(
+          ((.disk_address.device_bus // .device_bus // "") | ascii_downcase)
+            == ($bus | ascii_downcase)
+          and ((.disk_address.device_index // .device_index // -1) | tonumber) == $idx
+        )] | length) > 0
+  ' >/dev/null 2>&1
+}
+
 # Extra virtio disks can steal UEFI boot from the OS image (guest never reaches pertiskd).
 pin_boot_os_disk() {
   local uuid="$1" bus="${2:-$DISK_BUS}" body resp tu api3 get3 put3 adapter
@@ -1236,8 +1250,14 @@ learn_ipam_ip() {
   return 1
 }
 
+# Best-effort remove of a leftover netcfg slot before re-attach.
+# Fresh VMs have no :1 disk — skip Prism detach so we do not log
+# "InvalidArgument: No disk found at pci.1" (error_code 6) as a hard failure.
 detach_extra_disk() {
-  local uuid="$1" bus="$2" idx="$3" body resp tu
+  local uuid="$1" bus="$2" idx="$3" body resp tu task status err i
+  if ! vm_has_disk_at "$uuid" "$bus" "$idx"; then
+    return 0
+  fi
   body="$(jq -n --arg uuid "$uuid" --arg bus "$bus" --argjson idx "$idx" '{
     uuid: $uuid,
     vm_disks: [{ disk_address: { device_bus: $bus, device_index: $idx } }]
@@ -1246,7 +1266,28 @@ detach_extra_disk() {
   tu="$(echo "${resp:-}" | jq -r '.task_uuid // empty')"
   [[ -n "$tu" ]] || return 0
   echo "==> disks/detach ${bus}:${idx} task=${tu}" >&2
-  wait_task "$tu" "disk" >/dev/null || true
+  for i in $(seq 1 60); do
+    task="$(api_get "tasks/${tu}" 2>/dev/null || true)"
+    status="$(echo "${task:-}" | jq -r '
+      (.progress_status // .status // "") | tostring | ascii_upcase
+    ' 2>/dev/null || true)"
+    case "$status" in
+      SUCCEEDED|SUCCESS|COMPLETE|COMPLETED|100) return 0 ;;
+      FAILED|ABORTED|ERROR|CANCELLED|CANCELED)
+        err="$(echo "$task" | jq -r '
+          .meta_response.error_detail // .error_detail // empty
+        ' 2>/dev/null || true)"
+        if [[ "${err}" == *"No disk found"* ]]; then
+          return 0
+        fi
+        echo "warn: disks/detach ${bus}:${idx} failed: ${err:-$status}" >&2
+        return 0
+        ;;
+    esac
+    sleep 1
+  done
+  echo "warn: disks/detach ${bus}:${idx} timed out" >&2
+  return 0
 }
 
 # PE v2 attach endpoint is /disks/attach (POST /disks is not the attach API).
@@ -1344,11 +1385,11 @@ attach_netcfg_media() {
   bus="$DISK_BUS"
   bus_up="$(echo "$bus" | tr 'a-z' 'A-Z')"
   echo "==> attach IPAM netcfg via POST vms/.../disks/attach (${bus}:1)" >&2
+  # One detach attempt (bus case-insensitive in vm_has_disk_at).
   detach_extra_disk "$uuid" "$bus" 1
-  detach_extra_disk "$uuid" "$bus_up" 1
   if attach_via_v2_attach "$uuid" "$vmdisk" "$bus" 1 false \
-    || attach_via_v2_attach "$uuid" "$vmdisk" "$bus_up" 1 false \
-    || { [[ "$bus_up" != "SCSI" ]] && attach_via_v2_attach "$uuid" "$vmdisk" "scsi" 1 false; } \
+    || { [[ "$bus" != "$bus_up" ]] && attach_via_v2_attach "$uuid" "$vmdisk" "$bus_up" 1 false; } \
+    || { [[ "$bus_up" != "SCSI" && "${bus,,}" != "scsi" ]] && attach_via_v2_attach "$uuid" "$vmdisk" "scsi" 1 false; } \
     || attach_via_v3 "$uuid" "${NETCFG_IMAGE_UUID:-}" "$bus_up" \
     || attach_via_acli "$NAME" "$vmdisk" "$bus"; then
     pin_boot_os_disk "$uuid" "$bus"
@@ -1404,9 +1445,10 @@ if [[ -n "$PIN_BOOT_NAME" ]]; then
   set_power "$VM_UUID" OFF || true
   sleep 3
   detach_extra_disk "$VM_UUID" "$DISK_BUS" 1
-  detach_extra_disk "$VM_UUID" "$(echo "$DISK_BUS" | tr 'a-z' 'A-Z')" 1
-  detach_extra_disk "$VM_UUID" "scsi" 1
-  detach_extra_disk "$VM_UUID" "SCSI" 1
+  # Also clear a scsi:1 leftover if OS disk is on pci (or vice versa).
+  if [[ "${DISK_BUS,,}" != "scsi" ]]; then
+    detach_extra_disk "$VM_UUID" "scsi" 1
+  fi
   pin_boot_os_disk "$VM_UUID" "$DISK_BUS"
   if [[ "$START" == "1" ]]; then
     if ! set_power "$VM_UUID" ON; then

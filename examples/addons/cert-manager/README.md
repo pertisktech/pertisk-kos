@@ -48,3 +48,39 @@ kubectl apply -f examples/addons/cert-manager/wildcard-certificate.yaml
 ```
 
 Use `issuerRef.name: letsencrypt-cloudflare` and `issuerRef.kind: ClusterIssuer` on other Certificates.
+
+## DNS-01 / `no such host` on Cloudflare nameservers
+
+If the Certificate stays **Issuing** and challenges log:
+
+```text
+Waiting for DNS-01 challenge propagation: dial udp: lookup sid.ns.cloudflare.com. on 10.96.0.10:53: no such host
+```
+
+cluster DNS (`kube-dns` **10.96.0.10** / CoreDNS) cannot reach a working upstream resolver. cert-manager checks TXT records by querying public DNS; that path goes **pod → CoreDNS → upstream**.
+
+**Check:**
+
+```bash
+kubectl -n kube-system get pods -l k8s-app=kube-dns
+kubectl -n kube-system logs deploy/coredns --tail=30
+kubectl run dns-test --rm -it --restart=Never --image=busybox:1.36 -- \
+  nslookup sid.ns.cloudflare.com
+```
+
+**Fix (re-apply CoreDNS with public forwarders):**
+
+```bash
+kubectl apply -f examples/dns/coredns.yaml
+kubectl -n kube-system rollout restart deploy/coredns
+kubectl -n kube-system rollout status deploy/coredns --timeout=120s
+```
+
+The bundled Corefile forwards to `1.1.1.1`, `8.8.8.8`, then node `resolv.conf`. Ensure pods can egress **UDP/TCP 53** (and generally reach the internet) — Cilium/network policy must not block CoreDNS or cert-manager egress.
+
+After DNS works, delete stuck challenges or re-trigger issuance:
+
+```bash
+kubectl -n cert-manager describe certificate <name>
+kubectl -n cert-manager delete challenge --all   # cert-manager recreates them
+```

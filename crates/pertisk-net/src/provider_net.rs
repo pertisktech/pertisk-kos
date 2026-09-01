@@ -105,7 +105,7 @@ pub fn try_apply_provider_netcfg() -> Result<bool, super::NetError> {
 mod linux {
     use super::*;
     use crate::apply::apply_network;
-    use tracing::info;
+    use tracing::{debug, info};
 
     const CANDIDATES: &[&str] = &[
         "/dev/sr0",
@@ -131,6 +131,8 @@ mod linux {
         let Some(net) = load(attempts) else {
             if attempts > 1 {
                 info!("no provider netcfg disk found after scanning all candidates");
+            } else {
+                debug!("no provider netcfg disk on this pass");
             }
             return Ok(false);
         };
@@ -142,6 +144,13 @@ mod linux {
             .unwrap_or_default();
         info!(addr = %addr, "applying provider netcfg (AHV IPAM disk)");
         apply_network(&net)?;
+        // Netcfg is static. A DHCP maintainer left from boot would later expire the
+        // lease, rediscover a *different* LAN address, and rebase etcd peer URLs
+        // under every CP at once — overnight HA death after power-on.
+        for iface in &net.interfaces {
+            crate::dhcp::stop_maintainer(&iface.interface);
+            crate::dhcp::clear_persisted_lease(&iface.interface);
+        }
         Ok(true)
     }
 
@@ -151,11 +160,11 @@ mod linux {
             .status();
         let attempts = attempts.max(1);
         for attempt in 1..=attempts {
-            if attempts > 1 {
-                info!(attempt, "scanning for provider netcfg disk (attempt {}/{attempts})", attempt);
+            if attempts > 1 && (attempt == 1 || attempt % 5 == 0) {
+                debug!(attempt, "scanning for provider netcfg disk (attempt {attempt}/{attempts})");
             }
             if let Some(net) = scan() {
-                info!("provider netcfg disk found on attempt {}", attempt);
+                info!(attempt, "provider netcfg disk found");
                 return Some(net);
             }
             if attempt < attempts {
@@ -177,9 +186,8 @@ mod linux {
     }
 
     fn scan() -> Option<Network> {
-        info!("scanning CANDIDATES for provider netcfg disk");
+        debug!("scanning candidates for provider netcfg disk");
         for path in CANDIDATES {
-            info!("checking candidate device: {}", path);
             if let Some(net) = read_dev(path) {
                 return Some(net);
             }
@@ -188,7 +196,7 @@ mod linux {
         let rd = match std::fs::read_dir("/sys/block") {
             Ok(rd) => rd,
             Err(e) => {
-                info!(error = %e, "cannot read /sys/block");
+                debug!(error = %e, "cannot read /sys/block");
                 return None;
             }
         };
@@ -204,16 +212,14 @@ mod linux {
                 continue;
             }
             scanned.push(path.clone());
-            info!("checking dynamic block device: {}", path);
             if let Some(net) = read_dev(&path) {
                 return Some(net);
             }
         }
-        if !scanned.is_empty() {
-            info!(count = scanned.len(), "scanned {} extra block devices (no netcfg found)", scanned.len());
-        } else {
-            info!("no extra block devices found in /sys/block");
-        }
+        debug!(
+            extras = scanned.len(),
+            "no provider netcfg disk among candidates / extras"
+        );
         None
     }
 
@@ -223,7 +229,8 @@ mod linux {
         let mut f = match File::open(path) {
             Ok(f) => f,
             Err(e) => {
-                info!(path, error = %e, "cannot open device");
+                // Missing candidates (sr0, vdb, …) are normal on Proxmox / DHCP-only labs.
+                debug!(path, error = %e, "cannot open device");
                 return None;
             }
         };
@@ -231,12 +238,12 @@ mod linux {
         let n = match f.read(&mut buf) {
             Ok(n) => n,
             Err(e) => {
-                info!(path, error = %e, "cannot read device");
+                debug!(path, error = %e, "cannot read device");
                 return None;
             }
         };
         if n == 0 {
-            info!(path, "read 0 bytes from device");
+            debug!(path, "read 0 bytes from device");
             return None;
         }
         match parse_pertisk_net(&buf[..n]) {
@@ -245,7 +252,7 @@ mod linux {
                 Some(net)
             }
             None => {
-                info!(path, bytes = n, "device read but no PERTISK-NET header found");
+                debug!(path, bytes = n, "no PERTISK-NET header");
                 None
             }
         }

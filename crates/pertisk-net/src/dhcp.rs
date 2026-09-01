@@ -250,6 +250,47 @@ fn take_seeded_lease(iface: &str) -> Option<Lease> {
     map.remove(iface)
 }
 
+/// Stop the renew/rebind loop for `iface` (e.g. after provider netcfg takes over).
+#[cfg(target_os = "linux")]
+pub fn stop_maintainer(iface: &str) {
+    let mut map = match maintainers().lock() {
+        Ok(m) => m,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(prev) = map.remove(iface) {
+        prev.stop.store(true, Ordering::SeqCst);
+        let _ = prev.handle.join();
+        tracing::info!(interface = iface, "DHCP lease maintainer stopped (static/netcfg)");
+    }
+    let mut seeded = match seeded_leases().lock() {
+        Ok(m) => m,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    seeded.remove(iface);
+}
+
+/// Drop a STATE-persisted lease so a later DHCP path cannot INIT-REBOOT over static.
+#[cfg(target_os = "linux")]
+pub fn clear_persisted_lease(iface: &str) {
+    if let Some(path) = lease_path(iface) {
+        if path.is_file() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => tracing::info!(
+                    interface = iface,
+                    path = %path.display(),
+                    "cleared persisted DHCP lease"
+                ),
+                Err(err) => tracing::warn!(
+                    interface = iface,
+                    path = %path.display(),
+                    error = %err,
+                    "failed to clear persisted DHCP lease"
+                ),
+            }
+        }
+    }
+}
+
 /// Ensure a background renew/rebind loop is running for `iface`.
 ///
 /// Idempotent: replaces any prior maintainer for the same interface.

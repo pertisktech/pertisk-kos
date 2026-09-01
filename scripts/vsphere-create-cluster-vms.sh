@@ -106,10 +106,17 @@ fi
 pertisk_parallel_init
 
 # Parse static IPs from env (space-separated list for all nodes).
-# If provided, assign one to each VM in order via --ip flag.
+# If provided, assign one to each VM in order via --ip / --gateway (PERTISK-NET disk).
 STATIC_IPS_ARRAY=()
+STATIC_GATEWAY="${VSPHERE_STATIC_GATEWAY:-}"
+STATIC_NAMESERVER="${VSPHERE_STATIC_NAMESERVER:-}"
 if [[ -n "${VSPHERE_STATIC_IPS:-}" ]]; then
   read -ra STATIC_IPS_ARRAY <<<"${VSPHERE_STATIC_IPS}"
+  if [[ ${#STATIC_IPS_ARRAY[@]} -gt 0 && -z "$STATIC_GATEWAY" ]]; then
+    echo "ERROR: VSPHERE_STATIC_IPS requires VSPHERE_STATIC_GATEWAY to be set" >&2
+    exit 1
+  fi
+  echo "==> using static IPs: ${STATIC_IPS_ARRAY[*]} gateway=${STATIC_GATEWAY}"
 fi
 STATIC_IP_IDX=0
 
@@ -119,7 +126,10 @@ for i in $(seq 1 "$CONTROLPLANES"); do
   UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$CP_DISK" --memory "$CP_MEMORY" --cores "$CP_CORES")
   [[ -n "$CP_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$CP_DISK_GB")
   if [[ $STATIC_IP_IDX -lt ${#STATIC_IPS_ARRAY[@]} ]]; then
-    UPLOAD_ARGS+=(--ip "${STATIC_IPS_ARRAY[$STATIC_IP_IDX]}")
+    ip="${STATIC_IPS_ARRAY[$STATIC_IP_IDX]}"
+    UPLOAD_ARGS+=(--ip "$ip" --gateway "$STATIC_GATEWAY")
+    [[ -n "$STATIC_NAMESERVER" ]] && UPLOAD_ARGS+=(--nameserver "$STATIC_NAMESERVER")
+    echo "    static ip=${ip}"
     STATIC_IP_IDX=$((STATIC_IP_IDX + 1))
   fi
   pertisk_parallel_add "${NAME_PREFIX}-cp-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"
@@ -131,7 +141,10 @@ for i in $(seq 1 "$WORKERS"); do
   UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$WORKER_DISK" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
   [[ -n "$WORKER_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$WORKER_DISK_GB")
   if [[ $STATIC_IP_IDX -lt ${#STATIC_IPS_ARRAY[@]} ]]; then
-    UPLOAD_ARGS+=(--ip "${STATIC_IPS_ARRAY[$STATIC_IP_IDX]}")
+    ip="${STATIC_IPS_ARRAY[$STATIC_IP_IDX]}"
+    UPLOAD_ARGS+=(--ip "$ip" --gateway "$STATIC_GATEWAY")
+    [[ -n "$STATIC_NAMESERVER" ]] && UPLOAD_ARGS+=(--nameserver "$STATIC_NAMESERVER")
+    echo "    static ip=${ip}"
     STATIC_IP_IDX=$((STATIC_IP_IDX + 1))
   fi
   pertisk_parallel_add "${NAME_PREFIX}-wk-${i}" "$UPLOAD" "${UPLOAD_ARGS[@]}"

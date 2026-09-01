@@ -52,7 +52,10 @@ data:
           ttl 30
         }
         prometheus :9153
-        forward . /etc/resolv.conf {
+        # Explicit upstreams — do not rely only on node /etc/resolv.conf (often
+        # gateway stub or 127.0.0.53). cert-manager DNS-01 needs to resolve
+        # names like sid.ns.cloudflare.com via kube-dns (10.96.0.10).
+        forward . 1.1.1.1 8.8.8.8 /etc/resolv.conf {
           max_concurrent 1000
         }
         cache 30

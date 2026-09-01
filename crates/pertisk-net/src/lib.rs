@@ -17,6 +17,9 @@ pub use link::{
 };
 pub use provider_net::{apply_provider_netcfg, try_apply_provider_netcfg};
 
+#[cfg(target_os = "linux")]
+pub use dhcp::{clear_persisted_lease, stop_maintainer};
+
 /// Point DHCP lease persistence at STATE (`machine/dhcp`). No-op off Linux.
 #[cfg(target_os = "linux")]
 pub use dhcp::set_lease_dir;

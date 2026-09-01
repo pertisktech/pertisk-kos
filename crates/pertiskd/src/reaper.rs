@@ -182,11 +182,21 @@ mod unix_impl {
                     }
                     Ok(false) => {
                         netcfg_tries = netcfg_tries.saturating_add(1);
-                        if netcfg_tries >= 90 {
+                        // Guest already has IPv4 (DHCP) and no netcfg disk — stop soon.
+                        // Without an address, keep looking a bit longer for late AHV attach.
+                        let limit = if dhcp_ok { 5 } else { 30 };
+                        if netcfg_tries >= limit {
                             provider_netcfg_done = true;
+                            if dhcp_ok {
+                                info!(
+                                    tries = netcfg_tries,
+                                    "no provider netcfg disk; keeping DHCP address"
+                                );
+                            }
                         } else {
+                            let wait = if dhcp_ok { 5 } else { 2 };
                             netcfg_retry_at =
-                                std::time::Instant::now() + std::time::Duration::from_secs(2);
+                                std::time::Instant::now() + std::time::Duration::from_secs(wait);
                         }
                     }
                     Err(err) => {
