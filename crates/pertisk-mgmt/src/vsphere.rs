@@ -961,6 +961,28 @@ impl VsphereClient {
         Ok(first_guest_ipv4_from_xml(&xml))
     }
 
+    /// Guest IPv4s VMware Tools last reported (empty for powered-off VMs without tools data).
+    pub async fn all_guest_ipv4s(&self) -> Vec<String> {
+        let vms = self.list_vms().await.unwrap_or_default();
+        let futs = vms.into_iter().map(|vm| {
+            let this = self.clone();
+            async move {
+                this.vm_guest_ipv4(&vm.name)
+                    .await
+                    .ok()
+                    .flatten()
+            }
+        });
+        let mut ips: Vec<String> = futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
+        ips.sort();
+        ips.dedup();
+        ips
+    }
+
     pub async fn grow_vm_disk(&self, name: &str, disk_gb: i64) -> ApiResult<()> {
         if disk_gb < 1 {
             return Err(AppError::bad("disk_gb must be >= 1"));

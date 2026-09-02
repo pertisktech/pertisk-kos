@@ -1759,8 +1759,8 @@ async fn scan_ips(
     Json(body): Json<ScanIpsIn>,
 ) -> ApiResult<Json<ScanIpsOut>> {
     use crate::jobs::{
-        detect_guest_gateway, ip_from_provider_url, scan_subnet_for_free_ips,
-        subnet_from_provider_ip,
+        detect_guest_gateway, hypervisor_reserved_ips, inventory_guest_ips, ip_from_provider_url,
+        scan_subnet_for_free_ips, subnet_from_provider_ip,
     };
 
     let need_count = body.controlplanes + body.workers;
@@ -1789,12 +1789,8 @@ async fn scan_ips(
         .unwrap_or_default();
     exclude_ips.extend(urls.iter().filter_map(|u| ip_from_provider_url(u)));
 
-    let node_ips: Vec<Option<String>> =
-        sqlx::query_scalar("SELECT ip FROM nodes WHERE ip IS NOT NULL")
-            .fetch_all(state.pool())
-            .await
-            .unwrap_or_default();
-    exclude_ips.extend(node_ips.into_iter().flatten());
+    exclude_ips.extend(inventory_guest_ips(state.pool()).await);
+    exclude_ips.extend(hypervisor_reserved_ips(&state).await);
 
     // Exclude VIPs if provided
     if let Some(ref vip) = body.vip {
@@ -1818,6 +1814,7 @@ async fn scan_ips(
             "PROXMOX_STATIC_GATEWAY",
             "NUTANIX_STATIC_GATEWAY",
             "VSPHERE_STATIC_GATEWAY",
+            "PERTISK_VMS_STATIC_GATEWAY",
             "LAB_GATEWAY",
         ],
     )

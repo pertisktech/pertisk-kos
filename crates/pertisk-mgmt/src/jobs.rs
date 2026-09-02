@@ -107,10 +107,8 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) -> Opt
     note
 }
 
-/// Merge every registered provider's host (Proxmox/Nutanix/vSphere — not just
-/// this cluster's), any existing cluster node IPs, plus any operator-set
-/// `PROXMOX_STATIC_EXCLUDE` into the job's exclude list, so a static-IP scan
-/// never hands out a hypervisor's own management address or an existing node.
+/// Merge every registered provider's host, every inventory guest IP (including
+/// powered-off VMs on every hypervisor), plus any operator-set `PROXMOX_STATIC_EXCLUDE`.
 async fn auto_exclude_provider_hosts(cmd: &mut Command, state: &AppState) {
     let want_static = std::env::var("PROXMOX_STATIC_BASE")
         .or_else(|_| std::env::var("PROXMOX_STATIC_SUBNET"))
@@ -129,17 +127,8 @@ async fn auto_exclude_provider_hosts(cmd: &mut Command, state: &AppState) {
     hosts.extend(urls.iter().filter_map(|u| pve_host_from_url(u)));
 
     // Existing cluster node IPs (both IPv4 and IPv6).
-    let node_ips: Vec<Option<String>> = sqlx::query_scalar("SELECT ip FROM nodes WHERE ip IS NOT NULL")
-        .fetch_all(state.pool())
-        .await
-        .unwrap_or_default();
-    hosts.extend(node_ips.into_iter().flatten());
-
-    let node_ip6s: Vec<Option<String>> = sqlx::query_scalar("SELECT ip6 FROM nodes WHERE ip6 IS NOT NULL")
-        .fetch_all(state.pool())
-        .await
-        .unwrap_or_default();
-    hosts.extend(node_ip6s.into_iter().flatten());
+    hosts.extend(inventory_guest_ips(state.pool()).await);
+    hosts.extend(hypervisor_reserved_ips(state).await);
 
     // Operator-specified exclusions.
     if let Ok(extra) = std::env::var("PROXMOX_STATIC_EXCLUDE") {
@@ -472,6 +461,103 @@ fn local_ipv4_addrs() -> Vec<String> {
     ips
 }
 
+/// Every IPv4/IPv6 recorded on a node, including powered-off guests. Those
+/// addresses stay reserved so a new cluster cannot collide when the old VMs
+/// power back on.
+pub(crate) async fn inventory_guest_ips(pool: &sqlx::SqlitePool) -> Vec<String> {
+    let rows: Vec<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT ip, ip6 FROM nodes WHERE ip IS NOT NULL OR ip6 IS NOT NULL")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+    let mut ips = Vec::new();
+    for (ip, ip6) in rows {
+        if let Some(ip) = ip.filter(|s| !s.trim().is_empty()) {
+            ips.push(ip.trim().to_string());
+        }
+        if let Some(ip6) = ip6.filter(|s| !s.trim().is_empty()) {
+            ips.push(ip6.trim().to_string());
+        }
+    }
+    ips.sort();
+    ips.dedup();
+    ips
+}
+
+/// IPs claimed by hypervisor VM inventory (Nutanix IPAM, pertisk-vms NIC,
+/// Proxmox ipconfig, vSphere tools) — including powered-off guests that no
+/// longer answer ping. KOS `nodes` can miss these after a failed create or a
+/// deleted cluster whose VMs were left behind.
+pub(crate) async fn hypervisor_reserved_ips(state: &AppState) -> Vec<String> {
+    let rows: Vec<(String, String, String, String, String, i64)> = sqlx::query_as(
+        "SELECT kind, url, token_id, token_secret_enc, node, insecure FROM providers",
+    )
+    .fetch_all(state.pool())
+    .await
+    .unwrap_or_default();
+
+    let key = state.cfg().secret_key.clone();
+    let mut futs = Vec::new();
+    for (kind, url, token_id, secret_enc, node, insecure) in rows {
+        let key = key.clone();
+        futs.push(async move {
+            let Ok(secret) = crypto::decrypt(&key, &secret_enc) else {
+                return Vec::new();
+            };
+            collect_provider_vm_ips(&kind, url, token_id, secret, node, insecure != 0).await
+        });
+    }
+    let mut ips = Vec::new();
+    for chunk in futures::future::join_all(futs).await {
+        ips.extend(chunk);
+    }
+    ips.sort();
+    ips.dedup();
+    ips
+}
+
+async fn collect_provider_vm_ips(
+    kind: &str,
+    url: String,
+    token_id: String,
+    secret: String,
+    node: String,
+    insecure: bool,
+) -> Vec<String> {
+    let fut = async {
+        match kind {
+            "nutanix" | "ahv" | "prism" => {
+                crate::nutanix::NutanixClient::new(url, token_id, secret, insecure)
+                    .all_guest_ipv4s()
+                    .await
+            }
+            "pertisk-vms" | "pertisk-vm" | "pertiskvms" | "vms" => {
+                crate::pertisk_vms::PertiskVmsClient::new(url, token_id, secret, insecure)
+                    .all_guest_ipv4s()
+                    .await
+            }
+            "vsphere" | "esxi" => {
+                crate::vsphere::VsphereClient::new(url, token_id, secret, insecure)
+                    .all_guest_ipv4s()
+                    .await
+            }
+            _ => {
+                crate::proxmox::ProxmoxClient {
+                    url,
+                    token_id,
+                    token_secret: secret,
+                    insecure,
+                }
+                .all_guest_ipv4s(&node)
+                .await
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(15), fut)
+        .await
+        .unwrap_or_default()
+}
+
 /// ICMP first (k8s nodes often have no 80/443/22), then TCP on hypervisor + Pertisk + kube ports.
 pub(crate) async fn ip_is_in_use(ip: String, timeout_ms: u64) -> bool {
     use std::net::{IpAddr, SocketAddr};
@@ -549,7 +635,7 @@ pub(crate) async fn scan_subnet_for_free_ips(
     for chunk in candidates.chunks(32) {
         let futures: Vec<_> = chunk
             .iter()
-            .map(|&ip| ip_is_in_use(ip.to_string(), 500))
+            .map(|&ip| ip_is_in_use(ip.to_string(), 800))
             .collect();
         let results = futures::future::join_all(futures).await;
         for (idx, in_use) in results.iter().enumerate() {
@@ -1304,19 +1390,8 @@ async fn run_create_cluster(
                 .unwrap_or_default();
             exclude_ips.extend(urls.iter().filter_map(|u| ip_from_provider_url(u)));
 
-            let node_ips: Vec<Option<String>> =
-                sqlx::query_scalar("SELECT ip FROM nodes WHERE ip IS NOT NULL")
-                    .fetch_all(state.pool())
-                    .await
-                    .unwrap_or_default();
-            exclude_ips.extend(node_ips.into_iter().flatten());
-
-            let node_ip6s: Vec<Option<String>> =
-                sqlx::query_scalar("SELECT ip6 FROM nodes WHERE ip6 IS NOT NULL")
-                    .fetch_all(state.pool())
-                    .await
-                    .unwrap_or_default();
-            exclude_ips.extend(node_ip6s.into_iter().flatten());
+            exclude_ips.extend(inventory_guest_ips(state.pool()).await);
+            exclude_ips.extend(hypervisor_reserved_ips(state).await);
 
             // Also exclude this cluster's VIP and VIP6 (reserved for kube-vip).
             if let Some(vip) = &cluster.vip {

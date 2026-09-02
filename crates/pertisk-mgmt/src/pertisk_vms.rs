@@ -488,6 +488,22 @@ impl PertiskVmsClient {
         Ok(self.find_vm(name).await?.and_then(|v| v.ip))
     }
 
+    /// NIC IPs from VM spec, including powered-off guests (static `nets[].ip`).
+    pub async fn all_guest_ipv4s(&self) -> Vec<String> {
+        let mut ips: Vec<String> = self
+            .list_vms()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.ip)
+            .map(|s| s.split('/').next().unwrap_or(&s).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        ips.sort();
+        ips.dedup();
+        ips
+    }
+
     pub async fn delete_vm_by_name(&self, name: &str) -> ApiResult<()> {
         let Some(vm) = self.find_vm(name).await? else {
             return Ok(());
@@ -724,9 +740,16 @@ fn parse_vms(v: &Value) -> Vec<PertiskVm> {
                         nic.get("ip")
                             .and_then(|i| i.as_str())
                             .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string())
+                            .map(|s| {
+                                s.split('/')
+                                    .next()
+                                    .unwrap_or(s)
+                                    .trim()
+                                    .to_string()
+                            })
                     })
-                });
+                })
+                .filter(|s| !s.is_empty());
             let volume_id = spec
                 .get("disks")
                 .and_then(|d| d.as_array())
@@ -781,6 +804,20 @@ mod tests {
         assert_eq!(vms[0].name, "lab-cp-1");
         assert_eq!(vms[0].ip.as_deref(), Some("10.1.1.50"));
         assert!(vms[0].volume_id.is_some());
+    }
+
+    #[test]
+    fn parse_vm_strips_nic_cidr() {
+        let v = serde_json::json!([{
+            "id": 250,
+            "state": "stopped",
+            "spec": {
+                "name": "lab-cp-1",
+                "nets": [{"ip": "10.1.1.248/24"}]
+            }
+        }]);
+        let vms = parse_vms(&v);
+        assert_eq!(vms[0].ip.as_deref(), Some("10.1.1.248"));
     }
 
     #[test]

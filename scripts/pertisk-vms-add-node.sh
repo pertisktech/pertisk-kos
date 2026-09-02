@@ -353,6 +353,29 @@ wait_api() {
   die "pertiskctl API not ready at ${ip}:50000"
 }
 
+# After `reset --force` (reboot_scheduled), :50000 stays up until the guest
+# actually reboots. wait_ip would return immediately and join then hits RST.
+wait_api_down() {
+  local ip="$1" timeout_s="${2:-90}"
+  local deadline=$((SECONDS + timeout_s))
+  log "waiting for Machine API ${ip}:50000 to drop after reset…"
+  while (( SECONDS < deadline )); do
+    if ! api_reachable "$ip"; then
+      log "Machine API ${ip}:50000 is down"
+      return 0
+    fi
+    sleep 1
+  done
+  log "WARNING: ${ip}:50000 still up after ${timeout_s}s — continuing"
+}
+
+wait_after_reset() {
+  local vmid="$1" label="$2" ip="$3"
+  wait_api_down "$ip" 90
+  sleep 3
+  wait_ip "$vmid" "$label"
+}
+
 set_hostname_yaml() {
   local src="$1" dest="$2" host="$3"
   awk -v h="$host" '
@@ -406,8 +429,7 @@ wait_api "$NODE_IP"
 
 log "soft-reset ${NAME} @ ${NODE_IP} before join (clear leftover STATE)"
 if "$CTL" -e "${NODE_IP}:50000" reset --force 2>&1; then
-  sleep 8
-  NODE_IP="$(wait_ip "$VMID" "$NAME" | tr -d '[:space:]')"
+  NODE_IP="$(wait_after_reset "$VMID" "$NAME" "$NODE_IP" | tr -d '[:space:]')"
   wait_api "$NODE_IP"
 else
   log "WARNING: reset ${NAME} failed — continuing (fresh guests are fine)"

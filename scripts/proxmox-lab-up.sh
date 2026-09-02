@@ -390,6 +390,10 @@ elif [[ "${PROVIDER_KIND}" == "pertisk-vms" ]]; then
   if [[ -n "${PERTISK_VMS_DISK:-}" ]]; then
     DISK="${PERTISK_VMS_DISK}"
   fi
+  if [[ -n "${PERTISK_VMS_STATIC_IPS:-}" ]]; then
+    STATIC_IPS_ENV="${PERTISK_VMS_STATIC_IPS}"
+  fi
+  [[ -n "${PERTISK_VMS_STATIC_GATEWAY:-}" ]] && STATIC_GATEWAY="${PERTISK_VMS_STATIC_GATEWAY}"
   echo "==> provider=pertisk-vms url=${PERTISK_VMS_URL} storage=${PERTISK_VMS_STORAGE} network=${PERTISK_VMS_NETWORK}"
   echo "==> images dir=${IMAGES_DIR} disk=${DISK}"
   PROXMOX_URL="${PROXMOX_URL:-${PERTISK_VMS_URL}}"
@@ -1271,6 +1275,30 @@ wait_api() {
   die "pertiskctl API not ready at ${ip}:50000"
 }
 
+# After `reset --force` (reboot_scheduled), :50000 stays up until the guest
+# actually reboots. wait_ip's static-IP fast path would return immediately
+# and bootstrap then hits connection reset.
+wait_api_down() {
+  local ip="$1" timeout_s="${2:-90}"
+  local deadline=$((SECONDS + timeout_s))
+  log "waiting for Machine API ${ip}:50000 to drop after reset…"
+  while (( SECONDS < deadline )); do
+    if ! api_reachable "$ip"; then
+      log "Machine API ${ip}:50000 is down"
+      return 0
+    fi
+    sleep 1
+  done
+  log "WARNING: ${ip}:50000 still up after ${timeout_s}s — continuing"
+}
+
+wait_after_reset() {
+  local vmid="$1" label="$2" ip="$3"
+  wait_api_down "$ip" 90
+  sleep 3
+  wait_ip "$vmid" "$label"
+}
+
 # HTTP /readyz on a node IP (not TCP). Join finalize used to fail with
 # Connection reset by peer while :6443 accepted sockets.
 https_readyz() {
@@ -2072,8 +2100,7 @@ step_cluster() {
   else
     log "soft-reset CP1 @ ${CP_IP} before apply (clear leftover STATE)"
     if "$CTL" -e "${CP_IP}:50000" reset --force 2>&1; then
-      sleep 8
-      CP_IP="$(wait_ip "$CP_VMID" "${CLUSTER_NAME}-cp-1")"
+      CP_IP="$(wait_after_reset "$CP_VMID" "${CLUSTER_NAME}-cp-1" "$CP_IP")"
       CP_IPS[0]="$CP_IP"
       wait_api "$CP_IP"
     else
@@ -2091,11 +2118,23 @@ step_cluster() {
     while true; do
       boot_out="$("$CTL" -e "${CP_IP}:50000" bootstrap --advertise-address "$CP_IP" 2>&1)" && break
       echo "$boot_out" >&2
+      boot_try=$((boot_try + 1))
       if echo "$boot_out" | grep -q 'No such file or directory'; then
-        boot_try=$((boot_try + 1))
         (( boot_try < 6 )) || die "bootstrap CP1 failed"
         log "config.yaml missing after apply (STATE race); re-apply and retry ${boot_try}/5"
         apply_machine_yaml "$CP_IP" "$CLUSTER_OUT/controlplane.yaml" "$CP_VMID"
+        wait_api "$CP_IP"
+        continue
+      fi
+      if echo "$boot_out" | grep -qiE 'transport error|connection reset|connection error|Unavailable|Broken pipe'; then
+        (( boot_try < 8 )) || die "bootstrap CP1 failed"
+        log "bootstrap RPC dropped (guest reboot/reload?); wait for API and retry ${boot_try}/7"
+        if api_reachable "$CP_IP"; then
+          wait_api_down "$CP_IP" 60
+          sleep 3
+        fi
+        CP_IP="$(wait_ip "$CP_VMID" "${CLUSTER_NAME}-cp-1")"
+        CP_IPS[0]="$CP_IP"
         wait_api "$CP_IP"
         continue
       fi
@@ -2143,8 +2182,7 @@ Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate th
     else
       log "soft-reset ${host} @ ${ip} before join (clear leftover STATE)"
       if "$CTL" -e "${ip}:50000" reset --force 2>&1; then
-        sleep 8
-        ip="$(wait_ip "$cvid" "$host")"
+        ip="$(wait_after_reset "$cvid" "$host" "$ip")"
         CP_IPS[$((i - 1))]="$ip"
         wait_api "$ip"
       else
@@ -2250,8 +2288,7 @@ Check registry.k8s.io pulls / static pods on ${ip}."
     assert_guest_identity "$ip" "$host"
     log "soft-reset ${host} @ ${ip} before join (clear leftover STATE)"
     if "$CTL" -e "${ip}:50000" reset --force 2>&1; then
-      sleep 8
-      ip="$(wait_ip "$wvid" "$host")"
+      ip="$(wait_after_reset "$wvid" "$host" "$ip")"
       WORKER_IPS[$((i - 1))]="$ip"
       wait_api "$ip"
     else

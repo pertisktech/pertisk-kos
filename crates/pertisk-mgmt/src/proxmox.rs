@@ -523,6 +523,45 @@ impl ProxmoxClient {
         Ok(first_qemu_ga_ipv4(&v))
     }
 
+    /// Cloud-init / ipconfig IPv4s from QEMU config (present while the VM is off).
+    pub async fn all_guest_ipv4s(&self, node: &str) -> Vec<String> {
+        let mut nodes = Vec::new();
+        if !node.trim().is_empty() {
+            nodes.push(node.to_string());
+        } else if let Ok(v) = self.get_json("/nodes").await {
+            if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
+                for item in arr {
+                    if let Some(n) = item.get("node").and_then(|x| x.as_str()) {
+                        nodes.push(n.to_string());
+                    }
+                }
+            }
+        }
+        let mut ips = Vec::new();
+        for n in nodes {
+            let Ok(vms) = self.list_qemu(&n).await else {
+                continue;
+            };
+            let futs = vms.into_iter().map(|(vmid, _, _)| {
+                let this = self.clone();
+                let node = n.clone();
+                async move {
+                    this.get_json(&format!("/nodes/{node}/qemu/{vmid}/config"))
+                        .await
+                        .ok()
+                        .map(|cfg| ipv4s_from_qemu_config(&cfg))
+                        .unwrap_or_default()
+                }
+            });
+            for extra in futures::future::join_all(futs).await {
+                ips.extend(extra);
+            }
+        }
+        ips.sort();
+        ips.dedup();
+        ips
+    }
+
     /// Set CPU/memory on a QEMU VM (Proxmox `config` PUT). Values in MB / cores.
     ///
     /// Also enables `hotplug`/`numa` so increases can apply live when the guest
@@ -897,6 +936,42 @@ pub fn first_qemu_ga_ipv4(v: &Value) -> Option<String> {
     None
 }
 
+pub fn parse_ipconfig_ipv4(s: &str) -> Option<String> {
+    for part in s.split(',') {
+        let part = part.trim();
+        let Some(rest) = part.strip_prefix("ip=") else {
+            continue;
+        };
+        let ip = rest.split('/').next().unwrap_or(rest).trim();
+        if ip.is_empty() || ip.eq_ignore_ascii_case("dhcp") {
+            return None;
+        }
+        if ip.parse::<std::net::Ipv4Addr>().is_ok() {
+            return Some(ip.to_string());
+        }
+    }
+    None
+}
+
+fn ipv4s_from_qemu_config(v: &Value) -> Vec<String> {
+    let obj = v.get("data").unwrap_or(v);
+    let Some(map) = obj.as_object() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (k, val) in map {
+        if !k.starts_with("ipconfig") {
+            continue;
+        }
+        if let Some(s) = val.as_str() {
+            if let Some(ip) = parse_ipconfig_ipv4(s) {
+                out.push(ip);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -916,5 +991,18 @@ mod tests {
             }
         });
         assert_eq!(first_qemu_ga_ipv4(&v).as_deref(), Some("10.1.1.40"));
+    }
+
+    #[test]
+    fn parses_ipconfig_static() {
+        assert_eq!(
+            parse_ipconfig_ipv4("ip=10.1.1.248/24,gw=10.1.1.10").as_deref(),
+            Some("10.1.1.248")
+        );
+        assert_eq!(parse_ipconfig_ipv4("ip=dhcp"), None);
+        let cfg = json!({
+            "data": { "ipconfig0": "ip=10.1.1.247/24,gw=10.1.1.10" }
+        });
+        assert_eq!(ipv4s_from_qemu_config(&cfg), vec!["10.1.1.247".to_string()]);
     }
 }

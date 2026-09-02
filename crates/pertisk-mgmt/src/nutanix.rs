@@ -712,6 +712,51 @@ impl NutanixClient {
         Ok(first_nic_ipv4(&json))
     }
 
+    /// Every guest IPv4 Prism knows about, including powered-off VMs
+    /// (`requested_ip_address` / last learned address).
+    pub async fn all_guest_ipv4s(&self) -> Vec<String> {
+        let listed = match self.get("vms/?include_vm_nic_config=true").await {
+            Ok(v) if !v.is_null() => v,
+            _ => self
+                .get("vms?include_vm_nic_config=true")
+                .await
+                .unwrap_or(Value::Null),
+        };
+        let mut ips = Vec::new();
+        let mut missing: Vec<String> = Vec::new();
+        for vm in Self::entities(&listed) {
+            let got = all_nic_ipv4s(vm);
+            if got.is_empty() {
+                if let Some(uuid) = vm.get("uuid").and_then(|v| v.as_str()) {
+                    missing.push(uuid.to_string());
+                }
+            } else {
+                ips.extend(got);
+            }
+        }
+        if ips.is_empty() && missing.is_empty() {
+            if let Ok(vms) = self.list_vms().await {
+                missing = vms.into_iter().map(|v| v.uuid).collect();
+            }
+        }
+        if !missing.is_empty() {
+            let futs = missing.into_iter().map(|uuid| {
+                let this = self.clone();
+                async move {
+                    this.get(&format!("vms/{uuid}?include_vm_nic_config=true"))
+                        .await
+                        .ok()
+                        .map(|json| all_nic_ipv4s(&json))
+                        .unwrap_or_default()
+                }
+            });
+            for extra in futures::future::join_all(futs).await {
+                ips.extend(extra);
+            }
+        }
+        unique_guest_ipv4s(ips)
+    }
+
     pub async fn restart_vm_by_name(&self, name: &str) -> ApiResult<()> {
         let _ = self.power_off(name).await;
         self.wait_powered_off(name).await;
@@ -1043,27 +1088,60 @@ fn parse_vm(vm: &Value) -> Option<NutanixVm> {
 
 /// First usable IPv4 on a Prism VM (v2 nic config).
 pub fn first_nic_ipv4(vm: &Value) -> Option<String> {
-    let root = if vm.get("vm_nics").is_some() || vm.get("nic_list").is_some() {
-        vm
-    } else if let Some(inner) = vm.get("vm").or_else(|| vm.get("status")) {
-        inner
-    } else if let Some(arr) = vm.get("entities").and_then(|e| e.as_array()) {
-        arr.first()?
-    } else {
-        vm
-    };
+    let root = nic_config_root(vm);
     let nics = root
         .get("vm_nics")
         .or_else(|| root.get("nic_list"))
         .and_then(|n| n.as_array())?;
     for nic in nics {
         for ip in nic_ipv4s(nic) {
-            if usable_guest_ipv4(&ip) {
-                return Some(ip);
+            let ip = ip.split('/').next().unwrap_or(&ip).trim();
+            if usable_guest_ipv4(ip) {
+                return Some(ip.to_string());
             }
         }
     }
     None
+}
+
+fn nic_config_root(vm: &Value) -> &Value {
+    if vm.get("vm_nics").is_some() || vm.get("nic_list").is_some() {
+        vm
+    } else if let Some(inner) = vm.get("vm").or_else(|| vm.get("status")) {
+        inner
+    } else if let Some(arr) = vm.get("entities").and_then(|e| e.as_array()) {
+        arr.first().unwrap_or(vm)
+    } else {
+        vm
+    }
+}
+
+/// Assigned + requested IPv4s (powered-off guests keep `requested_ip_address`).
+fn all_nic_ipv4s(vm: &Value) -> Vec<String> {
+    let root = nic_config_root(vm);
+    let Some(nics) = root
+        .get("vm_nics")
+        .or_else(|| root.get("nic_list"))
+        .and_then(|n| n.as_array())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for nic in nics {
+        for ip in nic_ipv4s(nic) {
+            let ip = ip.split('/').next().unwrap_or(&ip).trim();
+            if usable_guest_ipv4(ip) {
+                out.push(ip.to_string());
+            }
+        }
+    }
+    unique_guest_ipv4s(out)
+}
+
+fn unique_guest_ipv4s(mut ips: Vec<String>) -> Vec<String> {
+    ips.sort();
+    ips.dedup();
+    ips
 }
 
 fn nic_ipv4s(nic: &Value) -> Vec<String> {
@@ -1141,6 +1219,20 @@ mod tests {
             }]
         });
         assert_eq!(first_nic_ipv4(&vm).as_deref(), Some("10.1.1.40"));
+        let all = all_nic_ipv4s(&vm);
+        assert!(all.contains(&"10.1.1.40".into()));
+        assert!(all.contains(&"10.1.1.31".into()));
+    }
+
+    #[test]
+    fn powered_off_keeps_requested_ip() {
+        let vm = json!({
+            "power_state": "off",
+            "vm_nics": [{
+                "requested_ip_address": "10.1.1.248"
+            }]
+        });
+        assert_eq!(first_nic_ipv4(&vm).as_deref(), Some("10.1.1.248"));
     }
 
     #[test]

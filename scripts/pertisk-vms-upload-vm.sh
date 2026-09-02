@@ -24,6 +24,7 @@ STORAGE="${PERTISK_VMS_STORAGE:-replica}"
 START=1
 IMPORT_ONLY=0
 STATIC_IP=""
+STATIC_GATEWAY="${PERTISK_VMS_STATIC_GATEWAY:-${LAB_GATEWAY:-}}"
 ARCH="${PERTISK_ARCH:-${ARCH:-amd64}}"
 
 usage() {
@@ -43,7 +44,8 @@ Options:
   --storage NAME    replica | rbd
   --no-start        do not start after create
   --import-only     upload template volume only
-  --ip CIDR_OR_IP   optional static IPv4 for NIC IPAM
+  --ip CIDR_OR_IP   static IPv4 (PERTISK-NET disk + NIC; no LAN DHCP)
+  --gateway IP      LAN gateway for --ip (default \$PERTISK_VMS_STATIC_GATEWAY)
 EOF
   exit 1
 }
@@ -62,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --no-start) START=0; shift ;;
     --import-only) IMPORT_ONLY=1; shift ;;
     --ip) STATIC_IP="$2"; shift 2 ;;
+    --gateway) STATIC_GATEWAY="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
@@ -76,6 +79,9 @@ die() { echo "error: $*" >&2; exit 1; }
 [[ -f "$DISK" ]] || die "disk not found: ${DISK:-unset}"
 command -v jq >/dev/null || die "jq required"
 command -v curl >/dev/null || die "curl required"
+if [[ -n "$STATIC_IP" ]]; then
+  command -v python3 >/dev/null || die "python3 required for --ip netcfg"
+fi
 
 case "$(printf '%s' "$ARCH" | tr '[:upper:]' '[:lower:]')" in
   amd64|x86_64|x64) ARCH=amd64 ;;
@@ -214,6 +220,34 @@ if [[ -n "$STATIC_IP" ]]; then
   nic_body="$(jq -n --arg id "$NET_ID" --arg ip "$ip" '{network_id:$id, ip:$ip}')"
 fi
 api POST "/v1/vms/${VMID}/nics" -H 'Content-Type: application/json' -d "$nic_body" >/dev/null
+
+if [[ -n "$STATIC_IP" ]]; then
+  gw="${STATIC_GATEWAY:-}"
+  [[ -n "$gw" ]] || die "--ip requires --gateway or PERTISK_VMS_STATIC_GATEWAY (guest must not DHCP onto a live node)"
+  cidr="$STATIC_IP"
+  [[ "$cidr" == */* ]] || cidr="${STATIC_IP%%/*}/24"
+  ns="${PERTISK_VMS_STATIC_NAMESERVER:-$gw}"
+  netcfg_name="${NAME}-netcfg"
+  old_nc="$(find_volume_id "$netcfg_name")"
+  if [[ -n "$old_nc" ]]; then
+    api DELETE "/v1/volumes/${old_nc}" >/dev/null 2>&1 || true
+  fi
+  raw="$(mktemp /tmp/pertisk-netcfg.XXXXXX.raw)"
+  python3 - "$raw" "$cidr" "$gw" "$ns" <<'PY'
+import sys
+path, cidr, gw, ns = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+blob = f"PERTISK-NET\nIPV4={cidr}\nGATEWAY={gw}\nNAMESERVER={ns}\nINTERFACE=eth0\n".encode()
+open(path, "wb").write(blob + b"\x00" * (1024 * 1024 - len(blob)))
+PY
+  log "attach netcfg ${netcfg_name} static=${cidr} gw=${gw}"
+  NC_ID="$("${CURL[@]}" -X POST "${BASE}/v1/volumes/import?name=$(printf '%s' "$netcfg_name" | jq -sRr @uri)&format=raw" \
+    -H "$(auth)" -H 'Accept: application/json' \
+    --data-binary @"${raw}" | jq -r '.id // empty')"
+  rm -f "$raw"
+  [[ -n "$NC_ID" ]] || die "netcfg import failed"
+  api POST "/v1/vms/${VMID}/disks" -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg id "$NC_ID" '{volume_id:$id}')" >/dev/null
+fi
 
 if [[ "$START" == "1" ]]; then
   log "start VM ${VMID}"
