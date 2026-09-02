@@ -199,10 +199,11 @@ if [[ -n "$DISK_GB" ]]; then
     -d "$(jq -n --argjson n "$bytes" '{size_bytes:$n}')" >/dev/null
 fi
 
-log "create VM ${NAME} id=${VMID} cores=${CORES} memory=${MEMORY}"
+log "create VM ${NAME} id=${VMID} cores=${CORES} memory=${MEMORY} autostart=true"
 api POST /v1/vms -H 'Content-Type: application/json' -d "$(jq -n \
   --argjson id "$VMID" --arg name "$NAME" --argjson cpus "$CORES" --argjson mem "$MEMORY" \
-  '{id:$id, name:$name, vcpus:$cpus, memory_mib:$mem, ha:true}')" >/dev/null
+  --argjson order "$VMID" \
+  '{id:$id, name:$name, vcpus:$cpus, memory_mib:$mem, ha:true, autostart:true, autostart_order:$order}')" >/dev/null
 
 api POST "/v1/vms/${VMID}/disks" -H 'Content-Type: application/json' \
   -d "$(jq -n --arg id "$VOL_ID" '{volume_id:$id}')" >/dev/null

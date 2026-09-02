@@ -66,7 +66,7 @@ Upload flow:
 
 1. Login `POST /v1/login` → Bearer token.
 2. `--import-only` streams the qcow2 once to `POST /v1/volumes/import?name=kos-cloud-{arch}&format=qcow2` (8 GiB stream, not the 64 MiB blob PUT).
-3. Clone the template volume per node, optional resize, `POST /v1/vms`, attach disk + NIC (create a bridged network on `vmbr0` if missing), then start.
+3. Clone the template volume per node, optional resize, `POST /v1/vms` with **`autostart: true`** (power on after a pertiskd reboot; `autostart_order` = VMID so CPs start first), attach disk + NIC (create a bridged network on `vmbr0` if missing), then start.
 
 Guests on a bridged LAN use **DHCP** (same unmanaged path as Nutanix). Optional `--ip` / `PERTISK_VMS_STATIC_IPS` sets `AttachNicRequest.ip`.
 
