@@ -12,11 +12,24 @@ import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 const AVAIL_POLL_MS = 15000
 
 function formatProbe(r, kind) {
-  const label = kind === 'vsphere' ? 'ESXi' : kind === 'nutanix' ? 'Nutanix' : 'Proxmox'
-  const hostWord = kind === 'proxmox' || !kind ? 'node' : 'host'
-  const hostsWord = kind === 'proxmox' || !kind ? 'nodes' : 'hosts'
+  const label =
+    kind === 'vsphere'
+      ? 'ESXi'
+      : kind === 'nutanix'
+        ? 'Nutanix'
+        : kind === 'pertisk-vms'
+          ? 'Pertisk VMs'
+          : 'Proxmox'
+  const hostWord = kind === 'proxmox' || kind === 'pertisk-vms' || !kind ? 'node' : 'host'
+  const hostsWord = kind === 'proxmox' || kind === 'pertisk-vms' || !kind ? 'nodes' : 'hosts'
   const storageWord =
-    kind === 'vsphere' ? 'datastore' : kind === 'nutanix' ? 'storage container' : 'storage'
+    kind === 'vsphere'
+      ? 'datastore'
+      : kind === 'nutanix'
+        ? 'storage container'
+        : kind === 'pertisk-vms'
+          ? 'storage backend'
+          : 'storage'
   const nodes = (r.nodes || []).map((n) => n.node).join(', ') || '(none)'
   const parts = [
     `${label} ${r.version || '?'} @ ${r.url}`,

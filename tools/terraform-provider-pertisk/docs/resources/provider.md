@@ -2,7 +2,7 @@
 page_title: "pertisk_provider Resource - pertisk"
 subcategory: ""
 description: |-
-  Register a Proxmox or vSphere hypervisor with pertisk-mgmt.
+  Register a Proxmox, vSphere, Nutanix, or Pertisk VMs hypervisor with pertisk-mgmt.
 ---
 
 # pertisk_provider (Resource)
@@ -25,6 +25,18 @@ resource "pertisk_provider" "pve" {
   bridge       = "vmbr0"
   insecure     = true
 }
+
+resource "pertisk_provider" "vms" {
+  name         = "lab-vms"
+  kind         = "pertisk-vms"
+  url          = "https://10.1.1.80:7443"
+  token_id     = "admin"
+  token_secret = var.pertisk_vms_password
+  node         = "n1"
+  storage      = "replica"
+  bridge       = "vmbr0"
+  insecure     = true
+}
 ```
 
 ## Argument Reference
@@ -41,7 +53,7 @@ resource "pertisk_provider" "pve" {
 
 ### Optional
 
-* `kind` - (String) `proxmox` | `vsphere` | `nutanix` (default `proxmox`).
+* `kind` - (String) `proxmox` | `vsphere` | `nutanix` | `pertisk-vms` (default `proxmox`).
 * `insecure` - (Boolean) Skip TLS verify (default `false`).
 
 ## Attribute Reference

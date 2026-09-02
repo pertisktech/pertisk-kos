@@ -52,8 +52,8 @@ fn apply_lab_env(cmd: &mut Command, state: &AppState, provider_url: &str) -> Opt
         "PROXMOX_STATIC_IPS",
         // Nutanix IPAM reserved IPs (space-separated list of addresses).
         "NUTANIX_STATIC_IPS",
-        // vSphere guest static IPs (space-separated list of addresses).
         "VSPHERE_STATIC_IPS",
+        "PERTISK_VMS_STATIC_IPS",
     ] {
         if let Ok(v) = std::env::var(key) {
             if !v.is_empty() {
@@ -576,7 +576,8 @@ async fn apply_proxmox_arm64_create_env(
 ) -> anyhow::Result<()> {
     if matches!(
         provider.kind.as_str(),
-        "nutanix" | "ahv" | "prism" | "vsphere" | "esxi"
+        "nutanix" | "ahv" | "prism" | "vsphere" | "esxi" | "pertisk-vms" | "pertisk-vm"
+            | "pertiskvms"
     ) {
         return Ok(());
     }
@@ -1186,6 +1187,8 @@ async fn run_create_cluster(
         vsphere_lab_up_path(state)
     } else if provider.kind == "nutanix" {
         nutanix_lab_up_path(state)
+    } else if provider.kind == "pertisk-vms" {
+        pertisk_vms_lab_up_path(state)
     } else {
         state.cfg().lab_up.clone()
     };
@@ -1255,6 +1258,21 @@ async fn run_create_cluster(
         if provider.insecure != 0 {
             cmd.env("NUTANIX_INSECURE", "1");
         }
+    } else if provider.kind == "pertisk-vms" {
+        cmd.env("PROVIDER_KIND", "pertisk-vms")
+            .env("PERTISK_VMS_URL", &provider.url)
+            .env("PERTISK_VMS_USER", &provider.token_id)
+            .env("PERTISK_VMS_PASSWORD", &secret)
+            .env("PERTISK_VMS_NODE", &provider.node)
+            .env("PERTISK_VMS_STORAGE", &provider.storage)
+            .env("PERTISK_VMS_NETWORK", &provider.bridge)
+            .env(
+                "PERTISK_VMS_MAC_SALT",
+                format!("{}|{}", provider.url.trim_end_matches('/'), provider.node),
+            );
+        if provider.insecure != 0 {
+            cmd.env("PERTISK_VMS_INSECURE", "1");
+        }
     } else {
         cmd.env("PROXMOX_URL", &provider.url)
             .env("PROXMOX_TOKEN_ID", &provider.token_id)
@@ -1314,6 +1332,9 @@ async fn run_create_cluster(
             let gw_keys: &[&str] = match provider.kind.as_str() {
                 "nutanix" | "ahv" | "prism" => &["NUTANIX_STATIC_GATEWAY", "LAB_GATEWAY"],
                 "vsphere" | "esxi" => &["VSPHERE_STATIC_GATEWAY", "LAB_GATEWAY"],
+                "pertisk-vms" | "pertisk-vm" | "pertiskvms" => {
+                    &["PERTISK_VMS_STATIC_GATEWAY", "LAB_GATEWAY"]
+                }
                 _ => &["PROXMOX_STATIC_GATEWAY", "LAB_GATEWAY"],
             };
             let gw_probe = detect_guest_gateway(&subnet, gw_keys).await;
@@ -1344,6 +1365,37 @@ async fn run_create_cluster(
                                     log_path,
                                     &format!(
                                         "=> auto-assigned Nutanix IPAM reserved IPs: {} gateway={}\n",
+                                        ips_to_use.join(", "),
+                                        gw_probe.summary
+                                    ),
+                                )?;
+                            }
+                            _ => {
+                                append_log(
+                                    log_path,
+                                    &format!(
+                                        "=> could not auto-assign IPs in {}, falling back to DHCP\n",
+                                        subnet
+                                    ),
+                                )?;
+                            }
+                        }
+                    }
+                }
+                "pertisk-vms" | "pertisk-vm" | "pertiskvms" => {
+                    let has_static = std::env::var("PERTISK_VMS_STATIC_IPS")
+                        .map(|v| !v.trim().is_empty())
+                        .unwrap_or(false);
+                    if !has_static {
+                        match scan_subnet_for_free_ips(&subnet, need_ips, &exclude_ips).await {
+                            Ok(free_ips) if !free_ips.is_empty() => {
+                                let ips_to_use = free_ips[..std::cmp::min(need_ips as usize, free_ips.len())].to_vec();
+                                cmd.env("PERTISK_VMS_STATIC_IPS", ips_to_use.join(" "));
+                                cmd.env("PERTISK_VMS_STATIC_GATEWAY", &gw_probe.chosen);
+                                append_log(
+                                    log_path,
+                                    &format!(
+                                        "=> auto-assigned pertisk-vms guest IPs: {} gateway={}\n",
                                         ips_to_use.join(", "),
                                         gw_probe.summary
                                     ),
@@ -2393,6 +2445,39 @@ pub async fn purge_cluster(state: &AppState, cid: &str, log_path: &str) -> anyho
                                 append_log(log_path, &format!("warn: delete {legacy}: {e}\n"))?;
                             }
                         }
+                    } else if provider.kind == "pertisk-vms" {
+                        let client = crate::pertisk_vms::PertiskVmsClient::new(
+                            provider.url.clone(),
+                            provider.token_id.clone(),
+                            secret,
+                            provider.insecure != 0,
+                        );
+                        let mut tried = std::collections::HashSet::new();
+                        for name in &node_names {
+                            if !tried.insert(name.clone()) {
+                                continue;
+                            }
+                            append_log(
+                                log_path,
+                                &format!("deleting VM {name} on pertisk-vms\n"),
+                            )?;
+                            if let Err(e) = client.delete_vm_by_name(name).await {
+                                append_log(log_path, &format!("warn: delete {name}: {e}\n"))?;
+                            }
+                        }
+                        for vmid in vmids {
+                            let legacy = crate::pertisk_vms::PertiskVmsClient::vm_name(prefix, vmid);
+                            if !tried.insert(legacy.clone()) {
+                                continue;
+                            }
+                            append_log(
+                                log_path,
+                                &format!("deleting VM {legacy} on pertisk-vms (by vmid)\n"),
+                            )?;
+                            if let Err(e) = client.delete_vm(prefix, vmid).await {
+                                append_log(log_path, &format!("warn: delete {legacy}: {e}\n"))?;
+                            }
+                        }
                     } else {
                         let client = crate::proxmox::ProxmoxClient {
                             url: provider.url,
@@ -2653,6 +2738,21 @@ async fn run_add_node(
             if provider.insecure != 0 {
                 cmd.env("VSPHERE_INSECURE", "1");
             }
+        } else if provider.kind == "pertisk-vms" {
+            cmd.env("PROVIDER_KIND", "pertisk-vms")
+                .env("PERTISK_VMS_URL", &provider.url)
+                .env("PERTISK_VMS_USER", &provider.token_id)
+                .env("PERTISK_VMS_PASSWORD", &secret)
+                .env("PERTISK_VMS_NODE", &provider.node)
+                .env("PERTISK_VMS_STORAGE", &provider.storage)
+                .env("PERTISK_VMS_NETWORK", &provider.bridge)
+                .env(
+                    "PERTISK_VMS_MAC_SALT",
+                    format!("{}|{}", provider.url.trim_end_matches('/'), provider.node),
+                );
+            if provider.insecure != 0 {
+                cmd.env("PERTISK_VMS_INSECURE", "1");
+            }
         } else {
             cmd.env("PROXMOX_URL", &provider.url)
                 .env("PROXMOX_TOKEN_ID", &provider.token_id)
@@ -2813,6 +2913,8 @@ fn add_node_script_path(state: &AppState, kind: &str) -> PathBuf {
         "nutanix-add-node.sh"
     } else if matches!(kind, "vsphere" | "esxi") {
         "vsphere-add-node.sh"
+    } else if matches!(kind, "pertisk-vms" | "pertisk-vm" | "pertiskvms") {
+        "pertisk-vms-add-node.sh"
     } else {
         "proxmox-add-node.sh"
     };
@@ -3380,6 +3482,22 @@ async fn remove_one_node(
                     if legacy != node.0 {
                         let _ = client.delete_vm(Some(&cluster_name), vmid).await;
                     }
+                } else if provider.kind == "pertisk-vms" {
+                    append_log(log_path, &format!("deleting VM {}\n", node.0))?;
+                    let client = crate::pertisk_vms::PertiskVmsClient::new(
+                        provider.url,
+                        provider.token_id,
+                        secret,
+                        provider.insecure != 0,
+                    );
+                    if let Err(e) = client.delete_vm_by_name(&node.0).await {
+                        append_log(log_path, &format!("warn: delete {}: {e}\n", node.0))?;
+                    }
+                    let legacy =
+                        crate::pertisk_vms::PertiskVmsClient::vm_name(Some(&cluster_name), vmid);
+                    if legacy != node.0 {
+                        let _ = client.delete_vm(Some(&cluster_name), vmid).await;
+                    }
                 } else {
                     append_log(log_path, &format!("deleting VM {vmid} ({})\n", node.0))?;
                     let client = crate::proxmox::ProxmoxClient {
@@ -3550,6 +3668,47 @@ async fn run_resize_node(
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             append_log(log_path, "VM restarted\n")?;
         }
+    } else if provider.kind == "pertisk-vms" {
+        let client = crate::pertisk_vms::PertiskVmsClient::new(
+            provider.url.clone(),
+            provider.token_id.clone(),
+            secret,
+            provider.insecure != 0,
+        );
+        if cpu_mem_changed {
+            client
+                .set_vm_hardware(&vm_name, set_cores, set_mem)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            append_log(log_path, "updated pertisk-vms CPU/memory config\n")?;
+        }
+        if let Some(want) = apply_disk {
+            let actual = cur_disk.unwrap_or(0);
+            if want > actual {
+                client
+                    .grow_vm_disk(&vm_name, want)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                append_log(
+                    log_path,
+                    &format!("grew pertisk-vms disk {actual} → {want} GiB\n"),
+                )?;
+                disk_grew_hypervisor = true;
+            } else if disk_requested {
+                append_log(
+                    log_path,
+                    &format!("pertisk-vms disk already >= {want} GiB — will grow guest EPHEMERAL\n"),
+                )?;
+            }
+        }
+        if cpu_mem_changed {
+            append_log(log_path, "restarting VM so CPU/memory take effect…\n")?;
+            client
+                .restart_vm_by_name(&vm_name)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            append_log(log_path, "VM restarted\n")?;
+        }
     } else {
         let client = crate::proxmox::ProxmoxClient {
             url: provider.url.clone(),
@@ -3664,6 +3823,17 @@ async fn run_resize_node(
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             } else if provider.kind == "nutanix" {
                 let client = crate::nutanix::NutanixClient::new(
+                    provider.url.clone(),
+                    provider.token_id.clone(),
+                    crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?,
+                    provider.insecure != 0,
+                );
+                client
+                    .restart_vm_by_name(&vm_name)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            } else if provider.kind == "pertisk-vms" {
+                let client = crate::pertisk_vms::PertiskVmsClient::new(
                     provider.url.clone(),
                     provider.token_id.clone(),
                     crypto::decrypt(&state.cfg().secret_key, &provider.token_secret_enc)?,
@@ -3961,6 +4131,17 @@ fn nutanix_lab_up_path(state: &AppState) -> std::path::PathBuf {
     let lab = &state.cfg().lab_up;
     if let Some(dir) = lab.parent() {
         let candidate = dir.join("nutanix-lab-up.sh");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    lab.clone()
+}
+
+fn pertisk_vms_lab_up_path(state: &AppState) -> std::path::PathBuf {
+    let lab = &state.cfg().lab_up;
+    if let Some(dir) = lab.parent() {
+        let candidate = dir.join("pertisk-vms-lab-up.sh");
         if candidate.exists() {
             return candidate;
         }

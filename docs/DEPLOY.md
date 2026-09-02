@@ -2,18 +2,18 @@
 
 Install **pertisk-mgmt** on a Linux host, register a hypervisor, then create clusters from the UI (or Terraform). Guests are immutable: **there is no SSH into Pertisk nodes**.
 
-Related: [MGMT.md](./MGMT.md) (packages / env), [PROXMOX.md](./PROXMOX.md), [NUTANIX.md](./NUTANIX.md), [VSPHERE.md](./VSPHERE.md).
+Related: [MGMT.md](./MGMT.md) (packages / env), [PROXMOX.md](./PROXMOX.md), [NUTANIX.md](./NUTANIX.md), [VSPHERE.md](./VSPHERE.md), [PERTISK_VMS.md](./PERTISK_VMS.md).
 
 ## SSH matrix
 
-| Hop | Proxmox (amd64) | Proxmox (arm64) | Nutanix AHV | vSphere (ESXi) |
-|-----|-----------------|-----------------|-------------|----------------|
-| **Build laptop → mgmt host** | Yes — copy DEB/RPM + qcow2 | Yes | Yes | Yes |
-| **Mgmt → hypervisor API** | Yes — token (`:8006`) | Yes — token | Yes — user/password (`:9440`) | Yes — user/password (`/sdk` SOAP) |
-| **Mgmt → hypervisor SSH** | **Not required** (`PROXMOX_NO_SSH=1`) | **Not required** on native aarch64 PVE (API create, default arch). On **x86 PVE** running aarch64 guests: `PROXMOX_ARM64_TEMPLATE` or `PROXMOX_SSH=root@<pve>` | **Not required**. Optional `NUTANIX_CVM_SSH` only to attach serial if REST fails | **Not required** (never used) |
-| **Anyone → Pertisk guest** | **Never** — Machine API `:50000` / serial console | Never | Never | Never |
+| Hop | Proxmox (amd64) | Proxmox (arm64) | Nutanix AHV | vSphere (ESXi) | Pertisk VMs |
+|-----|-----------------|-----------------|-------------|----------------|-------------|
+| **Build laptop → mgmt host** | Yes — copy DEB/RPM + qcow2 | Yes | Yes | Yes | Yes |
+| **Mgmt → hypervisor API** | Yes — token (`:8006`) | Yes — token | Yes — user/password (`:9440`) | Yes — user/password (`/sdk` SOAP) | Yes — user/password (`:7443` / `:7480`) |
+| **Mgmt → hypervisor SSH** | **Not required** (`PROXMOX_NO_SSH=1`) | **Not required** on native aarch64 PVE (API create, default arch). On **x86 PVE** running aarch64 guests: `PROXMOX_ARM64_TEMPLATE` or `PROXMOX_SSH=root@<pve>` | **Not required**. Optional `NUTANIX_CVM_SSH` only to attach serial if REST fails | **Not required** (never used) | **Not required** (never used) |
+| **Anyone → Pertisk guest** | **Never** — Machine API `:50000` / serial console | Never | Never | Never | Never |
 
-**L2:** mgmt must share the guest VLAN (or set `LAB_SUBNET`) so MAC→IP discovery works. If mgmt is routed-only, Proxmox can fall back to SSH ARP on the PVE bridge; ESXi and AHV cannot — put mgmt on the same L2.
+**L2:** mgmt must share the guest VLAN (or set `LAB_SUBNET`) so MAC→IP discovery works. If mgmt is routed-only, Proxmox can fall back to SSH ARP on the PVE bridge; ESXi, AHV, and Pertisk VMs cannot — put mgmt on the same L2.
 
 **Optional Proxmox SSH** (amd64): ZFS `qm importdisk` if API import fails, and offline EPHEMERAL grow. Production default is API-only.
 
@@ -45,7 +45,7 @@ Stage disks on mgmt (**Images** in the UI, or copy into `/var/lib/pertisk-mgmt/i
 
 ```text
 pertisk-cloud-amd64.qcow2           # or pertisk-cloud-amd64-vX.Y.Z.qcow2
-pertisk-cloud-arm64.qcow2           # arm64 / Proxmox only
+pertisk-cloud-arm64.qcow2           # arm64 / Proxmox and Pertisk VMs
 ```
 
 Mgmt does not compile these. Create Cluster fails if the matching file is missing.
@@ -164,7 +164,19 @@ Mgmt must be L2-adjacent for DHCP/ARP IP discovery.
 
 ---
 
-## 6. After the cluster is Ready
+## 6. Pertisk VMs
+
+**Need SSH to pertiskd?** No. REST `/v1` on `:7443` (HTTPS) or `:7480` (HTTP) only.
+
+1. Linux host with QEMU + OVMF. Admin password from `/etc/pertisk/admin`.
+2. UI provider: URL, username/password, node (`n1`), storage (`replica`), network (`vmbr0`). Insecure TLS for lab certs.
+3. Create cluster. Numeric VMIDs match KOS `cp_vmid`; names `{cluster}-cp-N`.
+
+See [PERTISK_VMS.md](./PERTISK_VMS.md).
+
+---
+
+## 7. After the cluster is Ready
 
 - Download kubeconfig from the cluster page (or Terraform).
 - CNI: Cilium (lab-up default), Calico, or Flannel — `cluster.cni: none` when a DaemonSet owns networking.

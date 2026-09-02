@@ -4,6 +4,7 @@ export function formatProviderKind(kind) {
   const k = String(kind || '').toLowerCase()
   if (k === 'vsphere' || k === 'esxi' || k === 'vmware') return 'vSphere'
   if (k === 'nutanix' || k === 'ahv') return 'Nutanix'
+  if (k === 'pertisk-vms' || k === 'pertisk-vm' || k === 'pertiskvms' || k === 'vms') return 'Pertisk VMs'
   if (k === 'proxmox' || k === '') return 'Proxmox'
   return kind
 }
@@ -11,6 +12,7 @@ export function formatProviderKind(kind) {
 export function normalizeProviderKind(kind) {
   const k = String(kind || '').toLowerCase()
   if (k === 'vsphere' || k === 'esxi' || k === 'vmware') return 'vsphere'
+  if (k === 'pertisk-vms' || k === 'pertisk-vm' || k === 'pertiskvms' || k === 'vms') return 'pertisk-vms'
   if (k === 'proxmox' || k === '') return 'proxmox'
   return k || 'proxmox'
 }

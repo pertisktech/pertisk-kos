@@ -9,7 +9,8 @@ import { normalizeProviderKind } from './ClusterMetaBadges'
 
 function guestArchAllowed(kind, arch) {
   if (arch !== 'arm64') return true
-  return normalizeProviderKind(kind) === 'proxmox'
+  const k = normalizeProviderKind(kind)
+  return k === 'proxmox' || k === 'pertisk-vms'
 }
 
 function VerifyRow({ state, label, message }) {
@@ -431,7 +432,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
       if (!form.provider_id) return 'Select a provider'
       if (!String(form.k8s_version || '').trim()) return 'Select a Kubernetes version'
       if (!armAllowed && form.arch === 'arm64') {
-        return 'arm64 guests are supported on Proxmox; vSphere and Nutanix use amd64'
+        return 'arm64 guests are supported on Proxmox and Pertisk VMs; vSphere and Nutanix use amd64'
       }
       if (!images) return 'Still checking cloud images…'
       if (imageBlocked) {
@@ -621,7 +622,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
               <select value={form.arch} onChange={(e) => set('arch', e.target.value)}>
                 <option value="amd64">amd64 (x86_64)</option>
                 <option value="arm64" disabled={!armAllowed}>
-                  arm64 (aarch64){!armAllowed ? ' — Proxmox only' : ''}
+                  arm64 (aarch64){!armAllowed ? ' — Proxmox / Pertisk VMs only' : ''}
                 </option>
               </select>
               <p className="hint muted">

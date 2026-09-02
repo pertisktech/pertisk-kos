@@ -57,6 +57,7 @@ async fn list(
                       CASE
                         WHEN lower(p.kind) IN ('nutanix', 'ahv', 'prism') THEN 'nutanix'
                         WHEN lower(p.kind) IN ('vsphere', 'esxi', 'vmware') THEN 'vsphere'
+                        WHEN lower(p.kind) IN ('pertisk-vms', 'pertisk-vm', 'pertiskvms', 'vms') THEN 'pertisk-vms'
                         WHEN p.kind IS NOT NULL AND trim(p.kind) != '' THEN 'proxmox'
                         ELSE NULL
                       END,

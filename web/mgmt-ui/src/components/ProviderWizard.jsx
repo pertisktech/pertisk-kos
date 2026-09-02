@@ -42,14 +42,28 @@ const emptyNutanix = {
   arch: 'auto',
 }
 
+const emptyPertiskVms = {
+  kind: 'pertisk-vms',
+  name: 'lab-vms',
+  url: 'https://10.1.1.80:7443',
+  token_id: 'admin',
+  token_secret: '',
+  node: 'n1',
+  storage: 'replica',
+  bridge: 'vmbr0',
+  insecure: true,
+  arch: 'auto',
+}
+
 function emptyForKind(kind) {
   if (kind === 'vsphere') return { ...emptyVsphere }
   if (kind === 'nutanix') return { ...emptyNutanix }
+  if (kind === 'pertisk-vms') return { ...emptyPertiskVms }
   return { ...emptyProxmox }
 }
 
 function isUserPass(kind) {
-  return kind === 'vsphere' || kind === 'nutanix'
+  return kind === 'vsphere' || kind === 'nutanix' || kind === 'pertisk-vms'
 }
 
 function labelsFor(kind) {
@@ -81,6 +95,21 @@ function labelsFor(kind) {
       urlPh: 'https://10.1.1.50:9440',
       userPh: 'admin',
       netPh: 'vlan.0',
+    }
+  }
+  if (kind === 'pertisk-vms') {
+    return {
+      product: 'Pertisk VMs',
+      hosts: 'hosts',
+      host: 'node',
+      storage: 'storage backend',
+      network: 'Network',
+      nodeField: 'Node',
+      credUser: 'Username',
+      credPass: 'Password',
+      urlPh: 'https://10.1.1.80:7443',
+      userPh: 'admin',
+      netPh: 'vmbr0',
     }
   }
   return {
@@ -343,7 +372,13 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
       ? [form.storage]
       : []
   const kindTitle =
-    form.kind === 'vsphere' ? 'vSphere' : form.kind === 'nutanix' ? 'Nutanix' : 'Proxmox'
+    form.kind === 'vsphere'
+      ? 'vSphere'
+      : form.kind === 'nutanix'
+        ? 'Nutanix'
+        : form.kind === 'pertisk-vms'
+          ? 'Pertisk VMs'
+          : 'Proxmox'
   const title = mode === 'edit' ? `Edit ${kindTitle} provider` : `Add ${kindTitle} provider`
 
   return (
@@ -404,6 +439,7 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
                   <option value="proxmox">Proxmox</option>
                   <option value="vsphere">vSphere (ESXi)</option>
                   <option value="nutanix">Nutanix (AHV)</option>
+                  <option value="pertisk-vms">Pertisk VMs</option>
                 </select>
               </div>
             )}
@@ -460,7 +496,7 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
               <input value={form.node} onChange={(e) => set('node', e.target.value)} />
             </div>
             <div className="field">
-              <label>{form.kind === 'vsphere' ? 'Datastore' : form.kind === 'nutanix' ? 'Storage container' : 'Storage'}</label>
+              <label>{form.kind === 'vsphere' ? 'Datastore' : form.kind === 'nutanix' ? 'Storage container' : form.kind === 'pertisk-vms' ? 'Storage backend' : 'Storage'}</label>
               {storageList.length > 1 ? (
                 <select value={form.storage} onChange={(e) => set('storage', e.target.value)}>
                   {storageList.map((s) => (
@@ -484,7 +520,9 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
                   ? 'Run Test on the last step to discover datastores.'
                   : form.kind === 'nutanix'
                     ? 'Run Test on the last step to discover storage containers.'
-                    : 'Run Test on the last step to discover storages that support images.'}
+                    : form.kind === 'pertisk-vms'
+                      ? 'replica is the default pool; rbd appears when Ceph is configured on the host.'
+                      : 'Run Test on the last step to discover storages that support images.'}
               </p>
             </div>
             <div className="field">
@@ -531,7 +569,7 @@ export default function ProviderWizard({ open, mode = 'create', provider = null,
               <div>{form.node || '—'}</div>
             </div>
             <div className="field">
-              <label>{form.kind === 'vsphere' ? 'Datastore' : form.kind === 'nutanix' ? 'Storage container' : 'Storage'}</label>
+              <label>{form.kind === 'vsphere' ? 'Datastore' : form.kind === 'nutanix' ? 'Storage container' : form.kind === 'pertisk-vms' ? 'Storage backend' : 'Storage'}</label>
               <div>{form.storage || '—'}</div>
             </div>
             <div className="field">

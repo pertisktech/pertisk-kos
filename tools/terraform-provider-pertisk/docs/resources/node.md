@@ -47,7 +47,7 @@ resource "pertisk_node" "extra_worker" {
 * `mode` - (String) `create` (default) | `adopt`. Forces new resource.
 * `ip` - (String) Required for `mode=adopt` (Machine API IPv4). Computed after create/join.
 * `name` - (String) Optional hostname for adopt; otherwise mgmt assigns `{cluster}-cp-N` / `{cluster}-wk-N`.
-* `source` - (String) For adopt: `adopted` | `baremetal`. After create, API may report `proxmox` | `vsphere`.
+* `source` - (String) For adopt: `adopted` | `baremetal`. After create, API may report `proxmox` | `vsphere` | `nutanix` | `pertisk-vms`.
 * `memory` - (Number) Optional memory MB override (`mode=create`). Forces new resource.
 * `cores` - (Number) Optional vCPU override. Forces new resource.
 * `disk_gb` - (Number) Optional disk GiB override. Forces new resource.

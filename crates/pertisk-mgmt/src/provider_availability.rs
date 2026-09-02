@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::crypto;
 use crate::nutanix::NutanixClient;
+use crate::pertisk_vms::PertiskVmsClient;
 use crate::proxmox::ProxmoxClient;
 use crate::routes::providers::ProviderOut;
 use crate::state::AppState;
@@ -114,6 +115,11 @@ async fn probe_uncached(state: &AppState, provider_id: &str) -> String {
         }
         "nutanix" => {
             NutanixClient::new(url, token_id, secret, insecure)
+                .ping()
+                .await
+        }
+        "pertisk-vms" => {
+            PertiskVmsClient::new(url, token_id, secret, insecure)
                 .ping()
                 .await
         }

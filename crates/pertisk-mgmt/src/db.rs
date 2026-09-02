@@ -385,18 +385,19 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await;
 
-    // Cluster create used to omit nodes.source (DEFAULT proxmox). Fix Nutanix / vSphere rows.
+    // Cluster create used to omit nodes.source (DEFAULT proxmox). Fix Nutanix / vSphere / pertisk-vms rows.
     let _ = sqlx::query(
         r#"UPDATE nodes SET source = CASE
              WHEN lower(p.kind) IN ('nutanix', 'ahv', 'prism') THEN 'nutanix'
              WHEN lower(p.kind) IN ('vsphere', 'esxi', 'vmware') THEN 'vsphere'
+             WHEN lower(p.kind) IN ('pertisk-vms', 'pertisk-vm', 'pertiskvms', 'vms') THEN 'pertisk-vms'
              ELSE nodes.source
            END
            FROM clusters c
            JOIN providers p ON p.id = c.provider_id
            WHERE nodes.cluster_id = c.id
              AND COALESCE(nodes.source, 'proxmox') = 'proxmox'
-             AND lower(p.kind) IN ('nutanix', 'ahv', 'prism', 'vsphere', 'esxi', 'vmware')"#,
+             AND lower(p.kind) IN ('nutanix', 'ahv', 'prism', 'vsphere', 'esxi', 'vmware', 'pertisk-vms', 'pertisk-vm', 'pertiskvms', 'vms')"#,
     )
     .execute(pool)
     .await;
@@ -405,6 +406,7 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
              SELECT CASE
                WHEN lower(p.kind) IN ('nutanix', 'ahv', 'prism') THEN 'nutanix'
                WHEN lower(p.kind) IN ('vsphere', 'esxi', 'vmware') THEN 'vsphere'
+               WHEN lower(p.kind) IN ('pertisk-vms', 'pertisk-vm', 'pertiskvms', 'vms') THEN 'pertisk-vms'
                ELSE nodes.source
              END
              FROM clusters c
@@ -416,7 +418,7 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
                SELECT 1 FROM clusters c
                JOIN providers p ON p.id = c.provider_id
                WHERE c.id = nodes.cluster_id
-                 AND lower(p.kind) IN ('nutanix', 'ahv', 'prism', 'vsphere', 'esxi', 'vmware')
+                 AND lower(p.kind) IN ('nutanix', 'ahv', 'prism', 'vsphere', 'esxi', 'vmware', 'pertisk-vms', 'pertisk-vm', 'pertiskvms', 'vms')
              )"#,
     )
     .execute(pool)

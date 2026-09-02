@@ -21,6 +21,7 @@ mod node_status;
 mod node_sync;
 mod nutanix;
 mod os_upgrade;
+mod pertisk_vms;
 mod provider_availability;
 mod provider_resources;
 mod proxmox;

@@ -109,7 +109,12 @@ export default function ProviderDashboard() {
       <p className="muted chart-footnote">
         Disk is the provider storage ({summary.storage || 'configured datastore / container'}).
         CPU and memory are the selected host
-        {kind === 'nutanix' ? ' (AHV cluster sum when the node name is the Prism cluster)' : ''}.
+        {kind === 'nutanix'
+          ? ' (AHV cluster sum when the node name is the Prism cluster)'
+          : kind === 'pertisk-vms'
+            ? ' (sum of pertisk-vms cluster members)'
+            : ''}
+        .
         {' '}
         <button type="button" className="linkish" onClick={() => nav('/providers')}>
           Manage providers

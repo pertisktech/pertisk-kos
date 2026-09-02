@@ -106,9 +106,9 @@ func (r *nodeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			"source": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				// No StaticString default: mode=create gets proxmox|vsphere from the API.
+				// No StaticString default: mode=create gets proxmox|vsphere|nutanix|pertisk-vms from the API.
 				// Defaulting to "adopted" caused inconsistent apply results for create VMs.
-				MarkdownDescription: "Provenance from API after apply (proxmox|vsphere|adopted|baremetal). Optional input for mode=adopt (adopted|baremetal); defaults to adopted.",
+				MarkdownDescription: "Provenance from API after apply (proxmox|vsphere|nutanix|pertisk-vms|adopted|baremetal). Optional input for mode=adopt (adopted|baremetal); defaults to adopted.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 					stringplanmodifier.UseStateForUnknown(),

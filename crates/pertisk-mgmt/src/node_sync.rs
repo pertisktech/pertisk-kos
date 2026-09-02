@@ -16,6 +16,7 @@ use crate::crypto;
 use crate::db;
 use crate::kubeconfig;
 use crate::nutanix::NutanixClient;
+use crate::pertisk_vms::PertiskVmsClient;
 use crate::proxmox::ProxmoxClient;
 use crate::state::AppState;
 use crate::vsphere::VsphereClient;
@@ -868,6 +869,13 @@ async fn hypervisor_guest_ips(
         let ip = match kind.as_str() {
             "nutanix" => {
                 NutanixClient::new(url.clone(), token_id.clone(), secret.clone(), insecure)
+                    .vm_ipv4(name)
+                    .await
+                    .ok()
+                    .flatten()
+            }
+            "pertisk-vms" => {
+                PertiskVmsClient::new(url.clone(), token_id.clone(), secret.clone(), insecure)
                     .vm_ipv4(name)
                     .await
                     .ok()

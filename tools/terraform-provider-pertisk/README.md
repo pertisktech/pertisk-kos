@@ -1,6 +1,6 @@
 # terraform-provider-pertisk
 
-Terraform provider for [pertisk-mgmt](../../docs/MGMT.md): register Proxmox / vSphere / Nutanix hypervisors and create, scale, upgrade, and destroy Pertisk Kubernetes clusters.
+Terraform provider for [pertisk-mgmt](../../docs/MGMT.md): register Proxmox / vSphere / Nutanix / Pertisk VMs hypervisors and create, scale, upgrade, and destroy Pertisk Kubernetes clusters.
 
 Address: `registry.terraform.io/pertisk-tech/pertisk`
 
@@ -9,7 +9,7 @@ Address: `registry.terraform.io/pertisk-tech/pertisk`
 | Feature | Resource / API | Notes |
 |---------|----------------|-------|
 | Auth | provider | Username/password login **or** Bearer `token`; `insecure` for lab TLS; env `PERTISK_*` |
-| Register hypervisor | `pertisk_provider` | `kind` = `proxmox` \| `vsphere` \| `nutanix`; token + node/storage/bridge |
+| Register hypervisor | `pertisk_provider` | `kind` = `proxmox` \| `vsphere` \| `nutanix` \| `pertisk-vms`; token + node/storage/bridge |
 | Lookup hypervisor | data `pertisk_provider` | By `name` or `id` |
 | Create / destroy cluster | `pertisk_cluster` | Waits for mgmt job; exports `status`, `endpoint`, `kubeconfig` |
 | HA control planes | `pertisk_cluster` | `controlplanes > 1` + `vip` (kube-vip); optional `vip6` |
@@ -116,6 +116,22 @@ resource "pertisk_provider" "ahv" {
   node         = "NTNX-Cluster"
   storage      = "SelfServiceContainer"
   bridge       = "homelab-subnet"
+  insecure     = true
+}
+```
+
+Pertisk VMs (`kind = "pertisk-vms"`; see [PERTISK_VMS.md](../../docs/PERTISK_VMS.md)):
+
+```hcl
+resource "pertisk_provider" "vms" {
+  name         = "tf-vms"
+  kind         = "pertisk-vms"
+  url          = "https://10.1.1.80:7443"
+  token_id     = "admin"
+  token_secret = var.pertisk_vms_password
+  node         = "n1"
+  storage      = "replica"
+  bridge       = "vmbr0"
   insecure     = true
 }
 ```

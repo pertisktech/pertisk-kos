@@ -49,7 +49,7 @@ pub struct ClusterOut {
     pub name: String,
     pub provider_id: String,
     pub provider_name: Option<String>,
-    /// `proxmox` | `vsphere` | `nutanix` (from providers.kind).
+    /// `proxmox` | `vsphere` | `nutanix` | `pertisk-vms` (from providers.kind).
     pub provider_kind: Option<String>,
     pub provider_url: Option<String>,
     pub provider_node: Option<String>,
@@ -582,7 +582,7 @@ async fn create(
     let kind = provider_kind.to_ascii_lowercase();
     if arch == "arm64" && matches!(kind.as_str(), "vsphere" | "nutanix") {
         return Err(AppError::bad(
-            "arm64 guests are supported on Proxmox; vSphere and Nutanix use amd64",
+            "arm64 guests are supported on Proxmox and pertisk-vms; vSphere and Nutanix use amd64",
         ));
     }
     if crate::cloud_images::find_for_arch(&state.cfg().images_dir, &arch).is_none() {
@@ -751,6 +751,14 @@ async fn delete_check(
                         client.test_connection().await
                     } else if kind == "nutanix" {
                         let client = crate::nutanix::NutanixClient::new(
+                            url.clone(),
+                            token_id.clone(),
+                            secret,
+                            insecure != 0,
+                        );
+                        client.test_connection().await
+                    } else if kind == "pertisk-vms" {
+                        let client = crate::pertisk_vms::PertiskVmsClient::new(
                             url.clone(),
                             token_id.clone(),
                             secret,
@@ -1891,6 +1899,9 @@ async fn provider_check_vmids(
         client.check_vmids(&row.4, cp_vmid, count, None).await
     } else if row.0 == "nutanix" {
         let client = crate::nutanix::NutanixClient::new(row.1, row.2, secret, row.5 != 0);
+        client.check_vmids(&row.4, cp_vmid, count, None).await
+    } else if row.0 == "pertisk-vms" {
+        let client = crate::pertisk_vms::PertiskVmsClient::new(row.1, row.2, secret, row.5 != 0);
         client.check_vmids(&row.4, cp_vmid, count, None).await
     } else {
         let client = ProxmoxClient {

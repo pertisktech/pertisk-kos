@@ -9,6 +9,7 @@ use crate::crypto;
 use crate::db;
 use crate::error::{ApiResult, AppError};
 use crate::nutanix::NutanixClient;
+use crate::pertisk_vms::PertiskVmsClient;
 use crate::proxmox::{ProbeResult, ProxmoxClient, ProxmoxStorage};
 use crate::rbac::{require_admin, require_mutate};
 use crate::routes::CurrentUser;
@@ -110,8 +111,9 @@ fn normalize_kind(kind: &str) -> ApiResult<String> {
         "proxmox" | "" => Ok("proxmox".into()),
         "vsphere" | "esxi" | "vmware" => Ok("vsphere".into()),
         "nutanix" | "ahv" | "prism" => Ok("nutanix".into()),
+        "pertisk-vms" | "pertisk-vm" | "pertiskvms" | "vms" => Ok("pertisk-vms".into()),
         other => Err(AppError::bad(format!(
-            "unsupported provider kind `{other}` (use proxmox|vsphere|nutanix)"
+            "unsupported provider kind `{other}` (use proxmox|vsphere|nutanix|pertisk-vms)"
         ))),
     }
 }
@@ -121,6 +123,7 @@ pub(crate) fn hypervisor_node_source(kind: &str) -> &'static str {
     match kind.trim().to_ascii_lowercase().as_str() {
         "nutanix" | "ahv" | "prism" => "nutanix",
         "vsphere" | "esxi" | "vmware" => "vsphere",
+        "pertisk-vms" | "pertisk-vm" | "pertiskvms" | "vms" => "pertisk-vms",
         _ => "proxmox",
     }
 }
@@ -200,6 +203,15 @@ async fn probe_provider(
         }
         "nutanix" => {
             let client = NutanixClient::new(
+                url.to_string(),
+                token_id.to_string(),
+                token_secret.to_string(),
+                insecure,
+            );
+            client.probe(Some(node), Some(storage), Some(bridge)).await
+        }
+        "pertisk-vms" => {
+            let client = PertiskVmsClient::new(
                 url.to_string(),
                 token_id.to_string(),
                 token_secret.to_string(),
@@ -569,6 +581,10 @@ async fn storage(
         let client = NutanixClient::new(p.url, p.token_id, p.secret, p.insecure);
         let list = client.list_storage(&p.node).await?;
         Ok(Json(list))
+    } else if p.kind == "pertisk-vms" {
+        let client = PertiskVmsClient::new(p.url, p.token_id, p.secret, p.insecure);
+        let list = client.list_storage(&p.node).await?;
+        Ok(Json(list))
     } else {
         let client = ProxmoxClient {
             url: p.url,
@@ -594,5 +610,7 @@ mod tests {
         assert_eq!(hypervisor_node_source("vmware"), "vsphere");
         assert_eq!(hypervisor_node_source("proxmox"), "proxmox");
         assert_eq!(hypervisor_node_source(""), "proxmox");
+        assert_eq!(hypervisor_node_source("pertisk-vms"), "pertisk-vms");
+        assert_eq!(hypervisor_node_source("pertisk-vm"), "pertisk-vms");
     }
 }

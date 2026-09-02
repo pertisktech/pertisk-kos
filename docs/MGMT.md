@@ -105,7 +105,7 @@ Provider cards and **Providers → Dashboard** (or click the provider name) open
 |--------|--------|--------|
 | Cluster cards | CPU / memory usage | `kubectl top nodes` vs provisioned cores / memory |
 | Cluster cards | Disk | kubelet stats summary when reachable; else provisioned `disk_gb` |
-| Provider cards / dashboard | CPU / memory | Proxmox node status; Nutanix AHV hosts; ESXi host quickStats |
+| Provider cards / dashboard | CPU / memory | Proxmox node status; Nutanix AHV hosts; ESXi host quickStats; pertisk-vms cluster members |
 | Provider cards / dashboard | Disk | Selected storage / container / datastore capacity |
 
 Polls `GET /api/dashboard/resources` and `GET /api/dashboard/providers` about every 15s. Cluster list / job status updates push via **SSE** (`GET /api/events?token=…`) with a slow poll fallback. Click a cluster card to open the cluster; click a provider card for the hypervisor dashboard (`GET /api/providers/{id}/dashboard`).
@@ -238,7 +238,7 @@ Recreating VMs from a new qcow2 is a reinstall, not this path.
 | `POST /api/images` | Multipart `image` + optional `arch`. Streams to disk. Max 8 GiB. Replaces same filename |
 | `DELETE /api/images/{name}` | Remove file (blocked while create/add-node is running) |
 
-Need `pertisk-cloud-amd64*.qcow2` and/or `pertisk-cloud-arm64*.qcow2`. Create Cluster fails fast if the matching arch is missing. **arm64** guests are Proxmox only; vSphere and Nutanix stay **amd64**.
+Need `pertisk-cloud-amd64*.qcow2` and/or `pertisk-cloud-arm64*.qcow2`. Create Cluster fails fast if the matching arch is missing. **arm64** guests are Proxmox and Pertisk VMs; vSphere and Nutanix stay **amd64**.
 
 Prefer GitHub Release assets (`pertisk-cloud-{arch}-v{VERSION}.qcow2`). Local build is optional:
 
@@ -267,6 +267,12 @@ Uses SOAP `/sdk` (not REST). Cluster create runs `vsphere-lab-up.sh` / `vsphere-
 UI → Providers → Kind **Nutanix (AHV)** → URL (`:9440`), username/password, cluster, storage container, network ([NUTANIX.md](./NUTANIX.md)).
 
 Uses Prism Element REST v2.0 (+ v0.8 image upload). Cluster create runs `nutanix-lab-up.sh` / `nutanix-upload-vm.sh` (qcow2 → DISK_IMAGE → UEFI VM). Mgmt must share L2 with guests for MAC→IP (`LAB_SUBNET`). Prefer the **unmanaged** VLAN (`vlan.0`) plus LAN DHCP; managed IPAM needs the netcfg disk. HA join writes etcd membership first; if local `/readyz` is still pulling images, lab-up waits up to 12 minutes then continues (node labels come later). `pertiskctl` waits up to 30 minutes (`PERTISKCTL_LONG_RPC_SECS`). Lab VLAN is IPv4-only — leave the wizard on **IPv4** unless the LAN has RA/DHCPv6.
+
+## Pertisk VMs provider
+
+UI → Providers → Kind **Pertisk VMs** → URL (`:7443` HTTPS or `:7480` HTTP), username/password, node (`n1`), storage (`replica`), network (`vmbr0`) ([PERTISK_VMS.md](./PERTISK_VMS.md)).
+
+Uses pertiskd REST `/v1`. Cluster create runs `pertisk-vms-lab-up.sh` / `pertisk-vms-upload-vm.sh` (stream qcow2 → template volume → clone → UEFI QEMU VM). **No SSH** to the hypervisor. Mgmt must share L2 with guests for MAC→IP (`LAB_SUBNET`). arm64 is allowed when the host arch is arm64.
 
 ## Clusters (HA)
 
@@ -404,4 +410,4 @@ Or `./scripts/deploy-mgmt-lab.sh --mgmt user@mgmt.example.com --with-ssh --pve p
 
 UI: Cluster → Nodes → **Add node** modes — Create VM / Adopt / Join instructions.
 
-Cloud providers (AWS/GCP/Azure) are **paused**; Proxmox, ESXi, and Nutanix AHV are the supported hypervisors.
+Cloud providers (AWS/GCP/Azure) are **paused**; Proxmox, ESXi, Nutanix AHV, and Pertisk VMs are the supported hypervisors.

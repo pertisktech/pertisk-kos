@@ -28,6 +28,9 @@ case "$PROVIDER_KIND" in
   nutanix)
     CREATE_VMS="${CREATE_VMS:-${ROOT}/scripts/nutanix-create-cluster-vms.sh}"
     ;;
+  pertisk-vms)
+    CREATE_VMS="${CREATE_VMS:-${ROOT}/scripts/pertisk-vms-create-cluster-vms.sh}"
+    ;;
   *)
     CREATE_VMS="${CREATE_VMS:-${ROOT}/scripts/proxmox-create-cluster-vms.sh}"
     ;;
@@ -372,6 +375,26 @@ elif [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
   PROXMOX_URL="${PROXMOX_URL:-${NUTANIX_URL}}"
   PROXMOX_NODE="${PROXMOX_NODE:-${NUTANIX_CLUSTER:-ahv}}"
   unset PROXMOX_SSH || true
+elif [[ "${PROVIDER_KIND}" == "pertisk-vms" ]]; then
+  : "${PERTISK_VMS_URL:?set PERTISK_VMS_URL}"
+  : "${PERTISK_VMS_USER:?set PERTISK_VMS_USER}"
+  : "${PERTISK_VMS_PASSWORD:?set PERTISK_VMS_PASSWORD}"
+  PERTISK_VMS_STORAGE="${PERTISK_VMS_STORAGE:-replica}"
+  PERTISK_VMS_NETWORK="${PERTISK_VMS_NETWORK:-vmbr0}"
+  export PERTISK_VMS_INSECURE="${PERTISK_VMS_INSECURE:-1}"
+  PVMS_HOST="$(echo "${PERTISK_VMS_URL}" | sed -E 's|https?://([^/:]+).*|\1|')"
+  if [[ -z "${LAB_SUBNET}" && "${PVMS_HOST}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+    LAB_SUBNET="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.0/24"
+    echo "==> auto LAB_SUBNET=${LAB_SUBNET}"
+  fi
+  if [[ -n "${PERTISK_VMS_DISK:-}" ]]; then
+    DISK="${PERTISK_VMS_DISK}"
+  fi
+  echo "==> provider=pertisk-vms url=${PERTISK_VMS_URL} storage=${PERTISK_VMS_STORAGE} network=${PERTISK_VMS_NETWORK}"
+  echo "==> images dir=${IMAGES_DIR} disk=${DISK}"
+  PROXMOX_URL="${PROXMOX_URL:-${PERTISK_VMS_URL}}"
+  PROXMOX_NODE="${PROXMOX_NODE:-${PERTISK_VMS_NODE:-n1}}"
+  unset PROXMOX_SSH || true
 else
 if [[ -z "${PROXMOX_URL:-}" ]]; then
   echo "==> loading Proxmox env from ${ROOT}/proxmox.sh"
@@ -463,6 +486,11 @@ elif [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
   AUTH=""
   BASE=""
   NODE="${NUTANIX_CLUSTER:-ahv}"
+elif [[ "${PROVIDER_KIND}" == "pertisk-vms" ]]; then
+  [[ "${PERTISK_VMS_INSECURE:-0}" == "1" ]] && CURL+=(-k)
+  AUTH=""
+  BASE=""
+  NODE="${PERTISK_VMS_NODE:-n1}"
 else
   [[ "${PROXMOX_INSECURE:-0}" == "1" ]] && CURL+=(-k)
   AUTH="Authorization: PVEAPIToken=${PROXMOX_TOKEN_ID}=${PROXMOX_TOKEN_SECRET}"
@@ -504,6 +532,17 @@ vm_mac() {
     echo "$mac" | tr 'A-F' 'a-f'
     return 0
   fi
+  if [[ "${PROVIDER_KIND}" == "pertisk-vms" ]]; then
+    if [[ -n "$name" ]]; then
+      mac="$(pertisk_vms_vm_mac "$name" 2>/dev/null || true)"
+    fi
+    if [[ -z "$mac" ]]; then
+      mac="$(pertisk_vms_vm_mac "${NAME_PREFIX}-${vmid}" 2>/dev/null || true)"
+    fi
+    [[ -n "$mac" ]] || die "VM ${name:-$vmid}: no MAC yet; power on once so pertisk-vms assigns one"
+    echo "$mac" | tr 'A-F' 'a-f'
+    return 0
+  fi
   local net0
   net0="$(api_get "/nodes/${NODE}/qemu/${vmid}/config" | jq -r '.data.net0 // empty')"
   [[ -n "$net0" ]] || die "VM ${vmid}: no net0"
@@ -521,7 +560,7 @@ vm_mac() {
 # Guest reports DHCP as soon as qemu-ga is up (pertiskd starts it after early net).
 qemu_agent_ipv4() {
   local vmid="$1" json ip
-  [[ "${PROVIDER_KIND}" == "vsphere" || "${PROVIDER_KIND}" == "nutanix" ]] && return 0
+  [[ "${PROVIDER_KIND}" == "vsphere" || "${PROVIDER_KIND}" == "nutanix" || "${PROVIDER_KIND}" == "pertisk-vms" ]] && return 0
   [[ -n "${BASE:-}" && -n "${NODE:-}" ]] || return 0
   json="$(api_get "/nodes/${NODE}/qemu/${vmid}/agent/network-get-interfaces" 2>/dev/null || true)"
   [[ -n "$json" ]] || return 0
@@ -565,7 +604,7 @@ for iface in result:
 # Global/ULA IPv6 from QGA (skip link-local fe80::).
 qemu_agent_ipv6() {
   local vmid="$1" json ip
-  [[ "${PROVIDER_KIND}" == "vsphere" || "${PROVIDER_KIND}" == "nutanix" ]] && return 0
+  [[ "${PROVIDER_KIND}" == "vsphere" || "${PROVIDER_KIND}" == "nutanix" || "${PROVIDER_KIND}" == "pertisk-vms" ]] && return 0
   [[ -n "${BASE:-}" && -n "${NODE:-}" ]] || return 0
   json="$(api_get "/nodes/${NODE}/qemu/${vmid}/agent/network-get-interfaces" 2>/dev/null || true)"
   [[ -n "$json" ]] || return 0
@@ -612,7 +651,7 @@ wait_guest_ipv6() {
   local vmid="$1" label="$2" deadline ip6="" last=0
   [[ "${DUAL_STACK}" == "1" ]] || return 0
   case "${PROVIDER_KIND:-proxmox}" in
-    nutanix | ahv | prism | vsphere | esxi)
+    nutanix | ahv | prism | vsphere | esxi | pertisk-vms)
       log "skip QGA IPv6 wait on ${PROVIDER_KIND} (no Proxmox qemu-guest-agent); IPv4-only guests are OK"
       return 0
       ;;
@@ -721,6 +760,49 @@ for e in ents:
         print(ip)
     raise SystemExit
 ' "$name" 2>/dev/null || true
+}
+
+pertisk_vms_token() {
+  if [[ -n "${PERTISK_VMS_TOKEN:-}" ]]; then
+    echo "$PERTISK_VMS_TOKEN"
+    return 0
+  fi
+  local curl_args=(curl -sS)
+  [[ "${PERTISK_VMS_INSECURE:-0}" == "1" ]] && curl_args+=(-k)
+  PERTISK_VMS_TOKEN="$("${curl_args[@]}" -X POST "${PERTISK_VMS_URL%/}/v1/login" \
+    -H 'Content-Type: application/json' \
+    -d "{\"username\":\"${PERTISK_VMS_USER}\",\"password\":\"${PERTISK_VMS_PASSWORD}\"}" \
+    | jq -r '.token // empty')"
+  export PERTISK_VMS_TOKEN
+  echo "${PERTISK_VMS_TOKEN:-}"
+}
+
+pertisk_vms_vm_json() {
+  local name="$1" token
+  token="$(pertisk_vms_token)"
+  [[ -n "$token" ]] || return 0
+  local curl_args=(curl -sS)
+  [[ "${PERTISK_VMS_INSECURE:-0}" == "1" ]] && curl_args+=(-k)
+  curl_args+=(-H "Authorization: Bearer ${token}" -H 'Accept: application/json')
+  "${curl_args[@]}" "${PERTISK_VMS_URL%/}/v1/vms" | jq -c --arg n "$name" --arg id "$name" '
+    (if type=="array" then . else (.vms // []) end)
+    | map(select((.spec.name == $n) or (.id|tostring) == $id or ((.spec.name // "") | endswith("-"+$id))))
+    | .[0] // empty
+  ' 2>/dev/null || true
+}
+
+pertisk_vms_vm_mac() {
+  local name="$1" json
+  json="$(pertisk_vms_vm_json "$name")"
+  [[ -n "$json" && "$json" != "null" ]] || return 0
+  echo "$json" | jq -r '(.spec.nets // []) | map(.mac // empty) | map(select(. != "")) | .[0] // empty'
+}
+
+pertisk_vms_vm_ips() {
+  local name="$1" json
+  json="$(pertisk_vms_vm_json "$name")"
+  [[ -n "$json" && "$json" != "null" ]] || return 0
+  echo "$json" | jq -r '(.spec.nets // []) | map(.ip // empty) | map(select(. != null and . != "")) | .[]'
 }
 
 vsphere_vm_mac() {
@@ -1030,6 +1112,16 @@ wait_ip() {
       fi
       if [[ -n "$nxip" ]]; then
         ip="$nxip"
+        issued=1
+      fi
+    fi
+    if [[ "${PROVIDER_KIND}" == "pertisk-vms" && -n "$label" ]]; then
+      pvip="$(pertisk_vms_vm_ips "$label" 2>/dev/null | head -1 || true)"
+      if [[ -z "$pvip" ]]; then
+        pvip="$(pertisk_vms_vm_ips "${NAME_PREFIX}-${vmid}" 2>/dev/null | head -1 || true)"
+      fi
+      if [[ -n "$pvip" ]]; then
+        ip="$pvip"
         issued=1
       fi
     fi
@@ -1789,7 +1881,7 @@ step_vms() {
   # upload-vm skips resize when the image virtual size already matches.
   [[ -n "$CP_DISK_GB" ]] && CREATE_ARGS+=(--cp-disk-gb "$CP_DISK_GB")
   [[ -n "$WORKER_DISK_GB" ]] && CREATE_ARGS+=(--worker-disk-gb "$WORKER_DISK_GB")
-  if [[ "${PROVIDER_KIND}" != "vsphere" && "${PROVIDER_KIND}" != "nutanix" && ( -n "$STATIC_BASE" || -n "$STATIC_SUBNET" ) ]]; then
+  if [[ "${PROVIDER_KIND}" != "vsphere" && "${PROVIDER_KIND}" != "nutanix" && "${PROVIDER_KIND}" != "pertisk-vms" && ( -n "$STATIC_BASE" || -n "$STATIC_SUBNET" ) ]]; then
     [[ -n "$STATIC_GATEWAY" ]] || die "--static-base/--static-subnet requires --static-gateway"
     if [[ -n "$STATIC_SUBNET" ]]; then
       CREATE_ARGS+=(--static-subnet "$STATIC_SUBNET" --static-gateway "$STATIC_GATEWAY")
@@ -1810,6 +1902,8 @@ step_vms() {
     VSPHERE_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
   elif [[ "${PROVIDER_KIND}" == "nutanix" ]]; then
     NUTANIX_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
+  elif [[ "${PROVIDER_KIND}" == "pertisk-vms" ]]; then
+    PERTISK_VMS_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
   else
     PROXMOX_DISK="$DISK" "$CREATE_VMS" "${CREATE_ARGS[@]}"
   fi
@@ -1817,7 +1911,7 @@ step_vms() {
 
 # Apply memory/cores/disk-gb to existing VMs (qm set + qm resize).
 step_apply_vm_sizing() {
-  if [[ "${PROVIDER_KIND}" == "vsphere" || "${PROVIDER_KIND}" == "nutanix" ]]; then
+  if [[ "${PROVIDER_KIND}" == "vsphere" || "${PROVIDER_KIND}" == "nutanix" || "${PROVIDER_KIND}" == "pertisk-vms" ]]; then
     log "skip Proxmox qm sizing on ${PROVIDER_KIND} (recreate VMs with --cp-memory/--disk-gb instead)"
     return 0
   fi

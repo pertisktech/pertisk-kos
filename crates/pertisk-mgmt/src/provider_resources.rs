@@ -11,6 +11,7 @@ use crate::cluster_resources::ResourceMetric;
 use crate::crypto;
 use crate::error::{ApiResult, AppError};
 use crate::nutanix::NutanixClient;
+use crate::pertisk_vms::PertiskVmsClient;
 use crate::proxmox::{HypervisorCapacity, ProxmoxClient};
 use crate::state::AppState;
 use crate::vsphere::VsphereClient;
@@ -182,6 +183,17 @@ async fn fetch_capacity(
         }
         "nutanix" => {
             let c = NutanixClient::new(
+                url.to_string(),
+                token_id.to_string(),
+                secret.to_string(),
+                insecure,
+            );
+            c.host_capacity(node, storage)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pertisk-vms" => {
+            let c = PertiskVmsClient::new(
                 url.to_string(),
                 token_id.to_string(),
                 secret.to_string(),

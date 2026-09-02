@@ -1143,6 +1143,10 @@ tr.row-click:focus-visible {
   background: color-mix(in srgb, #6f42c1 22%, transparent);
   color: #c4b5fd;
 }
+.badge.kind-pertisk-vms {
+  background: color-mix(in srgb, #0d9488 22%, transparent);
+  color: #5eead4;
+}
 .status-badges,
 .cluster-meta-badges {
   display: inline-flex;

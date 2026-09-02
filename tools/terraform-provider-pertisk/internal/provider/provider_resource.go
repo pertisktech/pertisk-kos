@@ -51,7 +51,7 @@ func (r *hypervisorProviderResource) Metadata(_ context.Context, req resource.Me
 
 func (r *hypervisorProviderResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Register a Proxmox or vSphere (ESXi) hypervisor in pertisk-mgmt. Create probes the hypervisor before saving.",
+		MarkdownDescription: "Register a Proxmox, vSphere (ESXi), Nutanix AHV, or Pertisk VMs hypervisor in pertisk-mgmt. Create probes the hypervisor before saving.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true,
@@ -67,37 +67,37 @@ func (r *hypervisorProviderResource) Schema(_ context.Context, _ resource.Schema
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("proxmox"),
-				MarkdownDescription: "proxmox | vsphere | nutanix",
+				MarkdownDescription: "proxmox | vsphere | nutanix | pertisk-vms",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"url": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Hypervisor API URL (e.g. https://pve:8006 or https://esxi).",
+				MarkdownDescription: "Hypervisor API URL (e.g. https://pve:8006, https://esxi, or https://host:7443 for pertisk-vms).",
 			},
 			"token_id": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Proxmox token id (user@realm!token) or ESXi username.",
+				MarkdownDescription: "Proxmox token id (user@realm!token), or username for ESXi / Nutanix / Pertisk VMs.",
 			},
 			"token_secret": schema.StringAttribute{
 				Required:            true,
 				Sensitive:           true,
-				MarkdownDescription: "Proxmox token secret or ESXi password. Never returned by API; kept in Terraform state.",
+				MarkdownDescription: "Proxmox token secret or hypervisor password. Never returned by API; kept in Terraform state.",
 			},
 			"node": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Proxmox node name or ESXi host inventory name.",
+				MarkdownDescription: "Proxmox node name, ESXi host, Nutanix cluster, or pertisk-vms member name.",
 			},
 			"storage": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Proxmox storage or ESXi datastore.",
+				MarkdownDescription: "Proxmox storage, ESXi datastore, Nutanix container, or pertisk-vms backend (replica/rbd).",
 			},
 			"bridge": schema.StringAttribute{
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("vmbr0"),
-				MarkdownDescription: "Proxmox bridge or ESXi portgroup (e.g. VM Network).",
+				MarkdownDescription: "Proxmox bridge, ESXi portgroup, Nutanix network, or pertisk-vms network/bridge (e.g. vmbr0).",
 			},
 			"insecure": schema.BoolAttribute{
 				Optional:            true,

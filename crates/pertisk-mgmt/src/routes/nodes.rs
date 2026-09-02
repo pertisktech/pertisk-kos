@@ -95,6 +95,7 @@ pub const NODE_SELECT: &str = r#"SELECT id, cluster_id, name, role, vmid, ip, ip
            (SELECT CASE
               WHEN lower(p.kind) IN ('nutanix', 'ahv', 'prism') THEN 'nutanix'
               WHEN lower(p.kind) IN ('vsphere', 'esxi', 'vmware') THEN 'vsphere'
+              WHEN lower(p.kind) IN ('pertisk-vms', 'pertisk-vm', 'pertiskvms', 'vms') THEN 'pertisk-vms'
               ELSE 'proxmox'
             END
             FROM clusters c

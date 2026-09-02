@@ -164,7 +164,7 @@ jobs:
             echo "## Guest cloud images"
             echo
             echo "Upload on mgmt **Images** (or copy to \`/var/lib/pertisk-mgmt/images/\`)."
-            echo "Cluster create needs \`pertisk-cloud-{amd64,arm64}*.qcow2\`. arm64 guests are Proxmox only."
+            echo "Cluster create needs \`pertisk-cloud-{amd64,arm64}*.qcow2\`. arm64 guests are Proxmox and Pertisk VMs."
             echo
             echo "| Architecture | File |"
             echo "|--------------|------|"
