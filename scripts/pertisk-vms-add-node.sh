@@ -407,16 +407,21 @@ mkdir -p "$CLUSTER_OUT"
 command -v jq >/dev/null || die "jq required"
 pvms_login
 
-log "create ${ROLE} VMID=${VMID} name=${NAME} arch=${ARCH} mem=${MEMORY} cores=${CORES} disk=${DISK} disk-gb=${DISK_GB:-image} network=${NETWORK}"
+if [[ -z "$DISK_GB" ]]; then
+  if [[ "$ROLE" == "controlplane" ]]; then DISK_GB=50; else DISK_GB=75; fi
+fi
+
+log "create ${ROLE} VMID=${VMID} name=${NAME} arch=${ARCH} mem=${MEMORY} cores=${CORES} disk=${DISK} disk-gb=${DISK_GB} network=${NETWORK}"
 UPLOAD_ARGS=(
   --vmid "$VMID"
   --name "$NAME"
+  --arch "$ARCH"
   --disk "$DISK"
   --memory "$MEMORY"
   --cores "$CORES"
   --network "$NETWORK"
+  --disk-gb "$DISK_GB"
 )
-[[ -n "$DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$DISK_GB")
 "$UPLOAD" "${UPLOAD_ARGS[@]}"
 
 log "wait for guest Machine API"

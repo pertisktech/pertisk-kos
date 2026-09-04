@@ -109,6 +109,28 @@ api() {
   "${CURL[@]}" -X "$method" "${BASE}${path}" -H "$(auth)" -H 'Accept: application/json' "$@"
 }
 
+# POST/PUT that must succeed. Prints the JSON body; dies on non-2xx.
+api_ok() {
+  local method="$1" path="$2"
+  shift 2
+  local tmp http body
+  tmp="$(mktemp)"
+  http="$("${CURL[@]}" -o "$tmp" -w '%{http_code}' -X "$method" "${BASE}${path}" \
+    -H "$(auth)" -H 'Accept: application/json' "$@")" || true
+  body="$(cat "$tmp")"
+  rm -f "$tmp"
+  case "$http" in
+    2*) printf '%s' "$body" ;;
+    *) die "${method} ${path} failed HTTP ${http}: ${body:-no body}" ;;
+  esac
+}
+
+bytes_from_gib() {
+  local gb="$1"
+  [[ "$gb" =~ ^[1-9][0-9]*$ ]] || die "--disk-gb must be a positive integer (got ${gb})"
+  jq -n --argjson gb "$gb" '$gb * 1024 * 1024 * 1024'
+}
+
 login
 
 tmpl_name="kos-cloud-${ARCH}"
@@ -194,15 +216,19 @@ if [[ -n "$old_vol" ]]; then
 fi
 
 log "clone template ${tmpl_name} → ${vol_name}"
-VOL_ID="$(api POST "/v1/volumes/${TMPL_ID}/clone" -H 'Content-Type: application/json' \
+VOL_ID="$(api_ok POST "/v1/volumes/${TMPL_ID}/clone" -H 'Content-Type: application/json' \
   -d "$(jq -n --arg n "$vol_name" '{name:$n, linked:false}')" | jq -r '.id // empty')"
 [[ -n "$VOL_ID" ]] || die "clone failed"
 
 if [[ -n "$DISK_GB" ]]; then
-  bytes=$((DISK_GB * 1024 * 1024 * 1024))
+  bytes="$(bytes_from_gib "$DISK_GB")"
   log "resize ${vol_name} to ${DISK_GB} GiB"
-  api POST "/v1/volumes/${VOL_ID}/resize" -H 'Content-Type: application/json' \
+  api_ok POST "/v1/volumes/${VOL_ID}/resize" -H 'Content-Type: application/json' \
     -d "$(jq -n --argjson n "$bytes" '{size_bytes:$n}')" >/dev/null
+  got="$(api GET "/v1/volumes/${VOL_ID}" | jq -r '.size_bytes // 0')"
+  if ! jq -ne --argjson got "$got" --argjson want "$bytes" '$got >= $want' >/dev/null; then
+    die "resize ${vol_name} did not take effect (size_bytes=${got}, want ${bytes}). Install qemu-img on the pertisk-vms host (qcow2 grow requires it)."
+  fi
 fi
 
 log "create VM ${NAME} id=${VMID} cores=${CORES} memory=${MEMORY} autostart=true"

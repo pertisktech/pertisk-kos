@@ -78,8 +78,9 @@ CP_MEMORY="${CP_MEMORY:-$MEMORY}"
 CP_CORES="${CP_CORES:-$CORES}"
 WORKER_MEMORY="${WORKER_MEMORY:-$MEMORY}"
 WORKER_CORES="${WORKER_CORES:-$CORES}"
-CP_DISK_GB="${CP_DISK_GB:-$DISK_GB}"
-WORKER_DISK_GB="${WORKER_DISK_GB:-$DISK_GB}"
+# Match mgmt defaults. ARM cloud qcow2 is ~400MiB virtual; clones must grow.
+CP_DISK_GB="${CP_DISK_GB:-${DISK_GB:-50}}"
+WORKER_DISK_GB="${WORKER_DISK_GB:-${DISK_GB:-75}}"
 CP_DISK="${CP_DISK:-$DISK}"
 WORKER_DISK="${WORKER_DISK:-$DISK}"
 
@@ -104,13 +105,13 @@ if [[ "$CONTROLPLANES" -lt 1 ]]; then
 fi
 
 echo "==> ensure pertisk-vms template volume for ${CP_DISK}"
-"$UPLOAD" --import-only --disk "$CP_DISK"
+"$UPLOAD" --import-only --arch "$ARCH" --disk "$CP_DISK"
 if [[ "$WORKERS" -gt 0 ]]; then
   cp_real="$(cd "$(dirname "$CP_DISK")" && pwd)/$(basename "$CP_DISK")"
   wk_real="$(cd "$(dirname "$WORKER_DISK")" && pwd)/$(basename "$WORKER_DISK")"
   if [[ "$wk_real" != "$cp_real" ]]; then
     echo "==> ensure pertisk-vms template volume for ${WORKER_DISK}"
-    "$UPLOAD" --import-only --disk "$WORKER_DISK"
+    "$UPLOAD" --import-only --arch "$ARCH" --disk "$WORKER_DISK"
   fi
 fi
 
@@ -125,7 +126,7 @@ STATIC_IP_IDX=0
 for i in $(seq 1 "$CONTROLPLANES"); do
   cvid=$((CP_VMID + i - 1))
   echo "==> control-plane VMID=${cvid} name=${NAME_PREFIX}-cp-${i} disk=${CP_DISK} mem=${CP_MEMORY} cores=${CP_CORES}"
-  UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --disk "$CP_DISK" --memory "$CP_MEMORY" --cores "$CP_CORES")
+  UPLOAD_ARGS=(--vmid "$cvid" --name "${NAME_PREFIX}-cp-${i}" --arch "$ARCH" --disk "$CP_DISK" --memory "$CP_MEMORY" --cores "$CP_CORES")
   [[ -n "$CP_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$CP_DISK_GB")
   if [[ $STATIC_IP_IDX -lt ${#STATIC_IPS_ARRAY[@]} ]]; then
     UPLOAD_ARGS+=(--ip "${STATIC_IPS_ARRAY[$STATIC_IP_IDX]}")
@@ -138,7 +139,7 @@ done
 for i in $(seq 1 "$WORKERS"); do
   wvid=$((CP_VMID + CONTROLPLANES + i - 1))
   echo "==> worker VMID=${wvid} name=${NAME_PREFIX}-wk-${i} disk=${WORKER_DISK} mem=${WORKER_MEMORY} cores=${WORKER_CORES}"
-  UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --disk "$WORKER_DISK" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
+  UPLOAD_ARGS=(--vmid "$wvid" --name "${NAME_PREFIX}-wk-${i}" --arch "$ARCH" --disk "$WORKER_DISK" --memory "$WORKER_MEMORY" --cores "$WORKER_CORES")
   [[ -n "$WORKER_DISK_GB" ]] && UPLOAD_ARGS+=(--disk-gb "$WORKER_DISK_GB")
   if [[ $STATIC_IP_IDX -lt ${#STATIC_IPS_ARRAY[@]} ]]; then
     UPLOAD_ARGS+=(--ip "${STATIC_IPS_ARRAY[$STATIC_IP_IDX]}")
