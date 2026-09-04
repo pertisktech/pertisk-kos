@@ -376,6 +376,21 @@ wait_after_reset() {
   wait_ip "$vmid" "$label"
 }
 
+wait_state_mounted() {
+  local ip="$1" timeout_s="${2:-300}"
+  local deadline=$((SECONDS + timeout_s)) out
+  log "waiting for STATE mount on ${ip}…"
+  while (( SECONDS < deadline )); do
+    out="$("$CTL" -e "${ip}:50000" disks 2>/dev/null || true)"
+    if printf '%s\n' "$out" | grep -Eq '^STATE[[:space:]]+[^[:space:]]+[[:space:]]+yes'; then
+      log "STATE mounted on ${ip}"
+      return 0
+    fi
+    sleep 3
+  done
+  log "WARNING: STATE not reported mounted on ${ip} after ${timeout_s}s"
+}
+
 set_hostname_yaml() {
   local src="$1" dest="$2" host="$3"
   awk -v h="$host" '
@@ -432,10 +447,12 @@ NODE_IP="$(wait_ip "$VMID" "$NAME" | tr -d '[:space:]')"
 wait_api "$CP_IP"
 wait_api "$NODE_IP"
 
+wait_state_mounted "$NODE_IP" 300
 log "soft-reset ${NAME} @ ${NODE_IP} before join (clear leftover STATE)"
 if "$CTL" -e "${NODE_IP}:50000" reset --force 2>&1; then
   NODE_IP="$(wait_after_reset "$VMID" "$NAME" "$NODE_IP" | tr -d '[:space:]')"
   wait_api "$NODE_IP"
+  wait_state_mounted "$NODE_IP" 300
 else
   log "WARNING: reset ${NAME} failed — continuing (fresh guests are fine)"
 fi

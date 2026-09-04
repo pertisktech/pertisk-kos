@@ -63,9 +63,13 @@ fn lock(state: &SharedState) -> Result<MutexGuard<'_, crate::state::NodeState>, 
 }
 
 /// API listens before STATE is mounted (AHV virtio-scsi can hang). Wait so
-/// apply/bootstrap never write `/system/state/config.yaml` on initramfs.
+/// apply/bootstrap/reset never touch `/system/state` on initramfs.
 async fn config_path_when_state_mounted(state: &SharedState) -> Result<PathBuf, Status> {
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(90);
+    wait_state_mounted(state, 90).await
+}
+
+async fn wait_state_mounted(state: &SharedState, timeout_secs: u64) -> Result<PathBuf, Status> {
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_secs);
     loop {
         {
             let st = lock(state)?;
@@ -75,7 +79,7 @@ async fn config_path_when_state_mounted(state: &SharedState) -> Result<PathBuf, 
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(Status::failed_precondition(
-                "STATE partition is not mounted yet; retry apply in a few seconds",
+                "STATE partition is not mounted yet; retry in a few seconds",
             ));
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -848,7 +852,10 @@ impl MachineService for MachineSvc {
                 "reset requires force=true (destroys STATE identity + local runtime data; GPT kept)",
             ));
         }
+        // Same race as apply: :50000 is up before STATE is bound. Resetting the
+        // initramfs dir leaves leftover kubernetes/BOOTSTRAPPED on the real disk.
         let state_root = {
+            let _ = wait_state_mounted(&self.state, 300).await?;
             let st = lock(&self.state)?;
             st.state_root.clone()
         };

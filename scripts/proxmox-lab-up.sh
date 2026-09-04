@@ -1299,6 +1299,23 @@ wait_after_reset() {
   wait_ip "$vmid" "$label"
 }
 
+# :50000 is up before the STATE partition is bound. Reset/apply on initramfs
+# is discarded when the real volume mounts (leftover BOOTSTRAPPED survives).
+wait_state_mounted() {
+  local ip="$1" timeout_s="${2:-300}"
+  local deadline=$((SECONDS + timeout_s)) out
+  log "waiting for STATE mount on ${ip}…"
+  while (( SECONDS < deadline )); do
+    out="$("$CTL" -e "${ip}:50000" disks 2>/dev/null || true)"
+    if printf '%s\n' "$out" | grep -Eq '^STATE[[:space:]]+[^[:space:]]+[[:space:]]+yes'; then
+      log "STATE mounted on ${ip}"
+      return 0
+    fi
+    sleep 3
+  done
+  log "WARNING: STATE not reported mounted on ${ip} after ${timeout_s}s"
+}
+
 # HTTP /readyz on a node IP (not TCP). Join finalize used to fail with
 # Connection reset by peer while :6443 accepted sockets.
 https_readyz() {
@@ -2098,11 +2115,13 @@ step_cluster() {
   if guest_has_admin_kubeconfig "$CP_IP" && https_readyz "$CP_IP"; then
     log "CP1 already bootstrapped and https://${CP_IP}:6443/readyz ok — skip soft-reset/apply/bootstrap (resume)"
   else
+    wait_state_mounted "$CP_IP" 300
     log "soft-reset CP1 @ ${CP_IP} before apply (clear leftover STATE)"
     if "$CTL" -e "${CP_IP}:50000" reset --force 2>&1; then
       CP_IP="$(wait_after_reset "$CP_VMID" "${CLUSTER_NAME}-cp-1" "$CP_IP")"
       CP_IPS[0]="$CP_IP"
       wait_api "$CP_IP"
+      wait_state_mounted "$CP_IP" 300
     else
       log "WARNING: reset CP1 failed — continuing (fresh guests are fine)"
     fi
@@ -2116,7 +2135,31 @@ step_cluster() {
     log "bootstrap CP1 (advertise=${CP_IP}; waits for registry.k8s.io pulls + :6443, up to ~10m)"
     local boot_out boot_try=0
     while true; do
-      boot_out="$("$CTL" -e "${CP_IP}:50000" bootstrap --advertise-address "$CP_IP" 2>&1)" && break
+      if boot_out="$("$CTL" -e "${CP_IP}:50000" bootstrap --advertise-address "$CP_IP" 2>&1)"; then
+        echo "$boot_out"
+        if echo "$boot_out" | grep -q 'already=true'; then
+          log "CP1 already bootstrapped — waiting for apiserver on ${CP_IP}"
+          if wait_https_readyz "$CP_IP" 180; then
+            break
+          fi
+          boot_try=$((boot_try + 1))
+          (( boot_try < 3 )) || die "CP1 already bootstrapped but https://${CP_IP}:6443/readyz failed.
+STATE is leftover from a previous guest on this disk. Destroy the VMs and recreate."
+          log "stale BOOTSTRAPPED (no :6443/readyz) — soft-reset, re-apply, retry ${boot_try}/2"
+          wait_state_mounted "$CP_IP" 180
+          if "$CTL" -e "${CP_IP}:50000" reset --force 2>&1; then
+            CP_IP="$(wait_after_reset "$CP_VMID" "${CLUSTER_NAME}-cp-1" "$CP_IP")"
+            CP_IPS[0]="$CP_IP"
+            wait_api "$CP_IP"
+            wait_state_mounted "$CP_IP" 300
+          fi
+          apply_machine_yaml "$CP_IP" "$CLUSTER_OUT/controlplane.yaml" "$CP_VMID"
+          sleep 8
+          wait_api "$CP_IP"
+          continue
+        fi
+        break
+      fi
       echo "$boot_out" >&2
       boot_try=$((boot_try + 1))
       if echo "$boot_out" | grep -q 'No such file or directory'; then
@@ -2140,15 +2183,6 @@ step_cluster() {
       fi
       die "bootstrap CP1 failed"
     done
-    echo "$boot_out"
-    if echo "$boot_out" | grep -q 'already=true'; then
-      log "CP1 already bootstrapped — verifying apiserver on ${CP_IP}"
-      if ! https_readyz "$CP_IP"; then
-        die "CP1 already bootstrapped but https://${CP_IP}:6443/readyz failed.
-STATE is likely leftover from a previous create (guest IP may have changed).
-Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate the cluster."
-      fi
-    fi
   fi
   log "bootstrap CP1 done"
 
@@ -2181,10 +2215,12 @@ Destroy the VMs (or: pertiskctl -e ${CP_IP}:50000 reset --force) and recreate th
       wait_https_readyz "$ip" "$JOIN_READYZ_WAIT" || true
     else
       log "soft-reset ${host} @ ${ip} before join (clear leftover STATE)"
+      wait_state_mounted "$ip" 300
       if "$CTL" -e "${ip}:50000" reset --force 2>&1; then
         ip="$(wait_after_reset "$cvid" "$host" "$ip")"
         CP_IPS[$((i - 1))]="$ip"
         wait_api "$ip"
+        wait_state_mounted "$ip" 300
       else
         log "WARNING: reset ${host} failed — continuing (fresh guests are fine)"
       fi
@@ -2287,10 +2323,12 @@ Check registry.k8s.io pulls / static pods on ${ip}."
     # Clear leftover kubelet/bootstrap STATE on reused disks (same as joining CPs).
     assert_guest_identity "$ip" "$host"
     log "soft-reset ${host} @ ${ip} before join (clear leftover STATE)"
+    wait_state_mounted "$ip" 300
     if "$CTL" -e "${ip}:50000" reset --force 2>&1; then
       ip="$(wait_after_reset "$wvid" "$host" "$ip")"
       WORKER_IPS[$((i - 1))]="$ip"
       wait_api "$ip"
+      wait_state_mounted "$ip" 300
     else
       log "WARNING: reset ${host} failed — continuing (fresh guests are fine)"
     fi
