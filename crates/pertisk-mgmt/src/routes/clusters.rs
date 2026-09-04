@@ -1601,6 +1601,30 @@ async fn validate_vips(
 ) -> ApiResult<VipCheck> {
     let mut conflicts = Vec::new();
 
+    let cluster_vips: Vec<(String, String, String, Option<String>, Option<String>)> =
+        sqlx::query_as(
+            r#"SELECT id, name, status, vip, vip6 FROM clusters
+               WHERE status NOT IN ('deleting', 'deleted')
+                 AND (? IS NULL OR id != ?)"#,
+        )
+        .bind(exclude_cluster_id)
+        .bind(exclude_cluster_id)
+        .fetch_all(state.pool())
+        .await?;
+    let node_rows: Vec<(String, String, Option<String>, Option<String>, String, String)> =
+        sqlx::query_as(
+            r#"SELECT n.name, n.role, n.ip, n.ip6, c.id, c.name
+               FROM nodes n
+               INNER JOIN clusters c ON c.id = n.cluster_id
+               WHERE c.status NOT IN ('deleting', 'deleted')"#,
+        )
+        .fetch_all(state.pool())
+        .await?;
+    let urls: Vec<String> = sqlx::query_scalar("SELECT url FROM providers")
+        .fetch_all(state.pool())
+        .await
+        .unwrap_or_default();
+
     for addr in [vip, vip6].into_iter().flatten() {
         if addr.parse::<std::net::IpAddr>().is_err() {
             return Ok(VipCheck {
@@ -1616,26 +1640,52 @@ async fn validate_vips(
                 }],
             });
         }
-        // Another Pertisk cluster already claims this VIP.
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
-            r#"SELECT id, name, status FROM clusters
-               WHERE (vip = ? OR vip6 = ?)
-                 AND status NOT IN ('deleting', 'deleted')
-                 AND (? IS NULL OR id != ?)"#,
-        )
-        .bind(addr)
-        .bind(addr)
-        .bind(exclude_cluster_id)
-        .bind(exclude_cluster_id)
-        .fetch_all(state.pool())
-        .await?;
-        for (id, name, status) in rows {
-            conflicts.push(VipConflict {
-                address: addr.to_string(),
-                reason: format!("claimed by cluster {name} ({status})"),
-                cluster_id: Some(id),
-                cluster_name: Some(name),
-            });
+
+        for (id, name, status, cvip, cvip6) in &cluster_vips {
+            let hit = cvip
+                .as_deref()
+                .is_some_and(|ip| crate::jobs::ips_equal(addr, ip))
+                || cvip6
+                    .as_deref()
+                    .is_some_and(|ip| crate::jobs::ips_equal(addr, ip));
+            if hit {
+                conflicts.push(VipConflict {
+                    address: addr.to_string(),
+                    reason: format!("claimed by cluster {name} ({status})"),
+                    cluster_id: Some(id.clone()),
+                    cluster_name: Some(name.clone()),
+                });
+            }
+        }
+
+        for (node_name, role, nip, nip6, cid, cname) in &node_rows {
+            let hit = nip
+                .as_deref()
+                .is_some_and(|ip| crate::jobs::ips_equal(addr, ip))
+                || nip6
+                    .as_deref()
+                    .is_some_and(|ip| crate::jobs::ips_equal(addr, ip));
+            if hit {
+                conflicts.push(VipConflict {
+                    address: addr.to_string(),
+                    reason: format!("used by machine {node_name} ({role}) on cluster {cname}"),
+                    cluster_id: Some(cid.clone()),
+                    cluster_name: Some(cname.clone()),
+                });
+            }
+        }
+
+        for url in &urls {
+            if let Some(hip) = crate::jobs::ip_from_provider_url(url) {
+                if crate::jobs::ips_equal(addr, &hip) {
+                    conflicts.push(VipConflict {
+                        address: addr.to_string(),
+                        reason: format!("this is a provider/hypervisor address ({hip})"),
+                        cluster_id: None,
+                        cluster_name: None,
+                    });
+                }
+            }
         }
 
         if address_answers_ping(addr).await {
@@ -1759,8 +1809,8 @@ async fn scan_ips(
     Json(body): Json<ScanIpsIn>,
 ) -> ApiResult<Json<ScanIpsOut>> {
     use crate::jobs::{
-        detect_guest_gateway, hypervisor_reserved_ips, inventory_guest_ips, ip_from_provider_url,
-        scan_subnet_for_free_ips, subnet_from_provider_ip,
+        detect_guest_gateway, hypervisor_reserved_ips, inventory_cluster_vips, inventory_guest_ips,
+        ip_from_provider_url, scan_subnet_for_free_ips, subnet_from_provider_ip,
     };
 
     let need_count = body.controlplanes + body.workers;
@@ -1790,9 +1840,10 @@ async fn scan_ips(
     exclude_ips.extend(urls.iter().filter_map(|u| ip_from_provider_url(u)));
 
     exclude_ips.extend(inventory_guest_ips(state.pool()).await);
+    exclude_ips.extend(inventory_cluster_vips(state.pool()).await);
     exclude_ips.extend(hypervisor_reserved_ips(&state).await);
 
-    // Exclude VIPs if provided
+    // Exclude the VIP being chosen for this new cluster (not in the DB yet).
     if let Some(ref vip) = body.vip {
         if !vip.trim().is_empty() {
             exclude_ips.push(vip.trim().to_string());

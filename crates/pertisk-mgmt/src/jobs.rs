@@ -126,8 +126,10 @@ async fn auto_exclude_provider_hosts(cmd: &mut Command, state: &AppState) {
         .unwrap_or_default();
     hosts.extend(urls.iter().filter_map(|u| pve_host_from_url(u)));
 
-    // Existing cluster node IPs (both IPv4 and IPv6).
+    // Existing cluster node IPs, kube-vip addresses, and hypervisor guests
+    // (including powered-off VMs).
     hosts.extend(inventory_guest_ips(state.pool()).await);
+    hosts.extend(inventory_cluster_vips(state.pool()).await);
     hosts.extend(hypervisor_reserved_ips(state).await);
 
     // Operator-specified exclusions.
@@ -461,6 +463,23 @@ fn local_ipv4_addrs() -> Vec<String> {
     ips
 }
 
+/// Parse a LAN address for comparison (strip CIDR / brackets).
+pub(crate) fn parse_lan_ip(s: &str) -> Option<std::net::IpAddr> {
+    let host = s.trim().split('/').next()?.trim();
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty() {
+        return None;
+    }
+    host.parse().ok()
+}
+
+pub(crate) fn ips_equal(a: &str, b: &str) -> bool {
+    match (parse_lan_ip(a), parse_lan_ip(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => a.trim() == b.trim() && !a.trim().is_empty(),
+    }
+}
+
 /// Every IPv4/IPv6 recorded on a node, including powered-off guests. Those
 /// addresses stay reserved so a new cluster cannot collide when the old VMs
 /// power back on.
@@ -477,6 +496,28 @@ pub(crate) async fn inventory_guest_ips(pool: &sqlx::SqlitePool) -> Vec<String> 
         }
         if let Some(ip6) = ip6.filter(|s| !s.trim().is_empty()) {
             ips.push(ip6.trim().to_string());
+        }
+    }
+    ips.sort();
+    ips.dedup();
+    ips
+}
+
+/// kube-vip / cluster VIP addresses. Never assign these to a guest NIC.
+pub(crate) async fn inventory_cluster_vips(pool: &sqlx::SqlitePool) -> Vec<String> {
+    let rows: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT vip, vip6 FROM clusters WHERE status NOT IN ('deleting', 'deleted')",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let mut ips = Vec::new();
+    for (vip, vip6) in rows {
+        if let Some(vip) = vip.filter(|s| !s.trim().is_empty()) {
+            ips.push(vip.trim().to_string());
+        }
+        if let Some(vip6) = vip6.filter(|s| !s.trim().is_empty()) {
+            ips.push(vip6.trim().to_string());
         }
     }
     ips.sort();
@@ -1382,7 +1423,7 @@ async fn run_create_cluster(
     let need_ips = (cluster.controlplanes + cluster.workers) as i64;
     if let Some(provider_ip) = ip_from_provider_url(&provider.url) {
         if let Some(subnet) = subnet_from_provider_ip(&provider_ip) {
-            // Collect all provider IPs + all existing node IPs for exclusion.
+            // Exclude provider hosts, machine IPs, every cluster VIP, and hypervisor guests.
             let mut exclude_ips: Vec<String> = Vec::new();
             let urls: Vec<String> = sqlx::query_scalar("SELECT url FROM providers")
                 .fetch_all(state.pool())
@@ -1391,19 +1432,8 @@ async fn run_create_cluster(
             exclude_ips.extend(urls.iter().filter_map(|u| ip_from_provider_url(u)));
 
             exclude_ips.extend(inventory_guest_ips(state.pool()).await);
+            exclude_ips.extend(inventory_cluster_vips(state.pool()).await);
             exclude_ips.extend(hypervisor_reserved_ips(state).await);
-
-            // Also exclude this cluster's VIP and VIP6 (reserved for kube-vip).
-            if let Some(vip) = &cluster.vip {
-                if !vip.is_empty() {
-                    exclude_ips.push(vip.clone());
-                }
-            }
-            if let Some(vip6) = &cluster.vip6 {
-                if !vip6.is_empty() {
-                    exclude_ips.push(vip6.clone());
-                }
-            }
             let gw_keys: &[&str] = match provider.kind.as_str() {
                 "nutanix" | "ahv" | "prism" => &["NUTANIX_STATIC_GATEWAY", "LAB_GATEWAY"],
                 "vsphere" | "esxi" => &["VSPHERE_STATIC_GATEWAY", "LAB_GATEWAY"],
@@ -5999,6 +6029,15 @@ pub async fn enqueue(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ips_equal_normalizes_cidr_and_v6() {
+        assert!(ips_equal("10.1.1.245", "10.1.1.245/24"));
+        assert!(ips_equal("fd00:1::254", "FD00:1::254"));
+        assert!(ips_equal("[fd00:1::254]/64", "fd00:1::254"));
+        assert!(!ips_equal("10.1.1.245", "10.1.1.254"));
+        assert!(!ips_equal("10.1.1.245", ""));
+    }
 
     #[test]
     fn pve_host_from_url_strips_scheme_and_port() {

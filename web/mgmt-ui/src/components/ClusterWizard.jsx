@@ -7,6 +7,13 @@ import K8sVersionSelect from './K8sVersionSelect'
 import WizardModal from './WizardModal'
 import { normalizeProviderKind } from './ClusterMetaBadges'
 
+function sameLanIp(a, b) {
+  const x = String(a || '').trim().split('/')[0].replace(/^\[|\]$/g, '')
+  const y = String(b || '').trim().split('/')[0].replace(/^\[|\]$/g, '')
+  if (!x || !y) return false
+  return x.toLowerCase() === y.toLowerCase()
+}
+
 function guestArchAllowed(kind, arch) {
   if (arch !== 'arm64') return true
   const k = normalizeProviderKind(kind)
@@ -333,7 +340,18 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
   const ha = Number(form.controlplanes) > 1
   const mode = form.network_mode
   const vmidBlocked = vmidCheck && !vmidCheck.ok
-  const vipBlocked = ha && vipCheck && !vipCheck.ok
+  const vipForMode =
+    mode === 'ipv4' || mode === 'dual-stack' ? String(form.vip || '').trim() : ''
+  const vip6ForMode =
+    mode === 'ipv6' || mode === 'dual-stack' ? String(form.vip6 || '').trim() : ''
+  const assignedNodeIps = Array.isArray(ipScan?.assigned) ? ipScan.assigned : []
+  const vipNodeClash = assignedNodeIps.find(
+    (ip) => sameLanIp(ip, vipForMode) || sameLanIp(ip, vip6ForMode),
+  )
+  const vipClashMessage = vipNodeClash
+    ? `VIP must not equal a node IP (${vipNodeClash} is assigned to a machine in this cluster)`
+    : ''
+  const vipBlocked = ha && ((vipCheck && !vipCheck.ok) || !!vipNodeClash)
   const verifying = vmidChecking || (ha && vipChecking) || !images
   const selectedProvider = providers.find((p) => p.id === form.provider_id)
   const armAllowed = guestArchAllowed(selectedProvider?.kind, 'arm64')
@@ -403,12 +421,12 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
   if (!ha) {
     vipVerify = { state: 'skipped', message: 'Skipped — single control plane' }
   } else {
-    const vip =
-      mode === 'ipv4' || mode === 'dual-stack' ? String(form.vip || '').trim() : ''
-    const vip6 =
-      mode === 'ipv6' || mode === 'dual-stack' ? String(form.vip6 || '').trim() : ''
+    const vip = vipForMode
+    const vip6 = vip6ForMode
     if (!vip && !vip6) {
       vipVerify = { state: 'idle', message: 'Enter VIP for HA' }
+    } else if (vipNodeClash) {
+      vipVerify = { state: 'error', message: vipClashMessage }
     } else if (vipChecking) {
       vipVerify = { state: 'loading', message: 'Checking VIP on the LAN…' }
     } else if (vipCheck?.ok) {
@@ -454,7 +472,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
         if ((mode === 'ipv6' || mode === 'dual-stack') && !String(form.vip6 || '').trim()) {
           return 'IPv6 VIP is required for this network mode when controlplanes > 1'
         }
-        if (vipBlocked) return vipCheck.message || 'Selected VIP is not available'
+        if (vipBlocked) return vipClashMessage || vipCheck.message || 'Selected VIP is not available'
       }
     }
     return ''
@@ -494,7 +512,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
       return
     }
     if (vipBlocked) {
-      setError(vipCheck.message || 'Selected VIP is not available')
+      setError(vipClashMessage || vipCheck.message || 'Selected VIP is not available')
       return
     }
 
@@ -770,7 +788,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
           </div>
           {ha && !vipChecking && vipBlocked && (
             <p className="hint" style={{ color: 'var(--danger, #b91c1c)' }}>
-              {vipCheck.message}
+              {vipClashMessage || vipCheck.message}
             </p>
           )}
 
@@ -799,24 +817,27 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
                 {ipScan.ok && ipScan.assigned?.length > 0 ? (
                   <div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                      {ipScan.assigned.map((ip, idx) => (
+                      {ipScan.assigned.map((ip, idx) => {
+                        const clash = sameLanIp(ip, vipForMode) || sameLanIp(ip, vip6ForMode)
+                        return (
                         <span key={ip} style={{
                           display: 'inline-flex',
                           alignItems: 'center',
                           gap: '4px',
-                          background: 'var(--success-bg, #166534)',
-                          color: 'var(--success-fg, #4ade80)',
+                          background: clash ? 'var(--danger-bg, #7f1d1d)' : 'var(--success-bg, #166534)',
+                          color: clash ? 'var(--danger-fg, #fca5a5)' : 'var(--success-fg, #4ade80)',
                           padding: '4px 8px',
                           borderRadius: '4px',
                           fontFamily: 'monospace',
                         }}>
-                          <Icon name="check" size={12} />
+                          <Icon name={clash ? 'alert' : 'check'} size={12} />
                           {ip}
                           <span style={{ opacity: 0.7, fontSize: '0.75rem' }}>
-                            {idx < form.controlplanes ? 'cp' : 'wk'}-{idx < form.controlplanes ? idx + 1 : idx - form.controlplanes + 1}
+                            {clash ? 'VIP clash' : `${idx < form.controlplanes ? 'cp' : 'wk'}-${idx < form.controlplanes ? idx + 1 : idx - form.controlplanes + 1}`}
                           </span>
                         </span>
-                      ))}
+                        )
+                      })}
                     </div>
                     <p style={{ marginTop: '0.5rem', opacity: 0.6, fontSize: '0.8rem' }}>
                       {ipScan.message}
