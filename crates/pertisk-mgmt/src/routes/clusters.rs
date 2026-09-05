@@ -1601,16 +1601,22 @@ async fn validate_vips(
 ) -> ApiResult<VipCheck> {
     let mut conflicts = Vec::new();
 
-    let cluster_vips: Vec<(String, String, String, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            r#"SELECT id, name, status, vip, vip6 FROM clusters
+    let cluster_vips: Vec<(
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        r#"SELECT id, name, status, vip, vip6, endpoint FROM clusters
                WHERE status NOT IN ('deleting', 'deleted')
                  AND (? IS NULL OR id != ?)"#,
-        )
-        .bind(exclude_cluster_id)
-        .bind(exclude_cluster_id)
-        .fetch_all(state.pool())
-        .await?;
+    )
+    .bind(exclude_cluster_id)
+    .bind(exclude_cluster_id)
+    .fetch_all(state.pool())
+    .await?;
     let node_rows: Vec<(String, String, Option<String>, Option<String>, String, String)> =
         sqlx::query_as(
             r#"SELECT n.name, n.role, n.ip, n.ip6, c.id, c.name
@@ -1624,6 +1630,7 @@ async fn validate_vips(
         .fetch_all(state.pool())
         .await
         .unwrap_or_default();
+    let hypervisor_ips = crate::jobs::hypervisor_reserved_ips(state).await;
 
     for addr in [vip, vip6].into_iter().flatten() {
         if addr.parse::<std::net::IpAddr>().is_err() {
@@ -1641,7 +1648,7 @@ async fn validate_vips(
             });
         }
 
-        for (id, name, status, cvip, cvip6) in &cluster_vips {
+        for (id, name, status, cvip, cvip6, endpoint) in &cluster_vips {
             let hit = cvip
                 .as_deref()
                 .is_some_and(|ip| crate::jobs::ips_equal(addr, ip))
@@ -1651,13 +1658,24 @@ async fn validate_vips(
             if hit {
                 conflicts.push(VipConflict {
                     address: addr.to_string(),
-                    reason: format!("claimed by cluster {name} ({status})"),
+                    reason: format!("claimed as VIP by cluster {name} ({status})"),
                     cluster_id: Some(id.clone()),
                     cluster_name: Some(name.clone()),
                 });
             }
+            if let Some(ep) = endpoint.as_deref() {
+                if crate::jobs::ips_equal(addr, ep) {
+                    conflicts.push(VipConflict {
+                        address: addr.to_string(),
+                        reason: format!("cluster {name} API endpoint ({status})"),
+                        cluster_id: Some(id.clone()),
+                        cluster_name: Some(name.clone()),
+                    });
+                }
+            }
         }
 
+        let mut named = false;
         for (node_name, role, nip, nip6, cid, cname) in &node_rows {
             let hit = nip
                 .as_deref()
@@ -1666,9 +1684,10 @@ async fn validate_vips(
                     .as_deref()
                     .is_some_and(|ip| crate::jobs::ips_equal(addr, ip));
             if hit {
+                named = true;
                 conflicts.push(VipConflict {
                     address: addr.to_string(),
-                    reason: format!("used by machine {node_name} ({role}) on cluster {cname}"),
+                    reason: format!("used by cluster node {node_name} ({role}) on {cname}"),
                     cluster_id: Some(cid.clone()),
                     cluster_name: Some(cname.clone()),
                 });
@@ -1678,6 +1697,7 @@ async fn validate_vips(
         for url in &urls {
             if let Some(hip) = crate::jobs::ip_from_provider_url(url) {
                 if crate::jobs::ips_equal(addr, &hip) {
+                    named = true;
                     conflicts.push(VipConflict {
                         address: addr.to_string(),
                         reason: format!("this is a provider/hypervisor address ({hip})"),
@@ -1688,17 +1708,26 @@ async fn validate_vips(
             }
         }
 
-        if address_answers_ping(addr).await {
+        if hypervisor_ips
+            .iter()
+            .any(|hip| crate::jobs::ips_equal(addr, hip))
+        {
+            if !named {
+                conflicts.push(VipConflict {
+                    address: addr.to_string(),
+                    reason: "in use by a hypervisor VM (cluster node or leftover guest)".into(),
+                    cluster_id: None,
+                    cluster_name: None,
+                });
+            }
+            named = true;
+        }
+
+        // ICMP is often filtered; cluster nodes still answer :22 / :50000 / :10250.
+        if crate::jobs::ip_is_in_use(addr.to_string(), 800).await && !named {
             conflicts.push(VipConflict {
                 address: addr.to_string(),
-                reason: "answers ICMP ping on the LAN".into(),
-                cluster_id: None,
-                cluster_name: None,
-            });
-        } else if address_has_apiserver(addr).await {
-            conflicts.push(VipConflict {
-                address: addr.to_string(),
-                reason: "HTTPS :6443 already responds (apiserver/kube-vip in use)".into(),
+                reason: "in use on the LAN (ICMP or TCP — likely a cluster node)".into(),
                 cluster_id: None,
                 cluster_name: None,
             });
@@ -1728,41 +1757,6 @@ async fn validate_vips(
         message,
         conflicts,
     })
-}
-
-async fn address_answers_ping(addr: &str) -> bool {
-    let is_v6 = addr.contains(':');
-    let mut cmd = tokio::process::Command::new("ping");
-    cmd.arg("-c").arg("1").arg("-W").arg("1");
-    if is_v6 {
-        cmd.arg("-6");
-    }
-    cmd.arg(addr)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    match cmd.status().await {
-        Ok(st) => st.success(),
-        Err(_) => false,
-    }
-}
-
-async fn address_has_apiserver(addr: &str) -> bool {
-    let host = if addr.contains(':') {
-        format!("[{addr}]")
-    } else {
-        addr.to_string()
-    };
-    let url = format!("https://{host}:6443/readyz");
-    let client = match reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(std::time::Duration::from_secs(2))
-        .connect_timeout(std::time::Duration::from_secs(1))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    matches!(client.get(&url).send().await, Ok(resp) if resp.status().is_success())
 }
 
 // --- IP scan endpoint ---

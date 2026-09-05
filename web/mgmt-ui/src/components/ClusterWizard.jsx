@@ -11,7 +11,22 @@ function sameLanIp(a, b) {
   const x = String(a || '').trim().split('/')[0].replace(/^\[|\]$/g, '')
   const y = String(b || '').trim().split('/')[0].replace(/^\[|\]$/g, '')
   if (!x || !y) return false
-  return x.toLowerCase() === y.toLowerCase()
+  const nx = x.includes('.') && x.includes(':') ? x.split(':')[0] : x
+  const ny = y.includes('.') && y.includes(':') ? y.split(':')[0] : y
+  return nx.toLowerCase() === ny.toLowerCase()
+}
+
+function machineUsingVip(machines, vip, vip6) {
+  return (machines || []).find((m) => {
+    const st = String(m.cluster_status || '')
+    if (st === 'deleting' || st === 'deleted') return false
+    return (
+      sameLanIp(m.ip, vip) ||
+      sameLanIp(m.ip6, vip) ||
+      sameLanIp(m.ip, vip6) ||
+      sameLanIp(m.ip6, vip6)
+    )
+  })
 }
 
 function guestArchAllowed(kind, arch) {
@@ -85,6 +100,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
   const [vipChecking, setVipChecking] = useState(false)
   const [ipScan, setIpScan] = useState(null)
   const [ipScanning, setIpScanning] = useState(false)
+  const [machines, setMachines] = useState(null)
   const [images, setImages] = useState(null)
   const [form, setForm] = useState({ ...defaultForm })
   const [addonPresets, setAddonPresets] = useState([])
@@ -100,6 +116,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
     setVmidCheck(null)
     setVipCheck(null)
     setIpScan(null)
+    setMachines(null)
     setImages(null)
     setForm({ ...defaultForm })
     setAddonPresets([])
@@ -118,6 +135,13 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
       })
       .catch(() => {
         if (!cancelled) setImages({ ready: {} })
+      })
+    api('/machines')
+      .then((r) => {
+        if (!cancelled) setMachines(Array.isArray(r) ? r : [])
+      })
+      .catch(() => {
+        if (!cancelled) setMachines([])
       })
     api('/providers')
       .then(async (p) => {
@@ -345,14 +369,19 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
   const vip6ForMode =
     mode === 'ipv6' || mode === 'dual-stack' ? String(form.vip6 || '').trim() : ''
   const assignedNodeIps = Array.isArray(ipScan?.assigned) ? ipScan.assigned : []
-  const vipNodeClash = assignedNodeIps.find(
+  const existingMachine = Array.isArray(machines)
+    ? machineUsingVip(machines, vipForMode, vip6ForMode)
+    : null
+  const assignedClash = assignedNodeIps.find(
     (ip) => sameLanIp(ip, vipForMode) || sameLanIp(ip, vip6ForMode),
   )
-  const vipClashMessage = vipNodeClash
-    ? `VIP must not equal a node IP (${vipNodeClash} is assigned to a machine in this cluster)`
-    : ''
-  const vipBlocked = ha && ((vipCheck && !vipCheck.ok) || !!vipNodeClash)
-  const verifying = vmidChecking || (ha && vipChecking) || !images
+  const vipClashMessage = existingMachine
+    ? `VIP is used by cluster node ${existingMachine.name} (${existingMachine.role}) on ${existingMachine.cluster_name}`
+    : assignedClash
+      ? `VIP must not equal a node IP (${assignedClash} is assigned to this new cluster)`
+      : ''
+  const vipBlocked = ha && ((vipCheck && !vipCheck.ok) || !!vipClashMessage)
+  const verifying = vmidChecking || (ha && vipChecking) || (ha && machines == null) || !images
   const selectedProvider = providers.find((p) => p.id === form.provider_id)
   const armAllowed = guestArchAllowed(selectedProvider?.kind, 'arm64')
   const imageReady = !!images?.ready?.[form.arch]
@@ -425,7 +454,7 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
     const vip6 = vip6ForMode
     if (!vip && !vip6) {
       vipVerify = { state: 'idle', message: 'Enter VIP for HA' }
-    } else if (vipNodeClash) {
+    } else if (vipClashMessage) {
       vipVerify = { state: 'error', message: vipClashMessage }
     } else if (vipChecking) {
       vipVerify = { state: 'loading', message: 'Checking VIP on the LAN…' }
@@ -818,7 +847,9 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
                   <div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
                       {ipScan.assigned.map((ip, idx) => {
-                        const clash = sameLanIp(ip, vipForMode) || sameLanIp(ip, vip6ForMode)
+                        const vipClash = sameLanIp(ip, vipForMode) || sameLanIp(ip, vip6ForMode)
+                        const nodeClash = !!machineUsingVip(machines, ip, '')
+                        const clash = vipClash || nodeClash
                         return (
                         <span key={ip} style={{
                           display: 'inline-flex',
@@ -833,7 +864,11 @@ export default function ClusterWizard({ open, onClose, onCreated }) {
                           <Icon name={clash ? 'alert' : 'check'} size={12} />
                           {ip}
                           <span style={{ opacity: 0.7, fontSize: '0.75rem' }}>
-                            {clash ? 'VIP clash' : `${idx < form.controlplanes ? 'cp' : 'wk'}-${idx < form.controlplanes ? idx + 1 : idx - form.controlplanes + 1}`}
+                            {vipClash
+                              ? 'VIP clash'
+                              : nodeClash
+                                ? 'in use'
+                                : `${idx < form.controlplanes ? 'cp' : 'wk'}-${idx < form.controlplanes ? idx + 1 : idx - form.controlplanes + 1}`}
                           </span>
                         </span>
                         )

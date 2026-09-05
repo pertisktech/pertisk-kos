@@ -463,14 +463,30 @@ fn local_ipv4_addrs() -> Vec<String> {
     ips
 }
 
-/// Parse a LAN address for comparison (strip CIDR / brackets).
+/// Parse a LAN address for comparison (strip CIDR / brackets / `:port`).
 pub(crate) fn parse_lan_ip(s: &str) -> Option<std::net::IpAddr> {
-    let host = s.trim().split('/').next()?.trim();
+    let raw = s.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some(ip) = ip_from_provider_url(raw) {
+        return ip.parse().ok();
+    }
+    let host = raw.split('/').next()?.trim();
     let host = host.trim_start_matches('[').trim_end_matches(']');
     if host.is_empty() {
         return None;
     }
-    host.parse().ok()
+    if let Ok(ip) = host.parse() {
+        return Some(ip);
+    }
+    // IPv4 host:port (e.g. cluster endpoint 10.1.1.245:6443).
+    if host.matches('.').count() == 3 {
+        if let Ok(ip) = host.split(':').next()?.parse() {
+            return Some(ip);
+        }
+    }
+    None
 }
 
 pub(crate) fn ips_equal(a: &str, b: &str) -> bool {
@@ -530,6 +546,23 @@ pub(crate) async fn inventory_cluster_vips(pool: &sqlx::SqlitePool) -> Vec<Strin
 /// longer answer ping. KOS `nodes` can miss these after a failed create or a
 /// deleted cluster whose VMs were left behind.
 pub(crate) async fn hypervisor_reserved_ips(state: &AppState) -> Vec<String> {
+    static CACHE: std::sync::OnceLock<tokio::sync::Mutex<Option<(std::time::Instant, Vec<String>)>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| tokio::sync::Mutex::new(None));
+    {
+        let g = cache.lock().await;
+        if let Some((at, ips)) = g.as_ref() {
+            if at.elapsed() < std::time::Duration::from_secs(20) {
+                return ips.clone();
+            }
+        }
+    }
+    let ips = hypervisor_reserved_ips_uncached(state).await;
+    *cache.lock().await = Some((std::time::Instant::now(), ips.clone()));
+    ips
+}
+
+async fn hypervisor_reserved_ips_uncached(state: &AppState) -> Vec<String> {
     let rows: Vec<(String, String, String, String, String, i64)> = sqlx::query_as(
         "SELECT kind, url, token_id, token_secret_enc, node, insecure FROM providers",
     )
@@ -6034,7 +6067,8 @@ mod tests {
     fn ips_equal_normalizes_cidr_and_v6() {
         assert!(ips_equal("10.1.1.245", "10.1.1.245/24"));
         assert!(ips_equal("fd00:1::254", "FD00:1::254"));
-        assert!(ips_equal("[fd00:1::254]/64", "fd00:1::254"));
+        assert!(ips_equal("10.1.1.245", "https://10.1.1.245:6443"));
+        assert!(ips_equal("10.1.1.245:6443", "10.1.1.245"));
         assert!(!ips_equal("10.1.1.245", "10.1.1.254"));
         assert!(!ips_equal("10.1.1.245", ""));
     }
