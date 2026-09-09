@@ -72,8 +72,8 @@ async fn auth_middleware(
         return Ok(next.run(req).await);
     }
 
-    // Host shell WebSocket + SSE: JWT arrives as ?token= (browsers cannot set Authorization).
-    if path.ends_with("/k8s/shell") || path == "/events" {
+    // Host shell still uses ?token=; live WS authenticates with the first message.
+    if path.ends_with("/k8s/shell") || path == "/ws" {
         return Ok(next.run(req).await);
     }
 

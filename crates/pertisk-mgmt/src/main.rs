@@ -99,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new(cfg.clone(), pool);
     jobs::spawn_worker(state.clone());
+    state.spawn_event_ticks();
 
     let app = routes::router(state).layer(TraceLayer::new_for_http());
 

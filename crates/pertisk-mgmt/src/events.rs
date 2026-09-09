@@ -1,4 +1,4 @@
-//! Dashboard / UI event bus (SSE fan-out).
+//! Dashboard / UI event bus (WebSocket + SSE fan-out).
 
 use serde::Serialize;
 use tokio::sync::broadcast;
@@ -8,7 +8,7 @@ const CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MgmtEvent {
-    /// `job` | `cluster` | `hello`
+    /// `job` | `cluster` | `hello` | `refresh`
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cluster_id: Option<String>,
@@ -65,6 +65,18 @@ impl EventBus {
             job_id: None,
             job_kind: None,
             status: Some(status.to_string()),
+            ts: chrono::Utc::now().timestamp(),
+        });
+    }
+
+    /// Periodic tick so the UI can refresh availability/metrics without setInterval.
+    pub fn refresh(&self) {
+        self.publish(MgmtEvent {
+            kind: "refresh".into(),
+            cluster_id: None,
+            job_id: None,
+            job_kind: None,
+            status: None,
             ts: chrono::Utc::now().timestamp(),
         });
     }

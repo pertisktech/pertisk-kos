@@ -14,7 +14,8 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8080',
         changeOrigin: true,
-        // Long-lived SSE (`/api/events`) must not hit default proxy timeouts.
+        ws: true,
+        // Long-lived WS (`/api/ws`) must not hit default proxy timeouts.
         timeout: 0,
         proxyTimeout: 0,
       },

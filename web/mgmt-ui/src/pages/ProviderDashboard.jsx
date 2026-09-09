@@ -7,8 +7,6 @@ import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import { formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 
-const POLL_MS = 15000
-
 export default function ProviderDashboard() {
   const { id } = useParams()
   const nav = useNavigate()
@@ -31,8 +29,6 @@ export default function ProviderDashboard() {
 
   useEffect(() => {
     load()
-    const t = setInterval(load, POLL_MS)
-    return () => clearInterval(t)
   }, [load])
   useMgmtRefresh(load)
 

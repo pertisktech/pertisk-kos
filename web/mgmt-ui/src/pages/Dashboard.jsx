@@ -9,10 +9,6 @@ import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
-const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
-const RESOURCES_POLL_MS = 15000
-const BUSY_FALLBACK_MS = 8000
-const LIST_POLL_MS = 15000
 const CACHE_CLUSTERS = 'pertisk_dash_clusters'
 const CACHE_PROVIDERS = 'pertisk_dash_providers'
 const CACHE_RESOURCES = 'pertisk_dash_resources'
@@ -255,44 +251,11 @@ export default function Dashboard() {
     loadProviderResources()
   }, [load, loadResources, loadProviderResources])
 
-  useMgmtRefresh(load)
-
-  useEffect(() => {
-    const busy = clusters.some((c) => BUSY.has(c.status))
-    if (!busy) return undefined
-    const t = setInterval(load, BUSY_FALLBACK_MS)
-    return () => clearInterval(t)
-  }, [clusters, load])
-
-  useEffect(() => {
-    if (clusters.length === 0) return undefined
-    const busy = clusters.some((c) => BUSY.has(c.status))
-    if (busy) return undefined
-    const t = setInterval(load, LIST_POLL_MS)
-    return () => clearInterval(t)
-  }, [clusters, load])
-
-  const awaitingLiveMetrics = resources.length === 0
-    || resources.some((r) => r.cpu?.percent == null && r.memory?.percent == null && r.status === 'ready' && r.availability !== 'offline')
-
-  useEffect(() => {
-    if (clusters.length === 0) return undefined
-    let n = 0
-    let timer
-    const tick = () => {
-      n += 1
-      loadResources()
-      timer = setTimeout(tick, n < 4 && awaitingLiveMetrics ? 2500 : RESOURCES_POLL_MS)
-    }
-    timer = setTimeout(tick, awaitingLiveMetrics ? 2500 : RESOURCES_POLL_MS)
-    return () => clearTimeout(timer)
-  }, [clusters.length, awaitingLiveMetrics, loadResources])
-
-  useEffect(() => {
-    if (providers.length === 0) return undefined
-    const t = setInterval(loadProviderResources, RESOURCES_POLL_MS)
-    return () => clearInterval(t)
-  }, [providers.length, loadProviderResources])
+  useMgmtRefresh(() => {
+    load()
+    loadResources()
+    loadProviderResources()
+  })
 
   const displayResources = useMemo(() => {
     if (clusters.length === 0) return resources
@@ -314,6 +277,8 @@ export default function Dashboard() {
   const providersOnline = providers.filter((p) => p.availability === 'online').length
   const providersOffline = providers.filter((p) => p.availability === 'offline').length
   const recent = clusters.slice(0, 8)
+  const awaitingLiveMetrics =
+    clusters.length > 0 && clusters.some((c) => !resources.some((r) => r.cluster_id === c.id))
   const dashNum = listLoading && clusters.length === 0
   const provNum = listLoading && providers.length === 0
 
@@ -342,7 +307,7 @@ export default function Dashboard() {
               <Icon name="clusters" size={18} /> Clusters
             </h2>
             <p className="muted dash-section-sub">
-              Live CPU, memory, and disk · updates every {RESOURCES_POLL_MS / 1000}s
+              Live CPU, memory, and disk · live over WebSocket
               {resourcesLoading && (resources.length === 0 || awaitingLiveMetrics) ? ' · loading metrics…' : ''}
             </p>
           </div>

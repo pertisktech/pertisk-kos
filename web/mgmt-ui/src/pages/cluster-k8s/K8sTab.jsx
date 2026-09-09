@@ -10,8 +10,7 @@ import {
   scaleDeployment,
 } from './api'
 import WorkloadTable from './WorkloadTable'
-
-const POLL_MS = 5000
+import { useMgmtRefresh } from '../../hooks/useMgmtEvents'
 
 export default function K8sTab({ clusterId, ready }) {
   const confirm = useConfirm()
@@ -53,10 +52,8 @@ export default function K8sTab({ clusterId, ready }) {
 
   useEffect(() => {
     load()
-    if (!ready) return undefined
-    const t = setInterval(load, POLL_MS)
-    return () => clearInterval(t)
-  }, [load, ready])
+  }, [load])
+  useMgmtRefresh(load, { clusterId })
 
   async function onScale(row) {
     const raw = window.prompt(`Replicas for ${row.namespace}/${row.name}`, String(row.replicas ?? 1))
@@ -119,7 +116,7 @@ export default function K8sTab({ clusterId, ready }) {
       <div className="section-head">
         <div>
           <h3 className="section-label">Workloads</h3>
-          <p className="muted">Live view via kubectl on the management host (polls every {POLL_MS / 1000}s).</p>
+          <p className="muted">Live view via kubectl on the management host (WebSocket refresh).</p>
         </div>
         <button type="button" className="secondary btn-icon" onClick={load} disabled={loading}>
           <Icon name="refresh" size={14} /> Refresh

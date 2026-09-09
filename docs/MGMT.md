@@ -108,7 +108,7 @@ Provider cards and **Providers → Dashboard** (or click the provider name) open
 | Provider cards / dashboard | CPU / memory | Proxmox node status; Nutanix AHV hosts; ESXi host quickStats; pertisk-vms cluster members |
 | Provider cards / dashboard | Disk | Selected storage / container / datastore capacity |
 
-Polls `GET /api/dashboard/resources` and `GET /api/dashboard/providers` about every 15s. Cluster list / job status updates push via **SSE** (`GET /api/events?token=…`) with a slow poll fallback. Click a cluster card to open the cluster; click a provider card for the hypervisor dashboard (`GET /api/providers/{id}/dashboard`).
+Live updates push over **WebSocket** (`GET /api/ws`; JWT sent as the first message, never on the URL). Job and cluster changes arrive immediately; the server also emits `refresh` ticks (every 3s while a job is running, else 15s) so availability, metrics, and workloads stay current without client polling. Click a cluster card to open the cluster; click a provider card for the hypervisor dashboard (`GET /api/providers/{id}/dashboard`).
 
 ## Nodes tab
 

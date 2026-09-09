@@ -155,6 +155,24 @@ impl AppState {
     pub fn emit_cluster(&self, cluster_id: &str, status: &str) {
         self.inner.events.cluster(cluster_id, status);
     }
+
+    /// Push `refresh` ticks over the event bus (faster while jobs run).
+    pub fn spawn_event_ticks(&self) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let busy = state
+                    .inner
+                    .running_jobs
+                    .lock()
+                    .map(|g| !g.is_empty())
+                    .unwrap_or(false);
+                let secs = if busy { 3 } else { 15 };
+                tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                state.inner.events.refresh();
+            }
+        });
+    }
 }
 
 fn build_metrics_http_client(tls: Option<&MetricsTls>) -> anyhow::Result<reqwest::Client> {

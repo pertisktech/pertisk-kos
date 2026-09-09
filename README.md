@@ -136,7 +136,7 @@ Single-port API + UI (`pertisk-mgmt`). Details: [docs/MGMT.md](./docs/MGMT.md).
 | **Audit** | Management action log (Phase D) |
 | **Adopt / join** | Register existing/bare-metal nodes; join-token snapshots (Phase D2) |
 | **Settings** | Session, listen/public URL, JWT TTL, paths, auth mode |
-| **Events** | SSE (`GET /api/events`) for job / cluster status |
+| **Live updates** | WebSocket (`GET /api/ws`; JWT as first message) for job / cluster status and `refresh` ticks |
 
 ### Terraform provider
 

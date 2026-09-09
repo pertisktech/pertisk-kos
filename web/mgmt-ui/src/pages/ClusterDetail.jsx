@@ -467,18 +467,7 @@ export default function ClusterDetail() {
 
   useEffect(() => {
     load()
-    const status = data?.cluster?.status
-    const busy =
-      status === 'provisioning' ||
-      status === 'pending' ||
-      status === 'upgrading' ||
-      status === 'deleting'
-    const availUnknown =
-      status === 'ready' &&
-      (!data?.cluster?.availability || data.cluster.availability === 'unknown')
-    const t = setInterval(load, busy ? 3000 : availUnknown ? 2500 : 20000)
-    return () => clearInterval(t)
-  }, [load, data?.cluster?.status, data?.cluster?.availability])
+  }, [load])
 
   async function loadJobLog(jobId, { follow = true } = {}) {
     selectedJobRef.current = jobId
@@ -524,7 +513,7 @@ export default function ClusterDetail() {
     if (!ok) return
     try {
       const res = await api(`/clusters/${id}`, { method: 'DELETE' })
-      // Async delete leaves a "deleting" row until the job finishes — list polls it off.
+      // Async delete leaves a "deleting" row until the job finishes — list drops it on the next event.
       if (res?.job_id) {
         nav(`/clusters?deleting=${id}`)
       } else {

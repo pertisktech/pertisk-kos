@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Icon } from '../../components/Icons'
 import { useConfirm } from '../../components/Confirm'
 import { checkAddon, installAddon, listAddons } from './api'
+import { useMgmtRefresh } from '../../hooks/useMgmtEvents'
 
 function statusLabel(status) {
   switch (status) {
@@ -113,7 +114,7 @@ function AddonCard({ clusterId, addon, onInstalled }) {
       }
       return next
     })
-    // Re-hydrate when the saved cluster config changes, not on every parent poll.
+    // Re-hydrate when the saved cluster config changes, not on every parent refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- savedKey captures config
   }, [savedKey])
 
@@ -335,12 +336,7 @@ export default function AddonsTab({ clusterId, ready, onInstalled }) {
   useEffect(() => {
     load()
   }, [load])
-
-  useEffect(() => {
-    if (!addons.some((a) => a.status === 'installing')) return undefined
-    const t = setInterval(load, 4000)
-    return () => clearInterval(t)
-  }, [addons, load])
+  useMgmtRefresh(load, { clusterId })
 
   const visibleSections = ADDON_SECTIONS.filter((s) => sectionItems(addons, s.id).length > 0)
   const visibleIds = visibleSections.map((s) => s.id).join(',')

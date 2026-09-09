@@ -208,7 +208,7 @@ Shipped:
 - etcd snapshot / restore lab path (`MachineService.EtcdSnapshot` / `EtcdRestore`, `pertiskctl etcd …`)
 - Mgmt Quote trust store (TOFU AK enroll / verify on node detail; stores EK fingerprint)
 - Soft reset (`MachineService.Reset`, `pertiskctl reset --force`; clears STATE + runtime, keeps GPT)
-- Dashboard events stream (`GET /api/events` SSE for job/cluster status)
+- Dashboard live stream (`GET /api/ws` WebSocket; JWT as first message)
 - CRI / service log follow (`MachineService.Logs` stream, `pertiskctl logs -f`)
 - DHCPv4 lease renew / rebind (T1 unicast + T2 broadcast maintainer)
 
@@ -297,7 +297,7 @@ _(none — P5 stretch complete for lab / HA)_
 - Lab: `proxmox-lab-up.sh --controlplanes 3 --vip <IP>`
 - `pertisk-mgmt` web UI (Proxmox + standalone ESXi providers)
 - Soft reset (`MachineService.Reset`, `pertiskctl reset --force`)
-- Dashboard events stream (`GET /api/events` SSE; job/cluster push)
+- Dashboard live stream (`GET /api/ws` WebSocket; job/cluster push + refresh ticks)
 - CRI / service log follow (`pertiskctl logs -f` / `Logs` stream)
 - DHCPv4 lease renew / rebind (builtin client T1/T2 maintainer)
 - EK cert + manufacturer CA chain (NV read + `PERTISK_TPM_EK_CAS` / `--ek-cas`)

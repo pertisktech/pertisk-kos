@@ -3,9 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { NodeStatusBadges } from '../components/NodeStatusBadges'
-
-/** Refresh live online/offline while the page is open. */
-const AVAIL_POLL_MS = 15_000
+import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 
 export default function Machines() {
   const nav = useNavigate()
@@ -23,10 +21,7 @@ export default function Machines() {
     load()
   }, [load])
 
-  useEffect(() => {
-    const t = setInterval(load, AVAIL_POLL_MS)
-    return () => clearInterval(t)
-  }, [load])
+  useMgmtRefresh(load)
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()

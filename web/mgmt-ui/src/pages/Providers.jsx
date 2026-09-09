@@ -9,8 +9,6 @@ import { formatProviderKind, normalizeProviderKind } from '../components/Cluster
 import UsageBar from '../components/UsageBar'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 
-const AVAIL_POLL_MS = 15000
-
 function formatProbe(r, kind) {
   const label =
     kind === 'vsphere'
@@ -79,8 +77,6 @@ export default function Providers() {
   }, [])
   useEffect(() => {
     load()
-    const t = setInterval(load, AVAIL_POLL_MS)
-    return () => clearInterval(t)
   }, [load])
   useMgmtRefresh(load)
 

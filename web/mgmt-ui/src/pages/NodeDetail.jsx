@@ -16,9 +16,8 @@ import { api } from '../api'
 import { Icon } from '../components/Icons'
 import { NodeStatusBadges } from '../components/NodeStatusBadges'
 import ColorLogViewer from '../components/ColorLogViewer'
+import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 
-const POLL_MS = 4000
-const LOG_POLL_MS = 3000
 const MAX_POINTS = 60
 const LOG_SERVICES = ['pertiskd', 'containerd', 'kubelet', 'dmesg']
 const LOG_TAIL = 200
@@ -105,7 +104,7 @@ export default function NodeDetail() {
       let avgMs = null
       const prev = lastApi.current
       if (prev.total != null) {
-        const dt = Math.max((now - (prev.t || now - POLL_MS)) / 1000, 0.001)
+        const dt = Math.max((now - (prev.t || now - 4000)) / 1000, 0.001)
         reqRate = Math.max(0, (total - prev.total) / dt)
         const dCount = count - (prev.count ?? 0)
         const dSum = sum - (prev.sum ?? 0)
@@ -143,9 +142,8 @@ export default function NodeDetail() {
     setSeries([])
     lastApi.current = { total: null, sum: null, count: null }
     load()
-    const t = setInterval(load, POLL_MS)
-    return () => clearInterval(t)
   }, [load])
+  useMgmtRefresh(load, { clusterId })
 
   const loadLogs = useCallback(async () => {
     try {
@@ -170,9 +168,8 @@ export default function NodeDetail() {
     setLogText('')
     setLogError(null)
     loadLogs()
-    const t = setInterval(loadLogs, LOG_POLL_MS)
-    return () => clearInterval(t)
   }, [loadLogs])
+  useMgmtRefresh(loadLogs, { clusterId })
 
   const loadAttest = useCallback(async () => {
     try {
@@ -456,7 +453,7 @@ export default function NodeDetail() {
       </div>
 
       <p className="muted" style={{ marginTop: '0.5rem' }}>
-        Charts keep ~{MAX_POINTS} samples in this browser session (poll every {POLL_MS / 1000}s). Refresh clears history.
+        Charts keep ~{MAX_POINTS} samples in this browser session (live over WebSocket). Refresh clears history.
       </p>
 
       <div className="card node-logs-card">

@@ -10,10 +10,6 @@ import UsageBar from '../components/UsageBar'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
-const BUSY = new Set(['deleting', 'provisioning', 'pending', 'upgrading'])
-const AVAIL_POLL_MS = 15000
-/** Slow fallback while busy if SSE drops; primary updates come from events. */
-const BUSY_FALLBACK_MS = 8000
 const CACHE_CLUSTERS = 'pertisk_dash_clusters'
 
 export default function Clusters() {
@@ -66,23 +62,6 @@ export default function Clusters() {
   }, [load])
 
   useMgmtRefresh(load)
-
-  // Slow fallback while mid-job (SSE is primary).
-  useEffect(() => {
-    const busy = list.some((c) => BUSY.has(c.status)) || !!expectDelete
-    if (!busy) return undefined
-    const t = setInterval(load, BUSY_FALLBACK_MS)
-    return () => clearInterval(t)
-  }, [list, load, expectDelete])
-
-  // Refresh online/offline even when idle.
-  useEffect(() => {
-    if (list.length === 0) return undefined
-    const busy = list.some((c) => BUSY.has(c.status))
-    if (busy) return undefined
-    const t = setInterval(load, AVAIL_POLL_MS)
-    return () => clearInterval(t)
-  }, [list, load])
 
   useEffect(() => {
     function onFocus() {
