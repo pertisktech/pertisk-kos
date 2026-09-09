@@ -1,7 +1,7 @@
 //! Signed A/B OS bundle helpers for mgmt (upload + hostPath staging).
 
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context};
@@ -156,6 +156,89 @@ pub fn infer_arch_from_name(name: &str) -> Option<String> {
     None
 }
 
+/// Read the guest kernel and return `amd64` / `arm64` when the PE/Image header is known.
+pub fn detect_kernel_arch(kernel: &Path) -> anyhow::Result<Option<String>> {
+    let mut f = File::open(kernel).with_context(|| format!("open {}", kernel.display()))?;
+    let mut buf = vec![0u8; 4096];
+    let n = f.read(&mut buf)?;
+    buf.truncate(n);
+    Ok(arch_from_kernel_bytes(&buf))
+}
+
+pub fn arch_from_kernel_bytes(buf: &[u8]) -> Option<String> {
+    if buf.len() >= 0x40 && buf[0] == b'M' && buf[1] == b'Z' {
+        let pe_off = u32::from_le_bytes(buf[0x3c..0x40].try_into().ok()?) as usize;
+        if pe_off.checked_add(6).is_some_and(|end| end <= buf.len())
+            && buf.get(pe_off..pe_off + 4) == Some(&b"PE\0\0"[..])
+        {
+            let machine = u16::from_le_bytes(buf[pe_off + 4..pe_off + 6].try_into().ok()?);
+            return match machine {
+                0x8664 => Some("amd64".into()),
+                0xAA64 => Some("arm64".into()),
+                _ => None,
+            };
+        }
+    }
+    if buf.len() >= 0x3C {
+        let magic = u32::from_le_bytes(buf[0x38..0x3C].try_into().ok()?);
+        if magic == 0x644D5241 {
+            return Some("arm64".into());
+        }
+    }
+    None
+}
+
+/// Fail if the kernel binary does not match the cluster / catalog arch.
+pub fn ensure_bundle_matches_arch(dir: &Path, expected: &str) -> anyhow::Result<()> {
+    let expected = normalize_arch(expected)?;
+    let kernel = dir.join("kernel");
+    let Some(got) = detect_kernel_arch(&kernel)? else {
+        return Ok(());
+    };
+    if got != expected {
+        bail!(
+            "OS bundle kernel is {got}, expected {expected}. \
+             Do not label an amd64 zip as arm64 (or the reverse). \
+             Upload os-bundle-{expected}-*.zip"
+        );
+    }
+    Ok(())
+}
+
+/// Resolve catalog arch from the kernel, zip name, and optional form field.
+pub fn resolve_upload_arch(
+    bundle_dir: &Path,
+    arch_hint: Option<&str>,
+    file_name: &str,
+) -> anyhow::Result<String> {
+    let detected = detect_kernel_arch(&bundle_dir.join("kernel"))?;
+    let named = infer_arch_from_name(file_name);
+    if let (Some(d), Some(h)) = (detected.as_deref(), arch_hint) {
+        let h = normalize_arch(h)?;
+        if d != h {
+            bail!(
+                "kernel is {d} but the upload arch was {h}. \
+                 Use os-bundle-{d}-*.zip and set arch to {d}"
+            );
+        }
+    }
+    if let (Some(d), Some(n)) = (detected.as_deref(), named.as_deref()) {
+        if d != n {
+            bail!("filename says {n} but the kernel is {d}");
+        }
+    }
+    if let Some(d) = detected {
+        return Ok(d);
+    }
+    if let Some(h) = arch_hint {
+        return normalize_arch(h);
+    }
+    if let Some(n) = named {
+        return Ok(n);
+    }
+    Ok("amd64".into())
+}
+
 /// Sum file sizes in a bundle directory (non-recursive).
 pub fn dir_size_bytes(dir: &Path) -> u64 {
     let Ok(rd) = fs::read_dir(dir) else {
@@ -304,5 +387,24 @@ mod tests {
         assert_eq!(infer_arch_from_name("bundle.zip"), None);
         assert_eq!(normalize_arch("x86_64").unwrap(), "amd64");
         assert_eq!(normalize_arch("aarch64").unwrap(), "arm64");
+    }
+
+    #[test]
+    fn arch_from_pe_machine() {
+        let mut amd = vec![0u8; 80];
+        amd[0] = b'M';
+        amd[1] = b'Z';
+        amd[0x3c..0x40].copy_from_slice(&64u32.to_le_bytes());
+        amd[64..68].copy_from_slice(b"PE\0\0");
+        amd[68..70].copy_from_slice(&0x8664u16.to_le_bytes());
+        assert_eq!(arch_from_kernel_bytes(&amd).as_deref(), Some("amd64"));
+
+        let mut arm = amd.clone();
+        arm[68..70].copy_from_slice(&0xAA64u16.to_le_bytes());
+        assert_eq!(arch_from_kernel_bytes(&arm).as_deref(), Some("arm64"));
+
+        let mut image = vec![0u8; 64];
+        image[0x38..0x3C].copy_from_slice(&0x644D5241u32.to_le_bytes());
+        assert_eq!(arch_from_kernel_bytes(&image).as_deref(), Some("arm64"));
     }
 }

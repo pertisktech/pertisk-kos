@@ -9,6 +9,13 @@ import { useConfirm } from '../components/Confirm'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 import { formatArch } from '../components/ClusterMetaBadges'
 
+function inferArchFromName(name) {
+  const l = String(name || '').toLowerCase()
+  if (l.includes('arm64') || l.includes('aarch64')) return 'arm64'
+  if (l.includes('amd64') || l.includes('x86_64')) return 'amd64'
+  return null
+}
+
 function formatBytes(n) {
   const v = Number(n) || 0
   if (v < 1024) return `${v} B`
@@ -92,7 +99,8 @@ export default function OsPackages() {
     setError('')
     try {
       const fd = new FormData()
-      fd.append('arch', arch)
+      const fromName = inferArchFromName(bundle?.zip?.name)
+      fd.append('arch', fromName || arch)
       appendBundle(fd, bundle)
       await api('/os-packages', { method: 'POST', body: fd })
       setUploadOpen(false)
@@ -254,7 +262,15 @@ export default function OsPackages() {
             <option value="arm64">arm64</option>
           </select>
         </div>
-        <OsBundlePicker value={bundle} onChange={setBundle} disabled={busy} />
+        <OsBundlePicker
+          value={bundle}
+          onChange={(b) => {
+            setBundle(b)
+            const a = inferArchFromName(b?.zip?.name)
+            if (a) setArch(a)
+          }}
+          disabled={busy}
+        />
         <div className="form-footer">
           <button type="button" className="secondary" onClick={() => setUploadOpen(false)} disabled={busy}>
             Cancel

@@ -169,10 +169,8 @@ async fn create(
             os_upgrade::validate_bundle_dir(&dest).map_err(|e| AppError::bad(e.to_string()))?
         };
 
-        let arch = arch_hint
-            .or_else(|| os_upgrade::infer_arch_from_name(&name_hint))
-            .unwrap_or_else(|| "amd64".into());
-        let arch = os_upgrade::normalize_arch(&arch).map_err(|e| AppError::bad(e.to_string()))?;
+        let arch = os_upgrade::resolve_upload_arch(&dest, arch_hint.as_deref(), &name_hint)
+            .map_err(|e| AppError::bad(e.to_string()))?;
 
         upsert_package(&state, &dest, &version, &arch).await
     }
@@ -365,6 +363,8 @@ pub(crate) async fn enqueue_from_package(
             pkg.arch
         )));
     }
+    os_upgrade::ensure_bundle_matches_arch(Path::new(&pkg.path), &cluster_arch)
+        .map_err(|e| AppError::bad(e.to_string()))?;
     let running: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM jobs WHERE cluster_id = ? AND kind IN ('upgrade_cluster', 'upgrade_os') \
          AND status IN ('queued', 'running')",

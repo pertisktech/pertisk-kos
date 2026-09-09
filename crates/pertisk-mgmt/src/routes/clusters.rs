@@ -1309,16 +1309,20 @@ async fn os_upgrade(
         crate::os_upgrade::validate_bundle_dir(&dest).map_err(|e| AppError::bad(e.to_string()))?
     };
 
-    let cluster_arch: String = sqlx::query_scalar("SELECT arch FROM clusters WHERE id = ?")
+    let cluster_arch: String = sqlx::query_scalar("SELECT COALESCE(arch, 'amd64') FROM clusters WHERE id = ?")
         .bind(&id)
         .fetch_one(state.pool())
         .await
         .unwrap_or_else(|_| "amd64".into());
-    let arch = arch_hint
-        .or_else(|| crate::os_upgrade::infer_arch_from_name(&zip_name))
-        .unwrap_or(cluster_arch);
-    let arch =
-        crate::os_upgrade::normalize_arch(&arch).map_err(|e| AppError::bad(e.to_string()))?;
+    let arch = crate::os_upgrade::resolve_upload_arch(&dest, arch_hint.as_deref(), &zip_name)
+        .map_err(|e| AppError::bad(e.to_string()))?;
+    crate::os_upgrade::ensure_bundle_matches_arch(&dest, &cluster_arch)
+        .map_err(|e| AppError::bad(e.to_string()))?;
+    if arch != crate::os_upgrade::normalize_arch(&cluster_arch).unwrap_or(cluster_arch.clone()) {
+        return Err(AppError::bad(format!(
+            "OS bundle kernel is {arch}, cluster is {cluster_arch}"
+        )));
+    }
 
     let pkg = crate::routes::os_packages::upsert_package(&state, &dest, &version, &arch)
         .await

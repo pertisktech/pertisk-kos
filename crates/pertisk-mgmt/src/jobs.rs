@@ -4458,6 +4458,13 @@ async fn run_upgrade_os(
 
     let bundle_path = Path::new(bundle_dir);
     let verified = crate::os_upgrade::validate_bundle_dir(bundle_path)?;
+    let cluster_arch: String =
+        sqlx::query_scalar("SELECT COALESCE(arch, 'amd64') FROM clusters WHERE id = ?")
+            .bind(cid)
+            .fetch_one(state.pool())
+            .await
+            .unwrap_or_else(|_| "amd64".into());
+    crate::os_upgrade::ensure_bundle_matches_arch(bundle_path, &cluster_arch)?;
     crate::os_upgrade::ensure_trust_pk(
         bundle_path,
         &[
@@ -5182,9 +5189,37 @@ async fn wait_guest_after_os_reboot(
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 
-    anyhow::bail!(
-        "guest API not reachable after OS reboot on {name} (last IP {live_ip}). On Nutanix, Prism Serial may show 'Unable to find valid boot device' if the netcfg virtio disk stole UEFI; power off, pin boot to pci:0, detach extra disk, power on."
-    )
+    anyhow::bail!("{}", os_reboot_timeout_message(state, cluster_id, name, &live_ip).await)
+}
+
+async fn os_reboot_timeout_message(
+    state: &AppState,
+    cluster_id: &str,
+    name: &str,
+    live_ip: &str,
+) -> String {
+    let arch: String = sqlx::query_scalar("SELECT COALESCE(arch, 'amd64') FROM clusters WHERE id = ?")
+        .bind(cluster_id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap_or_else(|_| "amd64".into());
+    let kind = provider_row_for_cluster(state, cluster_id)
+        .await
+        .map(|p| p.kind)
+        .unwrap_or_default();
+    let mut msg = format!(
+        "guest API not reachable after OS reboot on {name} (last IP {live_ip}, arch {arch})"
+    );
+    if provider_kind_is_nutanix(&kind) {
+        msg.push_str(
+            ". On Nutanix, Prism Serial may show 'Unable to find valid boot device' if the netcfg virtio disk stole UEFI; power off, pin boot to pci:0, detach extra disk, power on.",
+        );
+    } else {
+        msg.push_str(&format!(
+            ". Open the hypervisor console: the new A/B slot may have the wrong-arch kernel (an amd64 zip labeled as arm64 will not boot). Reset and boot the previous slot, then upload os-bundle-{arch}-*.zip."
+        ));
+    }
+    msg
 }
 
 /// kubeadm-shaped per-node upgrade: drain → bump version on-node → wait Ready → uncordon.
