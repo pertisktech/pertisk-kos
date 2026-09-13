@@ -469,8 +469,13 @@ func (r *clusterResource) Read(ctx context.Context, req resource.ReadRequest, re
 	cps, workers := state.Controlplanes, state.Workers
 	r.flatten(cl, &state)
 	// Keep create-time sizing — mgmt mutates clusters.workers on add/remove node.
-	state.Controlplanes = cps
-	state.Workers = workers
+	// On import, prior state is null; keep API values from flatten instead.
+	if !cps.IsNull() && !cps.IsUnknown() {
+		state.Controlplanes = cps
+	}
+	if !workers.IsNull() && !workers.IsUnknown() {
+		state.Workers = workers
+	}
 	r.fetchKubeconfig(ctx, &state)
 	r.ensureComputedKnown(&state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -507,8 +512,13 @@ func (r *clusterResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	}
 
 	// Ignore HCL drift on sizing after create (scale via pertisk_node).
-	plan.Controlplanes = state.Controlplanes
-	plan.Workers = state.Workers
+	// Skip when state is null (import) so config/API values stay in the plan.
+	if !state.Controlplanes.IsNull() && !state.Controlplanes.IsUnknown() {
+		plan.Controlplanes = state.Controlplanes
+	}
+	if !state.Workers.IsNull() && !state.Workers.IsUnknown() {
+		plan.Workers = state.Workers
+	}
 	// Keep API-filled IPv6 CIDRs when config still omits them.
 	if plan.PodSubnetIPv6.IsNull() {
 		plan.PodSubnetIPv6 = state.PodSubnetIPv6
