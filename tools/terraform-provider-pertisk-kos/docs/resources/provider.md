@@ -1,0 +1,67 @@
+---
+page_title: "pertisk-kos_provider Resource - pertisk-kos"
+subcategory: ""
+description: |-
+  Register a Proxmox, vSphere, Nutanix, or Pertisk VMs hypervisor with pertisk-mgmt.
+---
+
+# pertisk-kos_provider (Resource)
+
+Register a hypervisor connection used by [`pertisk-kos_cluster`](cluster.md).
+
+Deleting this resource requires an **admin** mgmt user.
+
+## Example Usage
+
+```terraform
+resource "pertisk-kos_provider" "pve" {
+  name         = "lab-proxmox"
+  kind         = "proxmox"
+  url          = "https://10.1.1.10:8006"
+  token_id     = "root@pam!pertisk"
+  token_secret = var.pve_token_secret
+  node         = "pve"
+  storage      = "local-lvm"
+  bridge       = "vmbr0"
+  insecure     = true
+}
+
+resource "pertisk-kos_provider" "vms" {
+  name         = "lab-vms"
+  kind         = "pertisk-vms"
+  url          = "https://10.1.1.80:7443"
+  token_id     = "admin"
+  token_secret = var.pertisk_vms_password
+  node         = "n1"
+  storage      = "replica"
+  bridge       = "vmbr0"
+  insecure     = true
+}
+```
+
+## Argument Reference
+
+### Required
+
+* `name` - (String) Display name in mgmt.
+* `url` - (String) Hypervisor API URL.
+* `token_id` - (String) API token id (Proxmox `user@realm!token`) or vSphere equivalent.
+* `token_secret` - (String, Sensitive) API token secret.
+* `node` - (String) Proxmox node name (or vSphere cluster/host per mgmt).
+* `storage` - (String) Storage for cloud disks.
+* `bridge` - (String) Network bridge (default often `vmbr0`).
+
+### Optional
+
+* `kind` - (String) `proxmox` | `vsphere` | `nutanix` | `pertisk-vms` (default `proxmox`).
+* `insecure` - (Boolean) Skip TLS verify (default `false`).
+
+## Attribute Reference
+
+* `id` - (String) Provider UUID in pertisk-mgmt.
+
+## Import
+
+```shell
+terraform import pertisk-kos_provider.pve a2fb8554-f6b9-433d-9f6e-e3d738eff677
+```

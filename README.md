@@ -5,7 +5,7 @@ Immutable, API-only Kubernetes node OS, plus an optional management plane for pr
 - **Node OS** — Rust `pertiskd` as PID 1, gRPC management (`pertiskctl`), containerd + kubelet; no SSH in production images
 - **Serial dashboard** — fullscreen status TUI on Proxmox / ESXi / AHV / Pertisk VMs Serial
 - **Management plane** — `pertisk-mgmt` (API + React UI) creates and operates clusters on **Proxmox**, standalone **ESXi**, **Nutanix AHV**, and **Pertisk VMs**
-- **Terraform** — `terraform-provider-pertisk` for the same mgmt API (register hypervisors, create / scale / upgrade / destroy)
+- **Terraform** — `terraform-provider-pertisk-kos` for the same mgmt API (register hypervisors, create / scale / upgrade / destroy)
 - **Cluster API** — CAPx (planned): Kubebuilder controllers for `Cluster` / `Machine` / `MachineDeployment`
 
 Architecture and phases: [DESIGN.md](./DESIGN.md). **Production install (Proxmox / Nutanix / vSphere / Pertisk VMs, SSH matrix):** [docs/DEPLOY.md](./docs/DEPLOY.md). Secure Boot / TPM lab: [docs/SECURE_BOOT.md](./docs/SECURE_BOOT.md). Kernel cmdline (dashboard knobs): [docs/KERNEL.md](./docs/KERNEL.md).
@@ -34,7 +34,7 @@ Architecture and phases: [DESIGN.md](./DESIGN.md). **Production install (Proxmox
 | EK cert + manufacturer CA chain | done (lab) — `PERTISK_TPM_EK_CAS` / `--ek-cas` |
 | Mgmt Quote trust store (AK enroll / verify) | done (lab) |
 | etcd snapshot / restore / recover (`pertiskctl etcd …`) | done (lab) |
-| Terraform provider (`pertisk_cluster` / `pertisk_node`) | done |
+| Terraform provider (`pertisk-kos_cluster` / `pertisk-kos_node`) | done |
 | Observability compose (Prometheus / Grafana / Loki) | done |
 | Cluster API provider (CAPx) | planned |
 
@@ -140,9 +140,9 @@ Single-port API + UI (`pertisk-mgmt`). Details: [docs/MGMT.md](./docs/MGMT.md).
 
 ### Terraform provider
 
-IaC for the same mgmt API: register Proxmox / vSphere / Nutanix, create HA/dual-stack clusters, size CP/worker VMs, scale with `pertisk_node`, upgrade via `k8s_version`.
+IaC for the same mgmt API: register Proxmox / vSphere / Nutanix, create HA/dual-stack clusters, size CP/worker VMs, scale with `pertisk-kos_node`, upgrade via `k8s_version`.
 
-→ [tools/terraform-provider-pertisk/README.md](./tools/terraform-provider-pertisk/README.md) (features, examples, docs, `TF_ACC` tests)
+→ [tools/terraform-provider-pertisk-kos/README.md](./tools/terraform-provider-pertisk-kos/README.md) (features, examples, docs, `TF_ACC` tests)
 
 ### Cluster API provider (CAPx) — planned
 
@@ -357,7 +357,7 @@ PERTISK_EMBED_BOOT=1 ./image/build-initramfs.sh
 | [image/README.md](./image/README.md) | Initramfs / QEMU |
 | [image/cloud/README.md](./image/cloud/README.md) | Cloud upload outlines |
 | [image/extensions/README.md](./image/extensions/README.md) | nfs-client, qemu-ga |
-| [tools/terraform-provider-pertisk/README.md](./tools/terraform-provider-pertisk/README.md) | Terraform: cluster create / HA / dual-stack / sizing / scale |
+| [tools/terraform-provider-pertisk-kos/README.md](./tools/terraform-provider-pertisk-kos/README.md) | Terraform: cluster create / HA / dual-stack / sizing / scale |
 | [examples/cni/README.md](./examples/cni/README.md) | Cilium / Calico / Flannel |
 | [examples/addons/README.md](./examples/addons/README.md) | CoreDNS, metrics-server, reflector, NFS |
 | [examples/observability/README.md](./examples/observability/README.md) | Host metrics scrape, Grafana/Loki compose, Alloy → Mimir |

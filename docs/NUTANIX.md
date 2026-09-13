@@ -79,7 +79,7 @@ On an **unmanaged** AHV network (this lab: `vlan.0`), upload skips the IPAM **ne
 ## Terraform
 
 ```hcl
-resource "pertisk_provider" "ahv" {
+resource "pertisk-kos_provider" "ahv" {
   name         = "lab-ahv"
   kind         = "nutanix"
   url          = "https://10.1.1.50:9440"
@@ -176,6 +176,6 @@ Create imports the hashed qcow2 **once**, then clones VMs in parallel (`PERTISK_
 
 ## Limits
 
-- Scale-out via UI / Terraform `pertisk_node` (`mode=create`) uses `nutanix-add-node.sh` (same join path as Proxmox).
+- Scale-out via UI / Terraform `pertisk-kos_node` (`mode=create`) uses `nutanix-add-node.sh` (same join path as Proxmox).
 - Mgmt must share L2 with guests for MAC→IP discovery (`LAB_SUBNET`), same as ESXi lab-up (Prism IP fallback helps when AHV has learned the address).
 - For Serial Console without working REST attach: `export NUTANIX_CVM_SSH=nutanix@<cvm-ip>` (SSH key, BatchMode).

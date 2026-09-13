@@ -183,4 +183,4 @@ See [PERTISK_VMS.md](./PERTISK_VMS.md).
 - Optional: [examples/observability](../examples/observability/) on the **mgmt** host (not on guests).
 - Harden: rotate `MGMT_SECRET_KEY` only with a planned re-encrypt; change default Grafana/admin passwords; [HARDENING.md](./HARDENING.md).
 
-Terraform: [tools/terraform-provider-pertisk](../tools/terraform-provider-pertisk/README.md).
+Terraform: [tools/terraform-provider-pertisk-kos](../tools/terraform-provider-pertisk-kos/README.md).

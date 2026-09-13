@@ -1,0 +1,67 @@
+name: terraform-provider-pertisk-kos
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "terraform-provider-pertisk-kos/v*"
+    paths:
+      - "tools/terraform-provider-pertisk-kos/**"
+      - ".github/workflows/terraform-provider-pertisk-kos.yml"
+  pull_request:
+    paths:
+      - "tools/terraform-provider-pertisk-kos/**"
+      - ".github/workflows/terraform-provider-pertisk-kos.yml"
+
+defaults:
+  run:
+    working-directory: tools/terraform-provider-pertisk-kos
+
+jobs:
+  test:
+    name: Build & test
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/terraform-provider-pertisk-kos/go.mod
+          cache-dependency-path: tools/terraform-provider-pertisk-kos/go.sum
+
+      - name: Format check
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Build
+        run: go build -ldflags="-X main.version=dev" -o /tmp/terraform-provider-pertisk-kos .
+
+  goreleaser-check:
+    name: GoReleaser check
+    runs-on: [self-hosted, linux]
+    if: startsWith(github.ref, 'refs/tags/terraform-provider-pertisk-kos/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/terraform-provider-pertisk-kos/go.mod
+          cache-dependency-path: tools/terraform-provider-pertisk-kos/go.sum
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+          workdir: tools/terraform-provider-pertisk-kos

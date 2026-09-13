@@ -75,7 +75,7 @@ Mgmt must share **L2** with guests (`LAB_SUBNET`) so MAC→IP discovery works. T
 ## Terraform
 
 ```hcl
-resource "pertisk_provider" "vms" {
+resource "pertisk-kos_provider" "vms" {
   name         = "lab-vms"
   kind         = "pertisk-vms"
   url          = "https://10.1.1.80:7443"

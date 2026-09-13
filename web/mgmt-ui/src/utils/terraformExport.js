@@ -125,8 +125,8 @@ export function generateClusterTerraform({ cluster, addons = [], mgmtUrl, insecu
   lines.push('')
   lines.push('terraform {')
   lines.push('  required_providers {')
-  lines.push('    pertisk = {')
-  lines.push('      source  = "pertisk-tech/pertisk"')
+  lines.push('    pertisk-kos = {')
+  lines.push('      source  = "pertisk-tech/pertisk-kos"')
   lines.push('      version = "~> 0.1"')
   lines.push('    }')
   lines.push('  }')
@@ -142,7 +142,7 @@ export function generateClusterTerraform({ cluster, addons = [], mgmtUrl, insecu
     lines.push('')
   }
 
-  lines.push('provider "pertisk" {')
+  lines.push('provider "pertisk-kos" {')
   lines.push(attr('url', tfQuote(url)))
   lines.push(attr('username', 'var.pertisk_username'))
   lines.push(attr('password', 'var.pertisk_password'))
@@ -153,14 +153,14 @@ export function generateClusterTerraform({ cluster, addons = [], mgmtUrl, insecu
   const providerLookup = str(c.provider_name)
     ? `  name = ${tfQuote(c.provider_name)}`
     : `  id   = ${tfQuote(c.provider_id || '')}`
-  lines.push(`data "pertisk_provider" "${providerName}" {`)
+  lines.push(`data "pertisk-kos_provider" "${providerName}" {`)
   lines.push(providerLookup)
   lines.push('}')
   lines.push('')
 
-  lines.push(`resource "pertisk_cluster" "${name}" {`)
+  lines.push(`resource "pertisk-kos_cluster" "${name}" {`)
   lines.push(attr('name', tfQuote(c.name || '')))
-  lines.push(attr('provider_id', `data.pertisk_provider.${providerName}.id`))
+  lines.push(attr('provider_id', `data.pertisk-kos_provider.${providerName}.id`))
   lines.push(attr('controlplanes', String(c.controlplanes ?? 1)))
   lines.push(attr('workers', String(c.workers ?? 1)))
   if (str(c.network_mode) && c.network_mode !== CLUSTER_DEFAULTS.network_mode) {
@@ -210,8 +210,8 @@ export function generateClusterTerraform({ cluster, addons = [], mgmtUrl, insecu
   for (const addon of installed) {
     const res = tfResourceName(addon.id, 'addon')
     addonNames.push({ res, addon })
-    lines.push(`resource "pertisk_addon" "${res}" {`)
-    lines.push(attr('cluster_id', `pertisk_cluster.${name}.id`))
+    lines.push(`resource "pertisk-kos_addon" "${res}" {`)
+    lines.push(attr('cluster_id', `pertisk-kos_cluster.${name}.id`))
     lines.push(attr('addon', tfQuote(addon.id)))
     const cfg = mapBlock('config', configEntries(addon))
     if (cfg) lines.push(cfg)
@@ -231,13 +231,13 @@ export function generateClusterTerraform({ cluster, addons = [], mgmtUrl, insecu
 
   lines.push('# --- import existing objects (remove after first successful apply) ---')
   lines.push('import {')
-  lines.push(`  to = pertisk_cluster.${name}`)
+  lines.push(`  to = pertisk-kos_cluster.${name}`)
   lines.push(`  id = ${tfQuote(c.id || '')}`)
   lines.push('}')
   for (const { res, addon } of addonNames) {
     lines.push('')
     lines.push('import {')
-    lines.push(`  to = pertisk_addon.${res}`)
+    lines.push(`  to = pertisk-kos_addon.${res}`)
     lines.push(`  id = ${tfQuote(`${c.id}/${addon.id}`)}`)
     lines.push('}')
   }

@@ -1,6 +1,6 @@
 # Release on push tag X.Y.Z (e.g. 0.1.10) — pertisk-mgmt DEB+RPM, guest qcow2,
 # optional signed OS A/B bundles (amd64/arm64), and GitHub Release.
-# Terraform provider releases use terraform-provider-pertisk/v* (separate workflow).
+# Terraform provider releases use terraform-provider-pertisk-kos/v* (separate workflow).
 #
 # Signed OS bundles need repo secrets OS_TRUST_SK and OS_TRUST_PK (hex from
 # `make os-trust`). If unset, qcow2 still ships and bundles are skipped.
