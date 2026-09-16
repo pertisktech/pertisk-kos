@@ -13,9 +13,9 @@ import {
 } from '../api'
 import Checkbox from '../components/Checkbox'
 import { Icon } from '../components/Icons'
-import { APP_VERSION } from '../utils/version'
+import AuthLayout from '../components/AuthLayout'
 
-function Auth0Mark({ size = 18 }) {
+function Auth0Mark({ size = 16 }) {
   return (
     <svg
       className="login-sso-mark"
@@ -46,7 +46,6 @@ export default function Login() {
   const showAuth0 = !!mode?.auth0
 
   useEffect(() => {
-    // Auth0 callback: /#/auth/callback?token=...
     const hash = window.location.hash
     if (hash.includes('auth/callback')) {
       const q = new URLSearchParams(hash.split('?')[1] || '')
@@ -88,76 +87,72 @@ export default function Login() {
   }
 
   return (
-    <div className="login-wrap">
-      <div className="login-card">
-        <div className="login-brand">
-          <span className="login-brand-mark" aria-hidden>
-            <Icon name="clusters" size={18} />
-          </span>
-          <h1>Pertisk KOS</h1>
-        </div>
-        {error && <div className="error">{error}</div>}
+    <AuthLayout
+      title="Sign in"
+      subtitle="Use your control-plane credentials to continue."
+    >
+      {error && <div className="error">{error}</div>}
 
-        {showAuth0 && !showLocal && (
-          <a className="login-sso-btn login-sso-primary" href="/api/auth/oidc/start">
-            <Auth0Mark />
-            <span>Continue with Auth0</span>
-          </a>
-        )}
+      {showAuth0 && !showLocal && (
+        <a className="login-sso-btn login-sso-primary" href="/api/auth/oidc/start">
+          <Auth0Mark />
+          <span>Continue with Auth0</span>
+        </a>
+      )}
 
-        {showLocal && (
-          <form onSubmit={onSubmit}>
-            <div className="field">
-              <label htmlFor="login-username">Username</label>
-              <input
-                id="login-username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="username"
-              />
-            </div>
-            <div className="field">
+      {showLocal && (
+        <form className="auth-fields" onSubmit={onSubmit}>
+          <div className="field">
+            <label htmlFor="login-username">Username</label>
+            <input
+              id="login-username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              placeholder="admin"
+            />
+          </div>
+          <div className="field">
+            <div className="field-label-row">
               <label htmlFor="login-password">Password</label>
-              <input
-                id="login-password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-              />
+              <Link to="/forgot-password" className="field-aside">
+                Forgot password?
+              </Link>
             </div>
-            <div className="field login-remember">
-              <Checkbox
-                id="login-remember"
-                checked={remember}
-                onChange={setRemember}
-                label="Remember password"
-              />
-            </div>
-            <button type="submit" className="login-submit" disabled={loading}>
-              {loading ? 'Signing in…' : 'Sign in'}
-            </button>
-            <p className="muted" style={{ marginTop: '0.85rem', marginBottom: 0, textAlign: 'center' }}>
-              <Link to="/forgot-password">Forgot password?</Link>
-            </p>
-          </form>
-        )}
+            <input
+              id="login-password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              placeholder="••••••••"
+            />
+          </div>
+          <div className="field login-remember">
+            <Checkbox
+              id="login-remember"
+              checked={remember}
+              onChange={setRemember}
+              label="Remember this device"
+            />
+          </div>
+          <button type="submit" className="login-submit" disabled={loading}>
+            {loading ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
+      )}
 
-        {showLocal && showAuth0 && (
-          <>
-            <div className="login-divider" role="separator" aria-label="or">
-              <span>or</span>
-            </div>
-            <a className="login-sso-btn" href="/api/auth/oidc/start">
-              <Auth0Mark />
-              <span>Continue with Auth0 SSO</span>
-            </a>
-          </>
-        )}
-      </div>
-      <footer className="login-footer">
-        <p className="version">Pertisk KOS v{APP_VERSION}</p>
-      </footer>
-    </div>
+      {showLocal && showAuth0 && (
+        <>
+          <div className="login-divider" role="separator" aria-label="or">
+            <span>or</span>
+          </div>
+          <a className="login-sso-btn" href="/api/auth/oidc/start">
+            <Icon name="shield" size={16} />
+            <span>Continue with Auth0 SSO</span>
+          </a>
+        </>
+      )}
+    </AuthLayout>
   )
 }

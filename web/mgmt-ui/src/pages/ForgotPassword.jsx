@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
-import { Icon } from '../components/Icons'
-import { APP_VERSION } from '../utils/version'
+import AuthLayout from '../components/AuthLayout'
 
 export default function ForgotPassword() {
   const nav = useNavigate()
@@ -43,50 +42,42 @@ export default function ForgotPassword() {
   if (!localEnabled) return null
 
   return (
-    <div className="login-wrap">
-      <div className="login-card">
-        <div className="login-brand">
-          <span className="login-brand-mark" aria-hidden>
-            <Icon name="clusters" size={18} />
-          </span>
-          <h1>Forgot password</h1>
+    <AuthLayout
+      title="Forgot password"
+      subtitle="We’ll send a reset link if that account exists and email is configured."
+    >
+      {error && <div className="error">{error}</div>}
+      {done ? (
+        <div className="auth-fields">
+          <p className="muted" style={{ margin: 0 }}>
+            If an account matches that username or email, a reset link has been sent when SMTP
+            is configured.
+          </p>
+          <Link to="/login" className="login-submit" style={{ display: 'inline-flex', textAlign: 'center' }}>
+            Back to sign in
+          </Link>
         </div>
-        {error && <div className="error">{error}</div>}
-        {done ? (
-          <>
-            <p>
-              If an account matches that username or email, a reset link has been sent when SMTP
-              is configured.
-            </p>
-            <Link to="/login" className="login-submit" style={{ display: 'inline-block', textAlign: 'center' }}>
-              Back to sign in
-            </Link>
-          </>
-        ) : (
-          <form onSubmit={onSubmit}>
-            <div className="field">
-              <label htmlFor="fp-ident">Username or email</label>
-              <input
-                id="fp-ident"
-                value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
-                autoComplete="username"
-                required
-              />
-            </div>
-            <button type="submit" className="login-submit" disabled={loading}>
-              {loading ? 'Sending…' : 'Send reset link'}
-            </button>
-            <p className="muted" style={{ marginTop: '1rem', marginBottom: 0 }}>
-              <Link to="/login">Back to sign in</Link>
-            </p>
-          </form>
-        )}
-      </div>
-      <footer className="login-footer">
-        <p className="version">Pertisk KOS v{APP_VERSION}</p>
-      </footer>
-    </div>
+      ) : (
+        <form className="auth-fields" onSubmit={onSubmit}>
+          <div className="field">
+            <label htmlFor="fp-ident">Username or email</label>
+            <input
+              id="fp-ident"
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
+              autoComplete="username"
+              required
+            />
+          </div>
+          <button type="submit" className="login-submit" disabled={loading}>
+            {loading ? 'Sending…' : 'Send reset link'}
+          </button>
+          <p className="muted" style={{ margin: 0, textAlign: 'center' }}>
+            <Link to="/login">Back to sign in</Link>
+          </p>
+        </form>
+      )}
+    </AuthLayout>
   )
 }
 
@@ -131,71 +122,67 @@ export function ResetPassword() {
   }
 
   return (
-    <div className="login-wrap">
-      <div className="login-card">
-        <div className="login-brand">
-          <span className="login-brand-mark" aria-hidden>
-            <Icon name="clusters" size={18} />
-          </span>
-          <h1>Reset password</h1>
+    <AuthLayout
+      title="Reset password"
+      subtitle="Choose a new password for your control-plane account."
+    >
+      {error && <div className="error">{error}</div>}
+      {done ? (
+        <div className="auth-fields">
+          <p className="muted" style={{ margin: 0 }}>
+            Your password has been updated. You can sign in now.
+          </p>
+          <button type="button" className="login-submit" onClick={() => nav('/login')}>
+            Sign in
+          </button>
         </div>
-        {error && <div className="error">{error}</div>}
-        {done ? (
-          <>
-            <p>Your password has been updated. You can sign in now.</p>
-            <button type="button" className="login-submit" onClick={() => nav('/login')}>
-              Sign in
-            </button>
-          </>
-        ) : (
-          <form onSubmit={onSubmit}>
-            {!tokenFromUrl && (
-              <div className="field">
-                <label htmlFor="rp-token">Reset token</label>
-                <input
-                  id="rp-token"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  required
-                />
-              </div>
-            )}
+      ) : (
+        <form className="auth-fields" onSubmit={onSubmit}>
+          {!tokenFromUrl && (
             <div className="field">
-              <label htmlFor="rp-password">New password</label>
+              <label htmlFor="rp-token">Reset token</label>
               <input
-                id="rp-password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                minLength={8}
+                id="rp-token"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
                 required
-                autoComplete="new-password"
               />
             </div>
-            <div className="field">
-              <label htmlFor="rp-confirm">Confirm password</label>
-              <input
-                id="rp-confirm"
-                type="password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                minLength={8}
-                required
-                autoComplete="new-password"
-              />
-            </div>
-            <button type="submit" className="login-submit" disabled={loading || !token.trim()}>
-              {loading ? 'Saving…' : 'Set password'}
-            </button>
-            <p className="muted" style={{ marginTop: '1rem', marginBottom: 0 }}>
-              <Link to="/login">Back to sign in</Link>
-            </p>
-          </form>
-        )}
-      </div>
-      <footer className="login-footer">
-        <p className="version">Pertisk KOS v{APP_VERSION}</p>
-      </footer>
-    </div>
+          )}
+          <div className="field">
+            <label htmlFor="rp-password">New password</label>
+            <input
+              id="rp-password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              minLength={8}
+              required
+              autoComplete="new-password"
+              placeholder="••••••••"
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="rp-confirm">Confirm password</label>
+            <input
+              id="rp-confirm"
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              minLength={8}
+              required
+              autoComplete="new-password"
+              placeholder="••••••••"
+            />
+          </div>
+          <button type="submit" className="login-submit" disabled={loading || !token.trim()}>
+            {loading ? 'Saving…' : 'Set password'}
+          </button>
+          <p className="muted" style={{ margin: 0, textAlign: 'center' }}>
+            <Link to="/login">Back to sign in</Link>
+          </p>
+        </form>
+      )}
+    </AuthLayout>
   )
 }

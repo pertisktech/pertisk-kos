@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+import PageHeader from '../components/PageHeader'
 import { NodeStatusBadges } from '../components/NodeStatusBadges'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 
 export default function Machines() {
   const nav = useNavigate()
+  const [params, setParams] = useSearchParams()
   const [list, setList] = useState([])
   const [error, setError] = useState('')
-  const [q, setQ] = useState('')
+  const [q, setQ] = useState(() => params.get('q') || '')
 
   const load = useCallback(() => {
     api('/machines')
@@ -22,6 +24,11 @@ export default function Machines() {
   }, [load])
 
   useMgmtRefresh(load)
+
+  useEffect(() => {
+    const next = params.get('q') || ''
+    setQ((prev) => (prev === next ? prev : next))
+  }, [params])
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
@@ -51,44 +58,51 @@ export default function Machines() {
   const offline = list.filter((m) => m.availability === 'offline').length
 
   return (
-    <div>
-      <div className="page-head">
-        <h1>
-          <Icon name="machines" size={22} /> Machines
-        </h1>
-        <div className="row-actions">
-          {list.length > 0 && (
-            <span className="status-badges" style={{ marginRight: 8 }}>
-              <span className="badge online">{online} online</span>
-              {offline > 0 && <span className="badge offline">{offline} offline</span>}
-            </span>
-          )}
-          <button type="button" className="secondary btn-icon" onClick={load}>
-            <Icon name="refresh" size={16} /> Refresh
-          </button>
-        </div>
-      </div>
+    <div className="dash-page">
+      <PageHeader
+        title="Machines"
+        description="Individual nodes running the immutable Pertisk node OS."
+        actions={
+          <div className="row-actions">
+            {list.length > 0 && (
+              <span className="status-badges">
+                <span className="badge online">{online} online</span>
+                {offline > 0 && <span className="badge offline">{offline} offline</span>}
+              </span>
+            )}
+            <button type="button" className="secondary btn-icon" onClick={load}>
+              <Icon name="refresh" size={16} /> Refresh
+            </button>
+          </div>
+        }
+      />
       {error && <div className="error">{error}</div>}
       <div className="card" style={{ marginBottom: '1rem' }}>
         <label className="field">
           Filter
           <input
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => {
+              const next = e.target.value
+              setQ(next)
+              const sp = new URLSearchParams(params)
+              if (next) sp.set('q', next)
+              else sp.delete('q')
+              setParams(sp, { replace: true })
+            }}
             placeholder="name, cluster, IP, online/offline…"
           />
         </label>
       </div>
-      <div className="card">
+      <div className="table-shell">
         <table>
           <thead>
             <tr>
-              <th>Name</th>
+              <th>Hostname</th>
               <th>Cluster</th>
               <th>Role</th>
               <th>Source</th>
               <th>Status</th>
-              <th>IP</th>
               <th>K8s</th>
               <th>OS</th>
               <th>AK</th>
@@ -97,6 +111,7 @@ export default function Machines() {
           <tbody>
             {filtered.map((m) => {
               const to = `/clusters/${m.cluster_id}/nodes/${m.id}`
+              const control = m.role === 'controlplane' || m.role === 'control-plane'
               return (
                 <tr
                   key={m.id}
@@ -112,7 +127,10 @@ export default function Machines() {
                   }}
                 >
                   <td>
-                    <span className="row-click-label">{m.name}</span>
+                    <div className="identity-cell">
+                      <span className="row-click-label">{m.name}</span>
+                      <span className="identity-cell-sub">{m.ip || m.ip6 || '—'}</span>
+                    </div>
                   </td>
                   <td>
                     <div>{m.cluster_name}</div>
@@ -121,7 +139,9 @@ export default function Machines() {
                     </div>
                   </td>
                   <td>
-                    <span className="badge">{m.role}</span>
+                    <span className={`tag ${control ? 'tag-accent' : 'tag-outline'}`}>
+                      {control ? 'Control plane' : m.role || 'Worker'}
+                    </span>
                   </td>
                   <td className="muted">
                     {m.source === 'adopted' || m.source === 'baremetal'
@@ -133,9 +153,12 @@ export default function Machines() {
                   <td>
                     <NodeStatusBadges status={m.status} availability={m.availability} />
                   </td>
-                  <td className="mono-inline">{m.ip || m.ip6 || '—'}</td>
-                  <td className="mono-inline">{m.k8s_version || '—'}</td>
-                  <td className="mono-inline">{m.os_version || '—'}</td>
+                  <td>
+                    <span className="tag tag-mono">{m.k8s_version || '—'}</span>
+                  </td>
+                  <td>
+                    <span className="tag tag-mono">{m.os_version || '—'}</span>
+                  </td>
                   <td>
                     <span className={`badge ${m.ak_enrolled ? 'ready' : ''}`}>
                       {m.ak_enrolled ? 'enrolled' : '—'}
@@ -147,7 +170,9 @@ export default function Machines() {
           </tbody>
         </table>
         {filtered.length === 0 && (
-          <p className="muted">No machines. Create a cluster to populate inventory.</p>
+          <p className="muted" style={{ margin: '0.75rem 1rem' }}>
+            No machines. Create a cluster to populate inventory.
+          </p>
         )}
       </div>
     </div>

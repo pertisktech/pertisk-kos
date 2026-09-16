@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+import PageHeader from '../components/PageHeader'
 import { useConfirm } from '../components/Confirm'
 import ProviderWizard from '../components/ProviderWizard'
 import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import { formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
-import UsageBar from '../components/UsageBar'
+import ResourceGauge, { GAUGE_BASE } from '../components/ResourceGauge'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 
 function formatProbe(r, kind) {
@@ -49,6 +50,16 @@ function formatProbe(r, kind) {
   return parts.join(' — ')
 }
 
+const emptyMetric = {
+  used: null,
+  total: null,
+  percent: null,
+  unit: '',
+  display_used: null,
+  display_total: null,
+  error: null,
+}
+
 export default function Providers() {
   const confirm = useConfirm()
   const [list, setList] = useState([])
@@ -66,6 +77,7 @@ export default function Providers() {
       api('/dashboard/providers').catch(() => []),
     ])
       .then(([rows, res]) => {
+        setError('')
         setList(Array.isArray(rows) ? rows : [])
         const map = {}
         for (const r of Array.isArray(res) ? res : []) {
@@ -141,76 +153,120 @@ export default function Providers() {
   }
 
   return (
-    <div>
-      <div className="page-head">
-        <h1><Icon name="providers" size={22} /> Providers</h1>
-        <button type="button" className="btn-icon" onClick={startCreate}>
-          <Icon name="plus" size={16} /> Add provider
-        </button>
-      </div>
+    <div className="dash-page">
+      <PageHeader
+        title="Providers"
+        description="Hypervisors and bare-metal backends supplying compute to the fleet."
+        actions={
+          <button type="button" className="btn-icon" onClick={startCreate}>
+            <Icon name="plus" size={16} /> Connect provider
+          </button>
+        }
+      />
       {error && <div className="error">{error}</div>}
       {msg && <p className="muted">{msg}</p>}
-      <div className="card table-card">
-        <div className="table-meta">Total: {list.length} records</div>
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Status</th>
-              <th>Kind</th>
-              <th>Arch</th>
-              <th>URL</th>
-              <th>Host / Node</th>
-              <th>CPU</th>
-              <th>Memory</th>
-              <th>Disk</th>
-              <th>Storage</th>
-              <th>TLS</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.map((p) => (
-              <tr key={p.id}>
-                <td>
-                  <Link to={`/providers/${p.id}`}>{p.name}</Link>
-                </td>
-                <td>
+
+      {list.length === 0 ? (
+        <div className="card dash-empty">
+          <p className="muted" style={{ margin: 0 }}>
+            No providers configured.
+          </p>
+        </div>
+      ) : (
+        <section className="entity-grid entity-grid-2">
+          {list.map((p) => {
+            const kind = normalizeProviderKind(p.kind)
+            const live = metrics[p.id] || {}
+            return (
+              <article key={p.id} className="entity-card">
+                <div className="entity-card-head">
+                  <Link to={`/providers/${p.id}`} className="entity-card-identity">
+                    <span className="entity-card-icon" aria-hidden>
+                      <Icon name="providers" size={18} />
+                    </span>
+                    <div className="entity-card-copy">
+                      <p className="entity-card-name">{p.name}</p>
+                      <p className="entity-card-sub">{p.url}</p>
+                    </div>
+                  </Link>
                   <ProviderStatusBadge availability={p.availability} showUnknown />
-                </td>
-                <td>
-                  <span className={`badge kind kind-${normalizeProviderKind(p.kind)}`}>
-                    {formatProviderKind(p.kind)}
-                  </span>
-                </td>
-                <td>{p.arch || 'amd64'}</td>
-                <td className="mono">{p.url}</td>
-                <td>{p.node}</td>
-                <td><UsageBar metric={metrics[p.id]?.cpu} color="cpu" /></td>
-                <td><UsageBar metric={metrics[p.id]?.memory} color="memory" /></td>
-                <td><UsageBar metric={metrics[p.id]?.disk} color="disk" /></td>
-                <td>{p.storage}</td>
-                <td>{p.insecure ? 'insecure' : 'verify'}</td>
-                <td className="row-actions">
+                </div>
+
+                <div className="entity-card-tags">
+                  <span className={`badge kind kind-${kind}`}>{formatProviderKind(p.kind)}</span>
+                  <span className="tag tag-mono">{p.arch || 'amd64'}</span>
+                  <span className="tag tag-outline">{p.insecure ? 'insecure TLS' : 'verify TLS'}</span>
+                </div>
+
+                <div className="entity-card-stats">
+                  <div className="entity-card-stat">
+                    <p className="entity-card-stat-label">Host</p>
+                    <p className="entity-card-stat-value">{p.node || '—'}</p>
+                  </div>
+                  <div className="entity-card-stat">
+                    <p className="entity-card-stat-label">Storage</p>
+                    <p className="entity-card-stat-value">{p.storage || '—'}</p>
+                  </div>
+                </div>
+
+                <div className="cluster-card-meters">
+                  <ResourceGauge
+                    label="CPU"
+                    icon="cpu"
+                    metric={live.cpu || { ...emptyMetric, unit: 'cores' }}
+                    color={GAUGE_BASE.cpu}
+                    size="sm"
+                  />
+                  <ResourceGauge
+                    label="Memory"
+                    icon="memory"
+                    metric={live.memory || { ...emptyMetric, unit: 'GiB' }}
+                    color={GAUGE_BASE.memory}
+                    size="sm"
+                  />
+                  <ResourceGauge
+                    label="Disk"
+                    icon="disk"
+                    metric={live.disk || { ...emptyMetric, unit: 'GiB' }}
+                    color={GAUGE_BASE.disk}
+                    size="sm"
+                  />
+                </div>
+                {live.error ? (
+                  <p className="muted cluster-resource-soft-err" title={live.error}>
+                    <Icon name="alert" size={12} />
+                    {live.error}
+                  </p>
+                ) : null}
+
+                <div className="entity-card-actions">
                   <Link className="btn secondary btn-icon" to={`/providers/${p.id}`}>
                     <Icon name="dashboard" size={14} /> Dashboard
                   </Link>
                   <button type="button" className="secondary btn-icon" onClick={() => startEdit(p)}>
                     <Icon name="edit" size={14} /> Edit
                   </button>
-                  <button type="button" className="secondary btn-icon" onClick={() => testSaved(p.id)} disabled={testing}>
+                  <button
+                    type="button"
+                    className="secondary btn-icon"
+                    onClick={() => testSaved(p.id)}
+                    disabled={testing}
+                  >
                     <Icon name="play" size={14} /> Test
                   </button>
-                  <button type="button" className="danger btn-icon" onClick={() => remove(p.id, p.name)}>
+                  <button
+                    type="button"
+                    className="danger btn-icon"
+                    onClick={() => remove(p.id, p.name)}
+                  >
                     <Icon name="trash" size={14} />
                   </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {list.length === 0 && <p className="muted">No providers configured.</p>}
-      </div>
+                </div>
+              </article>
+            )
+          })}
+        </section>
+      )}
 
       <ProviderWizard
         open={wizardOpen}

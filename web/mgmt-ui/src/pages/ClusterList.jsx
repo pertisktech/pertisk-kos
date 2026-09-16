@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
-import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
-import { formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
-import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
+import PageHeader from '../components/PageHeader'
+import StatCard from '../components/StatCard'
+import ClusterCard, { placeholderSummary } from '../components/ClusterCard'
 import ClusterWizard from '../components/ClusterWizard'
-import UsageBar from '../components/UsageBar'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
@@ -46,7 +45,6 @@ export default function Clusters() {
         }
         setMetrics(map)
         setLoaded(true)
-        // Drop ?deleting= once that cluster is gone from the API.
         if (expectDelete && !next.some((c) => c.id === expectDelete)) {
           setSearch({}, { replace: true })
         }
@@ -71,103 +69,66 @@ export default function Clusters() {
     return () => window.removeEventListener('focus', onFocus)
   }, [load])
 
+  const cards = useMemo(() => {
+    const byId = new Map(Object.entries(metrics))
+    return list.map((c) => {
+      const live = byId.get(c.id) || placeholderSummary(c)
+      return {
+        ...live,
+        provider_kind: c.provider_kind,
+        provider_name: c.provider_name,
+        arch: c.arch,
+        vip: c.vip,
+      }
+    })
+  }, [list, metrics])
+
+  const ready = list.filter((c) => c.status === 'ready').length
+  const attention = list.filter((c) => c.status === 'error' || c.status === 'degraded' || c.status === 'failed').length
+
   return (
-    <div>
-      <div className="page-head">
-        <h1><Icon name="clusters" size={22} /> Clusters</h1>
-        <button type="button" className="btn btn-icon" onClick={() => setWizardOpen(true)}>
-          <Icon name="plus" size={16} /> Create cluster
-        </button>
-      </div>
+    <div className="dash-page">
+      <PageHeader
+        title="Clusters"
+        description="Every Kubernetes cluster reconciled by the control plane."
+        actions={
+          <button type="button" className="btn btn-icon" onClick={() => setWizardOpen(true)}>
+            <Icon name="plus" size={16} /> Create cluster
+          </button>
+        }
+      />
       {error && <div className="error">{error}</div>}
       {expectDelete && (
-        <p className="muted" style={{ marginTop: 0 }}>
+        <p className="muted" style={{ margin: 0 }}>
           Deleting cluster… the list will update when the job finishes.
         </p>
       )}
-      <div className="card table-card">
-        <div className="table-meta">Total: {list.length} records</div>
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Status</th>
-              <th>Arch</th>
-              <th>Provider</th>
-              <th>CP / Workers</th>
-              <th>CPU</th>
-              <th>Memory</th>
-              <th>Disk</th>
-              <th>Network</th>
-              <th>CNI</th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.map((c) => {
-              const net = c.network_mode || (c.vip6 && c.vip ? 'dual-stack' : c.vip6 ? 'ipv6' : 'ipv4')
-              const to = `/clusters/${c.id}`
-              const kind = normalizeProviderKind(c.provider_kind)
-              return (
-                <tr
-                  key={c.id}
-                  className="row-click"
-                  tabIndex={0}
-                  role="link"
-                  onClick={() => nav(to)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      nav(to)
-                    }
-                  }}
-                >
-                  <td><span className="row-click-label">{c.name}</span></td>
-                  <td>
-                    <ClusterStatusBadges status={c.status} availability={c.availability} />
-                  </td>
-                  <td>
-                    <span className={`badge arch arch-${c.arch === 'arm64' ? 'arm64' : 'amd64'}`}>
-                      {c.arch === 'arm64' ? 'arm64' : 'amd64'}
-                    </span>
-                  </td>
-                  <td>
-                    {c.provider_name ? (
-                      <div className="cluster-provider-cell">
-                        <div className="cluster-provider-name">
-                          <span className={`badge kind kind-${kind}`}>
-                            {formatProviderKind(kind)}
-                          </span>
-                          <span>{c.provider_name}</span>
-                          <ProviderStatusBadge availability={c.provider_availability} />
-                        </div>
-                        <div className="muted cluster-provider-node">
-                          {c.provider_node || '—'}
-                        </div>
-                      </div>
-                    ) : (
-                      <span className="badge error">missing</span>
-                    )}
-                  </td>
-                  <td>{c.controlplanes} / {c.workers}</td>
-                  <td><UsageBar metric={metrics[c.id]?.cpu} color="cpu" /></td>
-                  <td><UsageBar metric={metrics[c.id]?.memory} color="memory" /></td>
-                  <td><UsageBar metric={metrics[c.id]?.disk} color="disk" /></td>
-                  <td>
-                    <span className="badge">{net}</span>
-                    <span className="muted" style={{ marginLeft: 8 }}>
-                      {c.vip || c.vip6 || '—'}
-                    </span>
-                  </td>
-                  <td>{c.cni}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-        {list.length === 0 && (
-          <p className="muted">{loaded ? 'No clusters. Create with M control planes (+ VIP if M&gt;1) and N workers.' : 'Loading clusters…'}</p>
-        )}
-      </div>
+
+      <section className="stat-grid stat-grid-3">
+        <StatCard label="Total clusters" value={loaded ? list.length : '—'} icon="clusters" />
+        <StatCard label="Ready" value={loaded ? ready : '—'} icon="check" />
+        <StatCard label="Needs attention" value={loaded ? attention : '—'} icon="alert" />
+      </section>
+
+      {list.length === 0 ? (
+        <div className="card dash-empty">
+          <p className="muted" style={{ margin: 0 }}>
+            {loaded
+              ? 'No clusters. Create with M control planes (+ VIP if M>1) and N workers.'
+              : 'Loading clusters…'}
+          </p>
+        </div>
+      ) : (
+        <section className="cluster-card-grid">
+          {cards.map((s) => (
+            <ClusterCard
+              key={s.cluster_id}
+              summary={s}
+              onOpen={() => nav(`/clusters/${s.cluster_id}`)}
+            />
+          ))}
+        </section>
+      )}
 
       <ClusterWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
     </div>

@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+import PageHeader from '../components/PageHeader'
 
 const PAGE = 100
+
+function isFailed(row) {
+  const hay = `${row.action || ''} ${row.detail || ''}`.toLowerCase()
+  return /\bfail|\berror|\bdenied|\bunauthor/.test(hay)
+}
 
 export default function Audit() {
   const [rows, setRows] = useState([])
@@ -27,15 +33,16 @@ export default function Audit() {
   }, [load])
 
   return (
-    <div>
-      <div className="page-head">
-        <h1>
-          <Icon name="audit" size={22} /> Audit
-        </h1>
-        <button type="button" className="secondary btn-icon" onClick={load}>
-          <Icon name="refresh" size={16} /> Refresh
-        </button>
-      </div>
+    <div className="dash-page">
+      <PageHeader
+        title="Audit log"
+        description="Immutable record of every action taken against the control plane."
+        actions={
+          <button type="button" className="secondary btn-icon" onClick={load}>
+            <Icon name="refresh" size={16} /> Refresh
+          </button>
+        }
+      />
       {error && <div className="error">{error}</div>}
       <div className="card" style={{ marginBottom: '1rem' }}>
         <div className="form-row" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -63,40 +70,44 @@ export default function Audit() {
           </label>
         </div>
       </div>
-      <div className="card">
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>User</th>
-              <th>Action</th>
-              <th>Resource</th>
-              <th>Detail</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <td className="mono-inline" style={{ whiteSpace: 'nowrap' }}>
-                  {r.created_at}
-                </td>
-                <td>{r.username || r.user_id || '—'}</td>
-                <td>
-                  <span className="badge">{r.action}</span>
-                </td>
-                <td className="mono-inline">{r.resource || '—'}</td>
-                <td className="muted" title={r.detail || ''}>
-                  {r.detail
-                    ? r.detail.length > 80
-                      ? `${r.detail.slice(0, 80)}…`
-                      : r.detail
-                    : '—'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {rows.length === 0 && <p className="muted">No audit entries.</p>}
+      <div className="card audit-card">
+        {rows.length === 0 ? (
+          <p className="muted" style={{ margin: '0.75rem' }}>
+            No audit entries.
+          </p>
+        ) : (
+          <ol className="audit-timeline">
+            {rows.map((r, index) => {
+              const failed = isFailed(r)
+              return (
+                <li key={r.id} className="audit-item">
+                  <div className="audit-rail">
+                    <span className={`audit-dot ${failed ? 'audit-dot-fail' : 'audit-dot-ok'}`}>
+                      <Icon name={failed ? 'x' : 'check'} size={14} />
+                    </span>
+                    {index < rows.length - 1 ? <span className="audit-line" /> : null}
+                  </div>
+                  <div className="audit-body">
+                    <div className="audit-title">
+                      <code className="audit-action">{r.action}</code>
+                      <span className="audit-target">{r.resource || '—'}</span>
+                    </div>
+                    <p className="audit-meta">
+                      <span className="audit-actor">{r.username || r.user_id || '—'}</span>
+                      {' · '}
+                      {r.created_at}
+                    </p>
+                    {r.detail ? (
+                      <p className="audit-detail" title={r.detail}>
+                        {r.detail.length > 120 ? `${r.detail.slice(0, 120)}…` : r.detail}
+                      </p>
+                    ) : null}
+                  </div>
+                </li>
+              )
+            })}
+          </ol>
+        )}
         <div className="form-footer" style={{ marginTop: '0.75rem', gap: '0.5rem' }}>
           <button
             type="button"

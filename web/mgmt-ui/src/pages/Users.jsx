@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+import PageHeader from '../components/PageHeader'
 import { useConfirm } from '../components/Confirm'
 import Checkbox from '../components/Checkbox'
 
@@ -130,15 +131,16 @@ export default function Users() {
   }
 
   return (
-    <div>
-      <div className="page-head">
-        <h1>
-          <Icon name="users" size={22} /> Users
-        </h1>
-        <button type="button" className="btn-icon" onClick={openCreate}>
-          <Icon name="plus" size={16} /> Create user
-        </button>
-      </div>
+    <div className="dash-page">
+      <PageHeader
+        title="Users"
+        description="People and service accounts with access to the control plane."
+        actions={
+          <button type="button" className="btn-icon" onClick={openCreate}>
+            <Icon name="plus" size={16} /> Invite user
+          </button>
+        }
+      />
       {error && <div className="error">{error}</div>}
       {msg && <p className="muted">{msg}</p>}
 
@@ -231,16 +233,14 @@ export default function Users() {
         </div>
       )}
 
-      <div className="card">
+      <div className="table-shell">
         <table>
           <thead>
             <tr>
-              <th>Username</th>
-              <th>Email</th>
+              <th>User</th>
               <th>Source</th>
               <th>Role</th>
               <th>Status</th>
-              <th>Created</th>
               <th>Updated</th>
               <th></th>
             </tr>
@@ -248,10 +248,19 @@ export default function Users() {
           <tbody>
             {list.map((u) => (
               <tr key={u.id}>
-                <td>{u.username}</td>
-                <td className="muted">{u.email || '—'}</td>
                 <td>
-                  <span className="badge">{u.source}</span>
+                  <div className="user-cell">
+                    <span className="user-cell-avatar" aria-hidden>
+                      {(u.username || '?').slice(0, 2).toUpperCase()}
+                    </span>
+                    <div className="identity-cell">
+                      <span className="user-cell-name">{u.username}</span>
+                      <span className="identity-cell-sub">{u.email || '—'}</span>
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  <span className="tag tag-outline">{u.source}</span>
                 </td>
                 <td>
                   <select
@@ -267,15 +276,12 @@ export default function Users() {
                   </select>
                 </td>
                 <td>
-                  <span className={`badge ${u.disabled ? 'error' : 'ready'}`}>
+                  <span className={`status-dot ${u.disabled ? 'status-dot-muted' : 'status-dot-ok'}`}>
                     {u.disabled ? 'disabled' : 'enabled'}
                   </span>
                 </td>
                 <td className="mono-inline" style={{ whiteSpace: 'nowrap' }}>
-                  {u.created_at}
-                </td>
-                <td className="mono-inline" style={{ whiteSpace: 'nowrap' }}>
-                  {u.updated_at || '—'}
+                  {u.updated_at || u.created_at || '—'}
                 </td>
                 <td>
                   <div className="row-actions">
@@ -304,7 +310,11 @@ export default function Users() {
             ))}
           </tbody>
         </table>
-        {list.length === 0 && <p className="muted">No users.</p>}
+        {list.length === 0 && (
+          <p className="muted" style={{ margin: '0.75rem 1rem' }}>
+            No users.
+          </p>
+        )}
       </div>
     </div>
   )

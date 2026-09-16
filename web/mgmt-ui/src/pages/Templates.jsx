@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
 import { defaultTemplateYaml } from '../utils/machineConfig'
@@ -98,68 +99,67 @@ export default function Templates() {
   }
 
   return (
-    <div>
-      <div className="page-head">
-        <h1>
-          <Icon name="templates" size={22} /> Templates
-        </h1>
-        <button type="button" className="btn btn-icon" onClick={openCreate}>
-          <Icon name="plus" size={16} /> New template
-        </button>
-      </div>
+    <div className="dash-page">
+      <PageHeader
+        title="Templates"
+        description="Reusable node blueprints that pin an image, arch, and topology."
+        actions={
+          <button type="button" className="btn btn-icon" onClick={openCreate}>
+            <Icon name="plus" size={16} /> New template
+          </button>
+        }
+      />
       {error && <div className="error">{error}</div>}
-      <div className="card">
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Role</th>
-              <th>Description</th>
-              <th>Updated</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {list.map((t) => (
-              <tr key={t.id}>
-                <td>{t.name}</td>
-                <td>
-                  <span className="badge">{t.role}</span>
-                </td>
-                <td className="muted">{t.description || '—'}</td>
-                <td className="mono-inline" style={{ whiteSpace: 'nowrap' }}>
-                  {t.updated_at}
-                </td>
-                <td>
-                  <div style={{ display: 'flex', gap: '0.35rem' }}>
-                    <button
-                      type="button"
-                      className="secondary btn-icon"
-                      onClick={() => openEdit(t)}
-                      title="Edit"
-                    >
-                      <Icon name="edit" size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary btn-icon"
-                      onClick={() => remove(t)}
-                      title="Delete"
-                    >
-                      <Icon name="trash" size={14} />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {list.length === 0 && (
-          <p className="muted">
+      {list.length === 0 ? (
+        <div className="card dash-empty">
+          <p className="muted" style={{ margin: 0 }}>
             No templates yet. Create a machine-config blueprint to reuse on cluster Config tabs.
           </p>
-        )}
-      </div>
+        </div>
+      ) : (
+        <section className="entity-grid entity-grid-3">
+          {list.map((t) => (
+            <article key={t.id} className="entity-card">
+              <div className="entity-card-head">
+                <div className="entity-card-identity">
+                  <span className="entity-card-icon" aria-hidden>
+                    <Icon name="templates" size={18} />
+                  </span>
+                  <div className="entity-card-copy">
+                    <p className="entity-card-name">{t.name}</p>
+                    <p className="entity-card-sub">{t.role || 'any'}</p>
+                  </div>
+                </div>
+              </div>
+              <p className="entity-card-desc">{t.description || 'No description.'}</p>
+              <div className="entity-card-foot">
+                <div className="entity-card-tags">
+                  <span className="tag tag-outline">{t.role || 'any'}</span>
+                  <span className="entity-card-stamp">{t.updated_at || '—'}</span>
+                </div>
+                <div className="row-actions">
+                  <button
+                    type="button"
+                    className="secondary btn-icon"
+                    onClick={() => openEdit(t)}
+                    title="Edit"
+                  >
+                    <Icon name="edit" size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="danger btn-icon"
+                    onClick={() => remove(t)}
+                    title="Delete"
+                  >
+                    <Icon name="trash" size={14} />
+                  </button>
+                </div>
+              </div>
+            </article>
+          ))}
+        </section>
+      )}
 
       <Modal
         open={open}

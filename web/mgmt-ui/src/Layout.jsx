@@ -3,35 +3,42 @@ import { getToken, logoutAndRedirect, setAuthProvider } from './api'
 import { useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import { Icon } from './components/Icons'
+import ThemeToggle from './components/ThemeToggle'
 import { useConfirm } from './components/Confirm'
 import { APP_VERSION } from './utils/version'
-import { applyTheme } from './utils/theme'
 
 const SIDEBAR_COLLAPSED_KEY = 'pertisk_kos_sidebar_collapsed'
 
-const NAV = [
-  { to: '/', label: 'Dashboard', icon: 'dashboard', end: true },
-  { to: '/clusters', label: 'Clusters', icon: 'clusters' },
-  { to: '/os-packages', label: 'OS packages', icon: 'packages' },
-  { to: '/images', label: 'Images', icon: 'disk' },
-  { to: '/machines', label: 'Machines', icon: 'machines' },
-  { to: '/templates', label: 'Templates', icon: 'templates' },
-  { to: '/providers', label: 'Providers', icon: 'providers' },
-  { to: '/users', label: 'Users', icon: 'users', adminOnly: true },
-  { to: '/audit', label: 'Audit', icon: 'audit' },
-  { to: '/settings', label: 'Settings', icon: 'settings' },
+const NAV_GROUPS = [
+  {
+    heading: 'Fleet',
+    items: [
+      { to: '/', label: 'Dashboard', icon: 'dashboard', end: true },
+      { to: '/clusters', label: 'Clusters', icon: 'clusters' },
+      { to: '/machines', label: 'Machines', icon: 'machines' },
+      { to: '/providers', label: 'Providers', icon: 'providers' },
+    ],
+  },
+  {
+    heading: 'Node OS',
+    items: [
+      { to: '/images', label: 'Images', icon: 'disk' },
+      { to: '/os-packages', label: 'OS packages', icon: 'packages' },
+      { to: '/templates', label: 'Templates', icon: 'templates' },
+    ],
+  },
+  {
+    heading: 'Governance',
+    items: [
+      { to: '/users', label: 'Users', icon: 'users', adminOnly: true },
+      { to: '/audit', label: 'Audit', icon: 'audit' },
+      { to: '/settings', label: 'Settings', icon: 'settings' },
+    ],
+  },
 ]
 
 function getStoredCollapsed() {
   return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
-}
-
-function resolveTitle(pathname) {
-  if (pathname.startsWith('/providers/') && pathname !== '/providers') return 'Provider dashboard'
-  const match = NAV.filter((n) =>
-    n.end ? pathname === n.to : pathname === n.to || pathname.startsWith(`${n.to}/`),
-  ).sort((a, b) => b.to.length - a.to.length)[0]
-  return match?.label ?? 'Cluster management'
 }
 
 export default function Layout() {
@@ -39,16 +46,11 @@ export default function Layout() {
   const location = useLocation()
   const confirm = useConfirm()
   const [user, setUser] = useState(null)
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(getStoredCollapsed)
+  const [search, setSearch] = useState('')
   const userMenuRef = useRef(null)
-  const title = resolveTitle(location.pathname)
-
-  useEffect(() => {
-    applyTheme(theme)
-  }, [theme])
 
   useEffect(() => {
     if (!getToken()) {
@@ -107,7 +109,18 @@ export default function Layout() {
     logoutAndRedirect(user?.provider || 'local')
   }
 
+  function onSearch(e) {
+    e.preventDefault()
+    const q = search.trim()
+    if (!q) {
+      nav('/machines')
+      return
+    }
+    nav(`/machines?q=${encodeURIComponent(q)}`)
+  }
+
   const initial = user?.username ? user.username.charAt(0).toUpperCase() : 'U'
+  const roleLabel = user?.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : 'Operator'
 
   return (
     <div className="shell">
@@ -122,17 +135,23 @@ export default function Layout() {
         className={`sidebar${mobileOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}`}
       >
         <div className="sidebar-header">
-          <div className="brand">
+          <NavLink to="/" className="brand" onClick={() => setMobileOpen(false)}>
             <span className="brand-mark" aria-hidden>
               <Icon name="clusters" size={16} />
             </span>
-            <div className="brand-text">
-              <span>
-                Pertisk <span className="accent">KOS</span>
-              </span>
+            <span className="brand-text">
+              <span className="brand-name">Pertisk KOS</span>
               <span className="brand-version">v{APP_VERSION}</span>
-            </div>
-          </div>
+            </span>
+          </NavLink>
+          <button
+            type="button"
+            className="sidebar-close-btn"
+            onClick={() => setMobileOpen(false)}
+            aria-label="Close navigation"
+          >
+            <Icon name="x" size={18} />
+          </button>
           <button
             type="button"
             className={`sidebar-collapse-btn${!collapsed ? ' anchor-right' : ''}`}
@@ -145,20 +164,42 @@ export default function Layout() {
         </div>
 
         <nav className="nav" aria-label="Primary">
-          {NAV.filter((n) => !n.adminOnly || user?.role === 'admin').map(({ to, label, icon, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              title={collapsed ? label : undefined}
-              onClick={() => setMobileOpen(false)}
-              className={({ isActive }) => (isActive ? 'active' : undefined)}
-            >
-              <Icon name={icon} size={18} />
-              <span className="nav-label">{label}</span>
-            </NavLink>
-          ))}
+          {NAV_GROUPS.map((group) => {
+            const items = group.items.filter((n) => !n.adminOnly || user?.role === 'admin')
+            if (items.length === 0) return null
+            return (
+              <div key={group.heading} className="nav-group">
+                <p className="nav-heading">{group.heading}</p>
+                <ul>
+                  {items.map(({ to, label, icon, end }) => (
+                    <li key={to}>
+                      <NavLink
+                        to={to}
+                        end={end}
+                        title={collapsed ? label : undefined}
+                        onClick={() => setMobileOpen(false)}
+                        className={({ isActive }) => (isActive ? 'active' : undefined)}
+                      >
+                        <Icon name={icon} size={18} />
+                        <span className="nav-label">{label}</span>
+                      </NavLink>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )
+          })}
         </nav>
+
+        <div className="sidebar-footer">
+          <div className="control-plane-chip">
+            <span className="control-plane-dot" aria-hidden />
+            <div className="control-plane-copy">
+              <p>Control plane</p>
+              <p>All systems operational</p>
+            </div>
+          </div>
+        </div>
       </aside>
 
       <div className={`main${mobileOpen ? ' sidebar-open' : ''}`}>
@@ -166,25 +207,27 @@ export default function Layout() {
           <div className="topbar-left">
             <button
               type="button"
-              className="secondary btn-icon topbar-menu-btn"
+              className="theme-toggle topbar-menu-btn"
               aria-controls="app-sidebar"
               aria-expanded={mobileOpen}
               aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
               onClick={() => setMobileOpen((v) => !v)}
             >
-              <Icon name={mobileOpen ? 'x' : 'menu'} size={18} />
+              <Icon name={mobileOpen ? 'x' : 'menu'} size={16} />
             </button>
-            <h1 className="topbar-title">{title}</h1>
+            <form className="topbar-search" onSubmit={onSearch} role="search">
+              <Icon name="search" size={16} />
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search clusters, machines, images…"
+                aria-label="Search"
+              />
+            </form>
           </div>
           <div className="row-actions">
-            <button
-              type="button"
-              className="secondary btn-icon"
-              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              title="Toggle theme"
-            >
-              <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
-            </button>
+            <ThemeToggle />
             <div className="user-menu" ref={userMenuRef}>
               <button
                 type="button"
@@ -194,8 +237,10 @@ export default function Layout() {
                 aria-expanded={showUserMenu}
               >
                 <span className="user-avatar">{initial}</span>
-                <span className="user-name">{user?.username || 'User'}</span>
-                <Icon name="chevron-down" size={14} className="user-chevron" />
+                <span className="user-meta">
+                  <span className="user-name">{user?.username || 'User'}</span>
+                  <span className="user-role">{roleLabel}</span>
+                </span>
               </button>
               {showUserMenu && (
                 <div className="user-menu-dropdown" role="menu">

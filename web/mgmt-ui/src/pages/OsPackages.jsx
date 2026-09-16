@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+import PageHeader from '../components/PageHeader'
+import StatCard from '../components/StatCard'
 import Modal from '../components/Modal'
 import OsBundlePicker, { osBundleReady } from '../components/OsBundlePicker'
 import Checkbox from '../components/Checkbox'
@@ -164,28 +166,42 @@ export default function OsPackages() {
   }
 
   return (
-    <div>
-      <div className="page-head">
-        <h1>
-          <Icon name="packages" size={22} /> OS packages
-        </h1>
-        <button type="button" className="btn btn-icon" onClick={() => setUploadOpen(true)}>
-          <Icon name="upload" size={16} /> Upload bundle
-        </button>
-      </div>
-      <p className="muted" style={{ marginTop: '-0.35rem', marginBottom: '1rem' }}>
+    <div className="dash-page">
+      <PageHeader
+        title="OS packages"
+        description="Components layered into the immutable node OS build."
+        actions={
+          <button type="button" className="btn btn-icon" onClick={() => setUploadOpen(true)}>
+            <Icon name="upload" size={16} /> Upload bundle
+          </button>
+        }
+      />
+      <p className="muted" style={{ margin: 0 }}>
         Signed A/B images (kernel + initramfs). Pick a version and apply it to matching-arch clusters.
         Kubernetes is not changed.
       </p>
       {error && <div className="error">{error}</div>}
-      <div className="card">
+      <section className="stat-grid stat-grid-3">
+        <StatCard label="Packages" value={list.length} icon="packages" />
+        <StatCard
+          label="amd64"
+          value={list.filter((p) => formatArch(p.arch) === 'amd64').length}
+          icon="cpu"
+        />
+        <StatCard
+          label="arm64"
+          value={list.filter((p) => formatArch(p.arch) === 'arm64').length}
+          icon="cpu"
+        />
+      </section>
+      <div className="table-shell">
         <table>
           <thead>
             <tr>
-              <th>Version</th>
+              <th>Package</th>
               <th>Arch</th>
               <th>Size</th>
-              <th>Trust key</th>
+              <th>Trust</th>
               <th>Updated</th>
               <th />
             </tr>
@@ -194,26 +210,24 @@ export default function OsPackages() {
             {list.map((p) => (
               <tr key={p.id}>
                 <td>
-                  <span className="mono-inline">{p.version}</span>
+                  <span className="identity-cell-name">{p.version}</span>
                 </td>
                 <td>
-                  <span className={`badge arch arch-${formatArch(p.arch)}`}>
-                    {formatArch(p.arch)}
-                  </span>
+                  <span className="tag tag-mono">{formatArch(p.arch)}</span>
                 </td>
-                <td className="muted">{formatBytes(p.size_bytes)}</td>
+                <td className="mono-inline muted">{formatBytes(p.size_bytes)}</td>
                 <td>
                   {p.has_trust_pk ? (
-                    <span className="badge ready">os-trust.pk</span>
+                    <span className="tag tag-accent">os-trust.pk</span>
                   ) : (
-                    <span className="badge">mgmt fallback</span>
+                    <span className="tag tag-outline">mgmt fallback</span>
                   )}
                 </td>
-                <td className="muted" style={{ whiteSpace: 'nowrap' }}>
+                <td className="mono-inline muted" style={{ whiteSpace: 'nowrap' }}>
                   {formatWhen(p.updated_at)}
                 </td>
                 <td>
-                  <div style={{ display: 'flex', gap: '0.35rem', justifyContent: 'flex-end' }}>
+                  <div className="row-actions" style={{ justifyContent: 'flex-end' }}>
                     <button
                       type="button"
                       className="btn-icon"
@@ -237,7 +251,7 @@ export default function OsPackages() {
           </tbody>
         </table>
         {list.length === 0 && (
-          <p className="muted">
+          <p className="muted" style={{ margin: '0.75rem 1rem' }}>
             No packages yet. Upload a zip from the GitHub Release (
             <span className="mono-inline">os-bundle-*-v*.zip</span>
             ) or <span className="mono-inline">make os-bundle</span>.

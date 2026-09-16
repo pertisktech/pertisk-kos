@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
 import { formatArch } from '../components/ClusterMetaBadges'
@@ -81,16 +82,17 @@ export default function Images() {
   const readyArm = !!catalog.ready?.arm64
 
   return (
-    <div>
-      <div className="page-head">
-        <h1>
-          <Icon name="disk" size={22} /> Images
-        </h1>
-        <button type="button" className="btn btn-icon" onClick={() => setUploadOpen(true)}>
-          <Icon name="upload" size={16} /> Upload qcow2
-        </button>
-      </div>
-      <p className="muted" style={{ marginTop: '-0.35rem', marginBottom: '1rem' }}>
+    <div className="dash-page">
+      <PageHeader
+        title="Images"
+        description="Immutable OS images published to the fleet across architectures and channels."
+        actions={
+          <button type="button" className="btn btn-icon" onClick={() => setUploadOpen(true)}>
+            <Icon name="upload" size={16} /> Publish image
+          </button>
+        }
+      />
+      <p className="muted" style={{ margin: 0 }}>
         Guest install disks for cluster create. Download
         {' '}
         <span className="mono-inline">pertisk-cloud-*-v*.qcow2</span>
@@ -112,15 +114,15 @@ export default function Images() {
           </span>
         )}
       </div>
-      <div className="card">
+      <div className="table-shell">
         <table>
           <thead>
             <tr>
-              <th>File</th>
+              <th>Image</th>
               <th>Arch</th>
               <th>Role</th>
               <th>Size</th>
-              <th>Created</th>
+              <th>Built</th>
               <th />
             </tr>
           </thead>
@@ -128,25 +130,25 @@ export default function Images() {
             {list.map((img) => (
               <tr key={img.name}>
                 <td>
-                  <span className="mono-inline">{img.name}</span>
-                  {img.is_default && (
-                    <span className="badge ready" style={{ marginLeft: 8 }}>
-                      default
-                    </span>
-                  )}
+                  <div className="identity-cell identity-cell-row">
+                    <span className="identity-cell-name">{img.name}</span>
+                    {img.is_default ? (
+                      <span className="badge ready">default</span>
+                    ) : null}
+                  </div>
                 </td>
                 <td>
-                  <span className={`badge arch arch-${formatArch(img.arch)}`}>
-                    {formatArch(img.arch)}
-                  </span>
+                  <span className="tag tag-mono">{formatArch(img.arch)}</span>
                 </td>
-                <td className="muted">{img.role || '—'}</td>
-                <td className="muted">{formatBytes(img.size_bytes)}</td>
-                <td className="muted" style={{ whiteSpace: 'nowrap' }}>
+                <td>
+                  <span className="tag tag-outline">{img.role || '—'}</span>
+                </td>
+                <td className="mono-inline muted">{formatBytes(img.size_bytes)}</td>
+                <td className="mono-inline muted" style={{ whiteSpace: 'nowrap' }}>
                   {formatWhen(img.created_at)}
                 </td>
                 <td>
-                  <div style={{ display: 'flex', gap: '0.35rem', justifyContent: 'flex-end' }}>
+                  <div className="row-actions" style={{ justifyContent: 'flex-end' }}>
                     <button
                       type="button"
                       className="secondary btn-icon"
@@ -162,7 +164,7 @@ export default function Images() {
           </tbody>
         </table>
         {list.length === 0 && (
-          <p className="muted">
+          <p className="muted" style={{ margin: '0.75rem 1rem' }}>
             No qcow2 yet. Upload <span className="mono-inline">pertisk-cloud-amd64*.qcow2</span> and/or{' '}
             <span className="mono-inline">pertisk-cloud-arm64*.qcow2</span> from the GitHub Release
             before Create Cluster.

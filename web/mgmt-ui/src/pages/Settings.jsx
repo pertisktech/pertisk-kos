@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
+import PageHeader from '../components/PageHeader'
 import { APP_VERSION } from '../utils/version'
 
 const TABS = [
@@ -77,12 +78,11 @@ export default function Settings() {
   }, [])
 
   return (
-    <div>
-      <div className="page-head">
-        <h1>
-          <Icon name="settings" size={22} /> Settings
-        </h1>
-      </div>
+    <div className="dash-page">
+      <PageHeader
+        title="Settings"
+        description="Control-plane configuration, release channels, and access."
+      />
       {error && <div className="error">{error}</div>}
 
       <div className="tabs-shell">
