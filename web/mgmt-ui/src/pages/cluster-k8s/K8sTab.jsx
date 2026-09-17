@@ -112,7 +112,7 @@ export default function K8sTab({ clusterId, ready }) {
   }
 
   return (
-    <div className="tab-body tab-body-fill k8s-tab">
+    <div className="tab-body k8s-tab">
       <div className="section-head">
         <div>
           <h3 className="section-label">Workloads</h3>

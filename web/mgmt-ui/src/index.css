@@ -539,10 +539,26 @@ label {
 }
 
 .content:has(.detail) {
-  overflow: hidden;
+  overflow: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.content:has(.detail)::-webkit-scrollbar {
+  display: none;
 }
 .content:has(.detail) > * {
   max-width: none;
+  min-height: 0;
+  height: auto;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.content:has(.shell-tab) {
+  overflow: hidden;
+}
+.content:has(.shell-tab) > * {
+  flex: 1 1 auto;
+  min-height: 0;
   height: 100%;
 }
 
@@ -2158,15 +2174,31 @@ th.col-actions, td.col-actions {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* Cluster detail — fill remaining viewport under header/stats */
+/* Cluster detail — grow with content so tabs are not clipped */
 .detail {
   display: flex;
   flex-direction: column;
-  flex: 1;
+  flex: 0 0 auto;
+  min-height: 0;
+  min-width: 0;
+  height: auto;
+}
+.detail:has(.shell-tab) {
+  flex: 1 1 auto;
   min-height: 0;
   height: 100%;
 }
-.detail-top { flex-shrink: 0; }
+.detail:has(.shell-tab) .tabs-shell,
+.detail:has(.shell-tab) .tab-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.detail:has(.shell-tab) .tab-body-fill {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
 .detail-title {
   display: flex;
   align-items: center;
@@ -2267,9 +2299,15 @@ th.col-actions, td.col-actions {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+}
+.detail .tabs-shell {
+  flex: 0 0 auto;
+  min-height: 0;
 }
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.25rem;
   padding: 0.35rem;
   background: var(--bg-elevated);
@@ -2277,6 +2315,8 @@ th.col-actions, td.col-actions {
   border-bottom: none;
   border-radius: var(--radius) var(--radius) 0 0;
   flex-shrink: 0;
+  overflow: visible;
+  min-width: 0;
 }
 .tab {
   display: inline-flex;
@@ -2289,6 +2329,7 @@ th.col-actions, td.col-actions {
   border-radius: 8px;
   font-weight: 500;
   font-size: 0.9rem;
+  white-space: nowrap;
 }
 .tab:hover {
   color: var(--text);
@@ -2316,22 +2357,24 @@ th.col-actions, td.col-actions {
   border-radius: 0 0 var(--radius) var(--radius);
   margin-bottom: 0;
   min-height: 0;
-  flex: 1;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   animation: fadeIn 0.15s ease;
 }
 .tab-body {
   padding: 0.15rem 0;
-  overflow: auto;
-  flex: 1;
+  overflow: visible;
+  flex: 0 0 auto;
+  height: auto;
   min-height: 0;
 }
 .tab-body-fill {
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  min-height: 24rem;
+  overflow: visible;
 }
 .section-label {
   margin: 0 0 0.5rem;
@@ -2993,7 +3036,8 @@ th.col-actions, td.col-actions {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  min-height: 0;
+  flex: 0 0 auto;
+  overflow: visible;
 }
 .k8s-toolbar {
   display: flex;
@@ -3174,16 +3218,18 @@ th.col-actions, td.col-actions {
   flex-direction: column;
   min-height: 0;
 }
-.k8s-shell-dock-fill .xterm-shell-body {
+.k8s-shell-dock-fill .xterm-shell-body,
+.k8s-shell-dock-fill .xterm-shell-body-tall {
   flex: 1;
   height: auto;
-  min-height: 280px;
+  min-height: 0;
 }
 .shell-tab {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   min-height: 0;
+  flex: 1;
 }
 
 @media (max-width: 900px) {
@@ -3193,7 +3239,6 @@ th.col-actions, td.col-actions {
 @media (max-width: 720px) {
   .form-grid, .panel-grid { grid-template-columns: 1fr; }
   .jobs-layout { grid-template-columns: 1fr; }
-  .tabs { overflow-x: auto; }
   .chart-grid { grid-template-columns: 1fr; }
 }
 

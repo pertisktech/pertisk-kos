@@ -80,9 +80,16 @@ export default function Xterm({ clusterId, clusterName, onClose }) {
       }, 80)
     }
     window.addEventListener('resize', onWinResize)
+    const ro = new ResizeObserver(onWinResize)
+    ro.observe(terminalRef.current)
+    requestAnimationFrame(() => {
+      fitAddonRef.current?.fit()
+      sendResize()
+    })
 
     return () => {
       window.removeEventListener('resize', onWinResize)
+      ro.disconnect()
       if (resizeTimer.current) window.clearTimeout(resizeTimer.current)
       dataDisp.dispose()
       try {
