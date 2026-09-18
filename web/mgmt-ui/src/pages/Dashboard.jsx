@@ -68,7 +68,7 @@ function ProviderResourceCard({ summary, onOpen }) {
         <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} layout="row" />
         <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} layout="row" />
       </div>
-      {summary.error && (
+      {summary.error && avail !== 'offline' && (
         <p className="muted cluster-resource-soft-err" title={summary.error}>
           <Icon name="alert" size={12} />
           {summary.error}

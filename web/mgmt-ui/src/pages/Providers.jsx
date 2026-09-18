@@ -227,7 +227,7 @@ export default function Providers() {
                     <div className="entity-card-share-fill" style={{ width: `${machineShare}%` }} />
                   </div>
                 </div>
-                {live.error ? (
+                {live.error && p.availability !== 'offline' && live.availability !== 'offline' ? (
                   <p className="muted cluster-resource-soft-err" title={live.error}>
                     <Icon name="alert" size={12} />
                     {live.error}

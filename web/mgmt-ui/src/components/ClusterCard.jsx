@@ -84,7 +84,7 @@ export default function ClusterCard({ summary, onOpen, compact = false }) {
           <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} layout="row" />
           <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} layout="row" />
         </div>
-        {summary.error && summary.status === 'ready' && (
+        {summary.error && summary.status === 'ready' && summary.availability !== 'offline' && (
           <p className="muted cluster-resource-soft-err" title={summary.error}>
             <Icon name="alert" size={12} />
             {summary.error}

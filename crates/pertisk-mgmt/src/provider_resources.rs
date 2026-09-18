@@ -288,13 +288,11 @@ async fn gather_live(state: &AppState, id: &str) -> ProviderResourceSummary {
             }
             summary.availability = "online".into();
         }
-        Ok(Err(e)) => {
+        Ok(Err(_)) => {
             summary.availability = "offline".into();
-            summary.error = Some(e);
         }
         Err(_) => {
-            summary.availability = crate::provider_availability::cached_or(&id);
-            summary.error = Some("timed out reading hypervisor stats".into());
+            summary.availability = "offline".into();
         }
     }
     summary

@@ -95,7 +95,7 @@ export default function ProviderDashboard() {
         <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} size="lg" />
         <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} size="lg" />
       </div>
-      {summary.error && (
+      {summary.error && summary.availability !== 'offline' && (
         <p className="muted cluster-resource-soft-err" title={summary.error} style={{ borderTop: 'none', paddingLeft: 0 }}>
           <Icon name="alert" size={12} />
           {summary.error}

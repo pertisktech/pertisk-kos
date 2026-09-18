@@ -238,19 +238,18 @@ async fn timeout_summary_with_capacity(
     .unwrap_or_default();
 
     let (cpu, memory, disk) = capacity_metrics(&nodes);
-    let err = Some("resource probe timed out (API unreachable?)".to_string());
     pack(
         cluster,
         nodes.len() as i64,
-        with_metric_error(cpu, err.clone()),
-        with_metric_error(memory, err.clone()),
-        with_metric_error(disk, err.clone()),
+        cpu,
+        memory,
+        disk,
         if cluster.status == "ready" {
             "offline".into()
         } else {
             "unknown".into()
         },
-        err,
+        None,
         capacity_node_metrics(&nodes),
     )
 }
@@ -318,11 +317,6 @@ fn capacity_metrics(nodes: &[NodeCap]) -> (ResourceMetric, ResourceMetric, Resou
         error: None,
     };
     (cpu, memory, disk)
-}
-
-fn with_metric_error(mut m: ResourceMetric, err: Option<String>) -> ResourceMetric {
-    m.error = err;
-    m
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -453,9 +447,6 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
 
     // Cluster VMs powered off / VIP dead — skip kubectl top & stats (would just timeout).
     if soft_err.is_some() && server_override.is_none() {
-        cpu.error = soft_err.clone();
-        memory.error = soft_err.clone();
-        disk.error = soft_err.clone();
         return pack(
             &cluster,
             node_count,
@@ -463,7 +454,7 @@ async fn gather_one(state: &AppState, cluster: ClusterRow) -> ClusterResourceSum
             memory,
             disk,
             "offline".into(),
-            soft_err,
+            None,
             node_res,
         );
     }
