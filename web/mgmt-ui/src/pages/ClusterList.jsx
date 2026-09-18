@@ -79,6 +79,8 @@ export default function Clusters() {
         provider_name: c.provider_name,
         arch: c.arch,
         vip: c.vip,
+        controlplanes: c.controlplanes,
+        workers: c.workers,
       }
     })
   }, [list, metrics])

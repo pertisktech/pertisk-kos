@@ -9,7 +9,7 @@ export default function AuthLayout({ title, subtitle, children }) {
       <aside className="auth-brand-panel">
         <Link to="/login" className="auth-brand-link">
           <span className="brand-mark" aria-hidden>
-            <Icon name="clusters" size={16} />
+            <Icon name="radio" size={16} />
           </span>
           <span className="auth-brand-name">Pertisk KOS</span>
         </Link>
@@ -30,7 +30,7 @@ export default function AuthLayout({ title, subtitle, children }) {
         <div className="auth-form">
           <div className="auth-mobile-brand">
             <span className="brand-mark" aria-hidden>
-              <Icon name="clusters" size={16} />
+              <Icon name="radio" size={16} />
             </span>
             <span className="auth-brand-name">Pertisk KOS</span>
           </div>

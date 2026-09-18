@@ -1,15 +1,19 @@
 import { Icon } from './Icons'
 import { ClusterStatusBadges } from './ClusterStatusBadges'
-import { ClusterMetaBadges } from './ClusterMetaBadges'
+import { ClusterMetaBadges, formatProviderKind } from './ClusterMetaBadges'
 import ResourceGauge, { GAUGE_BASE } from './ResourceGauge'
 
-export default function ClusterCard({ summary, onOpen }) {
+export default function ClusterCard({ summary, onOpen, compact = false }) {
   const version = formatK8sVersion(summary.k8s_version)
-  const nodes = summary.node_count
+  const cps = Number(summary.controlplanes) || 0
+  const wks = Number(summary.workers) || 0
+  const nodes = Number(summary.node_count) || cps + wks
   const statusClass = summary.status || 'unknown'
   const avail = summary.availability || 'unknown'
+  const provider = summary.provider_name || formatProviderKind(summary.provider_kind)
   const cardClass = [
     'cluster-card',
+    compact ? 'cluster-card-compact' : '',
     `status-${statusClass}`,
     statusClass === 'ready' ? `avail-${avail}` : '',
     summary._placeholder ? 'cluster-resource-skeleton' : '',
@@ -33,38 +37,60 @@ export default function ClusterCard({ summary, onOpen }) {
       <div className="cluster-card-head">
         <div className="cluster-card-identity">
           <span className="cluster-card-icon" aria-hidden>
-            <Icon name="clusters" size={18} />
+            <Icon name="radio" size={compact ? 18 : 20} />
           </span>
           <div className="cluster-card-title">
             <p className="cluster-card-name">{summary.cluster_name}</p>
             <p className="cluster-card-meta">
               {version ? <span className="mono-inline">{version}</span> : null}
-              {version ? <span aria-hidden>·</span> : null}
-              <span>
-                {nodes} node{nodes === 1 ? '' : 's'}
-              </span>
+              {version && provider ? <span aria-hidden>·</span> : null}
+              {provider ? <span>{provider}</span> : null}
             </p>
           </div>
         </div>
         <ClusterStatusBadges status={summary.status} availability={summary.availability} />
       </div>
-      <div className="cluster-card-tags">
-        {(summary.arch || summary.provider_kind) && (
-          <ClusterMetaBadges arch={summary.arch} providerKind={summary.provider_kind} />
+
+      <div className="cluster-card-stats">
+        <div className="cluster-card-stat">
+          <p className="cluster-card-stat-label">
+            <Icon name="machines" size={12} /> Nodes
+          </p>
+          <p className="cluster-card-stat-value">{nodes}</p>
+        </div>
+        <div className="cluster-card-stat">
+          <p className="cluster-card-stat-label">Control</p>
+          <p className="cluster-card-stat-value">{cps}</p>
+        </div>
+        <div className="cluster-card-stat">
+          <p className="cluster-card-stat-label">Workers</p>
+          <p className="cluster-card-stat-value">{wks}</p>
+        </div>
+      </div>
+
+      <div className="cluster-card-body">
+        <div className="cluster-card-tags">
+          {(summary.arch || summary.provider_kind) && (
+            <ClusterMetaBadges arch={summary.arch} providerKind={summary.provider_kind} />
+          )}
+          {summary.vip ? (
+            <span className="tag tag-outline">
+              <Icon name="network" size={12} /> VIP {summary.vip}
+            </span>
+          ) : null}
+        </div>
+        <div className="cluster-card-meters">
+          <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} layout="row" />
+          <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} layout="row" />
+          <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} layout="row" />
+        </div>
+        {summary.error && summary.status === 'ready' && (
+          <p className="muted cluster-resource-soft-err" title={summary.error}>
+            <Icon name="alert" size={12} />
+            {summary.error}
+          </p>
         )}
-        {summary.vip ? <span className="tag tag-outline">VIP {summary.vip}</span> : null}
       </div>
-      <div className="cluster-card-meters">
-        <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} size="lg" />
-        <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} size="lg" />
-        <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} size="lg" />
-      </div>
-      {summary.error && summary.status === 'ready' && (
-        <p className="muted cluster-resource-soft-err" title={summary.error}>
-          <Icon name="alert" size={12} />
-          {summary.error}
-        </p>
-      )}
     </article>
   )
 }
@@ -86,6 +112,8 @@ export function placeholderSummary(c) {
     availability: c.availability || 'unknown',
     k8s_version: c.k8s_version || '',
     node_count: nodes,
+    controlplanes: c.controlplanes || 0,
+    workers: c.workers || 0,
     provider_kind: c.provider_kind,
     provider_name: c.provider_name,
     arch: c.arch,

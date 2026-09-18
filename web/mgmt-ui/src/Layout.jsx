@@ -137,7 +137,7 @@ export default function Layout() {
         <div className="sidebar-header">
           <NavLink to="/" className="brand" onClick={() => setMobileOpen(false)}>
             <span className="brand-mark" aria-hidden>
-              <Icon name="clusters" size={16} />
+              <Icon name="radio" size={16} />
             </span>
             <span className="brand-text">
               <span className="brand-name">Pertisk KOS</span>

@@ -7,7 +7,7 @@ import StatCard from '../components/StatCard'
 import ClusterCard, { placeholderSummary } from '../components/ClusterCard'
 import ResourceGauge, { GAUGE_BASE } from '../components/ResourceGauge'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
-import { ClusterMetaBadges, formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
+import { ClusterMetaBadges, formatProviderKind, normalizeProviderKind, providerKindGlyph } from '../components/ClusterMetaBadges'
 import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
@@ -44,8 +44,8 @@ function ProviderResourceCard({ summary, onOpen }) {
     >
       <div className="cluster-card-head">
         <div className="cluster-card-identity">
-          <span className="cluster-card-icon" aria-hidden>
-            <Icon name="providers" size={18} />
+          <span className="cluster-card-icon entity-card-glyph" aria-hidden>
+            {providerKindGlyph(summary.kind)}
           </span>
           <div className="cluster-card-title">
             <p className="cluster-card-name">{summary.provider_name}</p>
@@ -57,15 +57,16 @@ function ProviderResourceCard({ summary, onOpen }) {
         </div>
         <ProviderStatusBadge availability={avail} showUnknown />
       </div>
+      <div className="cluster-card-body">
       {summary.storage ? (
         <div className="cluster-card-tags">
           <span className="tag tag-mono">{summary.storage}</span>
         </div>
       ) : null}
       <div className="cluster-card-meters">
-        <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} size="sm" />
-        <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} size="sm" />
-        <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} size="sm" />
+        <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} layout="row" />
+        <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} layout="row" />
+        <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} layout="row" />
       </div>
       {summary.error && (
         <p className="muted cluster-resource-soft-err" title={summary.error}>
@@ -73,6 +74,7 @@ function ProviderResourceCard({ summary, onOpen }) {
           {summary.error}
         </p>
       )}
+      </div>
     </article>
   )
 }
@@ -178,6 +180,8 @@ export default function Dashboard() {
         provider_name: c.provider_name,
         arch: c.arch,
         vip: c.vip,
+        controlplanes: c.controlplanes,
+        workers: c.workers,
       }
     })
   }, [resources, clusters])
@@ -279,10 +283,11 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="cluster-card-grid">
-            {displayResources.map((s) => (
+            {displayResources.slice(0, 2).map((s) => (
               <ClusterCard
                 key={s.cluster_id}
                 summary={s}
+                compact
                 onOpen={() => nav(`/clusters/${s.cluster_id}`)}
               />
             ))}

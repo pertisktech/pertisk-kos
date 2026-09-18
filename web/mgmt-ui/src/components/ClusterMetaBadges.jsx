@@ -17,6 +17,16 @@ export function normalizeProviderKind(kind) {
   return k || 'proxmox'
 }
 
+export function providerKindGlyph(kind) {
+  const k = normalizeProviderKind(kind)
+  if (k === 'pertisk-vms') return 'PV'
+  if (k === 'proxmox') return 'PX'
+  if (k === 'nutanix') return 'NX'
+  if (k === 'vsphere') return 'VS'
+  if (k === 'baremetal' || k === 'bare-metal') return 'BM'
+  return (formatProviderKind(kind) || '··').slice(0, 2).toUpperCase()
+}
+
 export function formatArch(arch) {
   const a = String(arch || 'amd64').toLowerCase()
   if (a === 'aarch64' || a === 'arm64') return 'arm64'
@@ -30,10 +40,10 @@ export function ClusterMetaBadges({ arch, providerKind, className = '' }) {
   const kindLabel = formatProviderKind(kind)
   return (
     <span className={`cluster-meta-badges ${className}`.trim()}>
-      <span className={`badge arch arch-${a}`} title={`Guest arch ${a}`}>
+      <span className={`tag tag-mono arch-${a}`} title={`Guest arch ${a}`}>
         {a}
       </span>
-      <span className={`badge kind kind-${kind}`} title={`Provider ${kindLabel}`}>
+      <span className={`tag tag-accent kind kind-${kind}`} title={`Provider ${kindLabel}`}>
         {kindLabel}
       </span>
     </span>

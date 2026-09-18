@@ -6,8 +6,7 @@ import PageHeader from '../components/PageHeader'
 import { useConfirm } from '../components/Confirm'
 import ProviderWizard from '../components/ProviderWizard'
 import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
-import { formatProviderKind, normalizeProviderKind } from '../components/ClusterMetaBadges'
-import ResourceGauge, { GAUGE_BASE } from '../components/ResourceGauge'
+import { formatProviderKind, providerKindGlyph } from '../components/ClusterMetaBadges'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 
 function formatProbe(r, kind) {
@@ -50,19 +49,10 @@ function formatProbe(r, kind) {
   return parts.join(' — ')
 }
 
-const emptyMetric = {
-  used: null,
-  total: null,
-  percent: null,
-  unit: '',
-  display_used: null,
-  display_total: null,
-  error: null,
-}
-
 export default function Providers() {
   const confirm = useConfirm()
   const [list, setList] = useState([])
+  const [clusters, setClusters] = useState([])
   const [metrics, setMetrics] = useState({})
   const [wizardOpen, setWizardOpen] = useState(false)
   const [wizardMode, setWizardMode] = useState('create')
@@ -74,11 +64,13 @@ export default function Providers() {
   const load = useCallback(() => {
     Promise.all([
       api('/providers'),
+      api('/clusters').catch(() => []),
       api('/dashboard/providers').catch(() => []),
     ])
-      .then(([rows, res]) => {
+      .then(([rows, cls, res]) => {
         setError('')
         setList(Array.isArray(rows) ? rows : [])
+        setClusters(Array.isArray(cls) ? cls : [])
         const map = {}
         for (const r of Array.isArray(res) ? res : []) {
           if (r?.provider_id) map[r.provider_id] = r
@@ -152,6 +144,12 @@ export default function Providers() {
     }
   }
 
+  const totalClusters = clusters.length
+  const totalMachines = clusters.reduce(
+    (n, c) => n + (Number(c.controlplanes) || 0) + (Number(c.workers) || 0),
+    0,
+  )
+
   return (
     <div className="dash-page">
       <PageHeader
@@ -173,16 +171,23 @@ export default function Providers() {
           </p>
         </div>
       ) : (
-        <section className="entity-grid entity-grid-2">
+        <section className="entity-grid entity-grid-3">
           {list.map((p) => {
-            const kind = normalizeProviderKind(p.kind)
             const live = metrics[p.id] || {}
+            const providerClusters = clusters.filter((c) => c.provider_id === p.id)
+            const clusterCount = providerClusters.length
+            const machineCount = providerClusters.reduce(
+              (n, c) => n + (Number(c.controlplanes) || 0) + (Number(c.workers) || 0),
+              0,
+            )
+            const machineShare =
+              totalMachines > 0 ? Math.round((machineCount / totalMachines) * 100) : 0
             return (
               <article key={p.id} className="entity-card">
                 <div className="entity-card-head">
                   <Link to={`/providers/${p.id}`} className="entity-card-identity">
-                    <span className="entity-card-icon" aria-hidden>
-                      <Icon name="providers" size={18} />
+                    <span className="entity-card-icon entity-card-glyph" aria-hidden>
+                      {providerKindGlyph(p.kind)}
                     </span>
                     <div className="entity-card-copy">
                       <p className="entity-card-name">{p.name}</p>
@@ -193,44 +198,34 @@ export default function Providers() {
                 </div>
 
                 <div className="entity-card-tags">
-                  <span className={`badge kind kind-${kind}`}>{formatProviderKind(p.kind)}</span>
+                  <span className="tag tag-accent">{formatProviderKind(p.kind)}</span>
+                  {p.node ? (
+                    <span className="tag tag-outline">
+                      <Icon name="network" size={12} /> {p.node}
+                    </span>
+                  ) : null}
                   <span className="tag tag-mono">{p.arch || 'amd64'}</span>
-                  <span className="tag tag-outline">{p.insecure ? 'insecure TLS' : 'verify TLS'}</span>
                 </div>
 
                 <div className="entity-card-stats">
                   <div className="entity-card-stat">
-                    <p className="entity-card-stat-label">Host</p>
-                    <p className="entity-card-stat-value">{p.node || '—'}</p>
+                    <p className="entity-card-stat-label">Clusters</p>
+                    <p className="entity-card-stat-value">{clusterCount}</p>
                   </div>
                   <div className="entity-card-stat">
-                    <p className="entity-card-stat-label">Storage</p>
-                    <p className="entity-card-stat-value">{p.storage || '—'}</p>
+                    <p className="entity-card-stat-label">Machines</p>
+                    <p className="entity-card-stat-value">{machineCount}</p>
                   </div>
                 </div>
 
-                <div className="cluster-card-meters">
-                  <ResourceGauge
-                    label="CPU"
-                    icon="cpu"
-                    metric={live.cpu || { ...emptyMetric, unit: 'cores' }}
-                    color={GAUGE_BASE.cpu}
-                    size="sm"
-                  />
-                  <ResourceGauge
-                    label="Memory"
-                    icon="memory"
-                    metric={live.memory || { ...emptyMetric, unit: 'GiB' }}
-                    color={GAUGE_BASE.memory}
-                    size="sm"
-                  />
-                  <ResourceGauge
-                    label="Disk"
-                    icon="disk"
-                    metric={live.disk || { ...emptyMetric, unit: 'GiB' }}
-                    color={GAUGE_BASE.disk}
-                    size="sm"
-                  />
+                <div className="entity-card-share">
+                  <div className="entity-card-share-top">
+                    <span>Fleet share</span>
+                    <span>{machineShare}%</span>
+                  </div>
+                  <div className="entity-card-share-track" aria-hidden>
+                    <div className="entity-card-share-fill" style={{ width: `${machineShare}%` }} />
+                  </div>
                 </div>
                 {live.error ? (
                   <p className="muted cluster-resource-soft-err" title={live.error}>
@@ -265,6 +260,23 @@ export default function Providers() {
               </article>
             )
           })}
+        </section>
+      )}
+
+      {list.length > 0 && (
+        <section className="card fleet-summary">
+          <div className="fleet-summary-item">
+            <p className="label">Providers</p>
+            <p className="value">{list.length}</p>
+          </div>
+          <div className="fleet-summary-item">
+            <p className="label">Total clusters</p>
+            <p className="value">{totalClusters}</p>
+          </div>
+          <div className="fleet-summary-item">
+            <p className="label">Total machines</p>
+            <p className="value">{totalMachines}</p>
+          </div>
         </section>
       )}
 
