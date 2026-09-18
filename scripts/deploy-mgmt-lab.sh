@@ -266,6 +266,24 @@ ssh "$MGMT_HOST" 'sudo bash -c "
   kubectl version --client 2>/dev/null | head -n 2
   if ! command -v helm >/dev/null 2>&1; then
     echo \"installing helm…\"
+    missing=()
+    command -v openssl >/dev/null 2>&1 || missing+=(openssl)
+    command -v tar >/dev/null 2>&1 || missing+=(tar)
+    command -v gzip >/dev/null 2>&1 || missing+=(gzip)
+    if [[ \${#missing[@]} -gt 0 ]]; then
+      echo \"installing helm deps: \${missing[*]}\"
+      if command -v dnf >/dev/null 2>&1; then
+        dnf install -y \"\${missing[@]}\"
+      elif command -v yum >/dev/null 2>&1; then
+        yum install -y \"\${missing[@]}\"
+      elif command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \"\${missing[@]}\"
+      else
+        echo \"missing \${missing[*]} (required by get-helm-3)\" >&2
+        exit 1
+      fi
+    fi
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
     # get-helm-3 defaults to /usr/local/bin; link into sudo PATH on RHEL.
     if [[ -x /usr/local/bin/helm && ! -e /usr/bin/helm ]]; then
