@@ -17,6 +17,17 @@ const CACHE_PROVIDERS = 'pertisk_dash_providers'
 const CACHE_RESOURCES = 'pertisk_dash_resources'
 const CACHE_PROVIDER_RES = 'pertisk_dash_provider_res'
 
+/** Prefer definitive online/offline; never let a stale "unknown" hide a known status. */
+function resolveAvailability(...vals) {
+  for (const v of vals) {
+    if (v === 'online' || v === 'offline') return v
+  }
+  for (const v of vals) {
+    if (v) return v
+  }
+  return 'unknown'
+}
+
 function ProviderResourceCard({ summary, onOpen }) {
   const kind = normalizeProviderKind(summary.kind)
   const avail = summary.availability || 'unknown'
@@ -170,20 +181,24 @@ export default function Dashboard() {
   })
 
   const displayResources = useMemo(() => {
-    if (clusters.length === 0) return resources
+    if (clusters.length === 0) return []
     const byId = new Map(resources.map((r) => [r.cluster_id, r]))
-    return clusters.map((c) => {
-      const live = byId.get(c.id) || placeholderSummary(c)
-      return {
-        ...live,
-        provider_kind: c.provider_kind,
-        provider_name: c.provider_name,
-        arch: c.arch,
-        vip: c.vip,
-        controlplanes: c.controlplanes,
-        workers: c.workers,
-      }
-    })
+    return clusters
+      .map((c) => {
+        const live = byId.get(c.id) || placeholderSummary(c)
+        return {
+          ...live,
+          provider_kind: c.provider_kind,
+          provider_name: c.provider_name,
+          arch: c.arch,
+          vip: c.vip,
+          controlplanes: c.controlplanes,
+          workers: c.workers,
+          // List probe wins over dashboard resource cache (often still "unknown").
+          availability: resolveAvailability(c.availability, live.availability),
+        }
+      })
+      .filter((s) => s.availability === 'online')
   }, [resources, clusters])
 
   const ready = clusters.filter((c) => c.status === 'ready').length
@@ -196,9 +211,18 @@ export default function Dashboard() {
   const liveOs = clusters.find((c) => c.os_version)?.os_version || clusters.find((c) => c.k8s_version)?.k8s_version
 
   const displayProviders = useMemo(() => {
-    if (providers.length === 0) return providerRes
+    if (providers.length === 0) return []
     const byId = new Map(providerRes.map((r) => [r.provider_id, r]))
-    return providers.map((p) => byId.get(p.id) || placeholderProvider(p))
+    return providers
+      .map((p) => {
+        const live = byId.get(p.id) || placeholderProvider(p)
+        return {
+          ...live,
+          // Same source as Providers page badge — not /dashboard/providers capacity status.
+          availability: resolveAvailability(p.availability, live.availability),
+        }
+      })
+      .filter((s) => s.availability === 'online')
   }, [providerRes, providers])
 
   return (
@@ -281,6 +305,17 @@ export default function Dashboard() {
               </Link>
             </div>
           </div>
+        ) : displayResources.length === 0 ? (
+          <div className="card dash-empty">
+            <p className="muted" style={{ margin: 0 }}>
+              No online clusters right now. Offline clusters still appear under All clusters.
+            </p>
+            <div className="dash-empty-actions">
+              <Link className="btn btn-icon" to="/clusters">
+                <Icon name="clusters" size={16} /> All clusters
+              </Link>
+            </div>
+          </div>
         ) : (
           <div className="cluster-card-grid cluster-card-grid-live">
             {displayResources.map((s) => (
@@ -353,7 +388,7 @@ export default function Dashboard() {
             All providers
           </Link>
         </div>
-        {displayProviders.length === 0 ? (
+        {providers.length === 0 ? (
           <div className="card dash-empty">
             <p className="muted" style={{ margin: 0 }}>
               No providers yet. Add Proxmox, vSphere, or Nutanix to create clusters.
@@ -364,8 +399,19 @@ export default function Dashboard() {
               </Link>
             </div>
           </div>
+        ) : displayProviders.length === 0 ? (
+          <div className="card dash-empty">
+            <p className="muted" style={{ margin: 0 }}>
+              No online providers right now. Offline providers still appear under All providers.
+            </p>
+            <div className="dash-empty-actions">
+              <Link className="btn btn-icon" to="/providers">
+                <Icon name="providers" size={16} /> All providers
+              </Link>
+            </div>
+          </div>
         ) : (
-          <div className="cluster-card-grid cluster-card-grid-3">
+          <div className="cluster-card-grid cluster-card-grid-live">
             {displayProviders.map((s) => (
               <ProviderResourceCard
                 key={s.provider_id}

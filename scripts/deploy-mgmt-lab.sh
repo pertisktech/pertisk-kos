@@ -306,7 +306,7 @@ mgmt:     ${MGMT_HOST}
 public:   ${MGMT_PUBLIC_URL}
 images:   /var/lib/pertisk-mgmt/images/pertisk-cloud-${ARCH}*.qcow2
 disk:     Proxmox API upload → local → import-from → provider storage
-          (no scp to PVE; like Omni infra provider)
+
 $([ "$WITH_SSH" == "1" ] && echo "ssh:      PROXMOX_SSH=${PVE_SSH} (arm64 qm create / arch=aarch64)" || true)
 
 Next:

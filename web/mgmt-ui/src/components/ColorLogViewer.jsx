@@ -330,6 +330,7 @@ export default function ColorLogViewer({
   'aria-label': ariaLabel = 'Log output',
 }) {
   const ref = useRef(null)
+  const pinning = useRef(false)
   const lines = useMemo(() => {
     if (!text) return null
     // Keep a trailing empty line so final `\n` still renders as a blank row.
@@ -337,14 +338,50 @@ export default function ColorLogViewer({
   }, [text])
 
   useEffect(() => {
-    if (!follow || !ref.current) return
-    ref.current.scrollTop = ref.current.scrollHeight
+    if (!follow || !ref.current) return undefined
+    const el = ref.current
+    let cancelled = false
+    let raf1 = 0
+    let raf2 = 0
+    let settleTimer = 0
+
+    const pin = () => {
+      if (cancelled || !el) return
+      pinning.current = true
+      el.scrollTop = el.scrollHeight
+    }
+
+    const release = () => {
+      if (cancelled) return
+      settleTimer = window.setTimeout(() => {
+        pinning.current = false
+      }, 50)
+    }
+
+    pin()
+    // Layout can grow after paint (pre-wrap / fonts) — pin again, then release.
+    raf1 = requestAnimationFrame(() => {
+      pin()
+      raf2 = requestAnimationFrame(() => {
+        pin()
+        release()
+      })
+    })
+
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(raf1)
+      cancelAnimationFrame(raf2)
+      window.clearTimeout(settleTimer)
+      pinning.current = false
+    }
   }, [text, follow])
 
   function onScroll() {
     const el = ref.current
-    if (!el || !onFollowChange) return
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+    if (!el || !onFollowChange || pinning.current) return
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+    const atBottom = gap <= 4
     if (atBottom && !follow) onFollowChange(true)
     if (!atBottom && follow) onFollowChange(false)
   }
