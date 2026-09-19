@@ -1,9 +1,9 @@
 import { Icon } from './Icons'
 
 export const GAUGE_BASE = {
-  cpu: '#38bdf8',
-  memory: '#a78bfa',
-  disk: '#34d399',
+  cpu: 'var(--resource-cpu)',
+  memory: 'var(--resource-memory)',
+  disk: 'var(--resource-disk)',
   track: 'color-mix(in srgb, var(--border) 70%, transparent)',
 }
 

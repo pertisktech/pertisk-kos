@@ -5,7 +5,7 @@ import { Icon } from '../components/Icons'
 import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
 import ClusterCard, { placeholderSummary } from '../components/ClusterCard'
-import ResourceGauge, { GAUGE_BASE } from '../components/ResourceGauge'
+import ResourceDonut from '../components/ResourceDonut'
 import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
 import { ClusterMetaBadges, formatProviderKind, normalizeProviderKind, providerKindGlyph } from '../components/ClusterMetaBadges'
 import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
@@ -64,9 +64,9 @@ function ProviderResourceCard({ summary, onOpen }) {
         </div>
       ) : null}
       <div className="cluster-card-meters">
-        <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} layout="row" />
-        <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} layout="row" />
-        <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} layout="row" />
+        <ResourceDonut kind="cpu" label="CPU" icon="cpu" metric={summary.cpu} size={56} />
+        <ResourceDonut kind="memory" label="Memory" icon="memory" metric={summary.memory} size={56} />
+        <ResourceDonut kind="disk" label="Disk" icon="disk" metric={summary.disk} size={56} />
       </div>
       {summary.error && avail !== 'offline' && (
         <p className="muted cluster-resource-soft-err" title={summary.error}>
@@ -240,7 +240,7 @@ export default function Dashboard() {
         <StatCard
           label="Node OS"
           value={dashNum ? '—' : liveOs ? (String(liveOs).startsWith('v') ? liveOs : `v${liveOs}`) : '—'}
-          hint="latest seen on fleet"
+          hint="latest stable channel"
           icon="packages"
         />
       </section>
@@ -282,8 +282,8 @@ export default function Dashboard() {
             </div>
           </div>
         ) : (
-          <div className="cluster-card-grid">
-            {displayResources.slice(0, 2).map((s) => (
+          <div className="cluster-card-grid cluster-card-grid-live">
+            {displayResources.map((s) => (
               <ClusterCard
                 key={s.cluster_id}
                 summary={s}

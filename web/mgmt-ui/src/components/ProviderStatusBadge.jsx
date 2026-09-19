@@ -1,17 +1,18 @@
 /** Live hypervisor API online/offline badge. */
 export function ProviderStatusBadge({ availability, className = '', showUnknown = false }) {
   const avail = availability || 'unknown'
+  const label = avail.charAt(0).toUpperCase() + avail.slice(1)
   if (!avail || avail === 'unknown') {
     if (!showUnknown) return null
     return (
       <span className={`badge unknown ${className}`.trim()} title="Availability unknown">
-        unknown
+        {label}
       </span>
     )
   }
   return (
     <span className={`badge ${avail} ${className}`.trim()} title={availTitle(avail)}>
-      {avail}
+      {label}
     </span>
   )
 }

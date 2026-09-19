@@ -1,7 +1,7 @@
 import { Icon } from './Icons'
 import { ClusterStatusBadges } from './ClusterStatusBadges'
 import { ClusterMetaBadges, formatProviderKind } from './ClusterMetaBadges'
-import ResourceGauge, { GAUGE_BASE } from './ResourceGauge'
+import ResourceDonut from './ResourceDonut'
 
 export default function ClusterCard({ summary, onOpen, compact = false }) {
   const version = formatK8sVersion(summary.k8s_version)
@@ -80,9 +80,9 @@ export default function ClusterCard({ summary, onOpen, compact = false }) {
           ) : null}
         </div>
         <div className="cluster-card-meters">
-          <ResourceGauge label="CPU" icon="cpu" metric={summary.cpu} color={GAUGE_BASE.cpu} layout="row" />
-          <ResourceGauge label="Memory" icon="memory" metric={summary.memory} color={GAUGE_BASE.memory} layout="row" />
-          <ResourceGauge label="Disk" icon="disk" metric={summary.disk} color={GAUGE_BASE.disk} layout="row" />
+          <ResourceDonut kind="cpu" label="CPU" icon="cpu" metric={summary.cpu} size={compact ? 56 : 64} />
+          <ResourceDonut kind="memory" label="Memory" icon="memory" metric={summary.memory} size={compact ? 56 : 64} />
+          <ResourceDonut kind="disk" label="Disk" icon="disk" metric={summary.disk} size={compact ? 56 : 64} />
         </div>
         {summary.error && summary.status === 'ready' && summary.availability !== 'offline' && (
           <p className="muted cluster-resource-soft-err" title={summary.error}>

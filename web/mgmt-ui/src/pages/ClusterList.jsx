@@ -121,7 +121,7 @@ export default function Clusters() {
           </p>
         </div>
       ) : (
-        <section className="cluster-card-grid">
+        <section className="cluster-card-grid cluster-card-grid-wide">
           {cards.map((s) => (
             <ClusterCard
               key={s.cluster_id}
