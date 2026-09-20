@@ -108,7 +108,7 @@
   --info: var(--color-blue-b1);
   --sidebar-w: 250px;
   --sidebar-w-collapsed: 76px;
-  --topbar-h: 68px;
+  --topbar-h: 52px;
   --font: var(--font-sans);
   --mono: var(--font-mono);
   --scrollbar-size: 10px;
@@ -331,7 +331,7 @@ label {
   justify-content: space-between;
   height: var(--topbar-h);
   min-height: var(--topbar-h);
-  padding: 0 1.25rem;
+  padding: 0 1rem;
   border-bottom: 1px solid var(--sidebar-border);
   gap: 0.5rem;
 }
@@ -412,7 +412,7 @@ label {
 .nav-group { margin-bottom: 0; }
 .nav-group:last-child { margin-bottom: 0; }
 .nav-heading {
-  margin: 2.5rem 0 0.5rem;
+  margin: 1.25rem 0 0.4rem;
   padding: 0 0.75rem;
   font-size: 10px;
   font-weight: 600;
@@ -561,7 +561,7 @@ label {
   gap: 0.75rem;
   height: var(--topbar-h);
   min-height: var(--topbar-h);
-  padding: 0 1.25rem;
+  padding: 0 1rem;
   border-bottom: 1px solid var(--app-border);
   background: var(--app-panel);
   position: relative;
@@ -599,8 +599,8 @@ label {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 2rem;
+  height: 2rem;
   padding: 0;
   min-height: 0;
   border: 1px solid var(--app-border);
@@ -628,7 +628,7 @@ label {
   pointer-events: none;
 }
 .topbar-search input {
-  height: 2.25rem;
+  height: 2rem;
   padding: 0 0.75rem 0 2.25rem;
   background: var(--app-control);
   border-color: var(--app-border);
@@ -656,7 +656,7 @@ label {
 }
 
 .content {
-  padding: 1.25rem;
+  padding: 1rem 1.25rem;
   flex: 1;
   min-height: 0;
   min-width: 0;
@@ -780,11 +780,11 @@ label {
   }
 
   .topbar {
-    padding-left: 2rem;
-    padding-right: 2rem;
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
   }
   .content {
-    padding: 2rem;
+    padding: 1.15rem 1.5rem;
   }
 }
 
@@ -888,7 +888,7 @@ label {
 .dash-page {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 1.15rem;
   padding-bottom: 0.5rem;
 }
 .dash-page > .page-head { margin-bottom: 0; }
