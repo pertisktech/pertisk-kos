@@ -57,7 +57,7 @@ From the management UI: cluster → **Add-ons** → Cilium LoadBalancer (ELB IPv
 
 ## Pertisk Ingress
 
-pertisk-proxy Ingress controller from Helm chart `pertisk/pertisk-ingress` (image `harbor.tools.pertisk.com/pertisk-proxy/ingress:v0.1.83`):
+pertisk-proxy Ingress controller from Helm chart `pertisk/pertisk-ingress` (image `registry.tools.thaidevops.co/pertisk-proxy/ingress:v0.1.83`):
 
 → [ingress/README.md](./ingress/README.md)
 
@@ -76,7 +76,7 @@ From the management UI: cluster → **Add-ons** → **Autoscaling**. Set mgmt us
 Pertisk Kubernetes web dashboard from Helm chart `pertisk/pertisk-kube`:
 
 ```bash
-helm repo add pertisk https://chart.tools.pertisk.com
+helm repo add pertisk https://charts.tools.thaidevops.co
 helm install pertisk-kube pertisk/pertisk-kube
 ```
 

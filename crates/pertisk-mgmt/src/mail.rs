@@ -158,6 +158,8 @@ mod tests {
             auth0_client_secret: None,
             auth0_audience: None,
             public_url: "http://127.0.0.1:8080".into(),
+            helm_chart_repo: crate::config::DEFAULT_HELM_CHART_REPO.into(),
+            image_registry: crate::config::DEFAULT_IMAGE_REGISTRY.into(),
             metrics_token: None,
             metrics_tls: None,
             images_dir: PathBuf::from("./data/images"),

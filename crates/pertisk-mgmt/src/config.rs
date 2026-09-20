@@ -26,6 +26,12 @@ pub struct Config {
     /// Reachable base URL for OIDC + guest serial dashboard (`machine.dashboard.mgmt_url`).
     /// Never `http://0.0.0.0:…` — that is not a client-reachable address.
     pub public_url: String,
+    /// Helm chart repository URL for add-on installs (`--repo`).
+    /// Override with `MGMT_HELM_CHART_REPO` (default `https://charts.tools.thaidevops.co`).
+    pub helm_chart_repo: String,
+    /// Container registry host for Ingress / Dashboard images.
+    /// Override with `MGMT_IMAGE_REGISTRY` (default `registry.tools.thaidevops.co`).
+    pub image_registry: String,
     /// Optional Bearer for scraping guest `:50001/metrics`.
     pub metrics_token: Option<String>,
     /// Optional mTLS client material for scraping guest metrics over HTTPS.
@@ -135,6 +141,8 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(86400);
         let public_url = resolve_public_url(listen);
+        let helm_chart_repo = resolve_helm_chart_repo();
+        let image_registry = resolve_image_registry();
         let metrics_token = std::env::var("MGMT_METRICS_TOKEN")
             .ok()
             .filter(|s| !s.is_empty());
@@ -190,6 +198,8 @@ impl Config {
             auth0_client_secret,
             auth0_audience,
             public_url,
+            helm_chart_repo,
+            image_registry,
             metrics_token,
             metrics_tls,
             images_dir,
@@ -372,6 +382,28 @@ fn resolve_public_url(listen: SocketAddr) -> String {
          Set MGMT_PUBLIC_URL=http://<mgmt-lan-ip>:{port} in /etc/pertisk-mgmt/pertisk-mgmt.env"
     );
     String::new()
+}
+
+/// Default Helm chart repo for Ingress / Dashboard / KOS scaler add-ons.
+pub const DEFAULT_HELM_CHART_REPO: &str = "https://charts.tools.thaidevops.co";
+
+/// Default container registry for Ingress / Dashboard images.
+pub const DEFAULT_IMAGE_REGISTRY: &str = "registry.tools.thaidevops.co";
+
+fn resolve_helm_chart_repo() -> String {
+    std::env::var("MGMT_HELM_CHART_REPO")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_HELM_CHART_REPO.to_string())
+}
+
+fn resolve_image_registry() -> String {
+    std::env::var("MGMT_IMAGE_REGISTRY")
+        .ok()
+        .map(|s| s.trim().trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_IMAGE_REGISTRY.to_string())
 }
 
 /// True when the URL host cannot be used by guests (wildcard / empty).

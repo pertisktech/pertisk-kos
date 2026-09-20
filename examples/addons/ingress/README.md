@@ -1,6 +1,6 @@
 # Pertisk Ingress
 
-Installs the [pertisk-ingress](https://chart.tools.pertisk.com) Helm chart
+Installs the [pertisk-ingress](https://charts.tools.thaidevops.co) Helm chart
 (`pertisk/pertisk-ingress`) into namespace `pertisk-proxy`, pinning the controller
 image to Harbor.
 
@@ -30,22 +30,22 @@ Gateway API reconciliation is enabled only when Gateway API CRDs are already in 
 ```bash
 # Prefer --repo so a local helm alias cannot resolve to Bitnami (or another public repo).
 helm upgrade --install pertisk-ingress pertisk-ingress \
-  --repo https://chart.tools.pertisk.com \
+  --repo https://charts.tools.thaidevops.co \
   --version 0.1.85 \
   --namespace pertisk-proxy --create-namespace \
-  --set image.registry=harbor.tools.pertisk.com \
+  --set image.registry=registry.tools.thaidevops.co \
   --set image.repository=pertisk-proxy/ingress \
   --set image.tag=v0.1.85-arm64 \
   --set nodeSelector.kubernetes\.io/arch=arm64 \
   --set image.pullPolicy=Always
 
 # Equivalent with a named repo:
-#   helm repo add pertisk https://chart.tools.pertisk.com --force-update
+#   helm repo add pertisk https://charts.tools.thaidevops.co --force-update
 #   helm upgrade --install pertisk-ingress pertisk/pertisk-ingress ...
 
 # ARM nodes must pull the arm64 variant (not the amd64 layer of a multi-arch tag):
-#   docker pull harbor.tools.pertisk.com/pertisk-proxy/ingress:v0.1.85
-#   harbor.tools.pertisk.com/pertisk-proxy/ingress:v0.1.85-arm64
+#   docker pull registry.tools.thaidevops.co/pertisk-proxy/ingress:v0.1.85
+#   registry.tools.thaidevops.co/pertisk-proxy/ingress:v0.1.85-arm64
 # or :v0.1.85@sha256:<arm64-manifest>
 
 kubectl -n pertisk-proxy get deploy,svc pertisk-proxy-ingress

@@ -174,6 +174,27 @@ export default function Settings() {
                     </dd>
                   </div>
                   <div>
+                    <dt>Helm chart repo</dt>
+                    <dd>
+                      <code className="mono-inline">{cfg.helm_chart_repo || '—'}</code>
+                      <p className="hint muted" style={{ marginTop: 6 }}>
+                        From <code>MGMT_HELM_CHART_REPO</code>. Used by Ingress, Dashboard, and
+                        KOS scaler add-ons (<code>helm … --repo</code>). Default:{' '}
+                        <code>https://charts.tools.thaidevops.co</code>.
+                      </p>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Image registry</dt>
+                    <dd>
+                      <code className="mono-inline">{cfg.image_registry || '—'}</code>
+                      <p className="hint muted" style={{ marginTop: 6 }}>
+                        From <code>MGMT_IMAGE_REGISTRY</code>. Container registry for Ingress and
+                        Dashboard images. Default: <code>registry.tools.thaidevops.co</code>.
+                      </p>
+                    </dd>
+                  </div>
+                  <div>
                     <dt>JWT TTL</dt>
                     <dd>{formatTtl(cfg.jwt_ttl_secs)}</dd>
                   </div>

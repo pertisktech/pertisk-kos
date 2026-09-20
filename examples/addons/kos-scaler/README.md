@@ -1,10 +1,10 @@
 # KOS scaler
 
 Worker-node autoscaler from Helm chart `pertisk/kos-scaler`
-(`https://chart.tools.pertisk.com`).
+(`https://charts.tools.thaidevops.co`).
 
 ```bash
-helm repo add pertisk https://chart.tools.pertisk.com
+helm repo add pertisk https://charts.tools.thaidevops.co
 helm repo update
 helm upgrade --install kos-scaler pertisk/kos-scaler \
   --namespace kos-scaler --create-namespace \
