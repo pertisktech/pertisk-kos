@@ -4,12 +4,87 @@ import { api } from '../api'
 import { Icon } from '../components/Icons'
 import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
-import ClusterCard, { placeholderSummary } from '../components/ClusterCard'
+import { placeholderSummary, formatK8sVersion } from '../components/ClusterCard'
 import ClusterWizard from '../components/ClusterWizard'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
 const CACHE_CLUSTERS = 'pertisk_dash_clusters'
+
+function formatMetric(m) {
+  if (!m) return '—'
+  const used = m.display_used ?? m.used
+  const total = m.display_total ?? m.total
+  if (used == null && total == null) return '—'
+  const unit = m.unit ? ` ${m.unit}` : ''
+  if (total == null) return `${used}${unit}`
+  if (used == null) return `— / ${total}${unit}`
+  return `${used} / ${total}${unit}`
+}
+
+function statusTone(status) {
+  if (status === 'ready') return 'ok'
+  if (status === 'error' || status === 'failed' || status === 'degraded') return 'err'
+  return 'warn'
+}
+
+function statusLabel(status) {
+  if (status === 'ready') return 'Healthy'
+  if (!status) return 'Unknown'
+  return status.charAt(0).toUpperCase() + status.slice(1)
+}
+
+function CompactClusterRow({ summary, onOpen }) {
+  const tone = statusTone(summary.status)
+  const cps = Number(summary.controlplanes) || 0
+  const wks = Number(summary.workers) || 0
+  const nodes = Number(summary.node_count) || cps + wks
+  const readyHint = summary.status === 'ready' ? 'machines ready' : 'machines'
+  const desc =
+    summary.provider_name ||
+    [formatK8sVersion(summary.k8s_version), summary.vip ? `VIP ${summary.vip}` : null]
+      .filter(Boolean)
+      .join(' · ') ||
+    'Managed cluster'
+
+  return (
+    <button type="button" className="compact-cluster-row" onClick={onOpen}>
+      <div className="compact-cluster-identity">
+        <span className={`compact-cluster-icon ${tone}`} aria-hidden>
+          <Icon name="clusters" size={16} />
+        </span>
+        <div style={{ minWidth: 0 }}>
+          <div className="compact-cluster-name">{summary.cluster_name}</div>
+          <div className="compact-cluster-desc">{desc}</div>
+        </div>
+      </div>
+      <div>
+        <span className="compact-cluster-mobile-label">Status</span>
+        <span className={`compact-cluster-status ${tone}`}>
+          <span className="dot" aria-hidden />
+          {statusLabel(summary.status)}
+        </span>
+      </div>
+      <div>
+        <span className="compact-cluster-mobile-label">Machines</span>
+        <div className="compact-cluster-cell">{nodes}</div>
+        <div className="compact-cluster-cell-sub">
+          {cps} CP · {wks} WK · {readyHint}
+        </div>
+      </div>
+      <div>
+        <span className="compact-cluster-mobile-label">CPU</span>
+        <div className="compact-cluster-cell">{formatMetric(summary.cpu)}</div>
+        <div className="compact-cluster-cell-sub">CPU used / total</div>
+      </div>
+      <div>
+        <span className="compact-cluster-mobile-label">Memory</span>
+        <div className="compact-cluster-cell">{formatMetric(summary.memory)}</div>
+        <div className="compact-cluster-cell-sub">memory used / total</div>
+      </div>
+    </button>
+  )
+}
 
 export default function Clusters() {
   const nav = useNavigate()
@@ -86,13 +161,16 @@ export default function Clusters() {
   }, [list, metrics])
 
   const ready = list.filter((c) => c.status === 'ready').length
-  const attention = list.filter((c) => c.status === 'error' || c.status === 'degraded' || c.status === 'failed').length
+  const totalMachines = list.reduce(
+    (n, c) => n + (c.controlplanes || 0) + (c.workers || 0),
+    0,
+  )
 
   return (
     <div className="dash-page">
       <PageHeader
         title="Clusters"
-        description="Every Kubernetes cluster reconciled by the control plane."
+        description="Create and manage your Talos Kubernetes clusters."
         actions={
           <button type="button" className="btn btn-icon" onClick={() => setWizardOpen(true)}>
             <Icon name="plus" size={16} /> Create cluster
@@ -107,9 +185,9 @@ export default function Clusters() {
       )}
 
       <section className="stat-grid stat-grid-3">
-        <StatCard label="Total clusters" value={loaded ? list.length : '—'} icon="clusters" />
-        <StatCard label="Ready" value={loaded ? ready : '—'} icon="check" />
-        <StatCard label="Needs attention" value={loaded ? attention : '—'} icon="alert" />
+        <StatCard label="Total clusters" value={loaded ? list.length : '—'} />
+        <StatCard label="Healthy" value={loaded ? ready : '—'} hintTone="ok" />
+        <StatCard label="Machines" value={loaded ? totalMachines : '—'} />
       </section>
 
       {list.length === 0 ? (
@@ -121,14 +199,35 @@ export default function Clusters() {
           </p>
         </div>
       ) : (
-        <section className="cluster-card-grid cluster-card-grid-wide">
-          {cards.map((s) => (
-            <ClusterCard
-              key={s.cluster_id}
-              summary={s}
-              onOpen={() => nav(`/clusters/${s.cluster_id}`)}
-            />
-          ))}
+        <section className="dash-section">
+          <div className="section-toolbar">
+            <div>
+              <h2 className="section-kicker" style={{ textTransform: 'none', letterSpacing: '-0.01em', fontSize: '0.875rem' }}>
+                All clusters
+              </h2>
+              <p className="muted dash-section-sub" style={{ margin: '0.25rem 0 0' }}>
+                Your managed Kubernetes infrastructure
+              </p>
+            </div>
+          </div>
+          <div className="compact-cluster-table">
+            <div className="compact-cluster-head">
+              <span>Cluster</span>
+              <span>Status</span>
+              <span>Machines</span>
+              <span>CPU</span>
+              <span>Memory</span>
+            </div>
+            <div className="compact-cluster-body">
+              {cards.map((s) => (
+                <CompactClusterRow
+                  key={s.cluster_id}
+                  summary={s}
+                  onOpen={() => nav(`/clusters/${s.cluster_id}`)}
+                />
+              ))}
+            </div>
+          </div>
         </section>
       )}
 

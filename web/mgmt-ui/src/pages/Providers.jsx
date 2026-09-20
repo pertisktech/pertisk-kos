@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import PageHeader from '../components/PageHeader'
+import StatCard from '../components/StatCard'
 import { useConfirm } from '../components/Confirm'
 import ProviderWizard from '../components/ProviderWizard'
-import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import { formatProviderKind, providerKindGlyph } from '../components/ClusterMetaBadges'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 
@@ -49,11 +49,121 @@ function formatProbe(r, kind) {
   return parts.join(' — ')
 }
 
+function formatMetric(m) {
+  if (!m) return '—'
+  const used = m.display_used ?? m.used
+  const total = m.display_total ?? m.total
+  if (used == null && total == null) return '—'
+  const unit = m.unit ? ` ${m.unit}` : ''
+  if (total == null) return `${used}${unit}`
+  if (used == null) return `— / ${total}${unit}`
+  return `${used} / ${total}${unit}`
+}
+
+function availTone(availability) {
+  if (availability === 'online') return 'ok'
+  if (availability === 'offline') return 'err'
+  return 'warn'
+}
+
+function availLabel(availability) {
+  if (availability === 'online') return 'Connected'
+  if (availability === 'offline') return 'Offline'
+  if (!availability) return 'Unknown'
+  return availability.charAt(0).toUpperCase() + availability.slice(1)
+}
+
+function CompactProviderRow({
+  provider,
+  live,
+  clusterCount,
+  machineCount,
+  onOpen,
+  onEdit,
+  onTest,
+  onRemove,
+  testing,
+}) {
+  const tone = availTone(provider.availability)
+  const kind = formatProviderKind(provider.kind)
+  const desc = [kind, provider.node, provider.arch || 'amd64'].filter(Boolean).join(' · ')
+
+  return (
+    <div
+      className="compact-cluster-row compact-provider-row"
+      role="link"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onOpen()
+        }
+      }}
+    >
+      <div className="compact-cluster-identity">
+        <span className={`compact-cluster-icon entity-card-glyph ${tone}`} aria-hidden>
+          {providerKindGlyph(provider.kind)}
+        </span>
+        <div style={{ minWidth: 0 }}>
+          <div className="compact-cluster-name">{provider.name}</div>
+          <div className="compact-cluster-desc">{provider.url || desc}</div>
+        </div>
+      </div>
+      <div>
+        <span className="compact-cluster-mobile-label">Status</span>
+        <span className={`compact-cluster-status ${tone}`}>
+          <span className="dot" aria-hidden />
+          {availLabel(provider.availability)}
+        </span>
+      </div>
+      <div>
+        <span className="compact-cluster-mobile-label">Clusters</span>
+        <div className="compact-cluster-cell">{clusterCount}</div>
+        <div className="compact-cluster-cell-sub">{machineCount} machines</div>
+      </div>
+      <div>
+        <span className="compact-cluster-mobile-label">CPU</span>
+        <div className="compact-cluster-cell">{formatMetric(live.cpu)}</div>
+        <div className="compact-cluster-cell-sub">CPU used / total</div>
+      </div>
+      <div>
+        <span className="compact-cluster-mobile-label">Memory</span>
+        <div className="compact-cluster-cell">{formatMetric(live.memory)}</div>
+        <div className="compact-cluster-cell-sub">memory used / total</div>
+      </div>
+      <div
+        className="compact-cluster-actions"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        <button type="button" className="secondary btn-icon" title="Edit" onClick={onEdit}>
+          <Icon name="edit" size={14} />
+        </button>
+        <button
+          type="button"
+          className="secondary btn-icon"
+          title="Test"
+          onClick={onTest}
+          disabled={testing}
+        >
+          <Icon name="play" size={14} />
+        </button>
+        <button type="button" className="danger btn-icon" title="Delete" onClick={onRemove}>
+          <Icon name="trash" size={14} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function Providers() {
+  const nav = useNavigate()
   const confirm = useConfirm()
   const [list, setList] = useState([])
   const [clusters, setClusters] = useState([])
   const [metrics, setMetrics] = useState({})
+  const [loaded, setLoaded] = useState(false)
   const [wizardOpen, setWizardOpen] = useState(false)
   const [wizardMode, setWizardMode] = useState('create')
   const [editing, setEditing] = useState(null)
@@ -76,9 +186,14 @@ export default function Providers() {
           if (r?.provider_id) map[r.provider_id] = r
         }
         setMetrics(map)
+        setLoaded(true)
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        setError(e.message)
+        setLoaded(true)
+      })
   }, [])
+
   useEffect(() => {
     load()
   }, [load])
@@ -115,6 +230,7 @@ export default function Providers() {
         setMsg('')
         setError(text)
       }
+      load()
     } catch (err) {
       setMsg('')
       setError(err.message)
@@ -144,7 +260,7 @@ export default function Providers() {
     }
   }
 
-  const totalClusters = clusters.length
+  const online = list.filter((p) => p.availability === 'online').length
   const totalMachines = clusters.reduce(
     (n, c) => n + (Number(c.controlplanes) || 0) + (Number(c.workers) || 0),
     0,
@@ -154,9 +270,9 @@ export default function Providers() {
     <div className="dash-page">
       <PageHeader
         title="Providers"
-        description="Hypervisors and bare-metal backends supplying compute to the fleet."
+        description="Manage infrastructure providers used to provision clusters."
         actions={
-          <button type="button" className="btn-icon" onClick={startCreate}>
+          <button type="button" className="btn btn-icon" onClick={startCreate}>
             <Icon name="plus" size={16} /> Connect provider
           </button>
         }
@@ -164,120 +280,73 @@ export default function Providers() {
       {error && <div className="error">{error}</div>}
       {msg && <p className="muted">{msg}</p>}
 
+      <section className="stat-grid stat-grid-3">
+        <StatCard label="Providers" value={loaded ? list.length : '—'} />
+        <StatCard
+          label="Connected"
+          value={loaded ? online : '—'}
+          hintTone={online > 0 ? 'ok' : undefined}
+        />
+        <StatCard label="Clusters" value={loaded ? clusters.length : '—'} hint={`${totalMachines} machines`} />
+      </section>
+
       {list.length === 0 ? (
         <div className="card dash-empty">
           <p className="muted" style={{ margin: 0 }}>
-            No providers configured.
+            {loaded ? 'No providers configured.' : 'Loading providers…'}
           </p>
         </div>
       ) : (
-        <>
-          <section className="card fleet-summary">
-            <div className="fleet-summary-item">
-              <p className="label">Providers</p>
-              <p className="value">{list.length}</p>
+        <section className="dash-section">
+          <div className="section-toolbar">
+            <div>
+              <h2
+                className="section-kicker"
+                style={{ textTransform: 'none', letterSpacing: '-0.01em', fontSize: '0.875rem' }}
+              >
+                All providers
+              </h2>
+              <p className="muted dash-section-sub" style={{ margin: '0.25rem 0 0' }}>
+                Hypervisors and bare-metal backends
+              </p>
             </div>
-            <div className="fleet-summary-item">
-              <p className="label">Total clusters</p>
-              <p className="value">{totalClusters}</p>
+          </div>
+          <div className="compact-cluster-table with-actions">
+            <div className="compact-cluster-head">
+              <span>Provider</span>
+              <span>Status</span>
+              <span>Clusters</span>
+              <span>CPU</span>
+              <span>Memory</span>
+              <span />
             </div>
-            <div className="fleet-summary-item">
-              <p className="label">Total machines</p>
-              <p className="value">{totalMachines}</p>
+            <div className="compact-cluster-body">
+              {list.map((p) => {
+                const live = metrics[p.id] || {}
+                const providerClusters = clusters.filter((c) => c.provider_id === p.id)
+                const clusterCount = providerClusters.length
+                const machineCount = providerClusters.reduce(
+                  (n, c) => n + (Number(c.controlplanes) || 0) + (Number(c.workers) || 0),
+                  0,
+                )
+                return (
+                  <CompactProviderRow
+                    key={p.id}
+                    provider={p}
+                    live={live}
+                    clusterCount={clusterCount}
+                    machineCount={machineCount}
+                    onOpen={() => nav(`/providers/${p.id}`)}
+                    onEdit={() => startEdit(p)}
+                    onTest={() => testSaved(p.id)}
+                    onRemove={() => remove(p.id, p.name)}
+                    testing={testing}
+                  />
+                )
+              })}
             </div>
-          </section>
-
-          <section className="entity-grid entity-grid-3">
-            {list.map((p) => {
-              const live = metrics[p.id] || {}
-              const providerClusters = clusters.filter((c) => c.provider_id === p.id)
-              const clusterCount = providerClusters.length
-              const machineCount = providerClusters.reduce(
-                (n, c) => n + (Number(c.controlplanes) || 0) + (Number(c.workers) || 0),
-                0,
-              )
-              const machineShare =
-                totalMachines > 0 ? Math.round((machineCount / totalMachines) * 100) : 0
-              return (
-                <article key={p.id} className="entity-card">
-                  <div className="entity-card-head">
-                    <Link to={`/providers/${p.id}`} className="entity-card-identity">
-                      <span className="entity-card-icon entity-card-glyph" aria-hidden>
-                        {providerKindGlyph(p.kind)}
-                      </span>
-                      <div className="entity-card-copy">
-                        <p className="entity-card-name">{p.name}</p>
-                        <p className="entity-card-sub">{p.url}</p>
-                      </div>
-                    </Link>
-                    <ProviderStatusBadge availability={p.availability} showUnknown />
-                  </div>
-
-                  <div className="entity-card-tags">
-                    <span className="tag tag-accent">{formatProviderKind(p.kind)}</span>
-                    {p.node ? (
-                      <span className="tag tag-outline">
-                        <Icon name="network" size={12} /> {p.node}
-                      </span>
-                    ) : null}
-                    <span className="tag tag-mono">{p.arch || 'amd64'}</span>
-                  </div>
-
-                  <div className="entity-card-stats">
-                    <div className="entity-card-stat">
-                      <p className="entity-card-stat-label">Clusters</p>
-                      <p className="entity-card-stat-value">{clusterCount}</p>
-                    </div>
-                    <div className="entity-card-stat">
-                      <p className="entity-card-stat-label">Machines</p>
-                      <p className="entity-card-stat-value">{machineCount}</p>
-                    </div>
-                  </div>
-
-                  <div className="entity-card-share">
-                    <div className="entity-card-share-top">
-                      <span>Fleet share</span>
-                      <span>{machineShare}%</span>
-                    </div>
-                    <div className="entity-card-share-track" aria-hidden>
-                      <div className="entity-card-share-fill" style={{ width: `${machineShare}%` }} />
-                    </div>
-                  </div>
-                  {live.error && p.availability !== 'offline' && live.availability !== 'offline' ? (
-                    <p className="muted cluster-resource-soft-err" title={live.error}>
-                      <Icon name="alert" size={12} />
-                      {live.error}
-                    </p>
-                  ) : null}
-
-                  <div className="entity-card-actions">
-                    <Link className="btn secondary btn-icon" to={`/providers/${p.id}`}>
-                      <Icon name="dashboard" size={14} /> Dashboard
-                    </Link>
-                    <button type="button" className="secondary btn-icon" onClick={() => startEdit(p)}>
-                      <Icon name="edit" size={14} /> Edit
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary btn-icon"
-                      onClick={() => testSaved(p.id)}
-                      disabled={testing}
-                    >
-                      <Icon name="play" size={14} /> Test
-                    </button>
-                    <button
-                      type="button"
-                      className="danger btn-icon"
-                      onClick={() => remove(p.id, p.name)}
-                    >
-                      <Icon name="trash" size={14} />
-                    </button>
-                  </div>
-                </article>
-              )
-            })}
-          </section>
-        </>
+          </div>
+        </section>
       )}
 
       <ProviderWizard

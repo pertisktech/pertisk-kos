@@ -88,8 +88,8 @@ export default function Login() {
 
   return (
     <AuthLayout
-      title="Sign in"
-      subtitle="Use your control-plane credentials to continue."
+      title="Sign in to KOS"
+      subtitle="Manage clusters, machines, and infrastructure."
     >
       {error && <div className="error">{error}</div>}
 

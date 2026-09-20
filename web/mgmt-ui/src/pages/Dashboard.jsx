@@ -4,10 +4,9 @@ import { api } from '../api'
 import { Icon } from '../components/Icons'
 import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
-import ClusterCard, { placeholderSummary } from '../components/ClusterCard'
+import { placeholderSummary, formatK8sVersion } from '../components/ClusterCard'
 import ResourceDonut from '../components/ResourceDonut'
-import { ClusterStatusBadges } from '../components/ClusterStatusBadges'
-import { ClusterMetaBadges, formatProviderKind, normalizeProviderKind, providerKindGlyph } from '../components/ClusterMetaBadges'
+import { formatProviderKind, normalizeProviderKind, providerKindGlyph } from '../components/ClusterMetaBadges'
 import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
@@ -26,6 +25,23 @@ function resolveAvailability(...vals) {
     if (v) return v
   }
   return 'unknown'
+}
+
+function formatMetric(m) {
+  if (!m) return '—'
+  const used = m.display_used ?? m.used
+  const total = m.display_total ?? m.total
+  if (used == null && total == null) return '—'
+  const unit = m.unit ? ` ${m.unit}` : ''
+  if (total == null) return `${used}${unit}`
+  if (used == null) return `— / ${total}${unit}`
+  return `${used} / ${total}${unit}`
+}
+
+function statusTone(status) {
+  if (status === 'ready' || status === 'Healthy') return 'ok'
+  if (status === 'error' || status === 'failed' || status === 'degraded') return 'err'
+  return 'warn'
 }
 
 function ProviderResourceCard({ summary, onOpen }) {
@@ -69,22 +85,78 @@ function ProviderResourceCard({ summary, onOpen }) {
         <ProviderStatusBadge availability={avail} showUnknown />
       </div>
       <div className="cluster-card-body">
-      {summary.storage ? (
-        <div className="cluster-card-tags">
-          <span className="tag tag-mono">{summary.storage}</span>
+        {summary.storage ? (
+          <div className="cluster-card-tags">
+            <span className="tag tag-mono">{summary.storage}</span>
+          </div>
+        ) : null}
+        <div className="cluster-card-meters">
+          <ResourceDonut kind="cpu" label="CPU" icon="cpu" metric={summary.cpu} size={56} />
+          <ResourceDonut kind="memory" label="Memory" icon="memory" metric={summary.memory} size={56} />
+          <ResourceDonut kind="disk" label="Disk" icon="disk" metric={summary.disk} size={56} />
         </div>
-      ) : null}
-      <div className="cluster-card-meters">
-        <ResourceDonut kind="cpu" label="CPU" icon="cpu" metric={summary.cpu} size={56} />
-        <ResourceDonut kind="memory" label="Memory" icon="memory" metric={summary.memory} size={56} />
-        <ResourceDonut kind="disk" label="Disk" icon="disk" metric={summary.disk} size={56} />
+        {summary.error && avail !== 'offline' && (
+          <p className="muted cluster-resource-soft-err" title={summary.error}>
+            <Icon name="alert" size={12} />
+            {summary.error}
+          </p>
+        )}
       </div>
-      {summary.error && avail !== 'offline' && (
-        <p className="muted cluster-resource-soft-err" title={summary.error}>
-          <Icon name="alert" size={12} />
-          {summary.error}
-        </p>
-      )}
+    </article>
+  )
+}
+
+function LiveClusterResourceCard({ summary, onOpen }) {
+  const tone = statusTone(summary.status)
+  const label = summary.status === 'ready' ? 'Healthy' : (summary.status || 'Unknown')
+
+  return (
+    <article
+      className="live-resource-card"
+      role="link"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onOpen()
+        }
+      }}
+    >
+      <div className="live-resource-head">
+        <div className="live-resource-title">
+          <span className={`live-resource-icon ${tone === 'ok' ? 'ok' : 'warn'}`} aria-hidden>
+            <Icon name="clusters" size={16} />
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <p className="live-resource-name">{summary.cluster_name}</p>
+            <p className="live-resource-sub">CPU · memory · disk usage</p>
+          </div>
+        </div>
+        <span className={`live-resource-status ${tone === 'ok' ? 'ok' : 'warn'}`}>
+          <span className="dot" aria-hidden />
+          {label}
+        </span>
+      </div>
+      <div className="live-metric-row">
+        <div className="live-metric-box">
+          <div className="live-metric-label">
+            <Icon name="cpu" size={12} /> CPU used / total
+          </div>
+          <div className="live-metric-value">{formatMetric(summary.cpu)}</div>
+        </div>
+        <div className="live-metric-box">
+          <div className="live-metric-label">
+            <Icon name="memory" size={12} /> Memory used / total
+          </div>
+          <div className="live-metric-value">{formatMetric(summary.memory)}</div>
+        </div>
+        <div className="live-metric-box">
+          <div className="live-metric-label">
+            <Icon name="disk" size={12} /> Disk used / total
+          </div>
+          <div className="live-metric-value">{formatMetric(summary.disk)}</div>
+        </div>
       </div>
     </article>
   )
@@ -194,7 +266,6 @@ export default function Dashboard() {
           vip: c.vip,
           controlplanes: c.controlplanes,
           workers: c.workers,
-          // List probe wins over dashboard resource cache (often still "unknown").
           availability: resolveAvailability(c.availability, live.availability),
         }
       })
@@ -206,9 +277,12 @@ export default function Dashboard() {
   const wks = clusters.reduce((n, c) => n + (c.workers || 0), 0)
   const totalNodes = cps + wks
   const providersOnline = providers.filter((p) => p.availability === 'online').length
+  const attention = clusters.filter(
+    (c) => c.status === 'error' || c.status === 'degraded' || c.status === 'failed' || c.status === 'provisioning',
+  ).length
   const recent = clusters.slice(0, 8)
   const dashNum = listLoading && clusters.length === 0
-  const liveOs = clusters.find((c) => c.os_version)?.os_version || clusters.find((c) => c.k8s_version)?.k8s_version
+  const provisioning = clusters.filter((c) => c.status === 'provisioning').length
 
   const displayProviders = useMemo(() => {
     if (providers.length === 0) return []
@@ -218,18 +292,40 @@ export default function Dashboard() {
         const live = byId.get(p.id) || placeholderProvider(p)
         return {
           ...live,
-          // Same source as Providers page badge — not /dashboard/providers capacity status.
           availability: resolveAvailability(p.availability, live.availability),
         }
       })
       .filter((s) => s.availability === 'online')
   }, [providerRes, providers])
 
+  const systemStatus = [
+    {
+      label: 'API server',
+      ok: !resourcesErr,
+      text: resourcesErr ? 'Unreachable' : 'Operational',
+    },
+    {
+      label: 'Clusters ready',
+      ok: ready === clusters.length && clusters.length > 0,
+      text: dashNum ? '—' : `${ready} / ${clusters.length || 0}`,
+    },
+    {
+      label: 'Provider connection',
+      ok: providersOnline > 0 || providers.length === 0,
+      text: dashNum ? '—' : `${providersOnline} of ${providers.length} online`,
+    },
+    {
+      label: 'Attention needed',
+      ok: attention === 0,
+      text: dashNum ? '—' : attention === 0 ? 'None' : `${attention} cluster${attention === 1 ? '' : 's'}`,
+    },
+  ]
+
   return (
     <div className="dash-page">
       <PageHeader
         title="Dashboard"
-        description="Clusters and hypervisors at a glance — live over WebSocket."
+        description="Overview of your Kubernetes infrastructure."
         actions={
           <>
             <button type="button" className="secondary btn-icon" onClick={loadResources} disabled={resourcesLoading}>
@@ -244,50 +340,62 @@ export default function Dashboard() {
 
       <section className="stat-grid">
         <StatCard
-          label="Clusters"
+          label="Total clusters"
           value={dashNum ? '—' : clusters.length}
-          hint={`${dashNum ? '—' : ready} ready`}
-          icon="clusters"
+          hint={dashNum ? undefined : `${ready} healthy`}
+          hintTone="ok"
         />
         <StatCard
-          label="Nodes"
+          label="Machines"
           value={dashNum ? '—' : totalNodes}
-          hint="across all providers"
-          icon="machines"
+          hint={
+            dashNum
+              ? undefined
+              : `${cps + wks - provisioning} ready${provisioning ? ` · ${provisioning} provisioning` : ''}`
+          }
         />
         <StatCard
-          label="Control planes"
-          value={dashNum ? '—' : cps}
-          hint={`${dashNum ? '—' : wks} workers`}
-          icon="shield"
+          label="Providers"
+          value={dashNum ? '—' : providers.length}
+          hint={dashNum ? undefined : `${providersOnline} online`}
         />
         <StatCard
-          label="Node OS"
-          value={dashNum ? '—' : liveOs ? (String(liveOs).startsWith('v') ? liveOs : `v${liveOs}`) : '—'}
-          hint="latest stable channel"
-          icon="packages"
+          label="Attention needed"
+          value={dashNum ? '—' : attention}
+          valueTone={attention > 0 ? 'warn' : undefined}
+          hint={
+            dashNum
+              ? undefined
+              : attention === 0
+                ? 'All clear'
+                : provisioning
+                  ? 'Provisioning / degraded'
+                  : 'Needs review'
+          }
         />
       </section>
 
       <section className="dash-section">
         <div className="section-toolbar">
-          <h2 className="section-kicker">Live clusters</h2>
+          <div>
+            <h2 className="section-kicker" style={{ textTransform: 'none', letterSpacing: '-0.01em', fontSize: '0.875rem' }}>
+              Cluster resource usage
+            </h2>
+            <p className="muted dash-section-sub" style={{ margin: '0.25rem 0 0' }}>
+              Online clusters · live used / total
+            </p>
+          </div>
           <Link to="/clusters" className="section-link">
-            All clusters
+            View all clusters
           </Link>
         </div>
         {resourcesErr && <div className="error">{resourcesErr}</div>}
         {listLoading && clusters.length === 0 ? (
-          <div className="cluster-card-grid">
+          <div className="dash-resource-grid">
             {[0, 1].map((i) => (
-              <div key={i} className="cluster-card cluster-resource-skeleton" aria-hidden>
+              <div key={i} className="live-resource-card cluster-resource-skeleton" aria-hidden>
                 <div className="skeleton-line w-40" />
                 <div className="skeleton-line w-80" />
-                <div className="cluster-card-meters">
-                  <div className="skeleton-line" />
-                  <div className="skeleton-line" />
-                  <div className="skeleton-line" />
-                </div>
               </div>
             ))}
           </div>
@@ -317,12 +425,11 @@ export default function Dashboard() {
             </div>
           </div>
         ) : (
-          <div className="cluster-card-grid cluster-card-grid-live">
+          <div className="dash-resource-grid">
             {displayResources.map((s) => (
-              <ClusterCard
+              <LiveClusterResourceCard
                 key={s.cluster_id}
                 summary={s}
-                compact
                 onOpen={() => nav(`/clusters/${s.cluster_id}`)}
               />
             ))}
@@ -330,60 +437,80 @@ export default function Dashboard() {
         )}
       </section>
 
-      {recent.length > 0 && (
-        <section className="dash-section">
-          <h2 className="section-kicker">Recent</h2>
-          <div className="table-shell">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Status</th>
-                  <th>Arch / Provider</th>
-                  <th>Topology</th>
-                  <th>Version</th>
-                </tr>
-              </thead>
-              <tbody>
+      {(recent.length > 0 || !dashNum) && (
+        <div className="dash-bottom-grid">
+          <section className="dash-panel-card">
+            <div className="section-toolbar">
+              <div>
+                <h2>Recent clusters</h2>
+                <p className="panel-sub">Latest activity across your infrastructure</p>
+              </div>
+              <Link to="/clusters" className="section-link">
+                View all clusters
+              </Link>
+            </div>
+            {recent.length === 0 ? (
+              <p className="muted" style={{ marginTop: '1.25rem' }}>No clusters yet.</p>
+            ) : (
+              <div className="dash-recent-list">
                 {recent.map((c) => {
-                  const to = `/clusters/${c.id}`
+                  const tone = statusTone(c.status)
+                  const nodes = (c.controlplanes || 0) + (c.workers || 0)
+                  const ver = formatK8sVersion(c.k8s_version) || c.os_version || '—'
                   return (
-                    <tr
+                    <div
                       key={c.id}
-                      className="row-click"
-                      tabIndex={0}
+                      className="dash-recent-row"
                       role="link"
-                      onClick={() => nav(to)}
+                      tabIndex={0}
+                      onClick={() => nav(`/clusters/${c.id}`)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault()
-                          nav(to)
+                          nav(`/clusters/${c.id}`)
                         }
                       }}
                     >
-                      <td><span className="row-click-label">{c.name}</span></td>
-                      <td>
-                        <ClusterStatusBadges status={c.status} availability={c.availability} />
-                      </td>
-                      <td>
-                        <ClusterMetaBadges arch={c.arch} providerKind={c.provider_kind} />
-                      </td>
-                      <td className="muted">
-                        {c.controlplanes} CP / {c.workers} WK{c.vip ? ` · VIP ${c.vip}` : ''}
-                      </td>
-                      <td className="mono-inline muted">{c.k8s_version || '—'}</td>
-                    </tr>
+                      <div className="dash-recent-left">
+                        <span className={`dash-recent-dot ${tone}`} aria-hidden />
+                        <div style={{ minWidth: 0 }}>
+                          <div className="dash-recent-name">{c.name}</div>
+                          <div className="dash-recent-meta">
+                            {nodes} machines · {c.status || 'unknown'}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="dash-recent-ver">{ver}</span>
+                    </div>
                   )
                 })}
-              </tbody>
-            </table>
-          </div>
-        </section>
+              </div>
+            )}
+          </section>
+
+          <section className="dash-panel-card">
+            <h2>System status</h2>
+            <p className="panel-sub">Derived from live control-plane state</p>
+            <div className="sys-status-list">
+              {systemStatus.map((item) => (
+                <div key={item.label} className="sys-status-row">
+                  <span className="sys-status-label">{item.label}</span>
+                  <span className={`sys-status-value ${item.ok ? 'ok' : 'warn'}`}>
+                    <span className="dot" aria-hidden />
+                    {item.text}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
       )}
 
       <section className="dash-section">
         <div className="section-toolbar">
-          <h2 className="section-kicker">Providers</h2>
+          <h2 className="section-kicker" style={{ textTransform: 'none', letterSpacing: '-0.01em', fontSize: '0.875rem' }}>
+            Providers
+          </h2>
           <Link to="/providers" className="section-link">
             All providers
           </Link>

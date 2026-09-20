@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { getToken, logoutAndRedirect, setAuthProvider } from './api'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import { Icon } from './components/Icons'
 import ThemeToggle from './components/ThemeToggle'
@@ -9,36 +9,44 @@ import { APP_VERSION } from './utils/version'
 
 const SIDEBAR_COLLAPSED_KEY = 'pertisk_kos_sidebar_collapsed'
 
-const NAV_GROUPS = [
-  {
-    heading: 'Fleet',
-    items: [
-      { to: '/', label: 'Dashboard', icon: 'dashboard', end: true },
-      { to: '/clusters', label: 'Clusters', icon: 'clusters' },
-      { to: '/machines', label: 'Machines', icon: 'machines' },
-      { to: '/providers', label: 'Providers', icon: 'providers' },
-    ],
-  },
-  {
-    heading: 'Node OS',
-    items: [
-      { to: '/images', label: 'Images', icon: 'disk' },
-      { to: '/os-packages', label: 'OS packages', icon: 'packages' },
-      { to: '/templates', label: 'Templates', icon: 'templates' },
-    ],
-  },
-  {
-    heading: 'Governance',
-    items: [
-      { to: '/users', label: 'Users', icon: 'users', adminOnly: true },
-      { to: '/audit', label: 'Audit', icon: 'audit' },
-      { to: '/settings', label: 'Settings', icon: 'settings' },
-    ],
-  },
+const NAV_ITEMS = [
+  { to: '/', label: 'Dashboard', icon: 'dashboard', end: true },
+  { to: '/clusters', label: 'Clusters', icon: 'clusters' },
+  { to: '/machines', label: 'Machines', icon: 'machines' },
+  { to: '/providers', label: 'Providers', icon: 'providers' },
+  { to: '/images', label: 'Images', icon: 'disk' },
+  { to: '/os-packages', label: 'OS packages', icon: 'packages' },
+  { to: '/templates', label: 'Templates', icon: 'templates' },
+  { to: '/users', label: 'Users', icon: 'users', adminOnly: true },
+  { to: '/audit', label: 'Audit log', icon: 'audit' },
+  { to: '/settings', label: 'Settings', icon: 'settings' },
+]
+
+const SECTION_TITLES = [
+  { match: /^\/clusters\/[^/]+/, title: 'Cluster' },
+  { match: /^\/clusters/, title: 'Clusters' },
+  { match: /^\/machines\/[^/]+/, title: 'Machine' },
+  { match: /^\/machines/, title: 'Machines' },
+  { match: /^\/providers\/[^/]+/, title: 'Provider' },
+  { match: /^\/providers/, title: 'Providers' },
+  { match: /^\/images/, title: 'Images' },
+  { match: /^\/os-packages/, title: 'OS packages' },
+  { match: /^\/templates/, title: 'Templates' },
+  { match: /^\/users/, title: 'Users' },
+  { match: /^\/audit/, title: 'Audit log' },
+  { match: /^\/settings/, title: 'Settings' },
+  { match: /^\/$/, title: 'Dashboard' },
 ]
 
 function getStoredCollapsed() {
   return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
+}
+
+function sectionTitle(pathname) {
+  for (const entry of SECTION_TITLES) {
+    if (entry.match.test(pathname)) return entry.title
+  }
+  return 'Dashboard'
 }
 
 export default function Layout() {
@@ -50,7 +58,9 @@ export default function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(getStoredCollapsed)
   const [search, setSearch] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   const userMenuRef = useRef(null)
+  const searchRef = useRef(null)
 
   useEffect(() => {
     if (!getToken()) {
@@ -68,6 +78,7 @@ export default function Layout() {
   useEffect(() => {
     setMobileOpen(false)
     setShowUserMenu(false)
+    setSearchOpen(false)
   }, [location.pathname])
 
   useEffect(() => {
@@ -94,6 +105,10 @@ export default function Layout() {
     return () => document.removeEventListener('keydown', onKey)
   }, [mobileOpen])
 
+  useEffect(() => {
+    if (searchOpen && searchRef.current) searchRef.current.focus()
+  }, [searchOpen])
+
   async function logout() {
     setShowUserMenu(false)
     const ok = await confirm({
@@ -117,10 +132,12 @@ export default function Layout() {
       return
     }
     nav(`/machines?q=${encodeURIComponent(q)}`)
+    setSearchOpen(false)
   }
 
-  const initial = user?.username ? user.username.charAt(0).toUpperCase() : 'U'
-  const roleLabel = user?.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : 'Operator'
+  const initial = user?.username ? user.username.slice(0, 2).toUpperCase() : 'AD'
+  const title = useMemo(() => sectionTitle(location.pathname), [location.pathname])
+  const navItems = NAV_ITEMS.filter((n) => !n.adminOnly || user?.role === 'admin')
 
   return (
     <div className="shell">
@@ -164,39 +181,39 @@ export default function Layout() {
         </div>
 
         <nav className="nav" aria-label="Primary">
-          {NAV_GROUPS.map((group) => {
-            const items = group.items.filter((n) => !n.adminOnly || user?.role === 'admin')
-            if (items.length === 0) return null
-            return (
-              <div key={group.heading} className="nav-group">
-                <p className="nav-heading">{group.heading}</p>
-                <ul>
-                  {items.map(({ to, label, icon, end }) => (
-                    <li key={to}>
-                      <NavLink
-                        to={to}
-                        end={end}
-                        title={collapsed ? label : undefined}
-                        onClick={() => setMobileOpen(false)}
-                        className={({ isActive }) => (isActive ? 'active' : undefined)}
-                      >
-                        <Icon name={icon} size={18} />
-                        <span className="nav-label">{label}</span>
-                      </NavLink>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )
-          })}
+          <div className="nav-group">
+            <p className="nav-heading">Manage</p>
+            <ul>
+              {navItems.map(({ to, label, icon, end }) => (
+                <li key={to}>
+                  <NavLink
+                    to={to}
+                    end={end}
+                    title={collapsed ? label : undefined}
+                    onClick={() => setMobileOpen(false)}
+                    className={({ isActive }) => (isActive ? 'active' : undefined)}
+                  >
+                    <Icon name={icon} size={15} />
+                    <span className="nav-label">{label}</span>
+                  </NavLink>
+                </li>
+              ))}
+            </ul>
+          </div>
         </nav>
 
         <div className="sidebar-footer">
           <div className="control-plane-chip">
-            <span className="control-plane-dot" aria-hidden />
-            <div className="control-plane-copy">
-              <p>Control plane</p>
-              <p>All systems operational</p>
+            <div className="control-plane-secure">
+              <Icon name="shield" size={16} />
+              <span>Identity secured</span>
+            </div>
+            <div className="control-plane-identity">
+              <span className="control-plane-avatar" aria-hidden>
+                {initial}
+              </span>
+              <span className="control-plane-user">{user?.username || 'admin'}</span>
+              <span className="control-plane-ver">v{APP_VERSION}</span>
             </div>
           </div>
         </div>
@@ -215,20 +232,35 @@ export default function Layout() {
             >
               <Icon name={mobileOpen ? 'x' : 'menu'} size={16} />
             </button>
-            <form className="topbar-search" onSubmit={onSearch} role="search">
-              <Icon name="search" size={16} />
-              <input
-                type="search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search clusters, machines, images…"
-                aria-label="Search"
-              />
-            </form>
+            <div className="topbar-section">{title}</div>
+            {searchOpen && (
+              <form className="topbar-search" style={{ display: 'block' }} onSubmit={onSearch} role="search">
+                <Icon name="search" size={16} />
+                <input
+                  ref={searchRef}
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onBlur={() => {
+                    if (!search.trim()) setSearchOpen(false)
+                  }}
+                  placeholder="Search machines…"
+                  aria-label="Search"
+                />
+              </form>
+            )}
           </div>
-          <div className="row-actions">
+          <div className="topbar-actions">
+            <button
+              type="button"
+              className="topbar-search-btn"
+              aria-label="Search"
+              onClick={() => setSearchOpen((v) => !v)}
+            >
+              <Icon name="search" size={16} />
+            </button>
             <ThemeToggle />
-            <div className="user-menu" ref={userMenuRef}>
+            <div className="topbar-user-chip user-menu" ref={userMenuRef}>
               <button
                 type="button"
                 className={`user-menu-trigger${showUserMenu ? ' open' : ''}`}
@@ -238,8 +270,7 @@ export default function Layout() {
               >
                 <span className="user-avatar">{initial}</span>
                 <span className="user-meta">
-                  <span className="user-name">{user?.username || 'User'}</span>
-                  <span className="user-role">{roleLabel}</span>
+                  <span className="user-name">{user?.username || 'admin'}</span>
                 </span>
               </button>
               {showUserMenu && (
