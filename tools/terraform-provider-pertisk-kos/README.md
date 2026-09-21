@@ -30,7 +30,7 @@ terraform state mv pertisk_cluster.lab pertisk-kos_cluster.lab
 | K8s version | `pertisk-kos_cluster` | Set at create; **change triggers in-place upgrade** (no replace) |
 | Scale out / in | `pertisk-kos_node` | `mode=create` (hypervisor VM) or `mode=adopt` (existing IP) |
 | Node hardware overrides | `pertisk-kos_node` | Optional `memory` / `cores` / `disk_gb` on create |
-| Install cluster add-ons | `pertisk-kos_addon` | `nfs`, `cert-manager`, `cilium-lb`, `ingress`, `kos-scaler`; waits for install job |
+| Install cluster add-ons | `pertisk-kos_addon` | `nfs`, `cert-manager`, `cilium-lb`, `ingress`, `pertisk-kos-scaler`; waits for install job |
 | Reuse add-on configs | `pertisk-kos_cluster` | `reuse_addons` (default true) + optional `addon_preset` |
 | Import | cluster / provider / node / addon | Cluster & provider by UUID; node/addon as `cluster_id/…` |
 

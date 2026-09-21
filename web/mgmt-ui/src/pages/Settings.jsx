@@ -178,9 +178,9 @@ export default function Settings() {
                     <dd>
                       <code className="mono-inline">{cfg.helm_chart_repo || '—'}</code>
                       <p className="hint muted" style={{ marginTop: 6 }}>
-                        From <code>MGMT_HELM_CHART_REPO</code>. Used by Ingress, Dashboard, and
-                        KOS scaler add-ons (<code>helm … --repo</code>). Default:{' '}
-                        <code>https://charts.tools.thaidevops.co</code>.
+                        From <code>MGMT_HELM_CHART_REPO</code>. Used by Ingress, Dashboard,
+                        pertisk-kos-scaler, and pertisk-cd add-ons (<code>helm … --repo</code>).
+                        Default: <code>https://charts.tools.thaidevops.co</code>.
                       </p>
                     </dd>
                   </div>
@@ -189,8 +189,9 @@ export default function Settings() {
                     <dd>
                       <code className="mono-inline">{cfg.image_registry || '—'}</code>
                       <p className="hint muted" style={{ marginTop: 6 }}>
-                        From <code>MGMT_IMAGE_REGISTRY</code>. Container registry for Ingress and
-                        Dashboard images. Default: <code>registry.tools.thaidevops.co</code>.
+                        From <code>MGMT_IMAGE_REGISTRY</code>. Container registry for Ingress,
+                        Dashboard, pertisk-kos-scaler, and pertisk-cd images. Default:{' '}
+                        <code>registry.tools.thaidevops.co</code>.
                       </p>
                     </dd>
                   </div>

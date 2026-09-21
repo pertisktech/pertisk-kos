@@ -53,7 +53,9 @@ function fieldVisible(addon, f, form) {
   }
   if (f.name === 'tls_secret') {
     if (addon.id === 'ingress') return !!(form.admin_host || '').trim()
-    if (addon.id === 'kubernetes-dashboard') return !!(form.host || '').trim()
+    if (addon.id === 'kubernetes-dashboard' || addon.id === 'pertisk-cd') {
+      return !!(form.host || '').trim()
+    }
   }
   return true
 }
@@ -75,6 +77,11 @@ const ADDON_SECTIONS = [
     id: 'autoscaling',
     title: 'Autoscaling',
     blurb: 'Scale workers through pertisk-mgmt when pods are pending or utilization is high.',
+  },
+  {
+    id: 'cd',
+    title: 'Continuous deployment',
+    blurb: 'Install Pertisk CD for GitOps-style application delivery (requires external Postgres).',
   },
   {
     id: 'certificates',

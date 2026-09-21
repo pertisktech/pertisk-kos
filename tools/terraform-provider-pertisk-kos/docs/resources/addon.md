@@ -64,7 +64,7 @@ resource "pertisk-kos_addon" "ingress" {
 
 resource "pertisk-kos_addon" "scaler" {
   cluster_id = pertisk-kos_cluster.lab.id
-  addon      = "kos-scaler"
+  addon      = "pertisk-kos-scaler"
 
   config = {
     username   = "admin"
@@ -101,7 +101,7 @@ resource "pertisk-kos_cluster" "lab" {
 ### Required
 
 * `cluster_id` - (String) Cluster UUID. Forces new resource.
-* `addon` - (String) `nfs` | `cert-manager` | `cilium-lb` | `ingress` | `kos-scaler` | `kubernetes-dashboard`. Forces new resource.
+* `addon` - (String) `nfs` | `cert-manager` | `cilium-lb` | `ingress` | `pertisk-kos-scaler` | `pertisk-cd` | `kubernetes-dashboard`. Forces new resource.
 
 ### Optional
 
@@ -110,9 +110,10 @@ resource "pertisk-kos_cluster" "lab" {
   * **cert-manager:** `provider` (`cloudflare`), `email`, `acme` (`production`|`staging`), `domain`
   * **cilium-lb:** `ipv4`, optional `ipv6` (required on dual-stack)
   * **ingress:** `image_tag`, optional `admin_host`, `tls_secret`, `registry_user`
-  * **kos-scaler:** `username`, `min_size`, `max_size`, optional `image_tag`, `storage_class`, `mgmt_url`
+  * **pertisk-kos-scaler:** `username`, `min_size`, `max_size`, optional `image_tag`, `storage_class`, `mgmt_url`
+  * **pertisk-cd:** `admin_email`, optional `admin_name`, `image_tag`, `host`, `tls_secret`, `git_url`, `git_group`
   * **kubernetes-dashboard:** `namespace` (default `pertisk-dashboard`), `image_tag`, `username`, optional `host`, `tls_secret` (`none` for HTTP only)
-* `secrets` - (Map of String, Sensitive) `api_token` (cert-manager); `admin_password` / `registry_password` (ingress); `password` (kos-scaler and kubernetes-dashboard).
+* `secrets` - (Map of String, Sensitive) `api_token` (cert-manager); `admin_password` / `registry_password` (ingress); `password` (pertisk-kos-scaler and kubernetes-dashboard); `database_url` / `admin_password` / `git_token` (pertisk-cd).
 * `timeout_minutes` - (Number) Job wait timeout (default `20`).
 
 ## Attribute Reference

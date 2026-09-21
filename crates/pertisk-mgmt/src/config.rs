@@ -29,7 +29,7 @@ pub struct Config {
     /// Helm chart repository URL for add-on installs (`--repo`).
     /// Override with `MGMT_HELM_CHART_REPO` (default `https://charts.tools.thaidevops.co`).
     pub helm_chart_repo: String,
-    /// Container registry host for Ingress / Dashboard images.
+    /// Container registry host for Ingress / Dashboard / scaler / CD images.
     /// Override with `MGMT_IMAGE_REGISTRY` (default `registry.tools.thaidevops.co`).
     pub image_registry: String,
     /// Optional Bearer for scraping guest `:50001/metrics`.
@@ -384,10 +384,10 @@ fn resolve_public_url(listen: SocketAddr) -> String {
     String::new()
 }
 
-/// Default Helm chart repo for Ingress / Dashboard / KOS scaler add-ons.
+/// Default Helm chart repo for Ingress / Dashboard / scaler / CD add-ons.
 pub const DEFAULT_HELM_CHART_REPO: &str = "https://charts.tools.thaidevops.co";
 
-/// Default container registry for Ingress / Dashboard images.
+/// Default container registry for Ingress / Dashboard / scaler / CD images.
 pub const DEFAULT_IMAGE_REGISTRY: &str = "registry.tools.thaidevops.co";
 
 fn resolve_helm_chart_repo() -> String {

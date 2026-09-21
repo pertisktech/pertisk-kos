@@ -48,7 +48,7 @@ func (r *addonResource) Metadata(_ context.Context, req resource.MetadataRequest
 
 func (r *addonResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Install or update a cluster add-on via pertisk-mgmt (`nfs`, `cert-manager`, `cilium-lb`, `ingress`, `kos-scaler`, `kubernetes-dashboard`). Destroy only drops Terraform state; the add-on stays on the cluster (mgmt has no uninstall API).",
+		MarkdownDescription: "Install or update a cluster add-on via pertisk-mgmt (`nfs`, `cert-manager`, `cilium-lb`, `ingress`, `pertisk-kos-scaler`, `pertisk-cd`, `kubernetes-dashboard`). Destroy only drops Terraform state; the add-on stays on the cluster (mgmt has no uninstall API).",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -66,7 +66,7 @@ func (r *addonResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			},
 			"addon": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Catalog id: `nfs` | `cert-manager` | `cilium-lb` | `ingress` | `kos-scaler` | `kubernetes-dashboard`. Forces new resource.",
+				MarkdownDescription: "Catalog id: `nfs` | `cert-manager` | `cilium-lb` | `ingress` | `pertisk-kos-scaler` | `kubernetes-dashboard`. Forces new resource.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -80,7 +80,7 @@ func (r *addonResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				ElementType:         types.StringType,
 				Optional:            true,
 				Sensitive:           true,
-				MarkdownDescription: "Secret fields: cert-manager `api_token`; ingress `admin_password`, `registry_password`; kos-scaler `password`.",
+				MarkdownDescription: "Secret fields: cert-manager `api_token`; ingress `admin_password`, `registry_password`; pertisk-kos-scaler `password`.",
 			},
 			"status": schema.StringAttribute{
 				Computed:            true,
@@ -190,9 +190,9 @@ func (r *addonResource) installAndWait(ctx context.Context, plan *addonModel) er
 	}
 	addon := plan.Addon.ValueString()
 	switch addon {
-	case "nfs", "cert-manager", "cilium-lb", "ingress", "kos-scaler", "kubernetes-dashboard":
+	case "nfs", "cert-manager", "cilium-lb", "ingress", "pertisk-kos-scaler", "pertisk-cd", "kubernetes-dashboard":
 	default:
-		return fmt.Errorf("addon must be nfs, cert-manager, cilium-lb, ingress, kos-scaler, or kubernetes-dashboard")
+		return fmt.Errorf("addon must be nfs, cert-manager, cilium-lb, ingress, pertisk-kos-scaler, pertisk-cd, or kubernetes-dashboard")
 	}
 
 	body, err := addonInstallBody(plan)

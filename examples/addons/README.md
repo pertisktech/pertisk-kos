@@ -57,7 +57,7 @@ From the management UI: cluster → **Add-ons** → Cilium LoadBalancer (ELB IPv
 
 ## Pertisk Ingress
 
-pertisk-proxy Ingress controller from Helm chart `pertisk/pertisk-ingress` (image `registry.tools.thaidevops.co/pertisk-proxy/ingress:v0.1.83`):
+pertisk-proxy Ingress controller from Helm chart `pertisk/pertisk-ingress` (image `registry.tools.thaidevops.co/pertisk-proxy/ingress:v0.1.95`):
 
 → [ingress/README.md](./ingress/README.md)
 
@@ -65,9 +65,13 @@ From the management UI: cluster → **Add-ons** → **Ingress** → Pertisk Ingr
 
 ## KOS scaler (worker autoscaling)
 
-Helm chart `pertisk/kos-scaler` — scale workers through pertisk-mgmt when pods are pending or CPU/memory is high:
+Helm chart `pertisk/pertisk-kos-scaler` — scale workers through pertisk-mgmt when pods are pending or CPU/memory is high:
 
-→ [kos-scaler/README.md](./kos-scaler/README.md)
+→ [pertisk-kos-scaler/README.md](./pertisk-kos-scaler/README.md)
+
+Helm chart `pertisk/pertisk-cd` — continuous deployment control plane (external Postgres required):
+
+→ [pertisk-cd/README.md](./pertisk-cd/README.md)
 
 From the management UI: cluster → **Add-ons** → **Autoscaling**. Set mgmt username/password and worker min/max. The cluster UUID and management public URL are filled in automatically.
 

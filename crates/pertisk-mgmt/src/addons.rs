@@ -44,17 +44,25 @@ const INGRESS_RELEASE: &str = "pertisk-ingress";
 const INGRESS_NAMESPACE: &str = "pertisk-proxy";
 const INGRESS_DEPLOY: &str = "pertisk-proxy-ingress";
 const INGRESS_ADMIN: &str = "pertisk-proxy-ingress-admin";
-const INGRESS_PULL_SECRET: &str = "pertisk-ingress-harbor";
+const INGRESS_PULL_SECRET: &str = "pertisk-ingress-registry";
 /// Default when `MGMT_IMAGE_REGISTRY` is unset (prefer `state.cfg().image_registry` at runtime).
 pub const INGRESS_IMAGE_REGISTRY: &str = crate::config::DEFAULT_IMAGE_REGISTRY;
 pub const INGRESS_IMAGE_REPO: &str = "pertisk-proxy/ingress";
-pub const INGRESS_IMAGE_TAG: &str = "v0.1.83";
-const KOS_SCALER_ID: &str = "kos-scaler";
-const KOS_SCALER_HELM_CHART: &str = "kos-scaler";
-const KOS_SCALER_RELEASE: &str = "kos-scaler";
-const KOS_SCALER_NAMESPACE: &str = "kos-scaler";
-const KOS_SCALER_DEPLOY: &str = "kos-scaler";
-pub const KOS_SCALER_IMAGE_TAG: &str = "0.1.0";
+pub const INGRESS_IMAGE_TAG: &str = "v0.1.95";
+const KOS_SCALER_ID: &str = "pertisk-kos-scaler";
+const KOS_SCALER_HELM_CHART: &str = "pertisk-kos-scaler";
+const KOS_SCALER_RELEASE: &str = "pertisk-kos-scaler";
+const KOS_SCALER_NAMESPACE: &str = "pertisk-kos-scaler";
+const KOS_SCALER_DEPLOY: &str = "pertisk-kos-scaler";
+pub const KOS_SCALER_IMAGE_TAG: &str = "1.2.3";
+const KOS_SCALER_ID_LEGACY: &str = "kos-scaler";
+const PERTISK_CD_ID: &str = "pertisk-cd";
+const PERTISK_CD_HELM_CHART: &str = "pertisk-cd";
+const PERTISK_CD_RELEASE: &str = "pertisk-cd";
+const PERTISK_CD_NAMESPACE: &str = "pertisk-cd";
+const PERTISK_CD_DEPLOY: &str = "pertisk-cd";
+pub const PERTISK_CD_IMAGE_REPO: &str = "pertisk-cd/pertisk-cd";
+pub const PERTISK_CD_IMAGE_TAG: &str = "v0.1.2";
 const KUBERNETES_DASHBOARD_ID: &str = "kubernetes-dashboard";
 const KUBERNETES_DASHBOARD_HELM_CHART: &str = "pertisk-kube";
 const KUBERNETES_DASHBOARD_RELEASE: &str = "pertisk-kube";
@@ -192,7 +200,7 @@ const INGRESS_FIELDS: &[AddonField] = &[
         required: true,
         placeholder: INGRESS_IMAGE_TAG,
         options: None,
-        help: "Multi-arch tag (e.g. v0.1.83) from MGMT_IMAGE_REGISTRY. Install pins the cluster arch (linux/arm64 or linux/amd64) so ARM nodes do not pull amd64.",
+        help: "Multi-arch tag (e.g. v0.1.95) from MGMT_IMAGE_REGISTRY. Install pins the cluster arch (linux/arm64 or linux/amd64) so ARM nodes do not pull amd64.",
     },
     AddonField {
         name: "admin_host",
@@ -223,21 +231,21 @@ const INGRESS_FIELDS: &[AddonField] = &[
     },
     AddonField {
         name: "registry_user",
-        label: "Harbor user",
+        label: "Registry user",
         kind: "text",
         required: false,
         placeholder: "optional",
         options: None,
-        help: "Optional. Leave empty when the Harbor project is public. Set only for a private project.",
+        help: "Optional. Leave empty when the registry project is public. Set only for a private project.",
     },
     AddonField {
         name: "registry_password",
-        label: "Harbor password",
+        label: "Registry password",
         kind: "password",
         required: false,
         placeholder: "optional",
         options: None,
-        help: "Optional registry credential (stored encrypted). Not needed for the public Harbor project.",
+        help: "Optional registry credential (stored encrypted). Not needed for a public registry project.",
     },
 ];
 
@@ -307,7 +315,7 @@ const KOS_SCALER_FIELDS: &[AddonField] = &[
         required: true,
         placeholder: "admin",
         options: None,
-        help: "pertisk-mgmt operator or admin. kos-scaler refreshes JWTs from this account.",
+        help: "pertisk-mgmt operator or admin. pertisk-kos-scaler refreshes JWTs from this account.",
     },
     AddonField {
         name: "password",
@@ -325,7 +333,7 @@ const KOS_SCALER_FIELDS: &[AddonField] = &[
         required: true,
         placeholder: "2",
         options: None,
-        help: "Minimum worker count kos-scaler will enforce.",
+        help: "Minimum worker count pertisk-kos-scaler will enforce.",
     },
     AddonField {
         name: "max_size",
@@ -334,7 +342,7 @@ const KOS_SCALER_FIELDS: &[AddonField] = &[
         required: true,
         placeholder: "10",
         options: None,
-        help: "Maximum workers kos-scaler may add via the management API.",
+        help: "Maximum workers pertisk-kos-scaler may add via the management API.",
     },
     AddonField {
         name: "image_tag",
@@ -343,7 +351,7 @@ const KOS_SCALER_FIELDS: &[AddonField] = &[
         required: false,
         placeholder: KOS_SCALER_IMAGE_TAG,
         options: None,
-        help: "Image tag for kos-scaler (chart default registry).",
+        help: "Image tag for pertisk-kos-scaler (from MGMT_IMAGE_REGISTRY).",
     },
     AddonField {
         name: "storage_class",
@@ -362,6 +370,99 @@ const KOS_SCALER_FIELDS: &[AddonField] = &[
         placeholder: "https://ptkos.example",
         options: None,
         help: "Must be reachable from cluster nodes. Leave empty to use this server’s public URL.",
+    },
+];
+
+const PERTISK_CD_FIELDS: &[AddonField] = &[
+    AddonField {
+        name: "database_url",
+        label: "Database URL",
+        kind: "password",
+        required: true,
+        placeholder: "postgres://user:pass@db:5432/pertisk_cd",
+        options: None,
+        help: "Postgres DATABASE_URL (stored encrypted). Leave blank on update to keep the current value. Postgres is not installed by this chart.",
+    },
+    AddonField {
+        name: "admin_email",
+        label: "Admin email",
+        kind: "text",
+        required: true,
+        placeholder: "admin@local",
+        options: None,
+        help: "Initial console admin email (PERTISK_ADMIN_EMAIL).",
+    },
+    AddonField {
+        name: "admin_name",
+        label: "Admin name",
+        kind: "text",
+        required: false,
+        placeholder: "Admin",
+        options: None,
+        help: "Initial console admin display name.",
+    },
+    AddonField {
+        name: "admin_password",
+        label: "Admin password",
+        kind: "password",
+        required: true,
+        placeholder: "required",
+        options: None,
+        help: "Initial console admin password (stored encrypted). Leave blank on update to keep the current value.",
+    },
+    AddonField {
+        name: "image_tag",
+        label: "Image tag",
+        kind: "text",
+        required: false,
+        placeholder: PERTISK_CD_IMAGE_TAG,
+        options: None,
+        help: "Image tag for pertisk-cd (from MGMT_IMAGE_REGISTRY).",
+    },
+    AddonField {
+        name: "host",
+        label: "Console host",
+        kind: "text",
+        required: false,
+        placeholder: "cd.example.com",
+        options: None,
+        help: "Hostname for the console Ingress. Leave empty to skip Ingress (port-forward only).",
+    },
+    AddonField {
+        name: "tls_secret",
+        label: "TLS secret",
+        kind: "select",
+        required: false,
+        placeholder: "none",
+        options: Some(&["none"]),
+        help: "TLS Secret for the console Ingress (from cert-manager). Choose none for HTTP only.",
+    },
+    AddonField {
+        name: "git_url",
+        label: "Git URL",
+        kind: "text",
+        required: false,
+        placeholder: "https://git.example.com",
+        options: None,
+        help: "Optional Git base URL for repositories.",
+    },
+    AddonField {
+        name: "git_token",
+        label: "Git token",
+        kind: "password",
+        required: false,
+        placeholder: "optional",
+        options: None,
+        help: "Optional Git access token (stored encrypted). Leave blank on update to keep the current value.",
+    },
+    AddonField {
+        name: "git_group",
+        label: "Git group",
+        kind: "text",
+        required: false,
+        placeholder: "optional",
+        options: None,
+        help: "Optional Git group / org path.",
     },
 ];
 
@@ -394,17 +495,25 @@ pub fn catalog() -> &'static [AddonCatalogEntry] {
         AddonCatalogEntry {
             id: INGRESS_ID,
             name: "Pertisk Ingress",
-            summary: "pertisk-proxy Ingress controller (Helm chart + Harbor image) with a LoadBalancer Service.",
+            summary: "pertisk-proxy Ingress controller (Helm chart + registry image) with a LoadBalancer Service.",
             section: "ingress",
             fields: INGRESS_FIELDS,
             requires_cni: None,
         },
         AddonCatalogEntry {
             id: KOS_SCALER_ID,
-            name: "KOS scaler",
-            summary: "Worker-node autoscaler (Helm kos-scaler). Adds and removes Pertisk workers from pending pods and CPU/memory pressure.",
+            name: "Pertisk KOS scaler",
+            summary: "Worker-node autoscaler (Helm pertisk-kos-scaler). Adds and removes Pertisk workers from pending pods and CPU/memory pressure.",
             section: "autoscaling",
             fields: KOS_SCALER_FIELDS,
+            requires_cni: None,
+        },
+        AddonCatalogEntry {
+            id: PERTISK_CD_ID,
+            name: "Pertisk CD",
+            summary: "Continuous deployment control plane (Helm pertisk-cd). Requires an external Postgres DATABASE_URL.",
+            section: "cd",
+            fields: PERTISK_CD_FIELDS,
             requires_cni: None,
         },
         AddonCatalogEntry {
@@ -427,7 +536,7 @@ pub fn catalog_entry(id: &str) -> ApiResult<&'static AddonCatalogEntry> {
 
 fn catalog_fields_json(entry: &AddonCatalogEntry, live: &Value, config: &Value) -> Value {
     let mut fields = serde_json::to_value(entry.fields).unwrap_or(json!([]));
-    if entry.id != INGRESS_ID && entry.id != KUBERNETES_DASHBOARD_ID {
+    if entry.id != INGRESS_ID && entry.id != KUBERNETES_DASHBOARD_ID && entry.id != PERTISK_CD_ID {
         return fields;
     }
     let mut opts: Vec<String> = vec!["none".into()];
@@ -624,13 +733,45 @@ pub struct KosScalerConfig {
     pub mgmt_url: String,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct PertiskCdConfig {
+    #[serde(default)]
+    pub database_url: String,
+    #[serde(default)]
+    pub admin_email: String,
+    #[serde(default)]
+    pub admin_name: String,
+    #[serde(default)]
+    pub admin_password: String,
+    #[serde(default)]
+    pub image_tag: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub tls_secret: String,
+    #[serde(default)]
+    pub git_url: String,
+    #[serde(default)]
+    pub git_token: String,
+    #[serde(default)]
+    pub git_group: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PertiskCdSecrets {
+    database_url: String,
+    admin_password: String,
+    git_token: String,
+}
+
 pub fn parse_addon_id(raw: &str) -> ApiResult<String> {
     match raw.trim() {
         NFS_ID => Ok(NFS_ID.into()),
         CERT_MANAGER_ID => Ok(CERT_MANAGER_ID.into()),
         CILIUM_LB_ID => Ok(CILIUM_LB_ID.into()),
         INGRESS_ID => Ok(INGRESS_ID.into()),
-        KOS_SCALER_ID => Ok(KOS_SCALER_ID.into()),
+        KOS_SCALER_ID | KOS_SCALER_ID_LEGACY => Ok(KOS_SCALER_ID.into()),
+        PERTISK_CD_ID => Ok(PERTISK_CD_ID.into()),
         KUBERNETES_DASHBOARD_ID => Ok(KUBERNETES_DASHBOARD_ID.into()),
         other => Err(AppError::bad(format!("unknown addon {other}"))),
     }
@@ -1087,21 +1228,21 @@ pub fn validate_ingress(cfg: &IngressConfig, require_registry: bool) -> Result<(
     }
     let user = cfg.registry_user.trim();
     if !user.is_empty() && !registry_user_ok(user) {
-        errors.push("Harbor user contains invalid characters".into());
+        errors.push("Registry user contains invalid characters".into());
     }
     let token = cfg.registry_password.trim();
     if !token.is_empty() {
         if token.len() < 4 {
-            errors.push("Harbor password looks too short".into());
+            errors.push("Registry password looks too short".into());
         } else if token.contains(['\n', '\r', '\0']) {
-            errors.push("Harbor password contains invalid characters".into());
+            errors.push("Registry password contains invalid characters".into());
         }
     }
     if require_registry && token.is_empty() {
-        errors.push("Harbor password is required when a Harbor user is set".into());
+        errors.push("Registry password is required when a registry user is set".into());
     }
     if user.is_empty() && !token.is_empty() {
-        errors.push("Harbor user is required when a Harbor password is set".into());
+        errors.push("Registry user is required when a registry password is set".into());
     }
     if errors.is_empty() {
         Ok(())
@@ -1271,6 +1412,7 @@ fn kos_scaler_helm_values(
     cluster_id: &str,
     endpoint: &str,
     password: &str,
+    registry: &str,
 ) -> Value {
     let tag = if cfg.image_tag.trim().is_empty() {
         KOS_SCALER_IMAGE_TAG
@@ -1279,8 +1421,12 @@ fn kos_scaler_helm_values(
     };
     let sc = cfg.storage_class.trim();
     let persist = !(sc.is_empty() || sc.eq_ignore_ascii_case("none"));
+    let registry = registry.trim().trim_end_matches('/');
     let mut values = json!({
-        "image": { "tag": tag },
+        "image": {
+            "repository": format!("{registry}/pertisksoft/pertisk-kos-scaler"),
+            "tag": tag,
+        },
         "mgmt": {
             "endpoint": endpoint,
             "clusterId": cluster_id,
@@ -1300,6 +1446,233 @@ fn kos_scaler_helm_values(
     if persist {
         values["statePersistence"]["storageClassName"] =
             json!(if sc.is_empty() { "nfs-client" } else { sc });
+    }
+    values
+}
+
+fn parse_pertisk_cd_secrets(raw: &str) -> PertiskCdSecrets {
+    let raw = raw.trim();
+    if raw.starts_with('{') {
+        if let Ok(value) = serde_json::from_str::<Value>(raw) {
+            return PertiskCdSecrets {
+                database_url: value
+                    .get("database_url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                admin_password: value
+                    .get("admin_password")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                git_token: value
+                    .get("git_token")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            };
+        }
+    }
+    PertiskCdSecrets {
+        database_url: raw.to_string(),
+        ..PertiskCdSecrets::default()
+    }
+}
+
+fn encode_pertisk_cd_secrets(secrets: &PertiskCdSecrets) -> String {
+    json!({
+        "database_url": secrets.database_url,
+        "admin_password": secrets.admin_password,
+        "git_token": secrets.git_token,
+    })
+    .to_string()
+}
+
+fn decrypt_pertisk_cd_secrets(state: &AppState, enc: Option<&str>) -> PertiskCdSecrets {
+    let Some(enc) = enc.filter(|s| !s.is_empty()) else {
+        return PertiskCdSecrets::default();
+    };
+    match crypto::decrypt(&state.cfg().secret_key, enc) {
+        Ok(raw) => parse_pertisk_cd_secrets(&raw),
+        Err(_) => PertiskCdSecrets::default(),
+    }
+}
+
+pub fn parse_pertisk_cd_stored(v: &Value) -> PertiskCdConfig {
+    PertiskCdConfig {
+        database_url: json_str(v, "database_url"),
+        admin_email: json_str(v, "admin_email"),
+        admin_name: json_str(v, "admin_name"),
+        admin_password: json_str(v, "admin_password"),
+        image_tag: json_str(v, "image_tag"),
+        host: json_str(v, "host"),
+        tls_secret: json_str(v, "tls_secret"),
+        git_url: json_str(v, "git_url"),
+        git_token: json_str(v, "git_token"),
+        git_group: json_str(v, "git_group"),
+    }
+}
+
+fn pertisk_cd_tls_secret(cfg: &PertiskCdConfig) -> String {
+    let tls_secret = cfg.tls_secret.trim();
+    if tls_secret.is_empty() || tls_secret.eq_ignore_ascii_case("none") {
+        String::new()
+    } else {
+        tls_secret.to_string()
+    }
+}
+
+pub fn public_pertisk_cd_config(cfg: &PertiskCdConfig, registry: &str) -> Value {
+    let tag = if cfg.image_tag.trim().is_empty() {
+        PERTISK_CD_IMAGE_TAG
+    } else {
+        cfg.image_tag.trim()
+    };
+    let email = if cfg.admin_email.trim().is_empty() {
+        "admin@local"
+    } else {
+        cfg.admin_email.trim()
+    };
+    let name = if cfg.admin_name.trim().is_empty() {
+        "Admin"
+    } else {
+        cfg.admin_name.trim()
+    };
+    let tls = pertisk_cd_tls_secret(cfg);
+    json!({
+        "admin_email": email,
+        "admin_name": name,
+        "image_tag": tag,
+        "image": format!("{}/{PERTISK_CD_IMAGE_REPO}:{tag}", registry.trim().trim_end_matches('/')),
+        "host": cfg.host.trim(),
+        "tls_secret": if tls.is_empty() { "none".to_string() } else { tls },
+        "git_url": cfg.git_url.trim(),
+        "git_group": cfg.git_group.trim(),
+    })
+}
+
+pub fn validate_pertisk_cd(
+    cfg: &PertiskCdConfig,
+    require_database_url: bool,
+    require_admin_password: bool,
+) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    if require_database_url && cfg.database_url.trim().is_empty() {
+        errors.push("database URL is required".into());
+    }
+    if !cfg.database_url.trim().is_empty()
+        && !cfg.database_url.trim().starts_with("postgres")
+    {
+        errors.push("database URL must start with postgres:// or postgresql://".into());
+    }
+    if cfg.admin_email.trim().is_empty() {
+        errors.push("admin email is required".into());
+    } else if cfg.admin_email.contains(['\n', '\r', '\0', ' ']) {
+        errors.push("admin email contains invalid characters".into());
+    }
+    if require_admin_password && cfg.admin_password.trim().is_empty() {
+        errors.push("admin password is required".into());
+    }
+    if !cfg.admin_password.trim().is_empty() {
+        if cfg.admin_password.trim().len() < 4 {
+            errors.push("admin password is too short".into());
+        } else if cfg.admin_password.contains(['\n', '\r', '\0']) {
+            errors.push("admin password contains invalid characters".into());
+        }
+    }
+    let tag = cfg.image_tag.trim();
+    if !tag.is_empty()
+        && (tag.len() > 128
+            || tag
+                .chars()
+                .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))))
+    {
+        errors.push("image tag must be a Docker tag (letters, digits, . _ - +)".into());
+    }
+    let host = cfg.host.trim();
+    if !host.is_empty()
+        && (host.len() > 253
+            || host.starts_with('.')
+            || host.ends_with('.')
+            || !host
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-')))
+    {
+        errors.push("console host must be a DNS hostname".into());
+    }
+    let tls_secret = pertisk_cd_tls_secret(cfg);
+    if !tls_secret.is_empty() {
+        if host.is_empty() {
+            errors.push("TLS secret requires a console host".into());
+        } else if !k8s_name_ok(&tls_secret) {
+            errors.push("TLS secret must be a Kubernetes resource name".into());
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn pertisk_cd_helm_values(
+    cfg: &PertiskCdConfig,
+    secrets: &PertiskCdSecrets,
+    registry: &str,
+    cluster_name: &str,
+) -> Value {
+    let tag = if cfg.image_tag.trim().is_empty() {
+        PERTISK_CD_IMAGE_TAG
+    } else {
+        cfg.image_tag.trim()
+    };
+    let registry = registry.trim().trim_end_matches('/');
+    let email = if cfg.admin_email.trim().is_empty() {
+        "admin@local"
+    } else {
+        cfg.admin_email.trim()
+    };
+    let name = if cfg.admin_name.trim().is_empty() {
+        "Admin"
+    } else {
+        cfg.admin_name.trim()
+    };
+    let host = cfg.host.trim();
+    let tls = pertisk_cd_tls_secret(cfg);
+    let mut values = json!({
+        "image": {
+            "repository": format!("{registry}/{PERTISK_CD_IMAGE_REPO}"),
+            "tag": tag,
+        },
+        "kubeContext": if cluster_name.trim().is_empty() {
+            "in-cluster".to_string()
+        } else {
+            cluster_name.trim().to_string()
+        },
+        "secrets": {
+            "databaseUrl": secrets.database_url.trim(),
+            "adminEmail": email,
+            "adminName": name,
+            "adminPassword": secrets.admin_password.trim(),
+            "gitUrl": cfg.git_url.trim(),
+            "gitToken": secrets.git_token.trim(),
+            "gitGroup": cfg.git_group.trim(),
+        },
+        "ingress": {
+            "enabled": !host.is_empty(),
+        }
+    });
+    if !host.is_empty() {
+        values["ingress"]["hosts"] = json!([{
+            "host": host,
+            "paths": [{ "path": "/", "pathType": "Prefix" }],
+        }]);
+        values["ingress"]["className"] = json!("pertisk-proxy");
+        values["ingress"]["tls"] = if tls.is_empty() {
+            json!([])
+        } else {
+            json!([{ "secretName": tls, "hosts": [host] }])
+        };
     }
     values
 }
@@ -1565,11 +1938,11 @@ pub fn admin_ingress_doc(host: &str, tls_secret: &str) -> Value {
     doc
 }
 
-pub fn harbor_pull_secret_doc(user: &str, password: &str) -> Value {
-    harbor_pull_secret_doc_for(INGRESS_IMAGE_REGISTRY, user, password)
+pub fn registry_pull_secret_doc(user: &str, password: &str) -> Value {
+    registry_pull_secret_doc_for(INGRESS_IMAGE_REGISTRY, user, password)
 }
 
-pub fn harbor_pull_secret_doc_for(registry: &str, user: &str, password: &str) -> Value {
+pub fn registry_pull_secret_doc_for(registry: &str, user: &str, password: &str) -> Value {
     let auth = B64.encode(format!("{}:{password}", user.trim()));
     let dockerconfig = json!({
         "auths": {
@@ -2447,6 +2820,64 @@ async fn live_kos_scaler(kc: &Path) -> Value {
     })
 }
 
+async fn live_pertisk_cd(kc: &Path) -> Value {
+    let deploy = kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "deploy",
+            PERTISK_CD_DEPLOY,
+            "-n",
+            PERTISK_CD_NAMESPACE,
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten();
+    let service = kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "svc",
+            PERTISK_CD_DEPLOY,
+            "-n",
+            PERTISK_CD_NAMESPACE,
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten();
+    let ingress = kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "ingress",
+            PERTISK_CD_DEPLOY,
+            "-n",
+            PERTISK_CD_NAMESPACE,
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten();
+    json!({
+        "installed": deploy.as_ref().map(deploy_ready).unwrap_or(false) && service.is_some(),
+        "partial": deploy.is_some() || service.is_some(),
+        "ready": deploy.as_ref().map(deploy_ready).unwrap_or(false),
+        "service": service.is_some(),
+        "image": deploy.as_ref().and_then(container_image),
+        "host": ingress.as_ref().and_then(|v| v.pointer("/spec/rules/0/host")).and_then(|v| v.as_str()),
+        "tls_secret": ingress.as_ref().and_then(|v| v.pointer("/spec/tls/0/secretName")).and_then(|v| v.as_str()),
+        "tls_secrets": list_tls_secret_names(kc, &[PERTISK_CD_NAMESPACE, CERT_NS]).await,
+    })
+}
+
 async fn live_kubernetes_dashboard(kc: &Path, namespace: &str) -> Value {
     let deploy = kubectl_json_optional(
         kc,
@@ -2693,7 +3124,29 @@ async fn load_row(state: &AppState, cluster_id: &str, addon: &str) -> ApiResult<
     .bind(addon)
     .fetch_optional(state.pool())
     .await?;
-    Ok(row)
+    if row.is_some() || addon != KOS_SCALER_ID {
+        return Ok(row);
+    }
+    // Migrate legacy add-on id `kos-scaler` → `pertisk-kos-scaler`.
+    let legacy = sqlx::query_as::<_, AddonRow>(
+        "SELECT status, config_json, secrets_enc, error, installed_at, updated_at \
+         FROM cluster_addons WHERE cluster_id = ? AND addon = ?",
+    )
+    .bind(cluster_id)
+    .bind(KOS_SCALER_ID_LEGACY)
+    .fetch_optional(state.pool())
+    .await?;
+    if legacy.is_some() {
+        sqlx::query(
+            "UPDATE cluster_addons SET addon = ? WHERE cluster_id = ? AND addon = ?",
+        )
+        .bind(KOS_SCALER_ID)
+        .bind(cluster_id)
+        .bind(KOS_SCALER_ID_LEGACY)
+        .execute(state.pool())
+        .await?;
+    }
+    Ok(legacy)
 }
 
 fn config_is_empty(config_json: &str) -> bool {
@@ -3114,6 +3567,24 @@ pub async fn summarize_one(
                 }
                 public_config = public_kos_scaler_config(&cfg);
             }
+            PERTISK_CD_ID => {
+                let mut cfg = parse_pertisk_cd_stored(body);
+                cfg.database_url = json_str(body, "database_url");
+                cfg.admin_password = json_str(body, "admin_password");
+                cfg.git_token = json_str(body, "git_token");
+                let stored_secrets = decrypt_pertisk_cd_secrets(
+                    state,
+                    row.as_ref().and_then(|r| r.secrets_enc.as_deref()),
+                );
+                let need_db = cfg.database_url.trim().is_empty()
+                    && stored_secrets.database_url.trim().is_empty();
+                let need_pw = cfg.admin_password.trim().is_empty()
+                    && stored_secrets.admin_password.trim().is_empty();
+                if let Err(e) = validate_pertisk_cd(&cfg, need_db, need_pw) {
+                    errors.extend(e);
+                }
+                public_config = public_pertisk_cd_config(&cfg, state.cfg().image_registry.as_str());
+            }
             KUBERNETES_DASHBOARD_ID => {
                 let mut cfg = parse_kubernetes_dashboard_stored(body);
                 cfg.password = json_str(body, "password");
@@ -3166,6 +3637,12 @@ pub async fn summarize_one(
             }
         }
     }
+    if addon == PERTISK_CD_ID {
+        public_config = public_pertisk_cd_config(
+            &parse_pertisk_cd_stored(&public_config),
+            state.cfg().image_registry.as_str(),
+        );
+    }
     if addon == KUBERNETES_DASHBOARD_ID {
         public_config = public_kubernetes_dashboard_config_with_registry(
             &parse_kubernetes_dashboard_stored(&public_config),
@@ -3193,6 +3670,7 @@ pub async fn summarize_one(
                     CILIUM_LB_ID => live_cilium_lb(&kc).await,
                     INGRESS_ID => live_ingress(&kc).await,
                     KOS_SCALER_ID => live_kos_scaler(&kc).await,
+                    PERTISK_CD_ID => live_pertisk_cd(&kc).await,
                     KUBERNETES_DASHBOARD_ID => {
                         let cfg = parse_kubernetes_dashboard_stored(&public_config);
                         live_kubernetes_dashboard(&kc, cfg.namespace.trim()).await
@@ -3390,7 +3868,14 @@ pub async fn summarize_one(
         && live_installed
         && !live.get("ready").and_then(|v| v.as_bool()).unwrap_or(false)
     {
-        warnings.push("kos-scaler is installed but the deployment is not ready".into());
+        warnings.push("pertisk-kos-scaler is installed but the deployment is not ready".into());
+    }
+    if addon == PERTISK_CD_ID
+        && live.get("available") == Some(&json!(true))
+        && live_installed
+        && !live.get("ready").and_then(|v| v.as_bool()).unwrap_or(false)
+    {
+        warnings.push("pertisk-cd is installed but the deployment is not ready".into());
     }
     if addon == KUBERNETES_DASHBOARD_ID
         && live.get("available") == Some(&json!(true))
@@ -3685,6 +4170,65 @@ pub async fn upsert_install(
             .await?;
             Ok((NfsConfig::default(), CertManagerConfig::default(), public))
         }
+        PERTISK_CD_ID => {
+            let row = load_row(state, cluster_id, addon).await?;
+            let mut secrets = decrypt_pertisk_cd_secrets(
+                state,
+                row.as_ref().and_then(|r| r.secrets_enc.as_deref()),
+            );
+            let mut cfg = parse_pertisk_cd_stored(&body);
+            cfg.database_url = json_str(&body, "database_url");
+            cfg.admin_password = json_str(&body, "admin_password");
+            cfg.git_token = json_str(&body, "git_token");
+            if let Err(e) = validate_pertisk_cd(
+                &cfg,
+                cfg.database_url.trim().is_empty() && secrets.database_url.trim().is_empty(),
+                cfg.admin_password.trim().is_empty() && secrets.admin_password.trim().is_empty(),
+            ) {
+                return Err(AppError::bad(e.join("; ")));
+            }
+            if !cfg.database_url.trim().is_empty() {
+                secrets.database_url = cfg.database_url.trim().to_string();
+            }
+            if !cfg.admin_password.trim().is_empty() {
+                secrets.admin_password = cfg.admin_password.trim().to_string();
+            }
+            if !cfg.git_token.trim().is_empty() {
+                secrets.git_token = cfg.git_token.trim().to_string();
+            }
+            if secrets.database_url.trim().is_empty() {
+                return Err(AppError::bad("database URL is required"));
+            }
+            if secrets.admin_password.trim().is_empty() {
+                return Err(AppError::bad("admin password is required"));
+            }
+            let public =
+                public_pertisk_cd_config(&cfg, state.cfg().image_registry.as_str());
+            let enc = crypto::encrypt(
+                &state.cfg().secret_key,
+                &encode_pertisk_cd_secrets(&secrets),
+            )
+            .map_err(AppError::Anyhow)?;
+            sqlx::query(
+                r#"INSERT INTO cluster_addons
+                     (cluster_id, addon, status, config_json, secrets_enc, error, installed_at, updated_at)
+                   VALUES (?, ?, 'installing', ?, ?, NULL, NULL, ?)
+                   ON CONFLICT(cluster_id, addon) DO UPDATE SET
+                     status = 'installing',
+                     config_json = excluded.config_json,
+                     secrets_enc = excluded.secrets_enc,
+                     error = NULL,
+                     updated_at = excluded.updated_at"#,
+            )
+            .bind(cluster_id)
+            .bind(addon)
+            .bind(public.to_string())
+            .bind(&enc)
+            .bind(&now)
+            .execute(state.pool())
+            .await?;
+            Ok((NfsConfig::default(), CertManagerConfig::default(), public))
+        }
         KUBERNETES_DASHBOARD_ID => {
             let row = load_row(state, cluster_id, addon).await?;
             let mut secrets = row
@@ -3840,6 +4384,18 @@ pub async fn run_install_job(
                 _ => anyhow::bail!("mgmt password is not stored"),
             };
             install_kos_scaler(state, cid, &kc, log_path, &stored, &password).await
+        }
+        PERTISK_CD_ID => {
+            let secrets = match row.secrets_enc.as_deref() {
+                Some(enc) if !enc.is_empty() => {
+                    parse_pertisk_cd_secrets(&crypto::decrypt(&state.cfg().secret_key, enc)?)
+                }
+                _ => anyhow::bail!("pertisk-cd secrets are not stored"),
+            };
+            if secrets.database_url.trim().is_empty() || secrets.admin_password.trim().is_empty() {
+                anyhow::bail!("pertisk-cd database URL or admin password is not stored; update the add-on")
+            }
+            install_pertisk_cd(state, cid, &kc, log_path, &stored, &secrets).await
         }
         KUBERNETES_DASHBOARD_ID => {
             let secrets = match row.secrets_enc.as_deref() {
@@ -4038,7 +4594,13 @@ async fn install_kos_scaler(
             "mgmt URL {endpoint:?} is not reachable from cluster nodes; set Mgmt URL override or MGMT_PUBLIC_URL"
         );
     }
-    let values = kos_scaler_helm_values(&cfg, cluster_id, &endpoint, password);
+    let values = kos_scaler_helm_values(
+        &cfg,
+        cluster_id,
+        &endpoint,
+        password,
+        state.cfg().image_registry.as_str(),
+    );
     let mut logged = values.clone();
     if logged.pointer_mut("/mgmt/password").is_some() {
         logged["mgmt"]["password"] = json!("***");
@@ -4046,7 +4608,7 @@ async fn install_kos_scaler(
     crate::jobs::append_log(
         log_path,
         &format!(
-            "kos-scaler chart {KOS_SCALER_HELM_CHART} tag={} endpoint={endpoint} cluster={cluster_id} workers={}..{}\n",
+            "pertisk-kos-scaler chart {KOS_SCALER_HELM_CHART} tag={} endpoint={endpoint} cluster={cluster_id} workers={}..{}\n",
             if cfg.image_tag.trim().is_empty() {
                 KOS_SCALER_IMAGE_TAG
             } else {
@@ -4060,7 +4622,7 @@ async fn install_kos_scaler(
     let values_path = state
         .cfg()
         .jobs_dir()
-        .join(format!("{cluster_id}-kos-scaler-values.yaml"));
+        .join(format!("{cluster_id}-pertisk-kos-scaler-values.yaml"));
     write_restricted_file(&values_path, &serde_json::to_string_pretty(&values)?)?;
     let _cleanup = UnlinkOnDrop(values_path.clone());
     crate::jobs::append_log(
@@ -4072,7 +4634,7 @@ async fn install_kos_scaler(
     )?;
     let values_s = values_path
         .to_str()
-        .ok_or_else(|| anyhow::anyhow!("kos-scaler values path is not utf-8"))?;
+        .ok_or_else(|| anyhow::anyhow!("pertisk-kos-scaler values path is not utf-8"))?;
     let repo = state.cfg().helm_chart_repo.as_str();
     crate::jobs::append_log(
         log_path,
@@ -4099,7 +4661,7 @@ async fn install_kos_scaler(
         .await
         .map_err(anyhow_api)?;
     crate::jobs::append_log(log_path, &out)?;
-    crate::jobs::append_log(log_path, "wait for kos-scaler deployment\n")?;
+    crate::jobs::append_log(log_path, "wait for pertisk-kos-scaler deployment\n")?;
     kubectl_ok(
         kc,
         &[
@@ -4108,6 +4670,108 @@ async fn install_kos_scaler(
             &format!("deploy/{KOS_SCALER_DEPLOY}"),
             "-n",
             KOS_SCALER_NAMESPACE,
+            "--timeout=180s",
+        ],
+    )
+    .await
+    .map_err(anyhow_api)?;
+    Ok(())
+}
+
+async fn install_pertisk_cd(
+    state: &AppState,
+    cluster_id: &str,
+    kc: &Path,
+    log_path: &str,
+    stored: &Value,
+    secrets: &PertiskCdSecrets,
+) -> anyhow::Result<()> {
+    let mut cfg = parse_pertisk_cd_stored(stored);
+    cfg.database_url = secrets.database_url.clone();
+    cfg.admin_password = secrets.admin_password.clone();
+    cfg.git_token = secrets.git_token.clone();
+    validate_pertisk_cd(&cfg, true, true).map_err(|e| anyhow::anyhow!(e.join("; ")))?;
+    let registry = state.cfg().image_registry.as_str();
+    let cluster_name: String =
+        sqlx::query_scalar("SELECT name FROM clusters WHERE id = ?")
+            .bind(cluster_id)
+            .fetch_optional(state.pool())
+            .await?
+            .unwrap_or_default();
+    let values = pertisk_cd_helm_values(&cfg, secrets, registry, &cluster_name);
+    let mut logged = values.clone();
+    if logged.pointer_mut("/secrets/databaseUrl").is_some() {
+        logged["secrets"]["databaseUrl"] = json!("***");
+    }
+    if logged.pointer_mut("/secrets/adminPassword").is_some() {
+        logged["secrets"]["adminPassword"] = json!("***");
+    }
+    if logged.pointer_mut("/secrets/gitToken").is_some() {
+        logged["secrets"]["gitToken"] = json!("***");
+    }
+    let values_path = state
+        .cfg()
+        .jobs_dir()
+        .join(format!("{cluster_id}-pertisk-cd-values.yaml"));
+    write_restricted_file(&values_path, &serde_json::to_string_pretty(&values)?)?;
+    let _cleanup = UnlinkOnDrop(values_path.clone());
+    crate::jobs::append_log(
+        log_path,
+        &format!(
+            "pertisk-cd chart {PERTISK_CD_HELM_CHART} image={registry}/{PERTISK_CD_IMAGE_REPO}:{} host={}\n",
+            if cfg.image_tag.trim().is_empty() {
+                PERTISK_CD_IMAGE_TAG
+            } else {
+                cfg.image_tag.trim()
+            },
+            cfg.host.trim(),
+        ),
+    )?;
+    crate::jobs::append_log(
+        log_path,
+        &format!(
+            "helm values:\n{}\n",
+            serde_json::to_string_pretty(&logged).unwrap_or_default()
+        ),
+    )?;
+    let values_s = values_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("pertisk-cd values path is not utf-8"))?;
+    let repo = state.cfg().helm_chart_repo.as_str();
+    crate::jobs::append_log(
+        log_path,
+        &format!(
+            "helm upgrade --install {PERTISK_CD_RELEASE} {PERTISK_CD_HELM_CHART} --repo {repo} -n {PERTISK_CD_NAMESPACE}\n"
+        ),
+    )?;
+    let helm_args = [
+        "upgrade",
+        "--install",
+        PERTISK_CD_RELEASE,
+        PERTISK_CD_HELM_CHART,
+        "--repo",
+        repo,
+        "--namespace",
+        PERTISK_CD_NAMESPACE,
+        "--create-namespace",
+        "--timeout",
+        "5m",
+        "-f",
+        values_s,
+    ];
+    let out = helm_output(Some(kc), &helm_args)
+        .await
+        .map_err(anyhow_api)?;
+    crate::jobs::append_log(log_path, &out)?;
+    crate::jobs::append_log(log_path, "wait for pertisk-cd deployment\n")?;
+    kubectl_ok(
+        kc,
+        &[
+            "wait",
+            "--for=condition=Available",
+            &format!("deploy/{PERTISK_CD_DEPLOY}"),
+            "-n",
+            PERTISK_CD_NAMESPACE,
             "--timeout=180s",
         ],
     )
@@ -4166,7 +4830,7 @@ async fn install_ingress(
         &format!(
             "pertisk-ingress {registry}/{INGRESS_IMAGE_REPO}:{} (pinned {resolved_tag}) arch={arch} network_mode={mode} gateway_api={gateway_api} pull_secret={} registry_user={}\n",
             cfg.image_tag.trim(),
-            if use_pull_secret { INGRESS_PULL_SECRET } else { "none (public Harbor)" },
+            if use_pull_secret { INGRESS_PULL_SECRET } else { "none (public registry)" },
             if cfg.registry_user.trim().is_empty() { "anonymous" } else { cfg.registry_user.trim() }
         ),
     )?;
@@ -4187,7 +4851,7 @@ async fn install_ingress(
             log_path,
             &format!("apply imagePullSecret {INGRESS_PULL_SECRET}\n"),
         )?;
-        let secret = harbor_pull_secret_doc_for(
+        let secret = registry_pull_secret_doc_for(
             registry,
             &cfg.registry_user,
             secrets.registry_password.trim(),
@@ -4199,7 +4863,7 @@ async fn install_ingress(
     } else {
         crate::jobs::append_log(
             log_path,
-            "Harbor project is public; skipping imagePullSecret\n",
+            "Registry project is public; skipping imagePullSecret\n",
         )?;
     }
     let values_path = state
@@ -4734,7 +5398,8 @@ mod tests {
                 "cert-manager",
                 "cilium-lb",
                 "ingress",
-                "kos-scaler",
+                "pertisk-kos-scaler",
+                "pertisk-cd",
                 "kubernetes-dashboard",
             ]
         );
@@ -4742,7 +5407,9 @@ mod tests {
         assert_eq!(catalog()[2].requires_cni, Some("cilium"));
         assert_eq!(catalog()[3].id, "ingress");
         assert_eq!(catalog()[3].section, "ingress");
-        assert_eq!(catalog()[5].section, "dashboard");
+        assert_eq!(catalog()[4].id, KOS_SCALER_ID);
+        assert_eq!(catalog()[5].id, PERTISK_CD_ID);
+        assert_eq!(catalog()[6].section, "dashboard");
     }
 
     #[test]
@@ -4952,11 +5619,21 @@ mod tests {
             storage_class: "nfs-client".into(),
             ..KosScalerConfig::default()
         };
-        let v = kos_scaler_helm_values(&cfg, "cid", "https://ptkos.example", "s3cret");
+        let v = kos_scaler_helm_values(
+            &cfg,
+            "cid",
+            "https://ptkos.example",
+            "s3cret",
+            "registry.tools.thaidevops.co",
+        );
         assert_eq!(v["mgmt"]["clusterId"], "cid");
         assert_eq!(v["mgmt"]["endpoint"], "https://ptkos.example");
         assert_eq!(v["mgmt"]["username"], "admin");
         assert_eq!(v["mgmt"]["password"], "s3cret");
+        assert_eq!(
+            v["image"]["repository"],
+            "registry.tools.thaidevops.co/pertisksoft/pertisk-kos-scaler"
+        );
         assert_eq!(v["config"]["workerPool"]["minSize"], 3);
         assert_eq!(v["config"]["workerPool"]["maxSize"], 12);
         assert_eq!(v["statePersistence"]["enabled"], true);
@@ -4971,7 +5648,7 @@ mod tests {
             tls_secret: "none".into(),
             admin_password: "super-secret".into(),
             registry_user: String::new(),
-            registry_password: "harbor-secret".into(),
+            registry_password: "registry-secret".into(),
         });
         assert!(v.get("admin_password").is_none());
         assert_eq!(v["image_tag"], INGRESS_IMAGE_TAG);
@@ -5011,7 +5688,7 @@ mod tests {
         assert_eq!(v4["service"]["ipFamilies"][0], "IPv4");
         assert_eq!(v4["gatewayApi"]["enabled"], false);
         assert_eq!(v4["adminIngress"]["enabled"], false);
-        assert_eq!(v4["imagePullSecrets"][0]["name"], "pertisk-ingress-harbor");
+        assert_eq!(v4["imagePullSecrets"][0]["name"], "pertisk-ingress-registry");
         assert!(v4.get("auth").is_none());
 
         let dual = ingress_helm_values(
@@ -5084,8 +5761,8 @@ mod tests {
     }
 
     #[test]
-    fn harbor_pull_secret_is_dockerconfigjson() {
-        let doc = harbor_pull_secret_doc("robot$pertisk-proxy+pull", "s3cret");
+    fn registry_pull_secret_is_dockerconfigjson() {
+        let doc = registry_pull_secret_doc("robot$pertisk-proxy+pull", "s3cret");
         assert_eq!(doc["kind"], "Secret");
         assert_eq!(doc["type"], "kubernetes.io/dockerconfigjson");
         let raw = doc["stringData"][".dockerconfigjson"].as_str().unwrap();

@@ -19,7 +19,12 @@ const ADDON_SECRET_FIELDS = {
     { field: 'admin_password', flag: 'token_set' },
     { field: 'registry_password', flag: 'registry_set' },
   ],
-  'kos-scaler': [{ field: 'password', flag: 'token_set' }],
+  'pertisk-kos-scaler': [{ field: 'password', flag: 'token_set' }],
+  'pertisk-cd': [
+    { field: 'database_url', flag: 'token_set' },
+    { field: 'admin_password', flag: 'token_set' },
+    { field: 'git_token', flag: 'token_set' },
+  ],
 }
 
 export function tfResourceName(raw, fallback = 'cluster') {
@@ -78,7 +83,10 @@ function secretVarName(clusterName, addonId, field) {
 
 function needsSecretVar(addon, spec) {
   if (spec.flag && addon[spec.flag]) return true
-  if (addon.id === 'kos-scaler' && spec.field === 'password') return true
+  if (addon.id === 'pertisk-kos-scaler' && spec.field === 'password') return true
+  if (addon.id === 'pertisk-cd' && (spec.field === 'database_url' || spec.field === 'admin_password')) {
+    return true
+  }
   return false
 }
 
