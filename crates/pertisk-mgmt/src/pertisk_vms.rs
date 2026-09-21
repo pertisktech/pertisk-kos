@@ -221,7 +221,17 @@ impl PertiskVmsClient {
 
     pub async fn list_storage(&self, _node: &str) -> ApiResult<Vec<ProxmoxStorage>> {
         let host = self.get("v1/host").await?;
-        Ok(storage_rows_from_host(&host))
+        let mut rows = storage_rows_from_host(&host);
+        if let Ok(metrics) = self.get("v1/metrics").await {
+            if let Some((used, avail, total)) = disk_bytes_from_metrics(&metrics, "") {
+                for row in &mut rows {
+                    row.total = Some(total as i64);
+                    row.avail = Some(avail as i64);
+                    let _ = used;
+                }
+            }
+        }
+        Ok(rows)
     }
 
     pub async fn host_capacity(&self, node: &str, storage: &str) -> ApiResult<HypervisorCapacity> {
@@ -274,14 +284,21 @@ impl PertiskVmsClient {
             storage: storage.to_string(),
             ..HypervisorCapacity::default()
         };
-        if let Ok(vols) = self.get("v1/volumes").await {
-            if let Some(arr) = vols.as_array() {
-                let used: f64 = arr
-                    .iter()
-                    .filter_map(|v| json_f64_val(v.get("size_bytes").unwrap_or(&Value::Null)))
-                    .sum();
-                if used > 0.0 {
-                    cap.disk_used_bytes = Some(used);
+        // Live host metrics (storage root filesystem — often /home on AlmaLinux).
+        if let Ok(metrics) = self.get("v1/metrics").await {
+            apply_live_metrics(&mut cap, &metrics, want);
+        }
+        // Fallback: provisioned volume sizes as used only (no free/total).
+        if cap.disk_total_bytes.is_none() {
+            if let Ok(vols) = self.get("v1/volumes").await {
+                if let Some(arr) = vols.as_array() {
+                    let used: f64 = arr
+                        .iter()
+                        .filter_map(|v| json_f64_val(v.get("size_bytes").unwrap_or(&Value::Null)))
+                        .sum();
+                    if used > 0.0 {
+                        cap.disk_used_bytes = Some(used);
+                    }
                 }
             }
         }
@@ -647,6 +664,75 @@ fn storage_rows_from_host(host: &Value) -> Vec<ProxmoxStorage> {
     rows
 }
 
+/// Parse `GET /v1/metrics` live sample (or a named node) into used / avail / total disk bytes.
+fn disk_bytes_from_metrics(metrics: &Value, node: &str) -> Option<(f64, f64, f64)> {
+    let live = if node.trim().is_empty() {
+        metrics.get("live")?
+    } else if let Some(nodes) = metrics.get("nodes").and_then(|v| v.as_array()) {
+        nodes
+            .iter()
+            .find(|n| {
+                n.get("name")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|n| n.eq_ignore_ascii_case(node.trim()))
+            })
+            .and_then(|n| n.get("live"))
+            .or_else(|| metrics.get("live"))?
+    } else {
+        metrics.get("live")?
+    };
+    let total = json_f64_val(live.get("disk_total_bytes").unwrap_or(&Value::Null))?;
+    if total <= 0.0 {
+        return None;
+    }
+    let used = json_f64_val(live.get("disk_used_bytes").unwrap_or(&Value::Null))
+        .unwrap_or(0.0)
+        .clamp(0.0, total);
+    let avail = (total - used).max(0.0);
+    Some((used, avail, total))
+}
+
+fn apply_live_metrics(cap: &mut HypervisorCapacity, metrics: &Value, node: &str) {
+    let live = if node.trim().is_empty() {
+        metrics.get("live")
+    } else {
+        metrics
+            .get("nodes")
+            .and_then(|v| v.as_array())
+            .and_then(|nodes| {
+                nodes.iter().find(|n| {
+                    n.get("name")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|n| n.eq_ignore_ascii_case(node.trim()))
+                })
+            })
+            .and_then(|n| n.get("live"))
+            .or_else(|| metrics.get("live"))
+    };
+    let Some(live) = live else {
+        return;
+    };
+    if let Some((used, avail, total)) = disk_bytes_from_metrics(metrics, node) {
+        cap.disk_used_bytes = Some(used);
+        cap.disk_avail_bytes = Some(avail);
+        cap.disk_total_bytes = Some(total);
+    }
+    if let Some(mem_total) = json_f64_val(live.get("mem_total_bytes").unwrap_or(&Value::Null)) {
+        if mem_total > 0.0 {
+            let mem_used = json_f64_val(live.get("mem_used_bytes").unwrap_or(&Value::Null))
+                .unwrap_or(0.0)
+                .clamp(0.0, mem_total);
+            cap.mem_total_bytes = Some(mem_total);
+            cap.mem_used_bytes = Some(mem_used);
+        }
+    }
+    if let Some(cpu_pct) = live.get("cpu_pct").and_then(|v| v.as_f64()) {
+        if let Some(total) = cap.cpu_total.filter(|t| *t > 0.0) {
+            cap.cpu_used = Some(((cpu_pct / 100.0) * total).clamp(0.0, total));
+        }
+    }
+}
+
 fn validate_storage(host: &Value, node: &str, storage: &str) -> StorageValidation {
     let rows = storage_rows_from_host(host);
     let available: Vec<String> = rows.iter().map(|s| s.storage.clone()).collect();
@@ -830,6 +916,45 @@ mod tests {
         assert!(v.ok);
         let bad = validate_storage(&host, "n1", "local-lvm");
         assert!(!bad.ok);
+    }
+
+    #[test]
+    fn metrics_fill_disk_used_avail_total() {
+        let metrics = serde_json::json!({
+            "live": {
+                "cpu_pct": 12.5,
+                "mem_used_bytes": 8_589_934_592u64,
+                "mem_total_bytes": 34_359_738_368u64,
+                "disk_used_bytes": 18_253_123_584u64,
+                "disk_total_bytes": 906_238_689_280u64
+            },
+            "nodes": [{
+                "name": "pertisk-r2514",
+                "live": {
+                    "cpu_pct": 12.5,
+                    "mem_used_bytes": 8_589_934_592u64,
+                    "mem_total_bytes": 34_359_738_368u64,
+                    "disk_used_bytes": 18_253_123_584u64,
+                    "disk_total_bytes": 906_238_689_280u64
+                }
+            }]
+        });
+        let (used, avail, total) = disk_bytes_from_metrics(&metrics, "").unwrap();
+        assert!((total - 906_238_689_280.0).abs() < 1.0);
+        assert!((used - 18_253_123_584.0).abs() < 1.0);
+        assert!((avail - (total - used)).abs() < 1.0);
+
+        let mut cap = HypervisorCapacity {
+            cpu_used: Some(2.0),
+            cpu_total: Some(16.0),
+            ..HypervisorCapacity::default()
+        };
+        apply_live_metrics(&mut cap, &metrics, "pertisk-r2514");
+        assert_eq!(cap.disk_total_bytes, Some(total));
+        assert_eq!(cap.disk_used_bytes, Some(used));
+        assert_eq!(cap.disk_avail_bytes, Some(avail));
+        assert!(cap.mem_total_bytes.unwrap() > 0.0);
+        assert!((cap.cpu_used.unwrap() - 2.0).abs() < 0.01); // 12.5% of 16
     }
 
     #[test]

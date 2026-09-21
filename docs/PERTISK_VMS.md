@@ -14,6 +14,8 @@ Production install and **SSH matrix**: [DEPLOY.md](./DEPLOY.md).
 
 Guest image: virtio disk/NIC — the existing Pertisk cloud qcow2 works. **amd64 and arm64** are both allowed when `GET /v1/host` reports that arch.
 
+**Capacity metrics:** mgmt reads live CPU / memory / disk from `GET /v1/metrics` (filesystem that holds `storage.root`, typically `/var/lib/pertisk` when that path is a dedicated LV). Volume size sums are only a fallback for used bytes when metrics omit totals.
+
 ## Provider fields
 
 | UI field | Stored as | Example |

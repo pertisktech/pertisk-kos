@@ -5,9 +5,7 @@ import { Icon } from '../components/Icons'
 import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
 import { placeholderSummary, formatK8sVersion } from '../components/ClusterCard'
-import ResourceDonut from '../components/ResourceDonut'
-import { formatProviderKind, normalizeProviderKind, providerKindGlyph } from '../components/ClusterMetaBadges'
-import { ProviderStatusBadge } from '../components/ProviderStatusBadge'
+import { formatProviderKind, providerKindGlyph } from '../components/ClusterMetaBadges'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
@@ -32,10 +30,48 @@ function formatMetric(m) {
   const used = m.display_used ?? m.used
   const total = m.display_total ?? m.total
   if (used == null && total == null) return '—'
-  const unit = m.unit ? ` ${m.unit}` : ''
+  if (typeof used === 'string' && typeof total === 'string') {
+    const um = used.trim().match(/^([\d.]+)\s*(.*)$/)
+    const tm = total.trim().match(/^([\d.]+)\s*(.*)$/)
+    if (um && tm && um[2] && um[2] === tm[2]) {
+      return `${um[1]} / ${tm[1]} ${tm[2]}`.trim()
+    }
+  }
+  const unit = m.display_used == null && m.display_total == null && m.unit ? ` ${m.unit}` : ''
   if (total == null) return `${used}${unit}`
   if (used == null) return `— / ${total}${unit}`
   return `${used} / ${total}${unit}`
+}
+
+function MetricBoxes({ summary }) {
+  return (
+    <div className="live-metric-row">
+      <div className="live-metric-box">
+        <div className="live-metric-label">
+          <Icon name="cpu" size={12} /> CPU
+        </div>
+        <div className="live-metric-value" title={formatMetric(summary.cpu)}>
+          {formatMetric(summary.cpu)}
+        </div>
+      </div>
+      <div className="live-metric-box">
+        <div className="live-metric-label">
+          <Icon name="memory" size={12} /> Memory
+        </div>
+        <div className="live-metric-value" title={formatMetric(summary.memory)}>
+          {formatMetric(summary.memory)}
+        </div>
+      </div>
+      <div className="live-metric-box">
+        <div className="live-metric-label">
+          <Icon name="disk" size={12} /> Disk
+        </div>
+        <div className="live-metric-value" title={formatMetric(summary.disk)}>
+          {formatMetric(summary.disk)}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function statusTone(status) {
@@ -44,21 +80,28 @@ function statusTone(status) {
   return 'warn'
 }
 
+function availTone(availability) {
+  if (availability === 'online') return 'ok'
+  if (availability === 'offline') return 'err'
+  return 'warn'
+}
+
 function ProviderResourceCard({ summary, onOpen }) {
-  const kind = normalizeProviderKind(summary.kind)
   const avail = summary.availability || 'unknown'
-  const cardClass = [
-    'cluster-card',
-    'provider-card',
-    avail === 'online' ? 'status-ready avail-online' : '',
-    avail === 'offline' ? 'status-ready avail-offline' : '',
+  const tone = availTone(avail)
+  const label =
+    avail === 'online' ? 'Connected' : avail === 'offline' ? 'Offline' : 'Unknown'
+  const sub = [
+    formatProviderKind(summary.kind),
+    summary.node,
+    summary.storage,
   ]
     .filter(Boolean)
-    .join(' ')
+    .join(' · ')
 
   return (
     <article
-      className={cardClass}
+      className="live-resource-card"
       role="link"
       tabIndex={0}
       onClick={onOpen}
@@ -69,39 +112,30 @@ function ProviderResourceCard({ summary, onOpen }) {
         }
       }}
     >
-      <div className="cluster-card-head">
-        <div className="cluster-card-identity">
-          <span className="cluster-card-icon entity-card-glyph" aria-hidden>
+      <div className="live-resource-head">
+        <div className="live-resource-title">
+          <span className={`live-resource-icon ${tone === 'ok' ? 'ok' : 'warn'}`} aria-hidden>
             {providerKindGlyph(summary.kind)}
           </span>
-          <div className="cluster-card-title">
-            <p className="cluster-card-name">{summary.provider_name}</p>
-            <p className="cluster-card-meta">
-              <span className={`badge kind kind-${kind}`}>{formatProviderKind(summary.kind)}</span>
-              {summary.node ? <span>{summary.node}</span> : null}
+          <div style={{ minWidth: 0 }}>
+            <p className="live-resource-name">{summary.provider_name}</p>
+            <p className="live-resource-sub" title={sub}>
+              {sub || `${formatProviderKind(summary.kind)} · CPU · memory · disk`}
             </p>
           </div>
         </div>
-        <ProviderStatusBadge availability={avail} showUnknown />
+        <span className={`live-resource-status ${tone === 'ok' ? 'ok' : 'warn'}`}>
+          <span className="dot" aria-hidden />
+          {label}
+        </span>
       </div>
-      <div className="cluster-card-body">
-        {summary.storage ? (
-          <div className="cluster-card-tags">
-            <span className="tag tag-mono">{summary.storage}</span>
-          </div>
-        ) : null}
-        <div className="cluster-card-meters">
-          <ResourceDonut kind="cpu" label="CPU" icon="cpu" metric={summary.cpu} size={56} />
-          <ResourceDonut kind="memory" label="Memory" icon="memory" metric={summary.memory} size={56} />
-          <ResourceDonut kind="disk" label="Disk" icon="disk" metric={summary.disk} size={56} />
-        </div>
-        {summary.error && avail !== 'offline' && (
-          <p className="muted cluster-resource-soft-err" title={summary.error}>
-            <Icon name="alert" size={12} />
-            {summary.error}
-          </p>
-        )}
-      </div>
+      <MetricBoxes summary={summary} />
+      {summary.error && avail !== 'offline' && (
+        <p className="muted cluster-resource-soft-err" title={summary.error}>
+          <Icon name="alert" size={12} />
+          {summary.error}
+        </p>
+      )}
     </article>
   )
 }
@@ -138,26 +172,7 @@ function LiveClusterResourceCard({ summary, onOpen }) {
           {label}
         </span>
       </div>
-      <div className="live-metric-row">
-        <div className="live-metric-box">
-          <div className="live-metric-label">
-            <Icon name="cpu" size={12} /> CPU
-          </div>
-          <div className="live-metric-value">{formatMetric(summary.cpu)}</div>
-        </div>
-        <div className="live-metric-box">
-          <div className="live-metric-label">
-            <Icon name="memory" size={12} /> Memory
-          </div>
-          <div className="live-metric-value">{formatMetric(summary.memory)}</div>
-        </div>
-        <div className="live-metric-box">
-          <div className="live-metric-label">
-            <Icon name="disk" size={12} /> Disk
-          </div>
-          <div className="live-metric-value">{formatMetric(summary.disk)}</div>
-        </div>
-      </div>
+      <MetricBoxes summary={summary} />
     </article>
   )
 }
@@ -538,7 +553,7 @@ export default function Dashboard() {
             </div>
           </div>
         ) : (
-          <div className="cluster-card-grid cluster-card-grid-live">
+          <div className="dash-resource-grid">
             {displayProviders.map((s) => (
               <ProviderResourceCard
                 key={s.provider_id}
