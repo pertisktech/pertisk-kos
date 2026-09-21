@@ -1546,8 +1546,16 @@ tr.row-click:focus-visible {
     justify-content: space-between;
   }
 }
+.detail-top {
+  margin-bottom: 0.75rem;
+}
 .detail .page-head {
   align-items: flex-start;
+  padding-bottom: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.detail .page-head .row-actions {
+  justify-content: flex-end;
 }
 .detail .page-head h1 {
   font-size: 1.35rem;
@@ -3788,6 +3796,10 @@ th.col-actions, td.col-actions {
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 .resource-donut-ratio span { margin-left: 0.125rem; }
 
@@ -4279,6 +4291,10 @@ a.entity-card-identity:hover .entity-card-name { color: var(--primary); }
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--app-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 .live-metric-value {
   margin-top: 0.25rem;

@@ -141,19 +141,19 @@ function LiveClusterResourceCard({ summary, onOpen }) {
       <div className="live-metric-row">
         <div className="live-metric-box">
           <div className="live-metric-label">
-            <Icon name="cpu" size={12} /> CPU used / total
+            <Icon name="cpu" size={12} /> CPU
           </div>
           <div className="live-metric-value">{formatMetric(summary.cpu)}</div>
         </div>
         <div className="live-metric-box">
           <div className="live-metric-label">
-            <Icon name="memory" size={12} /> Memory used / total
+            <Icon name="memory" size={12} /> Memory
           </div>
           <div className="live-metric-value">{formatMetric(summary.memory)}</div>
         </div>
         <div className="live-metric-box">
           <div className="live-metric-label">
-            <Icon name="disk" size={12} /> Disk used / total
+            <Icon name="disk" size={12} /> Disk
           </div>
           <div className="live-metric-value">{formatMetric(summary.disk)}</div>
         </div>
