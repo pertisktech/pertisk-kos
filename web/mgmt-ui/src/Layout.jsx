@@ -3,23 +3,38 @@ import { getToken, logoutAndRedirect, setAuthProvider } from './api'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import { Icon } from './components/Icons'
+import BrandLogo from './components/BrandLogo'
 import ThemeToggle from './components/ThemeToggle'
 import { useConfirm } from './components/Confirm'
-import { APP_VERSION } from './utils/version'
 
 const SIDEBAR_COLLAPSED_KEY = 'pertisk_kos_sidebar_collapsed'
 
-const NAV_ITEMS = [
-  { to: '/', label: 'Dashboard', icon: 'dashboard', end: true },
-  { to: '/clusters', label: 'Clusters', icon: 'clusters' },
-  { to: '/machines', label: 'Machines', icon: 'machines' },
-  { to: '/providers', label: 'Providers', icon: 'providers' },
-  { to: '/images', label: 'Images', icon: 'disk' },
-  { to: '/os-packages', label: 'OS packages', icon: 'packages' },
-  { to: '/templates', label: 'Templates', icon: 'templates' },
-  { to: '/users', label: 'Users', icon: 'users', adminOnly: true },
-  { to: '/audit', label: 'Audit log', icon: 'audit' },
-  { to: '/settings', label: 'Settings', icon: 'settings' },
+const NAV_SECTIONS = [
+  {
+    label: 'Fleet',
+    items: [
+      { to: '/', label: 'Overview', icon: 'dashboard', end: true },
+      { to: '/clusters', label: 'Clusters', icon: 'clusters' },
+      { to: '/machines', label: 'Machines', icon: 'machines' },
+      { to: '/providers', label: 'Providers', icon: 'providers' },
+    ],
+  },
+  {
+    label: 'Node OS',
+    items: [
+      { to: '/images', label: 'Images', icon: 'disk' },
+      { to: '/os-packages', label: 'OS packages', icon: 'packages' },
+      { to: '/templates', label: 'Templates', icon: 'templates' },
+    ],
+  },
+  {
+    label: 'System',
+    items: [
+      { to: '/users', label: 'Users', icon: 'users', adminOnly: true },
+      { to: '/audit', label: 'Audit log', icon: 'audit' },
+      { to: '/settings', label: 'Settings', icon: 'settings' },
+    ],
+  },
 ]
 
 const SECTION_TITLES = [
@@ -35,7 +50,7 @@ const SECTION_TITLES = [
   { match: /^\/users/, title: 'Users' },
   { match: /^\/audit/, title: 'Audit log' },
   { match: /^\/settings/, title: 'Settings' },
-  { match: /^\/$/, title: 'Dashboard' },
+  { match: /^\/$/, title: 'Overview' },
 ]
 
 function getStoredCollapsed() {
@@ -46,7 +61,7 @@ function sectionTitle(pathname) {
   for (const entry of SECTION_TITLES) {
     if (entry.match.test(pathname)) return entry.title
   }
-  return 'Dashboard'
+  return 'Overview'
 }
 
 export default function Layout() {
@@ -58,9 +73,7 @@ export default function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(getStoredCollapsed)
   const [search, setSearch] = useState('')
-  const [searchOpen, setSearchOpen] = useState(false)
   const userMenuRef = useRef(null)
-  const searchRef = useRef(null)
 
   useEffect(() => {
     if (!getToken()) {
@@ -78,7 +91,6 @@ export default function Layout() {
   useEffect(() => {
     setMobileOpen(false)
     setShowUserMenu(false)
-    setSearchOpen(false)
   }, [location.pathname])
 
   useEffect(() => {
@@ -105,10 +117,6 @@ export default function Layout() {
     return () => document.removeEventListener('keydown', onKey)
   }, [mobileOpen])
 
-  useEffect(() => {
-    if (searchOpen && searchRef.current) searchRef.current.focus()
-  }, [searchOpen])
-
   async function logout() {
     setShowUserMenu(false)
     const ok = await confirm({
@@ -132,12 +140,14 @@ export default function Layout() {
       return
     }
     nav(`/machines?q=${encodeURIComponent(q)}`)
-    setSearchOpen(false)
   }
 
   const initial = user?.username ? user.username.slice(0, 2).toUpperCase() : 'AD'
   const title = useMemo(() => sectionTitle(location.pathname), [location.pathname])
-  const navItems = NAV_ITEMS.filter((n) => !n.adminOnly || user?.role === 'admin')
+  const sections = NAV_SECTIONS.map((section) => ({
+    ...section,
+    items: section.items.filter((n) => !n.adminOnly || user?.role === 'admin'),
+  })).filter((section) => section.items.length > 0)
 
   return (
     <div className="shell">
@@ -154,11 +164,12 @@ export default function Layout() {
         <div className="sidebar-header">
           <NavLink to="/" className="brand" onClick={() => setMobileOpen(false)}>
             <span className="brand-mark" aria-hidden>
-              <Icon name="radio" size={16} />
+              <BrandLogo size={28} />
             </span>
             <span className="brand-text">
-              <span className="brand-name">Pertisk KOS</span>
-              <span className="brand-version">v{APP_VERSION}</span>
+              <span className="brand-name">
+                pertisk<span className="brand-slash">/</span>kos
+              </span>
             </span>
           </NavLink>
           <button
@@ -181,42 +192,28 @@ export default function Layout() {
         </div>
 
         <nav className="nav" aria-label="Primary">
-          <div className="nav-group">
-            <p className="nav-heading">Manage</p>
-            <ul>
-              {navItems.map(({ to, label, icon, end }) => (
-                <li key={to}>
-                  <NavLink
-                    to={to}
-                    end={end}
-                    title={collapsed ? label : undefined}
-                    onClick={() => setMobileOpen(false)}
-                    className={({ isActive }) => (isActive ? 'active' : undefined)}
-                  >
-                    <Icon name={icon} size={15} />
-                    <span className="nav-label">{label}</span>
-                  </NavLink>
-                </li>
-              ))}
-            </ul>
-          </div>
+          {sections.map((section) => (
+            <div className="nav-group" key={section.label}>
+              <p className="nav-heading">{section.label}</p>
+              <ul>
+                {section.items.map(({ to, label, icon, end }) => (
+                  <li key={to}>
+                    <NavLink
+                      to={to}
+                      end={end}
+                      title={collapsed ? label : undefined}
+                      onClick={() => setMobileOpen(false)}
+                      className={({ isActive }) => (isActive ? 'active' : undefined)}
+                    >
+                      <Icon name={icon} size={16} />
+                      <span className="nav-label">{label}</span>
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </nav>
-
-        <div className="sidebar-footer">
-          <div className="control-plane-chip">
-            <div className="control-plane-secure">
-              <Icon name="shield" size={16} />
-              <span>Identity secured</span>
-            </div>
-            <div className="control-plane-identity">
-              <span className="control-plane-avatar" aria-hidden>
-                {initial}
-              </span>
-              <span className="control-plane-user">{user?.username || 'admin'}</span>
-              <span className="control-plane-ver">v{APP_VERSION}</span>
-            </div>
-          </div>
-        </div>
       </aside>
 
       <div className={`main${mobileOpen ? ' sidebar-open' : ''}`}>
@@ -233,33 +230,27 @@ export default function Layout() {
               <Icon name={mobileOpen ? 'x' : 'menu'} size={16} />
             </button>
             <div className="topbar-section">{title}</div>
-            {searchOpen && (
-              <form className="topbar-search" style={{ display: 'block' }} onSubmit={onSearch} role="search">
-                <Icon name="search" size={16} />
-                <input
-                  ref={searchRef}
-                  type="search"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  onBlur={() => {
-                    if (!search.trim()) setSearchOpen(false)
-                  }}
-                  placeholder="Search machines…"
-                  aria-label="Search"
-                />
-              </form>
-            )}
+            <form className="topbar-search" onSubmit={onSearch} role="search">
+              <Icon name="search" size={14} />
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search clusters, nodes, node IDs…"
+                aria-label="Search"
+              />
+            </form>
           </div>
           <div className="topbar-actions">
+            <ThemeToggle />
             <button
               type="button"
-              className="topbar-search-btn"
-              aria-label="Search"
-              onClick={() => setSearchOpen((v) => !v)}
+              className="btn topbar-cta"
+              onClick={() => nav('/clusters?new=1')}
             >
-              <Icon name="search" size={16} />
+              <Icon name="plus" size={14} />
+              New cluster
             </button>
-            <ThemeToggle />
             <div className="topbar-user-chip user-menu" ref={userMenuRef}>
               <button
                 type="button"
@@ -267,14 +258,13 @@ export default function Layout() {
                 onClick={() => setShowUserMenu((v) => !v)}
                 aria-haspopup="menu"
                 aria-expanded={showUserMenu}
+                aria-label={user?.username ? `Signed in as ${user.username}` : 'Account menu'}
               >
                 <span className="user-avatar">{initial}</span>
-                <span className="user-meta">
-                  <span className="user-name">{user?.username || 'admin'}</span>
-                </span>
               </button>
               {showUserMenu && (
                 <div className="user-menu-dropdown" role="menu">
+                  {user?.username && <div className="user-menu-meta">{user.username}</div>}
                   {user?.role && <div className="user-menu-meta">{user.role}</div>}
                   <button type="button" role="menuitem" onClick={logout}>
                     <Icon name="logout" size={14} /> Logout

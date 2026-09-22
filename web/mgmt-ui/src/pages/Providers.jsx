@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
+import { ResourceBars, formatMetric } from '../components/ResourceBars'
 import { useConfirm } from '../components/Confirm'
 import ProviderWizard from '../components/ProviderWizard'
 import { formatProviderKind, providerKindGlyph } from '../components/ClusterMetaBadges'
@@ -49,17 +50,6 @@ function formatProbe(r, kind) {
   return parts.join(' — ')
 }
 
-function formatMetric(m) {
-  if (!m) return '—'
-  const used = m.display_used ?? m.used
-  const total = m.display_total ?? m.total
-  if (used == null && total == null) return '—'
-  const unit = m.unit ? ` ${m.unit}` : ''
-  if (total == null) return `${used}${unit}`
-  if (used == null) return `— / ${total}${unit}`
-  return `${used} / ${total}${unit}`
-}
-
 function availTone(availability) {
   if (availability === 'online') return 'ok'
   if (availability === 'offline') return 'err'
@@ -67,13 +57,13 @@ function availTone(availability) {
 }
 
 function availLabel(availability) {
-  if (availability === 'online') return 'Connected'
-  if (availability === 'offline') return 'Offline'
-  if (!availability) return 'Unknown'
-  return availability.charAt(0).toUpperCase() + availability.slice(1)
+  if (availability === 'online') return 'online'
+  if (availability === 'offline') return 'offline'
+  if (!availability) return 'unknown'
+  return availability
 }
 
-function CompactProviderRow({
+function FleetProviderRow({
   provider,
   live,
   clusterCount,
@@ -85,58 +75,38 @@ function CompactProviderRow({
   testing,
 }) {
   const tone = availTone(provider.availability)
-  const kind = formatProviderKind(provider.kind)
-  const desc = [kind, provider.node, provider.arch || 'amd64'].filter(Boolean).join(' · ')
+  const meta = [formatProviderKind(provider.kind), provider.node, provider.arch || 'amd64']
+    .filter(Boolean)
+    .join(' · ')
 
   return (
-    <div
-      className="compact-cluster-row compact-provider-row"
-      role="link"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onOpen()
-        }
-      }}
-    >
-      <div className="compact-cluster-identity">
-        <span className={`compact-cluster-icon entity-card-glyph ${tone}`} aria-hidden>
-          {providerKindGlyph(provider.kind)}
-        </span>
-        <div style={{ minWidth: 0 }}>
-          <div className="compact-cluster-name">{provider.name}</div>
-          <div className="compact-cluster-desc">{provider.url || desc}</div>
+    <div className="fleet-row fleet-row-provider fleet-row-actions">
+      <button type="button" className="fleet-row-main" onClick={onOpen}>
+        <div className="fleet-cell fleet-cell-name">
+          <span className={`fleet-mark ${tone}`} aria-hidden>
+            {providerKindGlyph(provider.kind)}
+          </span>
+          <div className="fleet-name-stack">
+            <span className="fleet-name">{provider.name}</span>
+            <span className="fleet-sub">{provider.url || meta}</span>
+          </div>
         </div>
-      </div>
-      <div>
-        <span className="compact-cluster-mobile-label">Status</span>
-        <span className={`compact-cluster-status ${tone}`}>
-          <span className="dot" aria-hidden />
-          {availLabel(provider.availability)}
+        <span className={`fleet-cell fleet-status ${tone}`}>{availLabel(provider.availability)}</span>
+        <span className="fleet-cell">
+          {clusterCount} clusters
+          <span className="fleet-sub-inline"> · {machineCount} nodes</span>
         </span>
-      </div>
-      <div>
-        <span className="compact-cluster-mobile-label">Clusters</span>
-        <div className="compact-cluster-cell">{clusterCount}</div>
-        <div className="compact-cluster-cell-sub">{machineCount} machines</div>
-      </div>
-      <div>
-        <span className="compact-cluster-mobile-label">CPU</span>
-        <div className="compact-cluster-cell">{formatMetric(live.cpu)}</div>
-        <div className="compact-cluster-cell-sub">CPU used / total</div>
-      </div>
-      <div>
-        <span className="compact-cluster-mobile-label">Memory</span>
-        <div className="compact-cluster-cell">{formatMetric(live.memory)}</div>
-        <div className="compact-cluster-cell-sub">memory used / total</div>
-      </div>
-      <div
-        className="compact-cluster-actions"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-      >
+        <span className="fleet-cell fleet-mono" title={formatMetric(live.cpu)}>
+          {formatMetric(live.cpu)}
+        </span>
+        <span className="fleet-cell fleet-mono" title={formatMetric(live.memory)}>
+          {formatMetric(live.memory)}
+        </span>
+        <div className="fleet-cell fleet-cell-bars">
+          <ResourceBars cpu={live.cpu} memory={live.memory} disk={live.disk} />
+        </div>
+      </button>
+      <div className="fleet-actions">
         <button type="button" className="secondary btn-icon" title="Edit" onClick={onEdit}>
           <Icon name="edit" size={14} />
         </button>
@@ -164,6 +134,7 @@ export default function Providers() {
   const [clusters, setClusters] = useState([])
   const [metrics, setMetrics] = useState({})
   const [loaded, setLoaded] = useState(false)
+  const [filter, setFilter] = useState('')
   const [wizardOpen, setWizardOpen] = useState(false)
   const [wizardMode, setWizardMode] = useState('create')
   const [editing, setEditing] = useState(null)
@@ -266,11 +237,20 @@ export default function Providers() {
     0,
   )
 
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase()
+    if (!q) return list
+    return list.filter((p) => {
+      const hay = [p.name, p.kind, p.url, p.node, p.availability].filter(Boolean).join(' ').toLowerCase()
+      return hay.includes(q)
+    })
+  }, [list, filter])
+
   return (
     <div className="dash-page">
       <PageHeader
         title="Providers"
-        description="Manage infrastructure providers used to provision clusters."
+        description="Hypervisors and backends used to provision clusters."
         actions={
           <button type="button" className="btn btn-icon" onClick={startCreate}>
             <Icon name="plus" size={16} /> Connect provider
@@ -281,73 +261,86 @@ export default function Providers() {
       {msg && <p className="muted">{msg}</p>}
 
       <section className="stat-grid stat-grid-3">
-        <StatCard label="Providers" value={loaded ? list.length : '—'} />
+        <StatCard icon="providers" label="Providers" value={loaded ? list.length : '—'} />
         <StatCard
+          icon="check"
           label="Connected"
           value={loaded ? online : '—'}
           hintTone={online > 0 ? 'ok' : undefined}
         />
-        <StatCard label="Clusters" value={loaded ? clusters.length : '—'} hint={`${totalMachines} machines`} />
+        <StatCard
+          icon="clusters"
+          label="Clusters"
+          value={loaded ? clusters.length : '—'}
+          hint={`${totalMachines} nodes`}
+        />
       </section>
 
-      {list.length === 0 ? (
-        <div className="card dash-empty">
-          <p className="muted" style={{ margin: 0 }}>
-            {loaded ? 'No providers configured.' : 'Loading providers…'}
-          </p>
+      <section className="fleet-panel">
+        <div className="fleet-panel-head">
+          <div className="fleet-panel-title-row">
+            <h2 className="fleet-panel-title">All providers</h2>
+          </div>
+          <div className="fleet-filter">
+            <Icon name="search" size={14} />
+            <input
+              type="search"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter…"
+              aria-label="Filter providers"
+            />
+          </div>
         </div>
-      ) : (
-        <section className="dash-section">
-          <div className="section-toolbar">
-            <div>
-              <h2
-                className="section-kicker"
-                style={{ textTransform: 'none', letterSpacing: '-0.01em', fontSize: '0.875rem' }}
-              >
-                All providers
-              </h2>
-              <p className="muted dash-section-sub" style={{ margin: '0.25rem 0 0' }}>
-                Hypervisors and bare-metal backends
-              </p>
+        {list.length === 0 ? (
+          <div className="fleet-empty">
+            <p className="muted" style={{ margin: 0 }}>
+              {loaded ? 'No providers configured.' : 'Loading providers…'}
+            </p>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="fleet-empty muted">No providers match this filter.</div>
+        ) : (
+          <div className="fleet-scroll">
+            <div className="fleet-table fleet-table-providers-actions">
+              <div className="fleet-head" aria-hidden>
+                <span>Provider</span>
+                <span>Status</span>
+                <span>Clusters</span>
+                <span>CPU</span>
+                <span>Memory</span>
+                <span>Resources</span>
+                <span />
+              </div>
+              <div className="fleet-body">
+                {filtered.map((p) => {
+                  const live = metrics[p.id] || {}
+                  const providerClusters = clusters.filter((c) => c.provider_id === p.id)
+                  const clusterCount = providerClusters.length
+                  const machineCount = providerClusters.reduce(
+                    (n, c) => n + (Number(c.controlplanes) || 0) + (Number(c.workers) || 0),
+                    0,
+                  )
+                  return (
+                    <FleetProviderRow
+                      key={p.id}
+                      provider={p}
+                      live={live}
+                      clusterCount={clusterCount}
+                      machineCount={machineCount}
+                      onOpen={() => nav(`/providers/${p.id}`)}
+                      onEdit={() => startEdit(p)}
+                      onTest={() => testSaved(p.id)}
+                      onRemove={() => remove(p.id, p.name)}
+                      testing={testing}
+                    />
+                  )
+                })}
+              </div>
             </div>
           </div>
-          <div className="compact-cluster-table with-actions">
-            <div className="compact-cluster-head">
-              <span>Provider</span>
-              <span>Status</span>
-              <span>Clusters</span>
-              <span>CPU</span>
-              <span>Memory</span>
-              <span />
-            </div>
-            <div className="compact-cluster-body">
-              {list.map((p) => {
-                const live = metrics[p.id] || {}
-                const providerClusters = clusters.filter((c) => c.provider_id === p.id)
-                const clusterCount = providerClusters.length
-                const machineCount = providerClusters.reduce(
-                  (n, c) => n + (Number(c.controlplanes) || 0) + (Number(c.workers) || 0),
-                  0,
-                )
-                return (
-                  <CompactProviderRow
-                    key={p.id}
-                    provider={p}
-                    live={live}
-                    clusterCount={clusterCount}
-                    machineCount={machineCount}
-                    onOpen={() => nav(`/providers/${p.id}`)}
-                    onEdit={() => startEdit(p)}
-                    onTest={() => testSaved(p.id)}
-                    onRemove={() => remove(p.id, p.name)}
-                    testing={testing}
-                  />
-                )
-              })}
-            </div>
-          </div>
-        </section>
-      )}
+        )}
+      </section>
 
       <ProviderWizard
         open={wizardOpen}

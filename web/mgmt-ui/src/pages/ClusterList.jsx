@@ -4,23 +4,14 @@ import { api } from '../api'
 import { Icon } from '../components/Icons'
 import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
+import { ResourceBars } from '../components/ResourceBars'
 import { placeholderSummary, formatK8sVersion } from '../components/ClusterCard'
+import { formatProviderKind } from '../components/ClusterMetaBadges'
 import ClusterWizard from '../components/ClusterWizard'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
 const CACHE_CLUSTERS = 'pertisk_dash_clusters'
-
-function formatMetric(m) {
-  if (!m) return '—'
-  const used = m.display_used ?? m.used
-  const total = m.display_total ?? m.total
-  if (used == null && total == null) return '—'
-  const unit = m.unit ? ` ${m.unit}` : ''
-  if (total == null) return `${used}${unit}`
-  if (used == null) return `— / ${total}${unit}`
-  return `${used} / ${total}${unit}`
-}
 
 function statusTone(status) {
   if (status === 'ready') return 'ok'
@@ -29,58 +20,33 @@ function statusTone(status) {
 }
 
 function statusLabel(status) {
-  if (status === 'ready') return 'Healthy'
-  if (!status) return 'Unknown'
-  return status.charAt(0).toUpperCase() + status.slice(1)
+  if (status === 'ready') return 'healthy'
+  if (!status) return 'unknown'
+  return status
 }
 
-function CompactClusterRow({ summary, onOpen }) {
+function FleetClusterRow({ summary, onOpen }) {
   const tone = statusTone(summary.status)
   const cps = Number(summary.controlplanes) || 0
   const wks = Number(summary.workers) || 0
   const nodes = Number(summary.node_count) || cps + wks
-  const readyHint = summary.status === 'ready' ? 'machines ready' : 'machines'
-  const desc =
-    summary.provider_name ||
-    [formatK8sVersion(summary.k8s_version), summary.vip ? `VIP ${summary.vip}` : null]
-      .filter(Boolean)
-      .join(' · ') ||
-    'Managed cluster'
+  const provider =
+    [formatProviderKind(summary.provider_kind), summary.provider_name].filter(Boolean).join(' · ') ||
+    '—'
+  const ver = formatK8sVersion(summary.k8s_version) || '—'
 
   return (
-    <button type="button" className="compact-cluster-row" onClick={onOpen}>
-      <div className="compact-cluster-identity">
-        <span className={`compact-cluster-icon ${tone}`} aria-hidden>
-          <Icon name="clusters" size={16} />
-        </span>
-        <div style={{ minWidth: 0 }}>
-          <div className="compact-cluster-name">{summary.cluster_name}</div>
-          <div className="compact-cluster-desc">{desc}</div>
-        </div>
+    <button type="button" className="fleet-row" onClick={onOpen}>
+      <div className="fleet-cell fleet-cell-name">
+        <span className={`fleet-dot ${tone}`} aria-hidden />
+        <span className="fleet-name">{summary.cluster_name}</span>
       </div>
-      <div>
-        <span className="compact-cluster-mobile-label">Status</span>
-        <span className={`compact-cluster-status ${tone}`}>
-          <span className="dot" aria-hidden />
-          {statusLabel(summary.status)}
-        </span>
-      </div>
-      <div>
-        <span className="compact-cluster-mobile-label">Machines</span>
-        <div className="compact-cluster-cell">{nodes}</div>
-        <div className="compact-cluster-cell-sub">
-          {cps} CP · {wks} WK · {readyHint}
-        </div>
-      </div>
-      <div>
-        <span className="compact-cluster-mobile-label">CPU</span>
-        <div className="compact-cluster-cell">{formatMetric(summary.cpu)}</div>
-        <div className="compact-cluster-cell-sub">CPU used / total</div>
-      </div>
-      <div>
-        <span className="compact-cluster-mobile-label">Memory</span>
-        <div className="compact-cluster-cell">{formatMetric(summary.memory)}</div>
-        <div className="compact-cluster-cell-sub">memory used / total</div>
+      <span className="fleet-cell fleet-cell-meta">{provider}</span>
+      <span className="fleet-cell">{nodes} nodes</span>
+      <span className="fleet-cell">{ver}</span>
+      <span className={`fleet-cell fleet-status ${tone}`}>{statusLabel(summary.status)}</span>
+      <div className="fleet-cell fleet-cell-bars">
+        <ResourceBars cpu={summary.cpu} memory={summary.memory} disk={summary.disk} />
       </div>
     </button>
   )
@@ -92,6 +58,7 @@ export default function Clusters() {
   const [metrics, setMetrics] = useState({})
   const [loaded, setLoaded] = useState(() => Array.isArray(readSessionJson(CACHE_CLUSTERS, null)))
   const [error, setError] = useState('')
+  const [filter, setFilter] = useState('')
   const [search, setSearch] = useSearchParams()
   const expectDelete = search.get('deleting')
   const [wizardOpen, setWizardOpen] = useState(search.get('new') === '1')
@@ -156,9 +123,22 @@ export default function Clusters() {
         vip: c.vip,
         controlplanes: c.controlplanes,
         workers: c.workers,
+        k8s_version: c.k8s_version,
       }
     })
   }, [list, metrics])
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase()
+    if (!q) return cards
+    return cards.filter((s) => {
+      const hay = [s.cluster_name, s.provider_name, s.provider_kind, s.status, formatK8sVersion(s.k8s_version)]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+      return hay.includes(q)
+    })
+  }, [cards, filter])
 
   const ready = list.filter((c) => c.status === 'ready').length
   const totalMachines = list.reduce(
@@ -170,10 +150,10 @@ export default function Clusters() {
     <div className="dash-page">
       <PageHeader
         title="Clusters"
-        description="Create and manage your Talos Kubernetes clusters."
+        description="Create and manage your Kubernetes clusters."
         actions={
           <button type="button" className="btn btn-icon" onClick={() => setWizardOpen(true)}>
-            <Icon name="plus" size={16} /> Create cluster
+            <Icon name="plus" size={16} /> New cluster
           </button>
         }
       />
@@ -185,51 +165,61 @@ export default function Clusters() {
       )}
 
       <section className="stat-grid stat-grid-3">
-        <StatCard label="Total clusters" value={loaded ? list.length : '—'} />
-        <StatCard label="Healthy" value={loaded ? ready : '—'} hintTone="ok" />
-        <StatCard label="Machines" value={loaded ? totalMachines : '—'} />
+        <StatCard icon="clusters" label="Clusters" value={loaded ? list.length : '—'} />
+        <StatCard icon="check" label="Healthy" value={loaded ? ready : '—'} hintTone="ok" />
+        <StatCard icon="machines" label="Nodes" value={loaded ? totalMachines : '—'} />
       </section>
 
-      {list.length === 0 ? (
-        <div className="card dash-empty">
-          <p className="muted" style={{ margin: 0 }}>
-            {loaded
-              ? 'No clusters. Create with M control planes (+ VIP if M>1) and N workers.'
-              : 'Loading clusters…'}
-          </p>
+      <section className="fleet-panel">
+        <div className="fleet-panel-head">
+          <div className="fleet-panel-title-row">
+            <h2 className="fleet-panel-title">All clusters</h2>
+          </div>
+          <div className="fleet-filter">
+            <Icon name="search" size={14} />
+            <input
+              type="search"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter…"
+              aria-label="Filter clusters"
+            />
+          </div>
         </div>
-      ) : (
-        <section className="dash-section">
-          <div className="section-toolbar">
-            <div>
-              <h2 className="section-kicker" style={{ textTransform: 'none', letterSpacing: '-0.01em', fontSize: '0.875rem' }}>
-                All clusters
-              </h2>
-              <p className="muted dash-section-sub" style={{ margin: '0.25rem 0 0' }}>
-                Your managed Kubernetes infrastructure
-              </p>
+        {list.length === 0 ? (
+          <div className="fleet-empty">
+            <p className="muted" style={{ margin: 0 }}>
+              {loaded
+                ? 'No clusters. Create with M control planes (+ VIP if M>1) and N workers.'
+                : 'Loading clusters…'}
+            </p>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="fleet-empty muted">No clusters match this filter.</div>
+        ) : (
+          <div className="fleet-scroll">
+            <div className="fleet-table fleet-table-clusters">
+              <div className="fleet-head" aria-hidden>
+                <span>Cluster</span>
+                <span>Provider</span>
+                <span>Nodes</span>
+                <span>Version</span>
+                <span>Status</span>
+                <span>Resources</span>
+              </div>
+              <div className="fleet-body">
+                {filtered.map((s) => (
+                  <FleetClusterRow
+                    key={s.cluster_id}
+                    summary={s}
+                    onOpen={() => nav(`/clusters/${s.cluster_id}`)}
+                  />
+                ))}
+              </div>
             </div>
           </div>
-          <div className="compact-cluster-table">
-            <div className="compact-cluster-head">
-              <span>Cluster</span>
-              <span>Status</span>
-              <span>Machines</span>
-              <span>CPU</span>
-              <span>Memory</span>
-            </div>
-            <div className="compact-cluster-body">
-              {cards.map((s) => (
-                <CompactClusterRow
-                  key={s.cluster_id}
-                  summary={s}
-                  onOpen={() => nav(`/clusters/${s.cluster_id}`)}
-                />
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
+        )}
+      </section>
 
       <ClusterWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
     </div>

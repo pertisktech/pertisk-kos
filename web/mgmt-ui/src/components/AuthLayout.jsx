@@ -1,4 +1,4 @@
-import { Icon } from './Icons'
+import BrandLogo from './BrandLogo'
 import ThemeToggle from './ThemeToggle'
 import { APP_VERSION } from '../utils/version'
 
@@ -12,10 +12,12 @@ export default function AuthLayout({ title, subtitle, children }) {
         <div className="auth-form">
           <div className="auth-mobile-brand">
             <span className="brand-mark" aria-hidden>
-              <Icon name="radio" size={16} />
+              <BrandLogo size={28} />
             </span>
             <div>
-              <div className="auth-brand-name">Pertisk KOS</div>
+              <div className="auth-brand-name">
+                pertisk<span className="brand-slash">/</span>kos
+              </div>
               <div className="auth-brand-sub">Kubernetes operating system</div>
             </div>
           </div>

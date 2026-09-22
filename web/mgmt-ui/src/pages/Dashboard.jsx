@@ -4,6 +4,7 @@ import { api } from '../api'
 import { Icon } from '../components/Icons'
 import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
+import { ResourceBars, formatMetric } from '../components/ResourceBars'
 import { placeholderSummary, formatK8sVersion } from '../components/ClusterCard'
 import { formatProviderKind, providerKindGlyph } from '../components/ClusterMetaBadges'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
@@ -14,7 +15,6 @@ const CACHE_PROVIDERS = 'pertisk_dash_providers'
 const CACHE_RESOURCES = 'pertisk_dash_resources'
 const CACHE_PROVIDER_RES = 'pertisk_dash_provider_res'
 
-/** Prefer definitive online/offline; never let a stale "unknown" hide a known status. */
 function resolveAvailability(...vals) {
   for (const v of vals) {
     if (v === 'online' || v === 'offline') return v
@@ -23,55 +23,6 @@ function resolveAvailability(...vals) {
     if (v) return v
   }
   return 'unknown'
-}
-
-function formatMetric(m) {
-  if (!m) return '—'
-  const used = m.display_used ?? m.used
-  const total = m.display_total ?? m.total
-  if (used == null && total == null) return '—'
-  if (typeof used === 'string' && typeof total === 'string') {
-    const um = used.trim().match(/^([\d.]+)\s*(.*)$/)
-    const tm = total.trim().match(/^([\d.]+)\s*(.*)$/)
-    if (um && tm && um[2] && um[2] === tm[2]) {
-      return `${um[1]} / ${tm[1]} ${tm[2]}`.trim()
-    }
-  }
-  const unit = m.display_used == null && m.display_total == null && m.unit ? ` ${m.unit}` : ''
-  if (total == null) return `${used}${unit}`
-  if (used == null) return `— / ${total}${unit}`
-  return `${used} / ${total}${unit}`
-}
-
-function MetricBoxes({ summary }) {
-  return (
-    <div className="live-metric-row">
-      <div className="live-metric-box">
-        <div className="live-metric-label">
-          <Icon name="cpu" size={12} /> CPU
-        </div>
-        <div className="live-metric-value" title={formatMetric(summary.cpu)}>
-          {formatMetric(summary.cpu)}
-        </div>
-      </div>
-      <div className="live-metric-box">
-        <div className="live-metric-label">
-          <Icon name="memory" size={12} /> Memory
-        </div>
-        <div className="live-metric-value" title={formatMetric(summary.memory)}>
-          {formatMetric(summary.memory)}
-        </div>
-      </div>
-      <div className="live-metric-box">
-        <div className="live-metric-label">
-          <Icon name="disk" size={12} /> Disk
-        </div>
-        <div className="live-metric-value" title={formatMetric(summary.disk)}>
-          {formatMetric(summary.disk)}
-        </div>
-      </div>
-    </div>
-  )
 }
 
 function statusTone(status) {
@@ -86,99 +37,16 @@ function availTone(availability) {
   return 'warn'
 }
 
-function ProviderResourceCard({ summary, onOpen }) {
-  const avail = summary.availability || 'unknown'
-  const tone = availTone(avail)
-  const label =
-    avail === 'online' ? 'Connected' : avail === 'offline' ? 'Offline' : 'Unknown'
-  const sub = [
-    formatProviderKind(summary.kind),
-    summary.node,
-    summary.storage,
-  ]
-    .filter(Boolean)
-    .join(' · ')
-
-  return (
-    <article
-      className="live-resource-card"
-      role="link"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onOpen()
-        }
-      }}
-    >
-      <div className="live-resource-head">
-        <div className="live-resource-title">
-          <span className={`live-resource-icon ${tone === 'ok' ? 'ok' : 'warn'}`} aria-hidden>
-            {providerKindGlyph(summary.kind)}
-          </span>
-          <div style={{ minWidth: 0 }}>
-            <p className="live-resource-name">{summary.provider_name}</p>
-            <p className="live-resource-sub" title={sub}>
-              {sub || `${formatProviderKind(summary.kind)} · CPU · memory · disk`}
-            </p>
-          </div>
-        </div>
-        <span className={`live-resource-status ${tone === 'ok' ? 'ok' : 'warn'}`}>
-          <span className="dot" aria-hidden />
-          {label}
-        </span>
-      </div>
-      <MetricBoxes summary={summary} />
-      {summary.error && avail !== 'offline' && (
-        <p className="muted cluster-resource-soft-err" title={summary.error}>
-          <Icon name="alert" size={12} />
-          {summary.error}
-        </p>
-      )}
-    </article>
-  )
-}
-
-function LiveClusterResourceCard({ summary, onOpen }) {
-  const tone = statusTone(summary.status)
-  const label = summary.status === 'ready' ? 'Healthy' : (summary.status || 'Unknown')
-
-  return (
-    <article
-      className="live-resource-card"
-      role="link"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onOpen()
-        }
-      }}
-    >
-      <div className="live-resource-head">
-        <div className="live-resource-title">
-          <span className={`live-resource-icon ${tone === 'ok' ? 'ok' : 'warn'}`} aria-hidden>
-            <Icon name="clusters" size={16} />
-          </span>
-          <div style={{ minWidth: 0 }}>
-            <p className="live-resource-name">{summary.cluster_name}</p>
-            <p className="live-resource-sub">CPU · memory · disk usage</p>
-          </div>
-        </div>
-        <span className={`live-resource-status ${tone === 'ok' ? 'ok' : 'warn'}`}>
-          <span className="dot" aria-hidden />
-          {label}
-        </span>
-      </div>
-      <MetricBoxes summary={summary} />
-    </article>
-  )
-}
-
 function placeholderProvider(p) {
-  const empty = { used: null, total: null, percent: null, unit: '', display_used: null, display_total: null, error: null }
+  const empty = {
+    used: null,
+    total: null,
+    percent: null,
+    unit: '',
+    display_used: null,
+    display_total: null,
+    error: null,
+  }
   return {
     provider_id: p.id,
     provider_name: p.name,
@@ -193,6 +61,70 @@ function placeholderProvider(p) {
   }
 }
 
+function FleetClusterRow({ summary, onOpen }) {
+  const tone = statusTone(summary.status)
+  const label = summary.status === 'ready' ? 'healthy' : summary.status || 'unknown'
+  const nodes =
+    Number(summary.node_count) ||
+    (Number(summary.controlplanes) || 0) + (Number(summary.workers) || 0)
+  const provider =
+    [formatProviderKind(summary.provider_kind), summary.provider_name].filter(Boolean).join(' · ') ||
+    '—'
+  const ver = formatK8sVersion(summary.k8s_version) || '—'
+
+  return (
+    <button type="button" className="fleet-row" onClick={onOpen}>
+      <div className="fleet-cell fleet-cell-name">
+        <span className={`fleet-dot ${tone}`} aria-hidden />
+        <span className="fleet-name">{summary.cluster_name}</span>
+      </div>
+      <span className="fleet-cell fleet-cell-meta">{provider}</span>
+      <span className="fleet-cell">{nodes} nodes</span>
+      <span className="fleet-cell">{ver}</span>
+      <span className={`fleet-cell fleet-status ${tone}`}>{label}</span>
+      <div className="fleet-cell fleet-cell-bars">
+        <ResourceBars cpu={summary.cpu} memory={summary.memory} disk={summary.disk} />
+      </div>
+    </button>
+  )
+}
+
+function FleetProviderRow({ summary, onOpen }) {
+  const avail = summary.availability || 'unknown'
+  const tone = availTone(avail)
+  const label = avail === 'online' ? 'online' : avail === 'offline' ? 'offline' : 'unknown'
+  const meta = [formatProviderKind(summary.kind), summary.node, summary.storage]
+    .filter(Boolean)
+    .join(' · ')
+
+  return (
+    <button type="button" className="fleet-row fleet-row-provider" onClick={onOpen}>
+      <div className="fleet-cell fleet-cell-name">
+        <span className={`fleet-mark ${tone}`} aria-hidden>
+          {providerKindGlyph(summary.kind)}
+        </span>
+        <div className="fleet-name-stack">
+          <span className="fleet-name">{summary.provider_name}</span>
+          <span className="fleet-sub">{meta || formatProviderKind(summary.kind)}</span>
+        </div>
+      </div>
+      <span className={`fleet-cell fleet-status ${tone}`}>{label}</span>
+      <span className="fleet-cell fleet-mono" title={formatMetric(summary.cpu)}>
+        {formatMetric(summary.cpu)}
+      </span>
+      <span className="fleet-cell fleet-mono" title={formatMetric(summary.memory)}>
+        {formatMetric(summary.memory)}
+      </span>
+      <span className="fleet-cell fleet-mono" title={formatMetric(summary.disk)}>
+        {formatMetric(summary.disk)}
+      </span>
+      <div className="fleet-cell fleet-cell-bars">
+        <ResourceBars cpu={summary.cpu} memory={summary.memory} disk={summary.disk} />
+      </div>
+    </button>
+  )
+}
+
 export default function Dashboard() {
   const nav = useNavigate()
   const [clusters, setClusters] = useState(() => readSessionJson(CACHE_CLUSTERS, []))
@@ -205,18 +137,19 @@ export default function Dashboard() {
   })
   const [resourcesErr, setResourcesErr] = useState('')
   const [resourcesLoading, setResourcesLoading] = useState(false)
+  const [filter, setFilter] = useState('')
 
   const load = useCallback(() => {
     Promise.all([
       api('/clusters').catch(() => []),
       api('/providers').catch(() => []),
     ]).then(([c, p]) => {
-      const clusters = Array.isArray(c) ? c : []
-      const providers = Array.isArray(p) ? p : []
-      setClusters(clusters)
-      setProviders(providers)
-      writeSessionJson(CACHE_CLUSTERS, clusters)
-      writeSessionJson(CACHE_PROVIDERS, providers)
+      const nextClusters = Array.isArray(c) ? c : []
+      const nextProviders = Array.isArray(p) ? p : []
+      setClusters(nextClusters)
+      setProviders(nextProviders)
+      writeSessionJson(CACHE_CLUSTERS, nextClusters)
+      writeSessionJson(CACHE_PROVIDERS, nextProviders)
       setListLoading(false)
     })
   }, [])
@@ -234,9 +167,7 @@ export default function Dashboard() {
       .catch((e) => {
         const msg = e.message || 'failed to load resources'
         if (/failed to fetch|networkerror|load failed|sending request/i.test(msg)) {
-          setResourcesErr(
-            'Cannot reach management API at :8080 — is pertisk-mgmt running?',
-          )
+          setResourcesErr('Cannot reach management API at :8080 — is pertisk-mgmt running?')
         } else {
           setResourcesErr(msg)
         }
@@ -270,47 +201,62 @@ export default function Dashboard() {
   const displayResources = useMemo(() => {
     if (clusters.length === 0) return []
     const byId = new Map(resources.map((r) => [r.cluster_id, r]))
-    return clusters
-      .map((c) => {
-        const live = byId.get(c.id) || placeholderSummary(c)
-        return {
-          ...live,
-          provider_kind: c.provider_kind,
-          provider_name: c.provider_name,
-          arch: c.arch,
-          vip: c.vip,
-          controlplanes: c.controlplanes,
-          workers: c.workers,
-          availability: resolveAvailability(c.availability, live.availability),
-        }
-      })
-      .filter((s) => s.availability === 'online')
+    return clusters.map((c) => {
+      const live = byId.get(c.id) || placeholderSummary(c)
+      return {
+        ...live,
+        provider_kind: c.provider_kind,
+        provider_name: c.provider_name,
+        arch: c.arch,
+        vip: c.vip,
+        controlplanes: c.controlplanes,
+        workers: c.workers,
+        k8s_version: c.k8s_version,
+        availability: resolveAvailability(c.availability, live.availability),
+      }
+    })
   }, [resources, clusters])
+
+  const filteredClusters = useMemo(() => {
+    const q = filter.trim().toLowerCase()
+    if (!q) return displayResources
+    return displayResources.filter((s) => {
+      const hay = [
+        s.cluster_name,
+        s.provider_name,
+        s.provider_kind,
+        s.status,
+        formatK8sVersion(s.k8s_version),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+      return hay.includes(q)
+    })
+  }, [displayResources, filter])
 
   const ready = clusters.filter((c) => c.status === 'ready').length
   const cps = clusters.reduce((n, c) => n + (c.controlplanes || 0), 0)
   const wks = clusters.reduce((n, c) => n + (c.workers || 0), 0)
   const totalNodes = cps + wks
   const providersOnline = providers.filter((p) => p.availability === 'online').length
-  const attention = clusters.filter(
-    (c) => c.status === 'error' || c.status === 'degraded' || c.status === 'failed' || c.status === 'provisioning',
+  const attention = clusters.filter((c) =>
+    ['error', 'degraded', 'failed', 'provisioning'].includes(c.status),
   ).length
-  const recent = clusters.slice(0, 8)
   const dashNum = listLoading && clusters.length === 0
   const provisioning = clusters.filter((c) => c.status === 'provisioning').length
+  const providerKinds = new Set(providers.map((p) => p.kind).filter(Boolean)).size
 
   const displayProviders = useMemo(() => {
     if (providers.length === 0) return []
     const byId = new Map(providerRes.map((r) => [r.provider_id, r]))
-    return providers
-      .map((p) => {
-        const live = byId.get(p.id) || placeholderProvider(p)
-        return {
-          ...live,
-          availability: resolveAvailability(p.availability, live.availability),
-        }
-      })
-      .filter((s) => s.availability === 'online')
+    return providers.map((p) => {
+      const live = byId.get(p.id) || placeholderProvider(p)
+      return {
+        ...live,
+        availability: resolveAvailability(p.availability, live.availability),
+      }
+    })
   }, [providerRes, providers])
 
   const systemStatus = [
@@ -339,15 +285,28 @@ export default function Dashboard() {
   return (
     <div className="dash-page">
       <PageHeader
-        title="Dashboard"
-        description="Overview of your Kubernetes infrastructure."
+        title="Fleet overview"
+        description={
+          dashNum
+            ? 'Loading your Kubernetes infrastructure…'
+            : `${clusters.length} cluster${clusters.length === 1 ? '' : 's'} across ${providerKinds || providers.length} hypervisor target${(providerKinds || providers.length) === 1 ? '' : 's'}.`
+        }
         actions={
           <>
-            <button type="button" className="secondary btn-icon" onClick={loadResources} disabled={resourcesLoading}>
+            <button
+              type="button"
+              className="secondary btn-icon"
+              onClick={() => {
+                load()
+                loadResources()
+                loadProviderResources()
+              }}
+              disabled={resourcesLoading}
+            >
               <Icon name="refresh" size={16} /> Refresh
             </button>
             <Link className="btn btn-icon" to="/clusters?new=1">
-              <Icon name="plus" size={16} /> Create cluster
+              <Icon name="plus" size={16} /> New cluster
             </Link>
           </>
         }
@@ -355,27 +314,31 @@ export default function Dashboard() {
 
       <section className="stat-grid">
         <StatCard
-          label="Total clusters"
+          icon="clusters"
+          label="Clusters"
           value={dashNum ? '—' : clusters.length}
           hint={dashNum ? undefined : `${ready} healthy`}
           hintTone="ok"
         />
         <StatCard
-          label="Machines"
+          icon="machines"
+          label="Nodes"
           value={dashNum ? '—' : totalNodes}
           hint={
             dashNum
               ? undefined
-              : `${cps + wks - provisioning} ready${provisioning ? ` · ${provisioning} provisioning` : ''}`
+              : `${Math.max(0, totalNodes - provisioning)} ready${provisioning ? ` · ${provisioning} provisioning` : ''}`
           }
         />
         <StatCard
+          icon="providers"
           label="Providers"
           value={dashNum ? '—' : providers.length}
           hint={dashNum ? undefined : `${providersOnline} online`}
         />
         <StatCard
-          label="Attention needed"
+          icon="alert"
+          label="Attention"
           value={dashNum ? '—' : attention}
           valueTone={attention > 0 ? 'warn' : undefined}
           hint={
@@ -390,150 +353,106 @@ export default function Dashboard() {
         />
       </section>
 
-      <section className="dash-section">
-        <div className="section-toolbar">
-          <div>
-            <h2 className="section-kicker" style={{ textTransform: 'none', letterSpacing: '-0.01em', fontSize: '0.875rem' }}>
-              Cluster resource usage
-            </h2>
-            <p className="muted dash-section-sub" style={{ margin: '0.25rem 0 0' }}>
-              Online clusters · live used / total
-            </p>
-          </div>
-          <Link to="/clusters" className="section-link">
-            View all clusters
-          </Link>
-        </div>
-        {resourcesErr && <div className="error">{resourcesErr}</div>}
-        {listLoading && clusters.length === 0 ? (
-          <div className="dash-resource-grid">
-            {[0, 1].map((i) => (
-              <div key={i} className="live-resource-card cluster-resource-skeleton" aria-hidden>
-                <div className="skeleton-line w-40" />
-                <div className="skeleton-line w-80" />
-              </div>
-            ))}
-          </div>
-        ) : clusters.length === 0 ? (
-          <div className="card dash-empty">
-            <p className="muted" style={{ margin: 0 }}>
-              No clusters yet. Add a provider, then create control planes and workers.
-            </p>
-            <div className="dash-empty-actions">
-              <Link className="btn btn-icon" to="/providers">
-                <Icon name="providers" size={16} /> Providers
-              </Link>
-              <Link className="btn btn-icon" to="/clusters?new=1">
-                <Icon name="plus" size={16} /> Create cluster
-              </Link>
-            </div>
-          </div>
-        ) : displayResources.length === 0 ? (
-          <div className="card dash-empty">
-            <p className="muted" style={{ margin: 0 }}>
-              No online clusters right now. Offline clusters still appear under All clusters.
-            </p>
-            <div className="dash-empty-actions">
-              <Link className="btn btn-icon" to="/clusters">
-                <Icon name="clusters" size={16} /> All clusters
-              </Link>
-            </div>
-          </div>
-        ) : (
-          <div className="dash-resource-grid">
-            {displayResources.map((s) => (
-              <LiveClusterResourceCard
-                key={s.cluster_id}
-                summary={s}
-                onOpen={() => nav(`/clusters/${s.cluster_id}`)}
-              />
-            ))}
-          </div>
-        )}
-      </section>
-
-      {(recent.length > 0 || !dashNum) && (
-        <div className="dash-bottom-grid">
-          <section className="dash-panel-card">
-            <div className="section-toolbar">
-              <div>
-                <h2>Recent clusters</h2>
-                <p className="panel-sub">Latest activity across your infrastructure</p>
-              </div>
+      <div className="dash-main-grid">
+        <section className="fleet-panel">
+          <div className="fleet-panel-head">
+            <div className="fleet-panel-title-row">
+              <h2 className="fleet-panel-title">Clusters</h2>
               <Link to="/clusters" className="section-link">
-                View all clusters
+                View all
               </Link>
             </div>
-            {recent.length === 0 ? (
-              <p className="muted" style={{ marginTop: '1.25rem' }}>No clusters yet.</p>
-            ) : (
-              <div className="dash-recent-list">
-                {recent.map((c) => {
-                  const tone = statusTone(c.status)
-                  const nodes = (c.controlplanes || 0) + (c.workers || 0)
-                  const ver = formatK8sVersion(c.k8s_version) || c.os_version || '—'
-                  return (
-                    <div
-                      key={c.id}
-                      className="dash-recent-row"
-                      role="link"
-                      tabIndex={0}
-                      onClick={() => nav(`/clusters/${c.id}`)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
-                          nav(`/clusters/${c.id}`)
-                        }
-                      }}
-                    >
-                      <div className="dash-recent-left">
-                        <span className={`dash-recent-dot ${tone}`} aria-hidden />
-                        <div style={{ minWidth: 0 }}>
-                          <div className="dash-recent-name">{c.name}</div>
-                          <div className="dash-recent-meta">
-                            {nodes} machines · {c.status || 'unknown'}
-                          </div>
-                        </div>
-                      </div>
-                      <span className="dash-recent-ver">{ver}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </section>
-
-          <section className="dash-panel-card">
-            <h2>System status</h2>
-            <p className="panel-sub">Derived from live control-plane state</p>
-            <div className="sys-status-list">
-              {systemStatus.map((item) => (
-                <div key={item.label} className="sys-status-row">
-                  <span className="sys-status-label">{item.label}</span>
-                  <span className={`sys-status-value ${item.ok ? 'ok' : 'warn'}`}>
-                    <span className="dot" aria-hidden />
-                    {item.text}
-                  </span>
-                </div>
-              ))}
+            <div className="fleet-filter">
+              <Icon name="search" size={14} />
+              <input
+                type="search"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Filter…"
+                aria-label="Filter clusters"
+              />
             </div>
-          </section>
-        </div>
-      )}
+          </div>
+          {resourcesErr && <div className="error fleet-panel-err">{resourcesErr}</div>}
+          {listLoading && clusters.length === 0 ? (
+            <div className="fleet-empty muted">Loading clusters…</div>
+          ) : clusters.length === 0 ? (
+            <div className="fleet-empty">
+              <p className="muted" style={{ margin: 0 }}>
+                No clusters yet. Add a provider, then create control planes and workers.
+              </p>
+              <div className="dash-empty-actions">
+                <Link className="btn btn-icon" to="/providers">
+                  <Icon name="providers" size={16} /> Providers
+                </Link>
+                <Link className="btn btn-icon" to="/clusters?new=1">
+                  <Icon name="plus" size={16} /> New cluster
+                </Link>
+              </div>
+            </div>
+          ) : filteredClusters.length === 0 ? (
+            <div className="fleet-empty muted">No clusters match this filter.</div>
+          ) : (
+            <div className="fleet-scroll">
+              <div className="fleet-table fleet-table-clusters">
+                <div className="fleet-head" aria-hidden>
+                  <span>Cluster</span>
+                  <span>Provider</span>
+                  <span>Nodes</span>
+                  <span>Version</span>
+                  <span>Status</span>
+                  <span>Resources</span>
+                </div>
+                <div className="fleet-body">
+                  {filteredClusters.map((s) => (
+                    <FleetClusterRow
+                      key={s.cluster_id}
+                      summary={s}
+                      onOpen={() => nav(`/clusters/${s.cluster_id}`)}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
 
-      <section className="dash-section">
-        <div className="section-toolbar">
-          <h2 className="section-kicker" style={{ textTransform: 'none', letterSpacing: '-0.01em', fontSize: '0.875rem' }}>
-            Providers
-          </h2>
-          <Link to="/providers" className="section-link">
-            All providers
-          </Link>
+        <section className="fleet-side-panel">
+          <div className="fleet-panel-head">
+            <h2 className="fleet-panel-title">System status</h2>
+          </div>
+          <div className="sys-status-list">
+            {systemStatus.map((item) => (
+              <div key={item.label} className="sys-status-row">
+                <span className="sys-status-label">{item.label}</span>
+                <span className={`sys-status-value ${item.ok ? 'ok' : 'warn'}`}>
+                  <span className="dot" aria-hidden />
+                  {item.text}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <section className="fleet-panel">
+        <div className="fleet-panel-head">
+          <div className="fleet-panel-title-row">
+            <h2 className="fleet-panel-title">Providers</h2>
+            <Link to="/providers" className="section-link">
+              All providers
+            </Link>
+          </div>
+          {providers.length > 0 && (
+            <p className="fleet-panel-sub muted">
+              {providersOnline} of {providers.length} hypervisors online
+            </p>
+          )}
         </div>
         {providers.length === 0 ? (
-          <div className="card dash-empty">
+          <div className="fleet-empty">
             <p className="muted" style={{ margin: 0 }}>
-              No providers yet. Add Proxmox, vSphere, or Nutanix to create clusters.
+              No providers yet. Add Proxmox, vSphere, Nutanix, or Pertisk VMs.
             </p>
             <div className="dash-empty-actions">
               <Link className="btn btn-icon" to="/providers">
@@ -541,32 +460,28 @@ export default function Dashboard() {
               </Link>
             </div>
           </div>
-        ) : displayProviders.length === 0 ? (
-          <div className="card dash-empty">
-            <p className="muted" style={{ margin: 0 }}>
-              No online providers right now. Offline providers still appear under All providers.
-            </p>
-            <div className="dash-empty-actions">
-              <Link className="btn btn-icon" to="/providers">
-                <Icon name="providers" size={16} /> All providers
-              </Link>
+        ) : (
+          <div className="fleet-scroll">
+            <div className="fleet-table fleet-table-providers">
+              <div className="fleet-head" aria-hidden>
+                <span>Provider</span>
+                <span>Status</span>
+                <span>CPU</span>
+                <span>Memory</span>
+                <span>Disk</span>
+                <span>Resources</span>
+              </div>
+              <div className="fleet-body">
+                {displayProviders.map((s) => (
+                  <FleetProviderRow
+                    key={s.provider_id}
+                    summary={s}
+                    onOpen={() => nav(`/providers/${s.provider_id}`)}
+                  />
+                ))}
+              </div>
             </div>
           </div>
-        ) : (
-          <div className="dash-resource-grid">
-            {displayProviders.map((s) => (
-              <ProviderResourceCard
-                key={s.provider_id}
-                summary={s}
-                onOpen={() => nav(`/providers/${s.provider_id}`)}
-              />
-            ))}
-          </div>
-        )}
-        {providers.length > 0 && (
-          <p className="muted dash-section-sub">
-            {providersOnline} of {providers.length} hypervisors online
-          </p>
         )}
       </section>
     </div>
