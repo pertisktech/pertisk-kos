@@ -7,26 +7,15 @@ import StatCard from '../components/StatCard'
 import { ResourceBars } from '../components/ResourceBars'
 import { placeholderSummary, formatK8sVersion } from '../components/ClusterCard'
 import { formatProviderKind } from '../components/ClusterMetaBadges'
+import { clusterFleetStatus, resolveAvailability } from '../components/ClusterStatusBadges'
 import ClusterWizard from '../components/ClusterWizard'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
 const CACHE_CLUSTERS = 'pertisk_dash_clusters'
 
-function statusTone(status) {
-  if (status === 'ready') return 'ok'
-  if (status === 'error' || status === 'failed' || status === 'degraded') return 'err'
-  return 'warn'
-}
-
-function statusLabel(status) {
-  if (status === 'ready') return 'healthy'
-  if (!status) return 'unknown'
-  return status
-}
-
 function FleetClusterRow({ summary, onOpen }) {
-  const tone = statusTone(summary.status)
+  const { label, tone } = clusterFleetStatus(summary.status, summary.availability)
   const cps = Number(summary.controlplanes) || 0
   const wks = Number(summary.workers) || 0
   const nodes = Number(summary.node_count) || cps + wks
@@ -44,7 +33,7 @@ function FleetClusterRow({ summary, onOpen }) {
       <span className="fleet-cell fleet-cell-meta">{provider}</span>
       <span className="fleet-cell">{nodes} nodes</span>
       <span className="fleet-cell">{ver}</span>
-      <span className={`fleet-cell fleet-status ${tone}`}>{statusLabel(summary.status)}</span>
+      <span className={`fleet-cell fleet-status ${tone}`}>{label}</span>
       <div className="fleet-cell fleet-cell-bars">
         <ResourceBars cpu={summary.cpu} memory={summary.memory} disk={summary.disk} />
       </div>
@@ -124,6 +113,8 @@ export default function Clusters() {
         controlplanes: c.controlplanes,
         workers: c.workers,
         k8s_version: c.k8s_version,
+        status: c.status || live.status,
+        availability: resolveAvailability(live.availability, c.availability),
       }
     })
   }, [list, metrics])
@@ -132,7 +123,7 @@ export default function Clusters() {
     const q = filter.trim().toLowerCase()
     if (!q) return cards
     return cards.filter((s) => {
-      const hay = [s.cluster_name, s.provider_name, s.provider_kind, s.status, formatK8sVersion(s.k8s_version)]
+      const hay = [s.cluster_name, s.provider_name, s.provider_kind, s.status, s.availability, formatK8sVersion(s.k8s_version)]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -141,6 +132,7 @@ export default function Clusters() {
   }, [cards, filter])
 
   const ready = list.filter((c) => c.status === 'ready').length
+  const online = cards.filter((c) => c.availability === 'online').length
   const totalMachines = list.reduce(
     (n, c) => n + (c.controlplanes || 0) + (c.workers || 0),
     0,
@@ -166,7 +158,13 @@ export default function Clusters() {
 
       <section className="stat-grid stat-grid-3">
         <StatCard icon="clusters" label="Clusters" value={loaded ? list.length : '—'} />
-        <StatCard icon="check" label="Healthy" value={loaded ? ready : '—'} hintTone="ok" />
+        <StatCard
+          icon="check"
+          label="Online"
+          value={loaded ? online : '—'}
+          hint={loaded ? `${ready} ready` : undefined}
+          hintTone="ok"
+        />
         <StatCard icon="machines" label="Nodes" value={loaded ? totalMachines : '—'} />
       </section>
 

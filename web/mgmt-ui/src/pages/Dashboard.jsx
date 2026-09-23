@@ -8,6 +8,7 @@ import ActivityLog from '../components/ActivityLog'
 import { ResourceBars, formatMetric } from '../components/ResourceBars'
 import { placeholderSummary, formatK8sVersion } from '../components/ClusterCard'
 import { formatProviderKind, providerKindGlyph } from '../components/ClusterMetaBadges'
+import { clusterFleetStatus, resolveAvailability } from '../components/ClusterStatusBadges'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 
@@ -15,22 +16,6 @@ const CACHE_CLUSTERS = 'pertisk_dash_clusters'
 const CACHE_PROVIDERS = 'pertisk_dash_providers'
 const CACHE_RESOURCES = 'pertisk_dash_resources'
 const CACHE_PROVIDER_RES = 'pertisk_dash_provider_res'
-
-function resolveAvailability(...vals) {
-  for (const v of vals) {
-    if (v === 'online' || v === 'offline') return v
-  }
-  for (const v of vals) {
-    if (v) return v
-  }
-  return 'unknown'
-}
-
-function statusTone(status) {
-  if (status === 'ready' || status === 'Healthy') return 'ok'
-  if (status === 'error' || status === 'failed' || status === 'degraded') return 'err'
-  return 'warn'
-}
 
 function availTone(availability) {
   if (availability === 'online') return 'ok'
@@ -63,8 +48,7 @@ function placeholderProvider(p) {
 }
 
 function FleetClusterRow({ summary, onOpen }) {
-  const tone = statusTone(summary.status)
-  const label = summary.status === 'ready' ? 'healthy' : summary.status || 'unknown'
+  const { label, tone } = clusterFleetStatus(summary.status, summary.availability)
   const nodes =
     Number(summary.node_count) ||
     (Number(summary.controlplanes) || 0) + (Number(summary.workers) || 0)
@@ -213,7 +197,7 @@ export default function Dashboard() {
         controlplanes: c.controlplanes,
         workers: c.workers,
         k8s_version: c.k8s_version,
-        availability: resolveAvailability(c.availability, live.availability),
+        availability: resolveAvailability(live.availability, c.availability),
       }
     })
   }, [resources, clusters])
@@ -227,6 +211,7 @@ export default function Dashboard() {
         s.provider_name,
         s.provider_kind,
         s.status,
+        s.availability,
         formatK8sVersion(s.k8s_version),
       ]
         .filter(Boolean)
@@ -237,12 +222,15 @@ export default function Dashboard() {
   }, [displayResources, filter])
 
   const ready = clusters.filter((c) => c.status === 'ready').length
+  const online = displayResources.filter((c) => c.availability === 'online').length
   const cps = clusters.reduce((n, c) => n + (c.controlplanes || 0), 0)
   const wks = clusters.reduce((n, c) => n + (c.workers || 0), 0)
   const totalNodes = cps + wks
   const providersOnline = providers.filter((p) => p.availability === 'online').length
-  const attention = clusters.filter((c) =>
-    ['error', 'degraded', 'failed', 'provisioning'].includes(c.status),
+  const attention = displayResources.filter(
+    (c) =>
+      ['error', 'degraded', 'failed', 'provisioning'].includes(c.status) ||
+      c.availability === 'offline',
   ).length
   const dashNum = listLoading && clusters.length === 0
   const provisioning = clusters.filter((c) => c.status === 'provisioning').length
@@ -255,7 +243,7 @@ export default function Dashboard() {
       const live = byId.get(p.id) || placeholderProvider(p)
       return {
         ...live,
-        availability: resolveAvailability(p.availability, live.availability),
+        availability: resolveAvailability(live.availability, p.availability),
       }
     })
   }, [providerRes, providers])
@@ -267,9 +255,9 @@ export default function Dashboard() {
       text: resourcesErr ? 'Unreachable' : 'Operational',
     },
     {
-      label: 'Clusters ready',
-      ok: ready === clusters.length && clusters.length > 0,
-      text: dashNum ? '—' : `${ready} / ${clusters.length || 0}`,
+      label: 'Clusters online',
+      ok: online === clusters.length && clusters.length > 0,
+      text: dashNum ? '—' : `${online} / ${clusters.length || 0}`,
     },
     {
       label: 'Provider connection',
@@ -318,7 +306,7 @@ export default function Dashboard() {
           icon="clusters"
           label="Clusters"
           value={dashNum ? '—' : clusters.length}
-          hint={dashNum ? undefined : `${ready} healthy`}
+          hint={dashNum ? undefined : `${online} online · ${ready} ready`}
           hintTone="ok"
         />
         <StatCard
