@@ -55,7 +55,7 @@ export default function ActivityLog({ limit = 24 }) {
   useMgmtRefresh(load)
 
   return (
-    <section className="fleet-side-panel activity-panel">
+    <section className="fleet-panel activity-panel">
       <div className="fleet-panel-head">
         <div className="fleet-panel-title-row">
           <h2 className="fleet-panel-title">Activity</h2>
@@ -80,7 +80,7 @@ export default function ActivityLog({ limit = 24 }) {
             ))}
             <div className="activity-cursor" aria-hidden>
               <span className="activity-prompt">$</span>
-              <span className="muted">tail -f audit_log</span>
+              <span className="muted">tail -f /var/log/pertiskd/events.log</span>
               <span className="activity-caret" />
             </div>
           </div>

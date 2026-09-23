@@ -354,89 +354,87 @@ export default function Dashboard() {
         />
       </section>
 
-      <div className="dash-main-grid">
-        <section className="fleet-panel">
-          <div className="fleet-panel-head">
-            <div className="fleet-panel-title-row">
-              <h2 className="fleet-panel-title">Clusters</h2>
-              <Link to="/clusters" className="section-link">
-                View all
+      <section className="fleet-panel">
+        <div className="fleet-panel-head">
+          <div className="fleet-panel-title-row">
+            <h2 className="fleet-panel-title">Clusters</h2>
+            <Link to="/clusters" className="section-link">
+              View all
+            </Link>
+          </div>
+          <div className="fleet-filter">
+            <Icon name="search" size={14} />
+            <input
+              type="search"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter…"
+              aria-label="Filter clusters"
+            />
+          </div>
+        </div>
+        {resourcesErr && <div className="error fleet-panel-err">{resourcesErr}</div>}
+        {listLoading && clusters.length === 0 ? (
+          <div className="fleet-empty muted">Loading clusters…</div>
+        ) : clusters.length === 0 ? (
+          <div className="fleet-empty">
+            <p className="muted" style={{ margin: 0 }}>
+              No clusters yet. Add a provider, then create control planes and workers.
+            </p>
+            <div className="dash-empty-actions">
+              <Link className="btn btn-icon" to="/providers">
+                <Icon name="providers" size={16} /> Providers
+              </Link>
+              <Link className="btn btn-icon" to="/clusters?new=1">
+                <Icon name="plus" size={16} /> New cluster
               </Link>
             </div>
-            <div className="fleet-filter">
-              <Icon name="search" size={14} />
-              <input
-                type="search"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder="Filter…"
-                aria-label="Filter clusters"
-              />
+          </div>
+        ) : filteredClusters.length === 0 ? (
+          <div className="fleet-empty muted">No clusters match this filter.</div>
+        ) : (
+          <div className="fleet-scroll">
+            <div className="fleet-table fleet-table-clusters">
+              <div className="fleet-head" aria-hidden>
+                <span>Cluster</span>
+                <span>Provider</span>
+                <span>Nodes</span>
+                <span>Version</span>
+                <span>Status</span>
+                <span>Resources</span>
+              </div>
+              <div className="fleet-body">
+                {filteredClusters.map((s) => (
+                  <FleetClusterRow
+                    key={s.cluster_id}
+                    summary={s}
+                    onOpen={() => nav(`/clusters/${s.cluster_id}`)}
+                  />
+                ))}
+              </div>
             </div>
           </div>
-          {resourcesErr && <div className="error fleet-panel-err">{resourcesErr}</div>}
-          {listLoading && clusters.length === 0 ? (
-            <div className="fleet-empty muted">Loading clusters…</div>
-          ) : clusters.length === 0 ? (
-            <div className="fleet-empty">
-              <p className="muted" style={{ margin: 0 }}>
-                No clusters yet. Add a provider, then create control planes and workers.
-              </p>
-              <div className="dash-empty-actions">
-                <Link className="btn btn-icon" to="/providers">
-                  <Icon name="providers" size={16} /> Providers
-                </Link>
-                <Link className="btn btn-icon" to="/clusters?new=1">
-                  <Icon name="plus" size={16} /> New cluster
-                </Link>
-              </div>
-            </div>
-          ) : filteredClusters.length === 0 ? (
-            <div className="fleet-empty muted">No clusters match this filter.</div>
-          ) : (
-            <div className="fleet-scroll">
-              <div className="fleet-table fleet-table-clusters">
-                <div className="fleet-head" aria-hidden>
-                  <span>Cluster</span>
-                  <span>Provider</span>
-                  <span>Nodes</span>
-                  <span>Version</span>
-                  <span>Status</span>
-                  <span>Resources</span>
-                </div>
-                <div className="fleet-body">
-                  {filteredClusters.map((s) => (
-                    <FleetClusterRow
-                      key={s.cluster_id}
-                      summary={s}
-                      onOpen={() => nav(`/clusters/${s.cluster_id}`)}
-                    />
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </section>
+        )}
+      </section>
 
-        <div className="dash-side-stack">
-          <ActivityLog />
-          <section className="fleet-side-panel sys-status-panel">
-            <div className="fleet-panel-head">
-              <h2 className="fleet-panel-title">System status</h2>
-            </div>
-            <div className="sys-status-list">
-              {systemStatus.map((item) => (
-                <div key={item.label} className="sys-status-row">
-                  <span className="sys-status-label">{item.label}</span>
-                  <span className={`sys-status-value ${item.ok ? 'ok' : 'warn'}`}>
-                    <span className="dot" aria-hidden />
-                    {item.text}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
+      <div className="dash-bottom-stack">
+        <ActivityLog />
+        <section className="fleet-panel sys-status-panel">
+          <div className="fleet-panel-head">
+            <h2 className="fleet-panel-title">System status</h2>
+          </div>
+          <div className="sys-status-list">
+            {systemStatus.map((item) => (
+              <div key={item.label} className="sys-status-row">
+                <span className="sys-status-label">{item.label}</span>
+                <span className={`sys-status-value ${item.ok ? 'ok' : 'warn'}`}>
+                  <span className="dot" aria-hidden />
+                  {item.text}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
       </div>
 
       <section className="fleet-panel">
