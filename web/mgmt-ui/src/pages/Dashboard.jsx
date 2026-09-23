@@ -4,6 +4,7 @@ import { api } from '../api'
 import { Icon } from '../components/Icons'
 import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
+import ActivityLog from '../components/ActivityLog'
 import { ResourceBars, formatMetric } from '../components/ResourceBars'
 import { placeholderSummary, formatK8sVersion } from '../components/ClusterCard'
 import { formatProviderKind, providerKindGlyph } from '../components/ClusterMetaBadges'
@@ -417,22 +418,25 @@ export default function Dashboard() {
           )}
         </section>
 
-        <section className="fleet-side-panel">
-          <div className="fleet-panel-head">
-            <h2 className="fleet-panel-title">System status</h2>
-          </div>
-          <div className="sys-status-list">
-            {systemStatus.map((item) => (
-              <div key={item.label} className="sys-status-row">
-                <span className="sys-status-label">{item.label}</span>
-                <span className={`sys-status-value ${item.ok ? 'ok' : 'warn'}`}>
-                  <span className="dot" aria-hidden />
-                  {item.text}
-                </span>
-              </div>
-            ))}
-          </div>
-        </section>
+        <div className="dash-side-stack">
+          <ActivityLog />
+          <section className="fleet-side-panel sys-status-panel">
+            <div className="fleet-panel-head">
+              <h2 className="fleet-panel-title">System status</h2>
+            </div>
+            <div className="sys-status-list">
+              {systemStatus.map((item) => (
+                <div key={item.label} className="sys-status-row">
+                  <span className="sys-status-label">{item.label}</span>
+                  <span className={`sys-status-value ${item.ok ? 'ok' : 'warn'}`}>
+                    <span className="dot" aria-hidden />
+                    {item.text}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
       </div>
 
       <section className="fleet-panel">

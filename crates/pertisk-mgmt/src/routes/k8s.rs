@@ -44,6 +44,8 @@ pub fn routes() -> Router<AppState> {
         // Host OS shell on the mgmt server with KUBECONFIG pointed at this cluster
         // (kubectl / helm for app install). Not pod exec.
         .route("/clusters/{id}/k8s/shell", get(host_shell_ws))
+        // Management-host shell (pertiskctl / ops) — no cluster kubeconfig.
+        .route("/mgmt/shell", get(mgmt_shell_ws))
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,18 +196,44 @@ async fn host_shell_ws(
     let (kc, cluster_name) = resolve_ready_kubeconfig(&state, &id).await?;
     let kc = Arc::new(kc);
     let cluster_name = Arc::new(cluster_name);
-    Ok(ws.on_upgrade(move |socket| handle_host_shell(socket, kc, cluster_name)))
+    Ok(ws.on_upgrade(move |socket| {
+        handle_host_shell(socket, Some(kc), Some(cluster_name), "cluster")
+    }))
+}
+
+async fn mgmt_shell_ws(
+    State(state): State<AppState>,
+    Query(q): Query<ShellQuery>,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, AppError> {
+    let claims = decode_token(state.cfg(), &q.token)?;
+    let user = AuthUser {
+        id: claims.sub,
+        username: claims.username,
+        role: claims.role,
+        provider: claims.provider,
+    };
+    require_mutate(&user)?;
+    Ok(ws.on_upgrade(|socket| handle_host_shell(socket, None, None, "mgmt")))
 }
 
 async fn handle_host_shell(
     socket: WebSocket,
-    kubeconfig: Arc<std::path::PathBuf>,
-    cluster_name: Arc<String>,
+    kubeconfig: Option<Arc<std::path::PathBuf>>,
+    cluster_name: Option<Arc<String>>,
+    mode: &'static str,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
 
-    let session = match spawn_host_shell(&kubeconfig, &cluster_name, &out_tx).await {
+    let session = match spawn_host_shell(
+        kubeconfig.as_deref().map(|p| p.as_path()),
+        cluster_name.as_deref().map(|s| s.as_str()),
+        mode,
+        &out_tx,
+    )
+    .await
+    {
         Some(s) => s,
         None => {
             let _ = ws_tx
@@ -315,8 +343,9 @@ fn pick_shell_bin() -> &'static str {
 }
 
 async fn spawn_host_shell(
-    kubeconfig: &std::path::Path,
-    cluster_name: &str,
+    kubeconfig: Option<&std::path::Path>,
+    cluster_name: Option<&str>,
+    mode: &str,
     tx: &mpsc::Sender<String>,
 ) -> Option<PtySession> {
     let pty_system = NativePtySystem::default();
@@ -355,10 +384,14 @@ async fn spawn_host_shell(
         std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into()),
     );
     cmd.env("PATH", &path);
-    cmd.env("KUBECONFIG", kubeconfig);
-    cmd.env("PERTISK_CLUSTER", cluster_name);
-    // Helm reads KUBECONFIG the same way.
-    cmd.env("HELM_KUBECONTEXT", "");
+    if let Some(kc) = kubeconfig {
+        cmd.env("KUBECONFIG", kc);
+        if let Some(name) = cluster_name {
+            cmd.env("PERTISK_CLUSTER", name);
+        }
+        // Helm reads KUBECONFIG the same way.
+        cmd.env("HELM_KUBECONTEXT", "");
+    }
 
     if let Err(err) = pair.slave.spawn_command(cmd) {
         let _ = tx
@@ -372,14 +405,22 @@ async fn spawn_host_shell(
     let reader = pair.master.try_clone_reader().ok()?;
     let writer = pair.master.take_writer().ok()?;
     // Banner after spawn — write via a short delay so the shell owns the TTY first.
-    let _ = tx
-        .send(format!(
-            "\r\n\u{1b}[1;36mpertisk shell\u{1b}[0m · cluster \u{1b}[1m{cluster_name}\u{1b}[0m\r\n\
-             KUBECONFIG={}\r\n\
-             Use \u{1b}[1mkubectl\u{1b}[0m / \u{1b}[1mhelm\u{1b}[0m to install apps.\r\n\r\n",
-            kubeconfig.display()
-        ))
-        .await;
+    let banner = if mode == "mgmt" {
+        "\r\n\u{1b}[1;36mpertisk mgmt shell\u{1b}[0m · \u{1b}[1mpertiskctl\u{1b}[0m / ops tools\r\n\
+         No cluster KUBECONFIG — use \u{1b}[1mpertiskctl\u{1b}[0m against guests or providers.\r\n\r\n"
+            .to_string()
+    } else {
+        let name = cluster_name.unwrap_or("cluster");
+        let kc = kubeconfig
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        format!(
+            "\r\n\u{1b}[1;36mpertisk shell\u{1b}[0m · cluster \u{1b}[1m{name}\u{1b}[0m\r\n\
+             KUBECONFIG={kc}\r\n\
+             Use \u{1b}[1mkubectl\u{1b}[0m / \u{1b}[1mhelm\u{1b}[0m to install apps.\r\n\r\n"
+        )
+    };
+    let _ = tx.send(banner).await;
 
     Some(PtySession {
         master: pair.master,

@@ -3,12 +3,21 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { buildHostShellWsUrl } from '../pages/cluster-k8s/api'
+import { buildHostShellWsUrl, buildMgmtShellWsUrl } from '../pages/cluster-k8s/api'
 
 /**
- * Host OS shell on the management server (KUBECONFIG set for this cluster).
+ * Interactive xterm attached to a management-host PTY WebSocket.
+ * Provide either `wsUrl`, or `clusterId` (cluster kubectl shell), or kind=mgmt.
  */
-export default function Xterm({ clusterId, clusterName, onClose }) {
+export default function Xterm({
+  clusterId,
+  clusterName,
+  kind = 'cluster',
+  wsUrl: wsUrlProp,
+  label,
+  onClose,
+  bare = false,
+}) {
   const terminalRef = useRef(null)
   const xtermRef = useRef(null)
   const wsRef = useRef(null)
@@ -16,12 +25,28 @@ export default function Xterm({ clusterId, clusterName, onClose }) {
   const lastDims = useRef(null)
   const resizeTimer = useRef(null)
 
+  const resolvedUrl =
+    wsUrlProp ||
+    (kind === 'mgmt'
+      ? buildMgmtShellWsUrl()
+      : clusterId
+        ? buildHostShellWsUrl(clusterId)
+        : '')
+
   useEffect(() => {
-    if (!terminalRef.current || !clusterId) return undefined
+    if (!terminalRef.current || !resolvedUrl) return undefined
 
     const style = getComputedStyle(document.documentElement)
-    const bg = style.getPropertyValue('--bg-elevated').trim() || '#131421'
-    const fg = style.getPropertyValue('--text').trim() || '#e8e8e9'
+    const bg =
+      style.getPropertyValue('--card').trim() ||
+      style.getPropertyValue('--bg-elevated').trim() ||
+      '#131421'
+    const fg =
+      style.getPropertyValue('--foreground').trim() ||
+      style.getPropertyValue('--text').trim() ||
+      '#e8e8e9'
+    const cursor =
+      style.getPropertyValue('--primary').trim() || fg
 
     const xterm = new XTerm({
       cursorBlink: true,
@@ -30,7 +55,7 @@ export default function Xterm({ clusterId, clusterName, onClose }) {
       theme: {
         background: bg,
         foreground: fg,
-        cursor: fg,
+        cursor,
       },
     })
     const fit = new FitAddon()
@@ -41,8 +66,7 @@ export default function Xterm({ clusterId, clusterName, onClose }) {
     xtermRef.current = xterm
     fitAddonRef.current = fit
 
-    const wsUrl = buildHostShellWsUrl(clusterId)
-    const ws = new WebSocket(wsUrl)
+    const ws = new WebSocket(resolvedUrl)
     wsRef.current = ws
 
     const sendResize = () => {
@@ -101,14 +125,22 @@ export default function Xterm({ clusterId, clusterName, onClose }) {
       xtermRef.current = null
       wsRef.current = null
     }
-  }, [clusterId])
+  }, [resolvedUrl])
+
+  const title =
+    label ||
+    (kind === 'mgmt'
+      ? 'mgmt · pertiskctl'
+      : `host shell${clusterName ? ` · ${clusterName}` : ''} · kubectl / helm`)
+
+  if (bare) {
+    return <div className="xterm-shell-body xterm-shell-body-tall" ref={terminalRef} />
+  }
 
   return (
     <div className="xterm-shell">
       <div className="xterm-shell-bar">
-        <span className="mono-inline">
-          host shell{clusterName ? ` · ${clusterName}` : ''} · kubectl / helm
-        </span>
+        <span className="mono-inline">{title}</span>
         {onClose && (
           <button type="button" className="secondary btn-icon" onClick={onClose}>
             Close

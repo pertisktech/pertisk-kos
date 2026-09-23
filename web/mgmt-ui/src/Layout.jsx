@@ -5,8 +5,10 @@ import { api } from './api'
 import { Icon } from './components/Icons'
 import BrandLogo from './components/BrandLogo'
 import ThemeToggle from './components/ThemeToggle'
+import BottomShell from './components/BottomShell'
 import { useConfirm } from './components/Confirm'
 import { APP_VERSION } from './utils/version'
+import { useShellDock } from './shell/ShellDockContext'
 
 const SIDEBAR_COLLAPSED_KEY = 'pertisk_kos_sidebar_collapsed'
 
@@ -69,6 +71,7 @@ export default function Layout() {
   const nav = useNavigate()
   const location = useLocation()
   const confirm = useConfirm()
+  const shellDock = useShellDock()
   const [user, setUser] = useState(null)
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -244,6 +247,15 @@ export default function Layout() {
             </form>
           </div>
           <div className="topbar-actions">
+            <button
+              type="button"
+              className="theme-toggle"
+              title="Management shell"
+              aria-label="Open management shell"
+              onClick={() => shellDock.openMgmtShell()}
+            >
+              <Icon name="terminal" size={16} />
+            </button>
             <ThemeToggle />
             <button
               type="button"
@@ -279,6 +291,7 @@ export default function Layout() {
         <div className="content">
           <Outlet />
         </div>
+        <BottomShell />
       </div>
     </div>
   )

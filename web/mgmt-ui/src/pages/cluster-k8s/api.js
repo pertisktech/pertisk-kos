@@ -68,3 +68,12 @@ export function buildHostShellWsUrl(clusterId) {
   if (token) url.searchParams.set('token', token)
   return url.toString()
 }
+
+/** Management-host shell (pertiskctl / ops tools) — no cluster KUBECONFIG. */
+export function buildMgmtShellWsUrl() {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const url = new URL(`${proto}//${window.location.host}/api/mgmt/shell`)
+  const token = getToken()
+  if (token) url.searchParams.set('token', token)
+  return url.toString()
+}
