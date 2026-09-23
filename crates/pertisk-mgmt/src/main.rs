@@ -26,6 +26,7 @@ mod provider_availability;
 mod provider_resources;
 mod proxmox;
 mod rbac;
+mod registry_client;
 mod routes;
 mod state;
 mod static_files;

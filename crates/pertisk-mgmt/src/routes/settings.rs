@@ -25,6 +25,7 @@ struct SettingsResp {
     public_url: String,
     helm_chart_repo: String,
     image_registry: String,
+    image_registry_auth_configured: bool,
     db: PathInfo,
     data_dir: PathInfo,
     jobs_dir: PathInfo,
@@ -103,6 +104,8 @@ async fn settings(State(state): State<AppState>) -> Json<SettingsResp> {
         public_url: cfg.public_url.clone(),
         helm_chart_repo: cfg.helm_chart_repo.clone(),
         image_registry: cfg.image_registry.clone(),
+        image_registry_auth_configured: !cfg.image_registry_user.trim().is_empty()
+            && !cfg.image_registry_password.is_empty(),
         db: path_info(&cfg.db),
         data_dir: path_info(&cfg.data_dir),
         jobs_dir: path_info(&cfg.jobs_dir()),

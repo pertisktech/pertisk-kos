@@ -14,8 +14,8 @@ Cluster → **Add-ons** → **Pertisk Ingress**:
 
 | Field | Default | Notes |
 |-------|---------|--------|
-| Image tag | `v0.1.95` | Multi-arch tag. Install pins `linux/{cluster-arch}` (digest or `v0.1.95-arm64`) so ARM nodes do not pull amd64 |
-| Registry user / password | empty | Optional. `pertisk-proxy` on the registry is **public** — leave blank. Set only for a private registry project |
+| Image tag | `0.1.95` | Multi-arch tag (`0.1.95` / `v0.1.95` both exist). Install pins a platform digest when the registry answers |
+| Registry user / password | empty | Optional. Leave blank for a **public** registry (no login). Set only for a private project |
 | Admin host | empty | Optional hostname for admin Ingress (`pertisk-proxy-ingress-admin`, port 9080) |
 | TLS secret | `none` | Shown when admin host is set. Pick a `kubernetes.io/tls` Secret (from cert-manager / reflector) or **none** for HTTP only |
 | Admin password | chart default | Stored encrypted; leave blank to keep the current value |
@@ -35,18 +35,15 @@ helm upgrade --install pertisk-ingress pertisk-ingress \
   --namespace pertisk-proxy --create-namespace \
   --set image.registry=registry.tools.thaidevops.co \
   --set image.repository=pertisk-proxy/ingress \
-  --set image.tag=v0.1.95-arm64 \
-  --set nodeSelector.kubernetes\.io/arch=arm64 \
+  --set image.tag=0.1.95 \
+  --set nodeSelector.kubernetes\.io/arch=amd64 \
   --set image.pullPolicy=Always
 
-# Equivalent with a named repo:
-#   helm repo add pertisk https://charts.tools.thaidevops.co --force-update
-#   helm upgrade --install pertisk-ingress pertisk/pertisk-ingress ...
+# ARM example: --set image.tag=0.1.95-arm64 --set nodeSelector.kubernetes\.io/arch=arm64
 
-# ARM nodes must pull the arm64 variant (not the amd64 layer of a multi-arch tag):
-#   docker pull registry.tools.thaidevops.co/pertisk-proxy/ingress:v0.1.95
-#   registry.tools.thaidevops.co/pertisk-proxy/ingress:v0.1.95-arm64
-# or :v0.1.95@sha256:<arm64-manifest>
+# Pull (public registry — no login):
+#   docker pull registry.tools.thaidevops.co/pertisk-proxy/ingress:0.1.95
+# Private registry: docker login, or set imagePullSecrets / MGMT_IMAGE_REGISTRY_*
 
 kubectl -n pertisk-proxy get deploy,svc pertisk-proxy-ingress
 kubectl get ingressclass pertisk-proxy

@@ -32,6 +32,12 @@ pub struct Config {
     /// Container registry host for Ingress / Dashboard / scaler / CD images.
     /// Override with `MGMT_IMAGE_REGISTRY` (default `registry.tools.thaidevops.co`).
     pub image_registry: String,
+    /// Optional pull username for `image_registry` (Docker Registry V2 / common registry).
+    /// Override with `MGMT_IMAGE_REGISTRY_USER`. Addon form credentials override this.
+    pub image_registry_user: String,
+    /// Optional pull password/token for `image_registry`.
+    /// Override with `MGMT_IMAGE_REGISTRY_PASSWORD`. Never exposed via the API.
+    pub image_registry_password: String,
     /// Optional Bearer for scraping guest `:50001/metrics`.
     pub metrics_token: Option<String>,
     /// Optional mTLS client material for scraping guest metrics over HTTPS.
@@ -143,6 +149,12 @@ impl Config {
         let public_url = resolve_public_url(listen);
         let helm_chart_repo = resolve_helm_chart_repo();
         let image_registry = resolve_image_registry();
+        let image_registry_user = std::env::var("MGMT_IMAGE_REGISTRY_USER")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let image_registry_password = std::env::var("MGMT_IMAGE_REGISTRY_PASSWORD")
+            .unwrap_or_default();
         let metrics_token = std::env::var("MGMT_METRICS_TOKEN")
             .ok()
             .filter(|s| !s.is_empty());
@@ -200,6 +212,8 @@ impl Config {
             public_url,
             helm_chart_repo,
             image_registry,
+            image_registry_user,
+            image_registry_password,
             metrics_token,
             metrics_tls,
             images_dir,

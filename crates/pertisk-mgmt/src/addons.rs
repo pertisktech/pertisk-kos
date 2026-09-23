@@ -45,10 +45,13 @@ const INGRESS_NAMESPACE: &str = "pertisk-proxy";
 const INGRESS_DEPLOY: &str = "pertisk-proxy-ingress";
 const INGRESS_ADMIN: &str = "pertisk-proxy-ingress-admin";
 const INGRESS_PULL_SECRET: &str = "pertisk-ingress-registry";
+const KOS_SCALER_PULL_SECRET: &str = "pertisk-kos-scaler-registry";
+const PERTISK_CD_PULL_SECRET: &str = "pertisk-cd-registry";
+const KUBERNETES_DASHBOARD_PULL_SECRET: &str = "pertisk-kube-registry";
 /// Default when `MGMT_IMAGE_REGISTRY` is unset (prefer `state.cfg().image_registry` at runtime).
 pub const INGRESS_IMAGE_REGISTRY: &str = crate::config::DEFAULT_IMAGE_REGISTRY;
 pub const INGRESS_IMAGE_REPO: &str = "pertisk-proxy/ingress";
-pub const INGRESS_IMAGE_TAG: &str = "v0.1.95";
+pub const INGRESS_IMAGE_TAG: &str = "0.1.95";
 const KOS_SCALER_ID: &str = "pertisk-kos-scaler";
 const KOS_SCALER_HELM_CHART: &str = "pertisk-kos-scaler";
 const KOS_SCALER_RELEASE: &str = "pertisk-kos-scaler";
@@ -200,7 +203,7 @@ const INGRESS_FIELDS: &[AddonField] = &[
         required: true,
         placeholder: INGRESS_IMAGE_TAG,
         options: None,
-        help: "Multi-arch tag (e.g. v0.1.95) from MGMT_IMAGE_REGISTRY. Install pins the cluster arch (linux/arm64 or linux/amd64) so ARM nodes do not pull amd64.",
+        help: "Image tag from MGMT_IMAGE_REGISTRY (e.g. 0.1.95). Install pins a platform digest when the registry allows; otherwise keeps this tag and nodeSelector.",
     },
     AddonField {
         name: "admin_host",
@@ -236,7 +239,7 @@ const INGRESS_FIELDS: &[AddonField] = &[
         required: false,
         placeholder: "optional",
         options: None,
-        help: "Optional. Leave empty when the registry project is public. Set only for a private project.",
+        help: "Optional. Leave empty for a public registry (anonymous pull). Set only for a private project.",
     },
     AddonField {
         name: "registry_password",
@@ -245,7 +248,7 @@ const INGRESS_FIELDS: &[AddonField] = &[
         required: false,
         placeholder: "optional",
         options: None,
-        help: "Optional registry credential (stored encrypted). Not needed for a public registry project.",
+        help: "Optional. Leave empty for a public registry. Set with Registry user for private pull.",
     },
 ];
 
@@ -1144,6 +1147,7 @@ fn kubernetes_dashboard_helm_values(
     cfg: &KubernetesDashboardConfig,
     jwt_secret: &str,
     registry: &str,
+    pull_secret: bool,
 ) -> Value {
     let mut values = json!({
         "app": {
@@ -1163,6 +1167,12 @@ fn kubernetes_dashboard_helm_values(
             "className": "pertisk-proxy",
         },
     });
+    if pull_secret {
+        values["imagePullSecrets"] = json!([{ "name": KUBERNETES_DASHBOARD_PULL_SECRET }]);
+        values["global"] = json!({
+            "imagePullSecrets": [{ "name": KUBERNETES_DASHBOARD_PULL_SECRET }],
+        });
+    }
     let host = cfg.host.trim();
     if !host.is_empty() {
         values["ingress"]["hosts"] = json!([{
@@ -1413,6 +1423,7 @@ fn kos_scaler_helm_values(
     endpoint: &str,
     password: &str,
     registry: &str,
+    pull_secret: bool,
 ) -> Value {
     let tag = if cfg.image_tag.trim().is_empty() {
         KOS_SCALER_IMAGE_TAG
@@ -1443,6 +1454,9 @@ fn kos_scaler_helm_values(
             "enabled": persist,
         }
     });
+    if pull_secret {
+        values["imagePullSecrets"] = json!([{ "name": KOS_SCALER_PULL_SECRET }]);
+    }
     if persist {
         values["statePersistence"]["storageClassName"] =
             json!(if sc.is_empty() { "nfs-client" } else { sc });
@@ -1620,6 +1634,7 @@ fn pertisk_cd_helm_values(
     secrets: &PertiskCdSecrets,
     registry: &str,
     cluster_name: &str,
+    pull_secret: bool,
 ) -> Value {
     let tag = if cfg.image_tag.trim().is_empty() {
         PERTISK_CD_IMAGE_TAG
@@ -1662,6 +1677,10 @@ fn pertisk_cd_helm_values(
             "enabled": !host.is_empty(),
         }
     });
+    if pull_secret {
+        // Chart may ignore this; install also patches the ServiceAccount.
+        values["imagePullSecrets"] = json!([{ "name": PERTISK_CD_PULL_SECRET }]);
+    }
     if !host.is_empty() {
         values["ingress"]["hosts"] = json!([{
             "host": host,
@@ -1681,19 +1700,21 @@ fn kube_arch(raw: &str) -> String {
     crate::os_upgrade::normalize_arch(raw).unwrap_or_else(|_| "amd64".into())
 }
 
-/// Pin a multi-arch tag to `tag@sha256:…` for `linux/{arch}`, or `tag-{arch}` when already suffixed.
-pub fn ingress_pin_tag(raw: &str, arch: &str) -> String {
-    let tag = if raw.trim().is_empty() {
-        INGRESS_IMAGE_TAG
+/// Normalize an ingress image tag (trim; empty → default). Do not invent a `v` prefix —
+/// the common registry publishes both `0.1.95` and `v0.1.95`.
+pub fn normalize_ingress_image_tag(raw: &str) -> String {
+    let tag = raw.trim();
+    if tag.is_empty() {
+        INGRESS_IMAGE_TAG.to_string()
     } else {
-        raw.trim()
-    };
-    let arch = kube_arch(arch);
-    if tag.ends_with("-amd64") || tag.ends_with("-arm64") || tag.contains('@') {
         tag.to_string()
-    } else {
-        format!("{tag}-{arch}")
     }
+}
+
+/// Keep an explicit arch/digest tag; otherwise return the normalized multi-arch tag.
+/// Arch selection uses `nodeSelector` + digest pin when the registry answers.
+pub fn ingress_pin_tag(raw: &str, _arch: &str) -> String {
+    normalize_ingress_image_tag(raw)
 }
 
 fn pick_platform_digest(index: &Value, arch: &str) -> Option<String> {
@@ -1752,57 +1773,65 @@ async fn resolve_ingress_image_tag(
     password: &str,
 ) -> anyhow::Result<String> {
     let arch = kube_arch(arch);
-    let tag = if tag.trim().is_empty() {
-        INGRESS_IMAGE_TAG.to_string()
-    } else {
-        tag.trim().to_string()
-    };
+    let tag = normalize_ingress_image_tag(tag);
     if tag.ends_with("-amd64") || tag.ends_with("-arm64") || tag.contains('@') {
         return Ok(tag);
     }
 
-    let url = format!("https://{registry}/v2/{INGRESS_IMAGE_REPO}/manifests/{tag}");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
-    let mut req = client.get(&url).header(
-        "Accept",
-        "application/vnd.oci.image.index.v1+json, \
-         application/vnd.docker.distribution.manifest.list.v2+json, \
-         application/vnd.oci.image.manifest.v1+json, \
-         application/vnd.docker.distribution.manifest.v2+json",
-    );
-    if !user.trim().is_empty() && !password.is_empty() {
-        req = req.basic_auth(user.trim(), Some(password));
-    }
-    let res = req.send().await;
-
-    let Ok(res) = res else {
-        return Ok(ingress_pin_tag(&tag, &arch));
-    };
-    if !res.status().is_success() {
-        return Ok(ingress_pin_tag(&tag, &arch));
-    }
-    let body: Value = match res.json().await {
-        Ok(v) => v,
-        Err(_) => return Ok(ingress_pin_tag(&tag, &arch)),
-    };
-    if body.get("manifests").and_then(|v| v.as_array()).is_some() {
-        if let Some(digest) = pick_platform_digest(&body, &arch) {
-            return Ok(format!("{tag}@{digest}"));
-        }
-        let platforms = index_platforms(&body);
-        anyhow::bail!(
-            "image {registry}/{INGRESS_IMAGE_REPO}:{tag} has no linux/{arch} \
-             (platforms: {}). Rebuild with docker buildx --platform linux/amd64,linux/arm64",
-            if platforms.is_empty() {
-                "none".into()
-            } else {
-                platforms.join(", ")
+    match crate::registry_client::fetch_manifest(
+        registry,
+        INGRESS_IMAGE_REPO,
+        &tag,
+        user,
+        password,
+    )
+    .await
+    {
+        Ok(body) => {
+            if body.get("manifests").and_then(|v| v.as_array()).is_some() {
+                if let Some(digest) = pick_platform_digest(&body, &arch) {
+                    return Ok(format!("{tag}@{digest}"));
+                }
+                let platforms = index_platforms(&body);
+                anyhow::bail!(
+                    "image {registry}/{INGRESS_IMAGE_REPO}:{tag} has no linux/{arch} \
+                     (platforms: {}). Rebuild with docker buildx --platform linux/amd64,linux/arm64",
+                    if platforms.is_empty() {
+                        "none".into()
+                    } else {
+                        platforms.join(", ")
+                    }
+                );
             }
-        );
+            Ok(tag)
+        }
+        Err(err) => {
+            // Keep the multi-arch tag (not invented -amd64/-arm64). nodeSelector still constrains arch.
+            tracing::warn!(
+                "ingress image digest pin skipped for {registry}/{INGRESS_IMAGE_REPO}:{tag}: {err:#}"
+            );
+            Ok(tag)
+        }
     }
-    Ok(ingress_pin_tag(&tag, &arch))
+}
+
+/// Resolve pull credentials: addon form overrides global MGMT_IMAGE_REGISTRY_* env.
+fn resolve_registry_pull_creds(
+    state: &AppState,
+    addon_user: &str,
+    addon_password: &str,
+) -> (String, String) {
+    let user = if !addon_user.trim().is_empty() {
+        addon_user.trim().to_string()
+    } else {
+        state.cfg().image_registry_user.trim().to_string()
+    };
+    let password = if !addon_password.is_empty() {
+        addon_password.to_string()
+    } else {
+        state.cfg().image_registry_password.clone()
+    };
+    (user, password)
 }
 
 fn ingress_service_ip_policy(network_mode: &str) -> (&'static str, Vec<&'static str>) {
@@ -1939,14 +1968,37 @@ pub fn admin_ingress_doc(host: &str, tls_secret: &str) -> Value {
 }
 
 pub fn registry_pull_secret_doc(user: &str, password: &str) -> Value {
-    registry_pull_secret_doc_for(INGRESS_IMAGE_REGISTRY, user, password)
+    registry_pull_secret_doc_ns(
+        INGRESS_IMAGE_REGISTRY,
+        INGRESS_NAMESPACE,
+        INGRESS_PULL_SECRET,
+        user,
+        password,
+    )
 }
 
+#[allow(dead_code)]
 pub fn registry_pull_secret_doc_for(registry: &str, user: &str, password: &str) -> Value {
+    registry_pull_secret_doc_ns(
+        registry,
+        INGRESS_NAMESPACE,
+        INGRESS_PULL_SECRET,
+        user,
+        password,
+    )
+}
+
+pub fn registry_pull_secret_doc_ns(
+    registry: &str,
+    namespace: &str,
+    name: &str,
+    user: &str,
+    password: &str,
+) -> Value {
     let auth = B64.encode(format!("{}:{password}", user.trim()));
     let dockerconfig = json!({
         "auths": {
-            registry: {
+            registry.trim(): {
                 "username": user.trim(),
                 "password": password,
                 "auth": auth,
@@ -1957,14 +2009,44 @@ pub fn registry_pull_secret_doc_for(registry: &str, user: &str, password: &str) 
         "apiVersion": "v1",
         "kind": "Secret",
         "metadata": {
-            "name": INGRESS_PULL_SECRET,
-            "namespace": INGRESS_NAMESPACE,
+            "name": name,
+            "namespace": namespace,
         },
         "type": "kubernetes.io/dockerconfigjson",
         "stringData": {
             ".dockerconfigjson": dockerconfig.to_string(),
         }
     })
+}
+
+async fn apply_registry_pull_secret(
+    kc: &Path,
+    log_path: &str,
+    registry: &str,
+    namespace: &str,
+    secret_name: &str,
+    user: &str,
+    password: &str,
+) -> anyhow::Result<()> {
+    crate::jobs::append_log(
+        log_path,
+        &format!("apply imagePullSecret {secret_name} in {namespace}\n"),
+    )?;
+    let ns = json!({
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": { "name": namespace },
+    });
+    let out = kubectl_apply_yaml(kc, &ns.to_string())
+        .await
+        .map_err(anyhow_api)?;
+    crate::jobs::append_log(log_path, &out)?;
+    let secret = registry_pull_secret_doc_ns(registry, namespace, secret_name, user, password);
+    let out = kubectl_apply_yaml(kc, &secret.to_string())
+        .await
+        .map_err(anyhow_api)?;
+    crate::jobs::append_log(log_path, &out)?;
+    Ok(())
 }
 
 pub fn render_cilium_lb_pool_yaml(cfg: &CiliumLbConfig, api_version: &str) -> String {
@@ -4440,7 +4522,27 @@ async fn install_kubernetes_dashboard(
     cfg.password = secrets.password.clone();
     validate_kubernetes_dashboard(&cfg, true).map_err(|e| anyhow::anyhow!(e.join("; ")))?;
     let registry = state.cfg().image_registry.as_str();
-    let values = kubernetes_dashboard_helm_values(&cfg, &secrets.jwt_secret, registry);
+    let (reg_user, reg_password) = resolve_registry_pull_creds(state, "", "");
+    let use_pull_secret = !reg_user.is_empty() && !reg_password.is_empty();
+    let ns = if cfg.namespace.trim().is_empty() {
+        KUBERNETES_DASHBOARD_NAMESPACE
+    } else {
+        cfg.namespace.trim()
+    };
+    if use_pull_secret {
+        apply_registry_pull_secret(
+            kc,
+            log_path,
+            registry,
+            ns,
+            KUBERNETES_DASHBOARD_PULL_SECRET,
+            &reg_user,
+            &reg_password,
+        )
+        .await?;
+    }
+    let values =
+        kubernetes_dashboard_helm_values(&cfg, &secrets.jwt_secret, registry, use_pull_secret);
     let mut logged = values.clone();
     logged["app"]["auth"]["password"] = json!("***");
     logged["app"]["auth"]["jwtSecret"] = json!("***");
@@ -4594,12 +4696,27 @@ async fn install_kos_scaler(
             "mgmt URL {endpoint:?} is not reachable from cluster nodes; set Mgmt URL override or MGMT_PUBLIC_URL"
         );
     }
+    let (reg_user, reg_password) = resolve_registry_pull_creds(state, "", "");
+    let use_pull_secret = !reg_user.is_empty() && !reg_password.is_empty();
+    if use_pull_secret {
+        apply_registry_pull_secret(
+            kc,
+            log_path,
+            state.cfg().image_registry.as_str(),
+            KOS_SCALER_NAMESPACE,
+            KOS_SCALER_PULL_SECRET,
+            &reg_user,
+            &reg_password,
+        )
+        .await?;
+    }
     let values = kos_scaler_helm_values(
         &cfg,
         cluster_id,
         &endpoint,
         password,
         state.cfg().image_registry.as_str(),
+        use_pull_secret,
     );
     let mut logged = values.clone();
     if logged.pointer_mut("/mgmt/password").is_some() {
@@ -4698,7 +4815,21 @@ async fn install_pertisk_cd(
             .fetch_optional(state.pool())
             .await?
             .unwrap_or_default();
-    let values = pertisk_cd_helm_values(&cfg, secrets, registry, &cluster_name);
+    let (reg_user, reg_password) = resolve_registry_pull_creds(state, "", "");
+    let use_pull_secret = !reg_user.is_empty() && !reg_password.is_empty();
+    if use_pull_secret {
+        apply_registry_pull_secret(
+            kc,
+            log_path,
+            registry,
+            PERTISK_CD_NAMESPACE,
+            PERTISK_CD_PULL_SECRET,
+            &reg_user,
+            &reg_password,
+        )
+        .await?;
+    }
+    let values = pertisk_cd_helm_values(&cfg, secrets, registry, &cluster_name, use_pull_secret);
     let mut logged = values.clone();
     if logged.pointer_mut("/secrets/databaseUrl").is_some() {
         logged["secrets"]["databaseUrl"] = json!("***");
@@ -4763,6 +4894,36 @@ async fn install_pertisk_cd(
         .await
         .map_err(anyhow_api)?;
     crate::jobs::append_log(log_path, &out)?;
+    if use_pull_secret {
+        // pertisk-cd chart does not template imagePullSecrets; attach via ServiceAccount.
+        let patch = format!(
+            r#"{{"imagePullSecrets":[{{"name":"{PERTISK_CD_PULL_SECRET}"}}]}}"#
+        );
+        match kubectl_ok(
+            kc,
+            &[
+                "patch",
+                "serviceaccount",
+                PERTISK_CD_RELEASE,
+                "-n",
+                PERTISK_CD_NAMESPACE,
+                "--type=merge",
+                "-p",
+                &patch,
+            ],
+        )
+        .await
+        {
+            Ok(()) => crate::jobs::append_log(
+                log_path,
+                &format!("patched serviceaccount/{PERTISK_CD_RELEASE} imagePullSecrets\n"),
+            )?,
+            Err(e) => crate::jobs::append_log(
+                log_path,
+                &format!("warn: could not patch CD serviceaccount pull secret: {e}\n"),
+            )?,
+        }
+    }
     crate::jobs::append_log(log_path, "wait for pertisk-cd deployment\n")?;
     kubectl_ok(
         kc,
@@ -4794,15 +4955,19 @@ async fn install_ingress(
     let cfg = parse_ingress_stored(stored);
     validate_ingress(&cfg, false).map_err(|e| anyhow::anyhow!("{}", e.join("; ")))?;
     let gateway_api = gateway_api_available(kc).await;
-    let use_pull_secret =
-        !cfg.registry_user.trim().is_empty() && !secrets.registry_password.trim().is_empty();
+    let (reg_user, reg_password) = resolve_registry_pull_creds(
+        state,
+        &cfg.registry_user,
+        secrets.registry_password.trim(),
+    );
+    let use_pull_secret = !reg_user.is_empty() && !reg_password.is_empty();
     let registry = state.cfg().image_registry.as_str();
     let resolved_tag = resolve_ingress_image_tag(
         registry,
         &cfg.image_tag,
         &arch,
-        &cfg.registry_user,
-        secrets.registry_password.trim(),
+        &reg_user,
+        &reg_password,
     )
     .await?;
     let admin_pw = secrets.admin_password.trim();
@@ -4830,8 +4995,8 @@ async fn install_ingress(
         &format!(
             "pertisk-ingress {registry}/{INGRESS_IMAGE_REPO}:{} (pinned {resolved_tag}) arch={arch} network_mode={mode} gateway_api={gateway_api} pull_secret={} registry_user={}\n",
             cfg.image_tag.trim(),
-            if use_pull_secret { INGRESS_PULL_SECRET } else { "none (public registry)" },
-            if cfg.registry_user.trim().is_empty() { "anonymous" } else { cfg.registry_user.trim() }
+            if use_pull_secret { INGRESS_PULL_SECRET } else { "none (anonymous/public)" },
+            if reg_user.is_empty() { "anonymous" } else { reg_user.as_str() }
         ),
     )?;
 
@@ -4847,23 +5012,20 @@ async fn install_ingress(
     crate::jobs::append_log(log_path, &out)?;
 
     if use_pull_secret {
-        crate::jobs::append_log(
+        apply_registry_pull_secret(
+            kc,
             log_path,
-            &format!("apply imagePullSecret {INGRESS_PULL_SECRET}\n"),
-        )?;
-        let secret = registry_pull_secret_doc_for(
             registry,
-            &cfg.registry_user,
-            secrets.registry_password.trim(),
-        );
-        let out = kubectl_apply_yaml(kc, &secret.to_string())
-            .await
-            .map_err(anyhow_api)?;
-        crate::jobs::append_log(log_path, &out)?;
+            INGRESS_NAMESPACE,
+            INGRESS_PULL_SECRET,
+            &reg_user,
+            &reg_password,
+        )
+        .await?;
     } else {
         crate::jobs::append_log(
             log_path,
-            "Registry project is public; skipping imagePullSecret\n",
+            "Public registry (no credentials); skipping imagePullSecret\n",
         )?;
     }
     let values_path = state
@@ -5625,6 +5787,7 @@ mod tests {
             "https://ptkos.example",
             "s3cret",
             "registry.tools.thaidevops.co",
+            false,
         );
         assert_eq!(v["mgmt"]["clusterId"], "cid");
         assert_eq!(v["mgmt"]["endpoint"], "https://ptkos.example");
@@ -5791,15 +5954,16 @@ mod tests {
     }
 
     #[test]
-    fn ingress_pin_tag_appends_cluster_arch() {
-        assert_eq!(ingress_pin_tag("v0.1.83", "arm64"), "v0.1.83-arm64");
-        assert_eq!(ingress_pin_tag("v0.1.83", "aarch64"), "v0.1.83-arm64");
-        assert_eq!(ingress_pin_tag("v0.1.83", "amd64"), "v0.1.83-amd64");
+    fn ingress_pin_tag_keeps_multiarch_and_normalizes_semver() {
+        assert_eq!(ingress_pin_tag("0.1.95", "arm64"), "0.1.95");
+        assert_eq!(ingress_pin_tag("v0.1.83", "amd64"), "v0.1.83");
         assert_eq!(ingress_pin_tag("v0.1.83-arm64", "amd64"), "v0.1.83-arm64");
         assert_eq!(
-            ingress_pin_tag("v0.1.83@sha256:abc", "arm64"),
-            "v0.1.83@sha256:abc"
+            ingress_pin_tag("0.1.95@sha256:abc", "arm64"),
+            "0.1.95@sha256:abc"
         );
+        assert_eq!(normalize_ingress_image_tag(""), INGRESS_IMAGE_TAG);
+        assert_eq!(normalize_ingress_image_tag(" 0.1.95 "), "0.1.95");
     }
 
     #[test]
@@ -5932,6 +6096,7 @@ mod tests {
             },
             "jwt-secret",
             KUBERNETES_DASHBOARD_IMAGE_REGISTRY,
+            false,
         );
         assert_eq!(
             values["app"]["image"]["registry"],

@@ -189,9 +189,20 @@ export default function Settings() {
                     <dd>
                       <code className="mono-inline">{cfg.image_registry || '—'}</code>
                       <p className="hint muted" style={{ marginTop: 6 }}>
-                        From <code>MGMT_IMAGE_REGISTRY</code>. Container registry for Ingress,
+                        From <code>MGMT_IMAGE_REGISTRY</code>. Docker Registry V2 host for Ingress,
                         Dashboard, pertisk-kos-scaler, and pertisk-cd images. Default:{' '}
                         <code>registry.tools.thaidevops.co</code>.
+                      </p>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Registry pull auth</dt>
+                    <dd>
+                      <BoolBadge on={cfg.image_registry_auth_configured} />
+                      <p className="hint muted" style={{ marginTop: 6 }}>
+                        From <code>MGMT_IMAGE_REGISTRY_USER</code> /{' '}
+                        <code>MGMT_IMAGE_REGISTRY_PASSWORD</code>. Optional — only for private
+                        registries. Leave unset when anonymous pull is allowed.
                       </p>
                     </dd>
                   </div>

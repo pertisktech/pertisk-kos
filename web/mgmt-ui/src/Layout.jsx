@@ -6,6 +6,7 @@ import { Icon } from './components/Icons'
 import BrandLogo from './components/BrandLogo'
 import ThemeToggle from './components/ThemeToggle'
 import { useConfirm } from './components/Confirm'
+import { APP_VERSION } from './utils/version'
 
 const SIDEBAR_COLLAPSED_KEY = 'pertisk_kos_sidebar_collapsed'
 
@@ -170,6 +171,7 @@ export default function Layout() {
               <span className="brand-name">
                 pertisk<span className="brand-slash">/</span>kos
               </span>
+              <span className="brand-version">v{APP_VERSION}</span>
             </span>
           </NavLink>
           <button
