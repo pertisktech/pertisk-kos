@@ -8,5 +8,5 @@ export function applyTheme(theme) {
 }
 
 export function initTheme() {
-  applyTheme(localStorage.getItem('theme') || 'dark')
+  applyTheme(localStorage.getItem('theme') || 'light')
 }

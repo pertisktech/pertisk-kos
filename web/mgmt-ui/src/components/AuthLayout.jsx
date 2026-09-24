@@ -15,9 +15,7 @@ export default function AuthLayout({ title, subtitle, children }) {
               <BrandLogo size={28} />
             </span>
             <div>
-              <div className="auth-brand-name">
-                pertisk<span className="brand-slash">/</span>kos
-              </div>
+              <div className="auth-brand-name">Pertisk KOS</div>
               <div className="auth-brand-sub">Kubernetes operating system</div>
             </div>
           </div>

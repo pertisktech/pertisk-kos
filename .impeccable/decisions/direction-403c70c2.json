@@ -1,0 +1,167 @@
+{
+  "title": "Choose the visual world",
+  "question": "The roll assigned NOC Status Mosaic for the Pertisk fleet shell. Keep it, take an alternate, or re-roll.",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "NOC Status Mosaic",
+      "kicker": "THE ROLL",
+      "lineage": "operations-center status walls",
+      "thesis": "The fleet reads as one quiet NOC wall: every cluster a status cell on a shared lattice.",
+      "palette": ["#f4f6f8", "#1a2332", "#5b6b7c", "#0d8a8a", "#c45c4a"],
+      "materials": ["matte cool slate", "hairline lattice", "LED status dots"],
+      "viewport": "Sidebar + fleet title; stats as thin mosaic strip; full-width cluster lattice with online/offline LEDs; activity as lasting marks below.",
+      "risk": "Can densify into dashboard noise if cells become cards.",
+      "raised": [
+        { "from": "challenger-oscilloscope", "raise": "Shared measurement grid — every fleet column locks to one lattice." },
+        { "from": "challenger-cracktro", "raise": "Rank by luminance and type weight, not card chrome." },
+        { "from": "challenger-miura", "raise": "Chrome collapse propagates as one linked fold." },
+        { "from": "challenger-cyclorama", "raise": "Every status has a named text cue, never color alone." }
+      ],
+      "comp": ".impeccable/mocks/decision/assigned.webp",
+      "wireframe": {
+        "cols": 12,
+        "rows": 10,
+        "regions": [
+          { "label": "nav rail", "x": 0, "y": 0, "w": 2, "h": 10, "accent": true },
+          { "label": "topbar", "x": 2, "y": 0, "w": 10, "h": 1 },
+          { "label": "title + actions", "x": 2, "y": 1, "w": 10, "h": 1 },
+          { "label": "stat mosaic", "x": 2, "y": 2, "w": 10, "h": 1 },
+          { "label": "cluster lattice", "x": 2, "y": 3, "w": 10, "h": 4, "accent": true },
+          { "label": "activity marks", "x": 2, "y": 7, "w": 10, "h": 2 },
+          { "label": "shell dock", "x": 2, "y": 9, "w": 10, "h": 1 }
+        ]
+      }
+    },
+    {
+      "id": "model-pick",
+      "label": "Commissioning Punch List",
+      "kicker": "IMPECCABLE’S PICK",
+      "lineage": "site commissioning checklists",
+      "thesis": "Fleet ops as a clean punch list: sections, checkmarks, zero ornamental chrome.",
+      "palette": ["#fafbfc", "#12161c", "#6b7280", "#0f766e"],
+      "materials": ["cool paper field", "hairline rules", "checkbox marks"],
+      "viewport": "Pertisk KOS brand; Fleet overview as sectioned checklist of clusters with online checks; New cluster as primary check action.",
+      "risk": "Also the direction most clean-infra runs land on — familiar by design.",
+      "comp": ".impeccable/mocks/decision/model-pick.webp",
+      "wireframe": {
+        "cols": 12,
+        "rows": 10,
+        "regions": [
+          { "label": "nav rail", "x": 0, "y": 0, "w": 2, "h": 10 },
+          { "label": "page head", "x": 2, "y": 0, "w": 10, "h": 2, "accent": true },
+          { "label": "stats row", "x": 2, "y": 2, "w": 10, "h": 1 },
+          { "label": "cluster checklist", "x": 2, "y": 3, "w": 10, "h": 5, "accent": true },
+          { "label": "activity", "x": 2, "y": 8, "w": 10, "h": 2 }
+        ]
+      }
+    },
+    {
+      "id": "challenger-timetable",
+      "label": "Timetable Slide Rack",
+      "verdict": "competitive",
+      "lineage": "pocket airline timetable / rw-timetable-slide-rack",
+      "thesis": "Clusters as glass slides on one rack: one type size, rank by weight and reversal.",
+      "palette": ["#e8d9a8", "#1c242c", "#2a3a4a", "#9e2b2b", "#1f6b4a"],
+      "materials": ["tinted glass slides", "goldenrod light bed", "carbon rules"],
+      "viewport": "Lateral rack of cluster slides; codes and versions in one size; active cluster as reversed plate.",
+      "case": "Holds product clarity for tabular fleet truth; weaker audience ID than a NOC for private-cloud operators.",
+      "risk": "Warm goldenrod can drift into the cream-default AI look if not kept cool-slate.",
+      "comp": ".impeccable/mocks/decision/challenger-timetable.webp",
+      "hero": "https://impeccable.style/worlds/cards/rw-timetable-slide-rack-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/rw-timetable-slide-rack.webp",
+      "wireframe": {
+        "cols": 12,
+        "rows": 8,
+        "regions": [
+          { "label": "nav", "x": 0, "y": 0, "w": 2, "h": 8 },
+          { "label": "tick rail", "x": 2, "y": 0, "w": 10, "h": 1 },
+          { "label": "slide rack", "x": 2, "y": 1, "w": 10, "h": 7, "accent": true }
+        ]
+      }
+    },
+    {
+      "id": "challenger-oscilloscope",
+      "label": "Signal Bench",
+      "verdict": "declined",
+      "lineage": "CRT oscilloscope graticule",
+      "thesis": "Fleet metrics as phosphor traces on a shared graticule.",
+      "palette": ["#0a0e12", "#2dce6f", "#6b7280", "#f59e0b"],
+      "materials": ["phosphor glass", "etched graticule", "bezel readouts"],
+      "viewport": "One graticule screen; cluster channels overlay as traces.",
+      "case": "Loses audience ID (lab bench ≠ day-job fleet) and clarity for status rows.",
+      "kept": "Shared measurement grid discipline.",
+      "hero": "https://impeccable.style/worlds/cards/scientific-notation-oscilloscope-signal-bench-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/scientific-notation-oscilloscope-signal-bench.webp",
+      "comp": ".impeccable/mocks/decision/challenger-oscilloscope.webp"
+    },
+    {
+      "id": "challenger-cracktro",
+      "label": "Void Queue",
+      "verdict": "declined",
+      "lineage": "cracktro scroller / operate-c-cracktro-scroller-queue",
+      "thesis": "Work floats on emissive void; rank is depth, never boxes.",
+      "palette": ["#050505", "#e8e4dc", "#9a9a9a", "#f0a020"],
+      "materials": ["emissive void", "bitmap baselines", "dust drift"],
+      "viewport": "Ivory fleet lines on black; amber caret on the active row.",
+      "case": "Fails audience ID and conflicts with clean/minimal anti-neon brief.",
+      "kept": "Rank by luminance and weight without card chrome.",
+      "hero": "https://impeccable.style/worlds/cards/operate-c-cracktro-scroller-queue-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/operate-c-cracktro-scroller-queue.webp",
+      "comp": ".impeccable/mocks/decision/challenger-cracktro.webp"
+    },
+    {
+      "id": "challenger-miura",
+      "label": "Miura Deploy Sheet",
+      "verdict": "declined",
+      "lineage": "Miura-fold deployable sheet",
+      "thesis": "One pull deploys the linked fleet field.",
+      "palette": ["#f7f7f5", "#111111", "#c9a227", "#8a9bb0"],
+      "materials": ["matte sheet", "gold packet face", "crease grid"],
+      "viewport": "Compact packet opens into tessellated cluster field.",
+      "case": "Weak audience ID; fold metaphor muddies status scanning.",
+      "kept": "One control propagates linked collapse across chrome.",
+      "hero": "https://impeccable.style/worlds/cards/paper-folds-pleats-deployable-miura-orbit-sheet-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/paper-folds-pleats-deployable-miura-orbit-sheet.webp",
+      "comp": ".impeccable/mocks/decision/challenger-miura.webp"
+    },
+    {
+      "id": "challenger-cyclorama",
+      "label": "Cyclorama Dawn",
+      "verdict": "declined",
+      "lineage": "theater cyclorama lighting",
+      "thesis": "Atmosphere bands carry fleet phase from night to day.",
+      "palette": ["#0a0c10", "#1e3a5f", "#c4787a", "#f5f5f0"],
+      "materials": ["depthless cyc", "horizon bands", "cue labels"],
+      "viewport": "Horizon-stacked fleet phases with named cues.",
+      "case": "Fails audience ID; color-led state weakens status truth.",
+      "kept": "Named cue states with text equivalents.",
+      "hero": "https://impeccable.style/worlds/cards/stagecraft-theater-lighting-cyclorama-dawn-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/stagecraft-theater-lighting-cyclorama-dawn.webp",
+      "comp": ".impeccable/mocks/decision/challenger-cyclorama.webp"
+    }
+  ],
+  "reroll": { "registers": ["safer", "bolder"] },
+  "buildPath": { "value": "code", "toggle": true },
+  "canon": true,
+  "canonCard": {
+    "label": "The category standard",
+    "thesis": "A clean modern infrastructure console executed at full craft — the expected fleet dashboard.",
+    "palette": ["#ffffff", "#0f172a", "#0ea5e9"],
+    "materials": ["flat panels", "soft shadows", "icon row"],
+    "viewport": "Sidebar, stat cards, cluster table, right rail — competitor-shaped.",
+    "risk": "Indistinguishable from other cloud consoles by design.",
+    "comp": ".impeccable/mocks/decision/canon.webp",
+    "wireframe": {
+      "cols": 12,
+      "rows": 8,
+      "regions": [
+        { "label": "sidebar", "x": 0, "y": 0, "w": 2, "h": 8 },
+        { "label": "stats", "x": 2, "y": 0, "w": 10, "h": 2 },
+        { "label": "table", "x": 2, "y": 2, "w": 7, "h": 6, "accent": true },
+        { "label": "side panel", "x": 9, "y": 2, "w": 3, "h": 6 }
+      ]
+    }
+  },
+  "steer": true
+}

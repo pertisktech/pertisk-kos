@@ -171,9 +171,7 @@ export default function Layout() {
               <BrandLogo size={28} />
             </span>
             <span className="brand-text">
-              <span className="brand-name">
-                pertisk<span className="brand-slash">/</span>kos
-              </span>
+              <span className="brand-name">Pertisk KOS</span>
               <span className="brand-version">v{APP_VERSION}</span>
             </span>
           </NavLink>

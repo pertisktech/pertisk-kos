@@ -303,14 +303,12 @@ export default function Dashboard() {
 
       <section className="stat-grid">
         <StatCard
-          icon="clusters"
           label="Clusters"
           value={dashNum ? '—' : clusters.length}
           hint={dashNum ? undefined : `${online} online · ${ready} ready`}
           hintTone="ok"
         />
         <StatCard
-          icon="machines"
           label="Nodes"
           value={dashNum ? '—' : totalNodes}
           hint={
@@ -320,13 +318,11 @@ export default function Dashboard() {
           }
         />
         <StatCard
-          icon="providers"
           label="Providers"
           value={dashNum ? '—' : providers.length}
           hint={dashNum ? undefined : `${providersOnline} online`}
         />
         <StatCard
-          icon="alert"
           label="Attention"
           value={dashNum ? '—' : attention}
           valueTone={attention > 0 ? 'warn' : undefined}
@@ -364,22 +360,6 @@ export default function Dashboard() {
         {resourcesErr && <div className="error fleet-panel-err">{resourcesErr}</div>}
         {listLoading && clusters.length === 0 ? (
           <div className="fleet-empty muted">Loading clusters…</div>
-        ) : clusters.length === 0 ? (
-          <div className="fleet-empty">
-            <p className="muted" style={{ margin: 0 }}>
-              No clusters yet. Add a provider, then create control planes and workers.
-            </p>
-            <div className="dash-empty-actions">
-              <Link className="btn btn-icon" to="/providers">
-                <Icon name="providers" size={16} /> Providers
-              </Link>
-              <Link className="btn btn-icon" to="/clusters?new=1">
-                <Icon name="plus" size={16} /> New cluster
-              </Link>
-            </div>
-          </div>
-        ) : filteredClusters.length === 0 ? (
-          <div className="fleet-empty muted">No clusters match this filter.</div>
         ) : (
           <div className="fleet-scroll">
             <div className="fleet-table fleet-table-clusters">
@@ -391,14 +371,40 @@ export default function Dashboard() {
                 <span>Status</span>
                 <span>Resources</span>
               </div>
-              <div className="fleet-body">
-                {filteredClusters.map((s) => (
-                  <FleetClusterRow
-                    key={s.cluster_id}
-                    summary={s}
-                    onOpen={() => nav(`/clusters/${s.cluster_id}`)}
-                  />
-                ))}
+              <div className={`fleet-body${clusters.length === 0 || filteredClusters.length === 0 ? ' fleet-lattice-empty' : ''}`}>
+                {clusters.length === 0 ? (
+                  <>
+                    <div className="fleet-row fleet-row-vacant" aria-hidden>
+                      <div className="fleet-cell fleet-cell-name">
+                        <span className="fleet-dot" />
+                        <span className="fleet-name muted">—</span>
+                      </div>
+                      <span className="fleet-cell fleet-cell-meta muted">—</span>
+                      <span className="fleet-cell muted">—</span>
+                      <span className="fleet-cell muted">—</span>
+                      <span className="fleet-cell fleet-status muted">vacant</span>
+                      <div className="fleet-cell fleet-cell-bars muted">—</div>
+                    </div>
+                    <div className="fleet-empty">
+                      <p className="muted" style={{ margin: 0 }}>
+                        No clusters yet.{' '}
+                        <Link to="/providers">Add a provider</Link>
+                        {' '}or{' '}
+                        <Link to="/clusters?new=1">create a cluster</Link>.
+                      </p>
+                    </div>
+                  </>
+                ) : filteredClusters.length === 0 ? (
+                  <div className="fleet-empty muted">No clusters match this filter.</div>
+                ) : (
+                  filteredClusters.map((s) => (
+                    <FleetClusterRow
+                      key={s.cluster_id}
+                      summary={s}
+                      onOpen={() => nav(`/clusters/${s.cluster_id}`)}
+                    />
+                  ))
+                )}
               </div>
             </div>
           </div>
