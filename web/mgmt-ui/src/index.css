@@ -716,10 +716,12 @@ label {
   flex: 0 0 auto;
   min-width: 0;
 }
-.content:has(.shell-tab) {
+.content:has(.shell-tab),
+.content:has(.jobs-tab) {
   overflow: hidden;
 }
-.content:has(.shell-tab) > * {
+.content:has(.shell-tab) > *,
+.content:has(.jobs-tab) > * {
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
@@ -2387,18 +2389,22 @@ th.col-actions, td.col-actions {
   min-width: 0;
   height: auto;
 }
-.detail:has(.shell-tab) {
+.detail:has(.shell-tab),
+.detail:has(.jobs-tab) {
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
 }
 .detail:has(.shell-tab) .tabs-shell,
-.detail:has(.shell-tab) .tab-panel {
+.detail:has(.shell-tab) .tab-panel,
+.detail:has(.jobs-tab) .tabs-shell,
+.detail:has(.jobs-tab) .tab-panel {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
 }
-.detail:has(.shell-tab) .tab-body-fill {
+.detail:has(.shell-tab) .tab-body-fill,
+.detail:has(.jobs-tab) .tab-body-fill {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
@@ -2913,7 +2919,11 @@ th.col-actions, td.col-actions {
 .upgrade-nodes { margin-top: 1.5rem; }
 .upgrade-nodes .section-label { margin-bottom: 0.35rem; }
 
-.jobs-tab { min-height: 0; }
+.jobs-tab {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
 .jobs-layout {
   display: grid;
   grid-template-columns: minmax(260px, 340px) 1fr;
@@ -2921,6 +2931,7 @@ th.col-actions, td.col-actions {
   flex: 1;
   min-height: 0;
   height: 100%;
+  overflow: hidden;
 }
 .jobs-list {
   display: flex;
@@ -3027,10 +3038,11 @@ th.col-actions, td.col-actions {
 .jobs-log .log-box,
 .jobs-log .color-log-viewer,
 .jobs-log .jobs-log-box {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   max-height: none;
   margin: 0;
+  overflow: auto;
 }
 .btn-icon.follow-on {
   border-color: var(--accent);

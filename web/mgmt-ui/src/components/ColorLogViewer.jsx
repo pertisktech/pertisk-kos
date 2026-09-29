@@ -331,6 +331,8 @@ export default function ColorLogViewer({
 }) {
   const ref = useRef(null)
   const pinning = useRef(false)
+  const followRef = useRef(follow)
+  followRef.current = follow
   const lines = useMemo(() => {
     if (!text) return null
     // Keep a trailing empty line so final `\n` still renders as a blank row.
@@ -353,9 +355,10 @@ export default function ColorLogViewer({
 
     const release = () => {
       if (cancelled) return
+      // Large colored logs can still grow after paint — keep ignore window open.
       settleTimer = window.setTimeout(() => {
-        pinning.current = false
-      }, 50)
+        if (!cancelled) pinning.current = false
+      }, 180)
     }
 
     pin()
@@ -368,11 +371,21 @@ export default function ColorLogViewer({
       })
     })
 
+    // Content / pane size changes (live job tail) while Following stays on.
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => {
+      if (cancelled || !followRef.current) return
+      pin()
+      window.clearTimeout(settleTimer)
+      release()
+    }) : null
+    ro?.observe(el)
+
     return () => {
       cancelled = true
       cancelAnimationFrame(raf1)
       cancelAnimationFrame(raf2)
       window.clearTimeout(settleTimer)
+      ro?.disconnect()
       pinning.current = false
     }
   }, [text, follow])
@@ -381,7 +394,7 @@ export default function ColorLogViewer({
     const el = ref.current
     if (!el || !onFollowChange || pinning.current) return
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight
-    const atBottom = gap <= 4
+    const atBottom = gap <= 24
     if (atBottom && !follow) onFollowChange(true)
     if (!atBottom && follow) onFollowChange(false)
   }
