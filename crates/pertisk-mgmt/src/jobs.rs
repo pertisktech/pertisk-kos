@@ -2849,6 +2849,9 @@ async fn run_add_node(
             append_log(log_path, &note)?;
         }
         auto_exclude_provider_hosts(&mut cmd, state).await;
+        if want_ip6 {
+            cmd.env("DUAL_STACK", "1").env("PERTISK_DUAL_STACK", "1");
+        }
 
         if provider.kind == "nutanix" || provider.kind == "ahv" || provider.kind == "prism" {
             cmd.env("PROVIDER_KIND", "nutanix")

@@ -240,10 +240,17 @@ api POST /v1/vms -H 'Content-Type: application/json' -d "$(jq -n \
 api POST "/v1/vms/${VMID}/disks" -H 'Content-Type: application/json' \
   -d "$(jq -n --arg id "$VOL_ID" '{volume_id:$id}')" >/dev/null
 
-nic_body="$(jq -n --arg id "$NET_ID" '{network_id:$id}')"
+# Dual-stack clusters: tell pertisk-vms to allow SLAAC and the KOS ULA fallback.
+dual=false
+if [[ "${DUAL_STACK:-0}" == "1" || "${PERTISK_DUAL_STACK:-0}" == "1" ]]; then
+  dual=true
+  log "NIC dual-stack (SLAAC + ULA fallback)"
+fi
+nic_body="$(jq -n --arg id "$NET_ID" --argjson dual "$dual" '{network_id:$id, dual_stack:$dual}')"
 if [[ -n "$STATIC_IP" ]]; then
   ip="${STATIC_IP%%/*}"
-  nic_body="$(jq -n --arg id "$NET_ID" --arg ip "$ip" '{network_id:$id, ip:$ip}')"
+  nic_body="$(jq -n --arg id "$NET_ID" --arg ip "$ip" --argjson dual "$dual" \
+    '{network_id:$id, ip:$ip, dual_stack:$dual}')"
 fi
 api POST "/v1/vms/${VMID}/nics" -H 'Content-Type: application/json' -d "$nic_body" >/dev/null
 
