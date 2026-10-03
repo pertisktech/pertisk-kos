@@ -3,7 +3,6 @@ import { getToken, logoutAndRedirect, setAuthProvider } from './api'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import { Icon } from './components/Icons'
-import BrandLogo from './components/BrandLogo'
 import ThemeToggle from './components/ThemeToggle'
 import BottomShell from './components/BottomShell'
 import { useConfirm } from './components/Confirm'
@@ -16,7 +15,7 @@ const NAV_SECTIONS = [
   {
     label: 'Fleet',
     items: [
-      { to: '/', label: 'Overview', icon: 'dashboard', end: true },
+      { to: '/', label: 'Dashboard', icon: 'dashboard', end: true },
       { to: '/clusters', label: 'Clusters', icon: 'clusters' },
       { to: '/machines', label: 'Machines', icon: 'machines' },
       { to: '/providers', label: 'Providers', icon: 'providers' },
@@ -31,10 +30,10 @@ const NAV_SECTIONS = [
     ],
   },
   {
-    label: 'System',
+    label: 'Governance',
     items: [
       { to: '/users', label: 'Users', icon: 'users', adminOnly: true },
-      { to: '/audit', label: 'Audit log', icon: 'audit' },
+      { to: '/audit', label: 'Audit', icon: 'audit' },
       { to: '/settings', label: 'Settings', icon: 'settings' },
     ],
   },
@@ -53,7 +52,7 @@ const SECTION_TITLES = [
   { match: /^\/users/, title: 'Users' },
   { match: /^\/audit/, title: 'Audit log' },
   { match: /^\/settings/, title: 'Settings' },
-  { match: /^\/$/, title: 'Overview' },
+  { match: /^\/$/, title: 'Dashboard' },
 ]
 
 function getStoredCollapsed() {
@@ -168,7 +167,7 @@ export default function Layout() {
         <div className="sidebar-header">
           <NavLink to="/" className="brand" onClick={() => setMobileOpen(false)}>
             <span className="brand-mark" aria-hidden>
-              <BrandLogo size={28} />
+              <Icon name="radio" size={16} />
             </span>
             <span className="brand-text">
               <span className="brand-name">Pertisk KOS</span>

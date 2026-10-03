@@ -152,8 +152,11 @@ pub async fn gather_all(state: &AppState) -> Vec<ClusterResourceSummary> {
         .map(|c| {
             let state = state.clone();
             async move {
-                if let Some(s) = cached_live(&c.id, Some(LIVE_TTL)) {
+                if let Some(mut s) = cached_live(&c.id, Some(LIVE_TTL)) {
                     if s.status != c.status {
+                        s.status = c.status.clone();
+                        s.availability =
+                            cluster_availability::cached_or(&c.id, &c.status);
                         spawn_live(state, c);
                     }
                     return s;
@@ -183,8 +186,10 @@ pub async fn gather_one_cached(
     .await
     .ok()??;
 
-    if let Some(s) = cached_live(&c.id, Some(LIVE_TTL)) {
+    if let Some(mut s) = cached_live(&c.id, Some(LIVE_TTL)) {
         if s.status != c.status {
+            s.status = c.status.clone();
+            s.availability = cluster_availability::cached_or(&c.id, &c.status);
             spawn_live(state.clone(), c);
         }
         return Some(s);

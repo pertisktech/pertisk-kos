@@ -31,7 +31,8 @@ export function clusterFleetStatus(status, availability) {
     if (avail === 'offline') return { label: 'offline', tone: 'err' }
     return { label: 'ready', tone: 'warn' }
   }
-  if (life === 'error' || life === 'failed' || life === 'degraded') {
+  if (life === 'degraded') return { label: life, tone: 'warn' }
+  if (life === 'error' || life === 'failed') {
     return { label: life, tone: 'err' }
   }
   if (life === 'provisioning' || life === 'updating' || life === 'deleting') {

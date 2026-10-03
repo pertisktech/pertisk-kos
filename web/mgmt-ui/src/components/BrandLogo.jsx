@@ -1,4 +1,4 @@
-/** Pertisk KOS mark from the redesign favicon / logo. */
+/** Pertisk KOS mark: violet tile + radio tower, matching designs/pertisk-kos. */
 export default function BrandLogo({ className = 'brand-logo', size = 28, title = 'Pertisk KOS' }) {
   return (
     <img

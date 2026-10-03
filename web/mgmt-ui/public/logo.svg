@@ -1,5 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <rect width="64" height="64" rx="14" fill="#0b1f2a"/>
-  <path d="M16 18h32v8H25v7h18v8H25v13h-9V18Z" fill="#55c7e8"/>
-  <path d="M43 18h9L38 54h-9l14-36Z" fill="#d8f7ff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <style>
+    .bg { fill: #7c6cbb; }
+    .fg { stroke: #f7f5ff; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #a78bfa; }
+      .fg { stroke: #17131f; }
+    }
+  </style>
+  <rect class="bg" width="64" height="64" rx="18"/>
+  <g class="fg" transform="translate(14 14) scale(1.5)" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.9 16.1C1 12.2 1 5.8 4.9 1.9"/>
+    <path d="M7.8 4.7a6.14 6.14 0 0 0-.8 7.5"/>
+    <circle cx="12" cy="9" r="2"/>
+    <path d="M16.2 4.8c2 2 2.26 5.11.8 7.4"/>
+    <path d="M19.1 1.9a9.96 9.96 0 0 1 0 14.1"/>
+    <path d="M9.5 18h5"/>
+    <path d="m8 22 4-11 4 11"/>
+  </g>
 </svg>

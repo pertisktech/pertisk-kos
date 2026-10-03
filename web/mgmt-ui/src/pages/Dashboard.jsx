@@ -197,6 +197,7 @@ export default function Dashboard() {
         controlplanes: c.controlplanes,
         workers: c.workers,
         k8s_version: c.k8s_version,
+        status: c.status || live.status,
         availability: resolveAvailability(live.availability, c.availability),
       }
     })
@@ -274,7 +275,7 @@ export default function Dashboard() {
   return (
     <div className="dash-page">
       <PageHeader
-        title="Fleet overview"
+        title="Dashboard"
         description={
           dashNum
             ? 'Loading your Kubernetes infrastructure…'
@@ -303,12 +304,14 @@ export default function Dashboard() {
 
       <section className="stat-grid">
         <StatCard
+          icon="clusters"
           label="Clusters"
           value={dashNum ? '—' : clusters.length}
           hint={dashNum ? undefined : `${online} online · ${ready} ready`}
           hintTone="ok"
         />
         <StatCard
+          icon="machines"
           label="Nodes"
           value={dashNum ? '—' : totalNodes}
           hint={
@@ -318,11 +321,13 @@ export default function Dashboard() {
           }
         />
         <StatCard
+          icon="providers"
           label="Providers"
           value={dashNum ? '—' : providers.length}
           hint={dashNum ? undefined : `${providersOnline} online`}
         />
         <StatCard
+          icon="alert"
           label="Attention"
           value={dashNum ? '—' : attention}
           valueTone={attention > 0 ? 'warn' : undefined}

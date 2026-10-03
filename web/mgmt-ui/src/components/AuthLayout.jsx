@@ -1,4 +1,4 @@
-import BrandLogo from './BrandLogo'
+import { Icon } from './Icons'
 import ThemeToggle from './ThemeToggle'
 import { APP_VERSION } from '../utils/version'
 
@@ -12,7 +12,7 @@ export default function AuthLayout({ title, subtitle, children }) {
         <div className="auth-form">
           <div className="auth-mobile-brand">
             <span className="brand-mark" aria-hidden>
-              <BrandLogo size={28} />
+              <Icon name="radio" size={16} />
             </span>
             <div>
               <div className="auth-brand-name">Pertisk KOS</div>
