@@ -57,9 +57,9 @@ function availTone(availability) {
 }
 
 function availLabel(availability) {
-  if (availability === 'online') return 'online'
-  if (availability === 'offline') return 'offline'
-  if (!availability) return 'unknown'
+  if (availability === 'online') return 'Online'
+  if (availability === 'offline') return 'Offline'
+  if (!availability) return 'Unknown'
   return availability
 }
 
@@ -75,51 +75,49 @@ function FleetProviderRow({
   testing,
 }) {
   const tone = availTone(provider.availability)
-  const meta = [formatProviderKind(provider.kind), provider.node, provider.arch || 'amd64']
-    .filter(Boolean)
-    .join(' · ')
+  const kind = formatProviderKind(provider.kind)
+  const meta = [provider.node, provider.arch || 'amd64'].filter(Boolean).join(' · ')
 
   return (
-    <div className="fleet-row fleet-row-provider fleet-row-actions">
-      <button type="button" className="fleet-row-main" onClick={onOpen}>
+    <div className="fleet-row-actions">
+      <button type="button" className="fleet-row fleet-row-main" onClick={onOpen}>
         <div className="fleet-cell fleet-cell-name">
           <span className={`fleet-mark ${tone}`} aria-hidden>
             {providerKindGlyph(provider.kind)}
           </span>
           <div className="fleet-name-stack">
             <span className="fleet-name">{provider.name}</span>
-            <span className="fleet-sub">{provider.url || meta}</span>
+            <span className="fleet-sub muted" title={provider.url || meta}>
+              {provider.url || meta || '—'}
+            </span>
           </div>
         </div>
         <span className={`fleet-cell fleet-status ${tone}`}>{availLabel(provider.availability)}</span>
+        <span className="fleet-cell fleet-cell-meta">{kind}</span>
         <span className="fleet-cell">
-          {clusterCount} clusters
-          <span className="fleet-sub-inline"> · {machineCount} nodes</span>
+          {clusterCount} · {machineCount}n
         </span>
-        <span className="fleet-cell fleet-mono" title={formatMetric(live.cpu)}>
+        <span className="fleet-cell" title={`${formatMetric(live.cpu)} / ${formatMetric(live.memory)}`}>
           {formatMetric(live.cpu)}
-        </span>
-        <span className="fleet-cell fleet-mono" title={formatMetric(live.memory)}>
-          {formatMetric(live.memory)}
         </span>
         <div className="fleet-cell fleet-cell-bars">
           <ResourceBars cpu={live.cpu} memory={live.memory} disk={live.disk} />
         </div>
       </button>
-      <div className="fleet-actions">
-        <button type="button" className="secondary btn-icon" title="Edit" onClick={onEdit}>
+      <div className="fleet-row-btns">
+        <button type="button" className="ghost btn-icon" title="Edit" onClick={onEdit}>
           <Icon name="edit" size={14} />
         </button>
         <button
           type="button"
-          className="secondary btn-icon"
+          className="ghost btn-icon"
           title="Test"
           onClick={onTest}
           disabled={testing}
         >
           <Icon name="play" size={14} />
         </button>
-        <button type="button" className="danger btn-icon" title="Delete" onClick={onRemove}>
+        <button type="button" className="ghost btn-icon danger-text" title="Delete" onClick={onRemove}>
           <Icon name="trash" size={14} />
         </button>
       </div>
@@ -232,6 +230,7 @@ export default function Providers() {
   }
 
   const online = list.filter((p) => p.availability === 'online').length
+  const offline = list.filter((p) => p.availability === 'offline').length
   const totalMachines = clusters.reduce(
     (n, c) => n + (Number(c.controlplanes) || 0) + (Number(c.workers) || 0),
     0,
@@ -247,10 +246,10 @@ export default function Providers() {
   }, [list, filter])
 
   return (
-    <div className="dash-page">
+    <div className="dash-page dash-page-vela">
       <PageHeader
         title="Providers"
-        description="Hypervisors and backends used to provision clusters."
+        description="Hypervisors and backends used to provision Pertisk clusters."
         actions={
           <button type="button" className="btn btn-icon" onClick={startCreate}>
             <Icon name="plus" size={16} /> Connect provider
@@ -258,14 +257,20 @@ export default function Providers() {
         }
       />
       {error && <div className="error">{error}</div>}
-      {msg && <p className="muted">{msg}</p>}
+      {msg && <p className="toast-ok muted">{msg}</p>}
 
-      <section className="stat-grid stat-grid-3">
-        <StatCard icon="providers" label="Providers" value={loaded ? list.length : '—'} />
+      <section className="stat-grid">
+        <StatCard
+          icon="providers"
+          label="Providers"
+          value={loaded ? list.length : '—'}
+          hint={loaded ? `${list.length === 0 ? 'None connected' : 'Configured'}` : undefined}
+        />
         <StatCard
           icon="check"
-          label="Connected"
+          label="Online"
           value={loaded ? online : '—'}
+          hint={loaded ? `${offline} offline` : undefined}
           hintTone={online > 0 ? 'ok' : undefined}
         />
         <StatCard
@@ -274,12 +279,25 @@ export default function Providers() {
           value={loaded ? clusters.length : '—'}
           hint={`${totalMachines} nodes`}
         />
+        <StatCard
+          icon="machines"
+          label="Coverage"
+          value={loaded ? `${online}/${list.length || 0}` : '—'}
+          hint="Hypervisors reachable"
+        />
       </section>
 
-      <section className="fleet-panel">
+      <section className="fleet-panel dash-panel-card">
         <div className="fleet-panel-head">
           <div className="fleet-panel-title-row">
-            <h2 className="fleet-panel-title">All providers</h2>
+            <div>
+              <h2 className="fleet-panel-title">All providers</h2>
+              <p className="fleet-panel-sub muted">
+                {loaded
+                  ? `${filtered.length} shown · ${list.length} total`
+                  : 'Loading hypervisors…'}
+              </p>
+            </div>
           </div>
           <div className="fleet-filter">
             <Icon name="search" size={14} />
@@ -287,16 +305,25 @@ export default function Providers() {
               type="search"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter…"
+              placeholder="Filter providers…"
               aria-label="Filter providers"
             />
           </div>
         </div>
-        {list.length === 0 ? (
-          <div className="fleet-empty">
-            <p className="muted" style={{ margin: 0 }}>
-              {loaded ? 'No providers configured.' : 'Loading providers…'}
-            </p>
+
+        {!loaded ? (
+          <div className="fleet-empty muted">Loading providers…</div>
+        ) : list.length === 0 ? (
+          <div className="fleet-empty dash-empty-rich">
+            <span className="dash-empty-icon" aria-hidden>
+              <Icon name="providers" size={22} />
+            </span>
+            <p>No providers configured. Connect Proxmox, vSphere, Nutanix, or Pertisk VMs.</p>
+            <div className="dash-empty-actions">
+              <button type="button" className="btn btn-icon" onClick={startCreate}>
+                <Icon name="plus" size={16} /> Connect provider
+              </button>
+            </div>
           </div>
         ) : filtered.length === 0 ? (
           <div className="fleet-empty muted">No providers match this filter.</div>
@@ -306,11 +333,11 @@ export default function Providers() {
               <div className="fleet-head" aria-hidden>
                 <span>Provider</span>
                 <span>Status</span>
+                <span>Kind</span>
                 <span>Clusters</span>
                 <span>CPU</span>
-                <span>Memory</span>
                 <span>Resources</span>
-                <span />
+                <span>Actions</span>
               </div>
               <div className="fleet-body">
                 {filtered.map((p) => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { Icon } from '../components/Icons'
 import PageHeader from '../components/PageHeader'
@@ -133,13 +133,17 @@ export default function Clusters() {
 
   const ready = list.filter((c) => c.status === 'ready').length
   const online = cards.filter((c) => c.availability === 'online').length
+  const attention = cards.filter((c) => {
+    const { tone } = clusterFleetStatus(c.status, c.availability)
+    return tone === 'warn' || tone === 'err'
+  }).length
   const totalMachines = list.reduce(
     (n, c) => n + (c.controlplanes || 0) + (c.workers || 0),
     0,
   )
 
   return (
-    <div className="dash-page">
+    <div className="dash-page dash-page-vela">
       <PageHeader
         title="Clusters"
         description="Create and manage your Kubernetes clusters."
@@ -156,8 +160,13 @@ export default function Clusters() {
         </p>
       )}
 
-      <section className="stat-grid stat-grid-3">
-        <StatCard icon="clusters" label="Clusters" value={loaded ? list.length : '—'} />
+      <section className="stat-grid">
+        <StatCard
+          icon="clusters"
+          label="Clusters"
+          value={loaded ? list.length : '—'}
+          hint={loaded ? `${ready} ready` : undefined}
+        />
         <StatCard
           icon="check"
           label="Online"
@@ -165,13 +174,32 @@ export default function Clusters() {
           hint={loaded ? `${ready} ready` : undefined}
           hintTone="ok"
         />
-        <StatCard icon="machines" label="Nodes" value={loaded ? totalMachines : '—'} />
+        <StatCard
+          icon="machines"
+          label="Nodes"
+          value={loaded ? totalMachines : '—'}
+          hint="Control planes + workers"
+        />
+        <StatCard
+          icon="alert"
+          label="Attention"
+          value={loaded ? attention : '—'}
+          valueTone={attention > 0 ? 'warn' : undefined}
+          hint={attention === 0 ? 'All clear' : 'Needs review'}
+        />
       </section>
 
-      <section className="fleet-panel">
+      <section className="fleet-panel dash-panel-card">
         <div className="fleet-panel-head">
           <div className="fleet-panel-title-row">
-            <h2 className="fleet-panel-title">All clusters</h2>
+            <div>
+              <h2 className="fleet-panel-title">All clusters</h2>
+              <p className="fleet-panel-sub muted">
+                {loaded
+                  ? `${filtered.length} shown · ${list.length} total`
+                  : 'Loading clusters…'}
+              </p>
+            </div>
           </div>
           <div className="fleet-filter">
             <Icon name="search" size={14} />
@@ -179,18 +207,27 @@ export default function Clusters() {
               type="search"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter…"
+              placeholder="Filter clusters…"
               aria-label="Filter clusters"
             />
           </div>
         </div>
-        {list.length === 0 ? (
-          <div className="fleet-empty">
-            <p className="muted" style={{ margin: 0 }}>
-              {loaded
-                ? 'No clusters. Create with M control planes (+ VIP if M>1) and N workers.'
-                : 'Loading clusters…'}
-            </p>
+        {!loaded && list.length === 0 ? (
+          <div className="fleet-empty muted">Loading clusters…</div>
+        ) : list.length === 0 ? (
+          <div className="fleet-empty dash-empty-rich">
+            <span className="dash-empty-icon" aria-hidden>
+              <Icon name="clusters" size={22} />
+            </span>
+            <p>No clusters yet. Create with M control planes (+ VIP if M&gt;1) and N workers.</p>
+            <div className="dash-empty-actions">
+              <Link className="btn secondary btn-icon" to="/providers">
+                <Icon name="providers" size={16} /> Add provider
+              </Link>
+              <button type="button" className="btn btn-icon" onClick={() => setWizardOpen(true)}>
+                <Icon name="plus" size={16} /> New cluster
+              </button>
+            </div>
           </div>
         ) : filtered.length === 0 ? (
           <div className="fleet-empty muted">No clusters match this filter.</div>

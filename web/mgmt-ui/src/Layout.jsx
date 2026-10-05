@@ -167,11 +167,11 @@ export default function Layout() {
         <div className="sidebar-header">
           <NavLink to="/" className="brand" onClick={() => setMobileOpen(false)}>
             <span className="brand-mark" aria-hidden>
-              <Icon name="radio" size={16} />
+              <img className="brand-logo" src="/logo.svg" alt="" width={34} height={34} />
             </span>
             <span className="brand-text">
               <span className="brand-name">Pertisk KOS</span>
-              <span className="brand-version">v{APP_VERSION}</span>
+              <span className="brand-version">Fleet · v{APP_VERSION}</span>
             </span>
           </NavLink>
           <button

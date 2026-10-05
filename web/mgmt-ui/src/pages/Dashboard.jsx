@@ -47,6 +47,44 @@ function placeholderProvider(p) {
   }
 }
 
+function FleetHealthRing({ online, total }) {
+  const pct = total > 0 ? Math.round((online / total) * 100) : 0
+  const size = 104
+  const stroke = 10
+  const r = (size - stroke) / 2
+  const c = 2 * Math.PI * r
+  const filled = total > 0 ? (online / total) * c : 0
+  return (
+    <div className="fleet-health-ring" aria-label={`${pct}% clusters online`}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke="color-mix(in srgb, var(--border) 80%, transparent)"
+          strokeWidth={stroke}
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke="var(--success)"
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={`${filled} ${c - filled}`}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </svg>
+      <div className="fleet-health-ring-center">
+        <strong>{total === 0 ? '—' : `${pct}%`}</strong>
+        <span>online</span>
+      </div>
+    </div>
+  )
+}
+
 function FleetClusterRow({ summary, onOpen }) {
   const { label, tone } = clusterFleetStatus(summary.status, summary.availability)
   const nodes =
@@ -74,41 +112,7 @@ function FleetClusterRow({ summary, onOpen }) {
   )
 }
 
-function FleetProviderRow({ summary, onOpen }) {
-  const avail = summary.availability || 'unknown'
-  const tone = availTone(avail)
-  const label = avail === 'online' ? 'online' : avail === 'offline' ? 'offline' : 'unknown'
-  const meta = [formatProviderKind(summary.kind), summary.node, summary.storage]
-    .filter(Boolean)
-    .join(' · ')
 
-  return (
-    <button type="button" className="fleet-row fleet-row-provider" onClick={onOpen}>
-      <div className="fleet-cell fleet-cell-name">
-        <span className={`fleet-mark ${tone}`} aria-hidden>
-          {providerKindGlyph(summary.kind)}
-        </span>
-        <div className="fleet-name-stack">
-          <span className="fleet-name">{summary.provider_name}</span>
-          <span className="fleet-sub">{meta || formatProviderKind(summary.kind)}</span>
-        </div>
-      </div>
-      <span className={`fleet-cell fleet-status ${tone}`}>{label}</span>
-      <span className="fleet-cell fleet-mono" title={formatMetric(summary.cpu)}>
-        {formatMetric(summary.cpu)}
-      </span>
-      <span className="fleet-cell fleet-mono" title={formatMetric(summary.memory)}>
-        {formatMetric(summary.memory)}
-      </span>
-      <span className="fleet-cell fleet-mono" title={formatMetric(summary.disk)}>
-        {formatMetric(summary.disk)}
-      </span>
-      <div className="fleet-cell fleet-cell-bars">
-        <ResourceBars cpu={summary.cpu} memory={summary.memory} disk={summary.disk} />
-      </div>
-    </button>
-  )
-}
 
 export default function Dashboard() {
   const nav = useNavigate()
@@ -152,7 +156,7 @@ export default function Dashboard() {
       .catch((e) => {
         const msg = e.message || 'failed to load resources'
         if (/failed to fetch|networkerror|load failed|sending request/i.test(msg)) {
-          setResourcesErr('Cannot reach management API at :8080 — is pertisk-mgmt running?')
+          setResourcesErr('Cannot reach management API — is pertisk-mgmt running?')
         } else {
           setResourcesErr(msg)
         }
@@ -273,9 +277,9 @@ export default function Dashboard() {
   ]
 
   return (
-    <div className="dash-page">
+    <div className="dash-page dash-page-vela">
       <PageHeader
-        title="Dashboard"
+        title="Fleet overview"
         description={
           dashNum
             ? 'Loading your Kubernetes infrastructure…'
@@ -343,121 +347,146 @@ export default function Dashboard() {
         />
       </section>
 
-      <section className="fleet-panel">
-        <div className="fleet-panel-head">
-          <div className="fleet-panel-title-row">
-            <h2 className="fleet-panel-title">Clusters</h2>
-            <Link to="/clusters" className="section-link">
-              View all
-            </Link>
-          </div>
-          <div className="fleet-filter">
-            <Icon name="search" size={14} />
-            <input
-              type="search"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter…"
-              aria-label="Filter clusters"
-            />
-          </div>
-        </div>
-        {resourcesErr && <div className="error fleet-panel-err">{resourcesErr}</div>}
-        {listLoading && clusters.length === 0 ? (
-          <div className="fleet-empty muted">Loading clusters…</div>
-        ) : (
-          <div className="fleet-scroll">
-            <div className="fleet-table fleet-table-clusters">
-              <div className="fleet-head" aria-hidden>
-                <span>Cluster</span>
-                <span>Provider</span>
-                <span>Nodes</span>
-                <span>Version</span>
-                <span>Status</span>
-                <span>Resources</span>
+      <div className="dash-main-grid">
+        <section className="fleet-panel dash-panel-card">
+          <div className="fleet-panel-head">
+            <div className="fleet-panel-title-row">
+              <div>
+                <h2 className="fleet-panel-title">Clusters</h2>
+                <p className="fleet-panel-sub muted">
+                  {dashNum ? 'Loading…' : `${filteredClusters.length} shown · ${clusters.length} total`}
+                </p>
               </div>
-              <div className={`fleet-body${clusters.length === 0 || filteredClusters.length === 0 ? ' fleet-lattice-empty' : ''}`}>
-                {clusters.length === 0 ? (
-                  <>
-                    <div className="fleet-row fleet-row-vacant" aria-hidden>
-                      <div className="fleet-cell fleet-cell-name">
-                        <span className="fleet-dot" />
-                        <span className="fleet-name muted">—</span>
-                      </div>
-                      <span className="fleet-cell fleet-cell-meta muted">—</span>
-                      <span className="fleet-cell muted">—</span>
-                      <span className="fleet-cell muted">—</span>
-                      <span className="fleet-cell fleet-status muted">vacant</span>
-                      <div className="fleet-cell fleet-cell-bars muted">—</div>
-                    </div>
-                    <div className="fleet-empty">
-                      <p className="muted" style={{ margin: 0 }}>
-                        No clusters yet.{' '}
-                        <Link to="/providers">Add a provider</Link>
-                        {' '}or{' '}
-                        <Link to="/clusters?new=1">create a cluster</Link>.
-                      </p>
-                    </div>
-                  </>
-                ) : filteredClusters.length === 0 ? (
-                  <div className="fleet-empty muted">No clusters match this filter.</div>
-                ) : (
-                  filteredClusters.map((s) => (
-                    <FleetClusterRow
-                      key={s.cluster_id}
-                      summary={s}
-                      onOpen={() => nav(`/clusters/${s.cluster_id}`)}
-                    />
-                  ))
-                )}
-              </div>
+              <Link to="/clusters" className="section-link">
+                View all
+              </Link>
+            </div>
+            <div className="fleet-filter">
+              <Icon name="search" size={14} />
+              <input
+                type="search"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Filter clusters…"
+                aria-label="Filter clusters"
+              />
             </div>
           </div>
-        )}
-      </section>
-
-      <div className="dash-bottom-stack">
-        <ActivityLog />
-        <section className="fleet-panel sys-status-panel">
-          <div className="fleet-panel-head">
-            <h2 className="fleet-panel-title">System status</h2>
-          </div>
-          <div className="sys-status-list">
-            {systemStatus.map((item) => (
-              <div key={item.label} className="sys-status-row">
-                <span className="sys-status-label">{item.label}</span>
-                <span className={`sys-status-value ${item.ok ? 'ok' : 'warn'}`}>
-                  <span className="dot" aria-hidden />
-                  {item.text}
-                </span>
+          {resourcesErr && <div className="error fleet-panel-err">{resourcesErr}</div>}
+          {listLoading && clusters.length === 0 ? (
+            <div className="fleet-empty muted">Loading clusters…</div>
+          ) : (
+            <div className="fleet-scroll">
+              <div className="fleet-table fleet-table-clusters">
+                <div className="fleet-head" aria-hidden>
+                  <span>Cluster</span>
+                  <span>Provider</span>
+                  <span>Nodes</span>
+                  <span>Version</span>
+                  <span>Status</span>
+                  <span>Resources</span>
+                </div>
+                <div
+                  className={`fleet-body${clusters.length === 0 || filteredClusters.length === 0 ? ' fleet-lattice-empty' : ''}`}
+                >
+                  {clusters.length === 0 ? (
+                    <div className="fleet-empty dash-empty-rich">
+                      <span className="dash-empty-icon" aria-hidden>
+                        <Icon name="clusters" size={22} />
+                      </span>
+                      <p>
+                        No clusters yet. Connect a hypervisor, then create your first HA cluster.
+                      </p>
+                      <div className="dash-empty-actions">
+                        <Link className="btn secondary btn-icon" to="/providers">
+                          <Icon name="providers" size={16} /> Add provider
+                        </Link>
+                        <Link className="btn btn-icon" to="/clusters?new=1">
+                          <Icon name="plus" size={16} /> New cluster
+                        </Link>
+                      </div>
+                    </div>
+                  ) : filteredClusters.length === 0 ? (
+                    <div className="fleet-empty muted">No clusters match this filter.</div>
+                  ) : (
+                    filteredClusters.map((s) => (
+                      <FleetClusterRow
+                        key={s.cluster_id}
+                        summary={s}
+                        onOpen={() => nav(`/clusters/${s.cluster_id}`)}
+                      />
+                    ))
+                  )}
+                </div>
               </div>
-            ))}
-          </div>
+            </div>
+          )}
         </section>
+
+        <aside className="dash-side-stack">
+          <section className="fleet-panel dash-panel-card dash-health-card">
+            <div className="fleet-panel-head">
+              <div>
+                <h2 className="fleet-panel-title">Fleet health</h2>
+                <p className="fleet-panel-sub muted">Online share · system checks</p>
+              </div>
+            </div>
+            <div className="dash-health-body">
+              <FleetHealthRing online={online} total={clusters.length} />
+              <ul className="dash-health-legend">
+                <li>
+                  <span className="dot ok" /> Online <strong>{dashNum ? '—' : online}</strong>
+                </li>
+                <li>
+                  <span className="dot warn" /> Attention{' '}
+                  <strong>{dashNum ? '—' : attention}</strong>
+                </li>
+                <li>
+                  <span className="dot muted" /> Total{' '}
+                  <strong>{dashNum ? '—' : clusters.length}</strong>
+                </li>
+              </ul>
+            </div>
+            <div className="sys-status-list dash-side-status">
+              {systemStatus.map((item) => (
+                <div key={item.label} className="sys-status-row">
+                  <span className="sys-status-label">{item.label}</span>
+                  <span className={`sys-status-value ${item.ok ? 'ok' : 'warn'}`}>
+                    <span className="dot" aria-hidden />
+                    {item.text}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        </aside>
       </div>
 
-      <section className="fleet-panel">
+      <section className="fleet-panel dash-panel-card">
         <div className="fleet-panel-head">
           <div className="fleet-panel-title-row">
-            <h2 className="fleet-panel-title">Providers</h2>
+            <div>
+              <h2 className="fleet-panel-title">Providers</h2>
+              <p className="fleet-panel-sub muted">
+                {providers.length === 0
+                  ? 'No hypervisors connected'
+                  : `${providersOnline} of ${providers.length} online`}
+              </p>
+            </div>
             <Link to="/providers" className="section-link">
               All providers
             </Link>
           </div>
-          {providers.length > 0 && (
-            <p className="fleet-panel-sub muted">
-              {providersOnline} of {providers.length} hypervisors online
-            </p>
-          )}
         </div>
         {providers.length === 0 ? (
-          <div className="fleet-empty">
-            <p className="muted" style={{ margin: 0 }}>
-              No providers yet. Add Proxmox, vSphere, Nutanix, or Pertisk VMs.
-            </p>
+          <div className="fleet-empty dash-empty-rich">
+            <span className="dash-empty-icon" aria-hidden>
+              <Icon name="providers" size={22} />
+            </span>
+            <p>Connect Proxmox, vSphere, Nutanix, or Pertisk VMs to start provisioning.</p>
             <div className="dash-empty-actions">
               <Link className="btn btn-icon" to="/providers">
-                <Icon name="plus" size={16} /> Add provider
+                <Icon name="plus" size={16} /> Connect provider
               </Link>
             </div>
           </div>
@@ -467,24 +496,51 @@ export default function Dashboard() {
               <div className="fleet-head" aria-hidden>
                 <span>Provider</span>
                 <span>Status</span>
+                <span>Kind</span>
+                <span>Node</span>
                 <span>CPU</span>
-                <span>Memory</span>
-                <span>Disk</span>
                 <span>Resources</span>
               </div>
               <div className="fleet-body">
-                {displayProviders.map((s) => (
-                  <FleetProviderRow
-                    key={s.provider_id}
-                    summary={s}
-                    onOpen={() => nav(`/providers/${s.provider_id}`)}
-                  />
-                ))}
+                {displayProviders.map((s) => {
+                  const avail = s.availability || 'unknown'
+                  const tone = availTone(avail)
+                  const label =
+                    avail === 'online' ? 'Online' : avail === 'offline' ? 'Offline' : 'Unknown'
+                  return (
+                    <button
+                      key={s.provider_id}
+                      type="button"
+                      className="fleet-row"
+                      onClick={() => nav(`/providers/${s.provider_id}`)}
+                    >
+                      <div className="fleet-cell fleet-cell-name">
+                        <span className={`fleet-mark ${tone}`} aria-hidden>
+                          {providerKindGlyph(s.kind)}
+                        </span>
+                        <span className="fleet-name">{s.provider_name}</span>
+                      </div>
+                      <span className={`fleet-cell fleet-status ${tone}`}>{label}</span>
+                      <span className="fleet-cell fleet-cell-meta">
+                        {formatProviderKind(s.kind)}
+                      </span>
+                      <span className="fleet-cell fleet-cell-meta">{s.node || '—'}</span>
+                      <span className="fleet-cell" title={formatMetric(s.cpu)}>
+                        {formatMetric(s.cpu)}
+                      </span>
+                      <div className="fleet-cell fleet-cell-bars">
+                        <ResourceBars cpu={s.cpu} memory={s.memory} disk={s.disk} />
+                      </div>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           </div>
         )}
       </section>
+
+      <ActivityLog />
     </div>
   )
 }
