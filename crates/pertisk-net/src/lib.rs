@@ -16,7 +16,9 @@ pub use link::{
     ipv6_enabled, is_ula_ipv6, is_usable_global_ipv6, prefer_global_ipv6, set_ipv6_enabled,
     DualStackIpv6Outcome,
 };
-pub use provider_net::{apply_provider_netcfg, try_apply_provider_netcfg};
+pub use provider_net::{
+    apply_provider_netcfg, provider_netcfg_wants_dual_stack, try_apply_provider_netcfg,
+};
 
 /// Reconcile dual-stack IPv6 on configured interfaces (no SLAAC wait).
 ///

@@ -67,7 +67,7 @@ LAB_SUBNET=10.1.1.0/24 ./scripts/pertisk-vms-lab-up.sh --skip-build --cp-vmid 21
 Upload flow:
 
 1. Login `POST /v1/login` → Bearer token.
-2. `--import-only` streams the qcow2 once to `POST /v1/volumes/import?name=kos-cloud-{arch}&format=qcow2` (8 GiB stream, not the 64 MiB blob PUT).
+2. `--import-only` streams the qcow2 to `POST /v1/volumes/import?name=kos-cloud-{arch}-{hash12}&format=qcow2` (content fingerprint per image; CP 50G and worker 75G keep separate templates. Use `--force-import` to replace the same hash).
 3. Clone the template volume per node, grow the clone with `POST /v1/volumes/{id}/resize` to the role size (CP 50 GiB / worker 75 GiB by default — ARM cloud qcow2 is only a few hundred MiB). `qemu-img` must be on the pertisk-vms host (`apt install qemu-utils`). Then `POST /v1/vms` with **`autostart: true`** (power on after a pertiskd reboot; `autostart_order` = VMID so CPs start first), attach disk + NIC (create a bridged network on `vmbr0` if missing), then start.
 
 Guests on a bridged LAN use **DHCP** unless mgmt auto-assigns `PERTISK_VMS_STATIC_IPS` (then a **PERTISK-NET** extra disk pins the address — same as Proxmox). Auto-detect skips every IP already in KOS node inventory **and** every address the hypervisors still have on a VM (Nutanix IPAM / pertisk-vms NIC / Proxmox ipconfig), including powered-off guests, so a new cluster cannot collide when those VMs start again. The subnet scan also skips addresses that answer on the wire.

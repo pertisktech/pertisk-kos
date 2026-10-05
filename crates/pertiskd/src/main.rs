@@ -343,12 +343,11 @@ fn run() -> Result<()> {
     // DHCP + API *before* STATE mount. On AHV, virtio-scsi I/O can hang while
     // mounting STATE; lab-up still needs a live address / :50000. After STATE is
     // up we re-apply network so INIT-REBOOT can reclaim the lease file.
-    let early_dual = early_cfg
+    let cfg_dual = early_cfg
         .as_ref()
         .and_then(|c| c.cluster.as_ref())
         .map(|c| c.is_dual_stack())
         .unwrap_or(false);
-    sysctl::apply_ipv6_policy(early_dual);
     if let Ok(mut st) = api_state.lock() {
         st.set_message("network");
     }
@@ -360,9 +359,19 @@ fn run() -> Result<()> {
         }
     }
     if !args.skip_network {
-        // Wait up to 10 seconds for network interfaces to appear (udev delay)
+        // Wait up to 10 seconds for network interfaces to appear (udev delay).
+        // Also gives the PERTISK-NET disk time to show up before we decide IPv6 policy.
         wait_for_network_interface();
-        
+
+        // Static netcfg can request dual-stack before cluster YAML exists
+        // (pertisk-vms / AHV labs with DUAL_STACK=1 on the netcfg disk).
+        let netcfg_dual = pertisk_net::provider_netcfg_wants_dual_stack();
+        let early_dual = cfg_dual || netcfg_dual;
+        if netcfg_dual && !cfg_dual {
+            info!("provider netcfg requested dual-stack (SLAAC before cluster apply)");
+        }
+        sysctl::apply_ipv6_policy(early_dual);
+
         match pertisk_net::apply_provider_netcfg() {
             Ok(true) => info!("provider netcfg applied (AHV IPAM disk)"),
             other => {
@@ -380,6 +389,8 @@ fn run() -> Result<()> {
                 }
             }
         }
+    } else {
+        sysctl::apply_ipv6_policy(cfg_dual);
     }
 
     let tls = resolve_tls(&args);

@@ -23,6 +23,7 @@ NETWORK="${PERTISK_VMS_NETWORK:-vmbr0}"
 STORAGE="${PERTISK_VMS_STORAGE:-replica}"
 START=1
 IMPORT_ONLY=0
+FORCE_IMPORT="${PERTISK_VMS_FORCE_IMPORT:-0}"
 STATIC_IP=""
 STATIC_GATEWAY="${PERTISK_VMS_STATIC_GATEWAY:-${LAB_GATEWAY:-}}"
 ARCH="${PERTISK_ARCH:-${ARCH:-amd64}}"
@@ -43,7 +44,8 @@ Options:
   --network NAME    pertisk-vms network name or bridge (default vmbr0)
   --storage NAME    replica | rbd
   --no-start        do not start after create
-  --import-only     upload template volume only
+  --import-only     upload template volume only (fingerprinted; skips if hash matches)
+  --force-import    re-import template even when fingerprint matches
   --ip CIDR_OR_IP   static IPv4 (PERTISK-NET disk + NIC; no LAN DHCP)
   --gateway IP      LAN gateway for --ip (default \$PERTISK_VMS_STATIC_GATEWAY)
 EOF
@@ -63,6 +65,7 @@ while [[ $# -gt 0 ]]; do
     --storage) STORAGE="$2"; shift 2 ;;
     --no-start) START=0; shift ;;
     --import-only) IMPORT_ONLY=1; shift ;;
+    --force-import) FORCE_IMPORT=1; shift ;;
     --ip) STATIC_IP="$2"; shift 2 ;;
     --gateway) STATIC_GATEWAY="$2"; shift 2 ;;
     -h|--help) usage ;;
@@ -133,13 +136,35 @@ bytes_from_gib() {
 
 login
 
-tmpl_name="kos-cloud-${ARCH}"
+# Content id for the qcow2 — without this, --import-only / create-cluster reused a
+# stale kos-cloud-amd64 volume and guests never picked up new pertiskd (IPv6 fixes).
+qcow2_fingerprint() {
+  local f="$1" sum
+  if command -v sha256sum >/dev/null 2>&1; then
+    sum="$(sha256sum "$f" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    sum="$(shasum -a 256 "$f" | awk '{print $1}')"
+  else
+    sum="$(python3 -c 'import hashlib,sys
+h=hashlib.sha256()
+with open(sys.argv[1],"rb") as fh:
+    for chunk in iter(lambda: fh.read(1024*1024), b""):
+        h.update(chunk)
+print(h.hexdigest())' "$f")"
+  fi
+  printf '%s\n' "${sum:0:12}"
+}
+
 disk_base="$(basename "$DISK")"
+ARCH_SUFFIX="$ARCH"
 if [[ "$disk_base" == *arm64* ]]; then
-  tmpl_name="kos-cloud-arm64"
+  ARCH_SUFFIX=arm64
 elif [[ "$disk_base" == *amd64* ]]; then
-  tmpl_name="kos-cloud-amd64"
+  ARCH_SUFFIX=amd64
 fi
+DISK_HASH="$(qcow2_fingerprint "$DISK")"
+tmpl_name="kos-cloud-${ARCH_SUFFIX}-${DISK_HASH}"
+legacy_tmpl_name="kos-cloud-${ARCH_SUFFIX}"
 
 find_volume_id() {
   local want="$1"
@@ -152,10 +177,23 @@ find_volume_id() {
 ensure_template() {
   local id
   id="$(find_volume_id "$tmpl_name")"
-  if [[ -n "$id" ]]; then
-    log "reuse template volume ${tmpl_name} id=${id}"
+  if [[ -n "$id" && "$FORCE_IMPORT" != "1" ]]; then
+    log "reuse template volume ${tmpl_name} id=${id} (qcow2 fingerprint match)"
     echo "$id"
     return 0
+  fi
+  if [[ -n "$id" && "$FORCE_IMPORT" == "1" ]]; then
+    log "force-import: delete existing ${tmpl_name} id=${id}"
+    api DELETE "/v1/volumes/${id}" >/dev/null 2>&1 || true
+  fi
+  # Only remove the legacy unhashed name (pre-fingerprint). Never delete other
+  # kos-cloud-{arch}-{hash} volumes — CP (50G) and worker (75G) images differ and
+  # parallel create must keep both templates.
+  local legacy
+  legacy="$(find_volume_id "$legacy_tmpl_name")"
+  if [[ -n "$legacy" ]]; then
+    log "delete legacy template ${legacy_tmpl_name} id=${legacy}"
+    api DELETE "/v1/volumes/${legacy}" >/dev/null 2>&1 || true
   fi
   log "import template ${tmpl_name} from ${DISK}"
   local resp
@@ -216,8 +254,27 @@ if [[ -n "$old_vol" ]]; then
 fi
 
 log "clone template ${tmpl_name} → ${vol_name}"
-VOL_ID="$(api_ok POST "/v1/volumes/${TMPL_ID}/clone" -H 'Content-Type: application/json' \
-  -d "$(jq -n --arg n "$vol_name" '{name:$n, linked:false}')" | jq -r '.id // empty')"
+clone_body="$(jq -n --arg n "$vol_name" '{name:$n, linked:false}')"
+VOL_ID=""
+clone_tmp="$(mktemp)"
+clone_http="$("${CURL[@]}" -o "$clone_tmp" -w '%{http_code}' -X POST \
+  "${BASE}/v1/volumes/${TMPL_ID}/clone" -H "$(auth)" -H 'Accept: application/json' \
+  -H 'Content-Type: application/json' -d "$clone_body")" || true
+clone_resp="$(cat "$clone_tmp")"
+rm -f "$clone_tmp"
+case "$clone_http" in
+  2*) VOL_ID="$(printf '%s' "$clone_resp" | jq -r '.id // empty')" ;;
+  404)
+    # Template disappeared (rare race) — re-import this fingerprint and retry once.
+    log "clone 404 for ${tmpl_name}; re-importing template"
+    FORCE_IMPORT=1
+    TMPL_ID="$(ensure_template)"
+    [[ -n "$TMPL_ID" ]] || die "template re-import failed after clone 404"
+    VOL_ID="$(api_ok POST "/v1/volumes/${TMPL_ID}/clone" -H 'Content-Type: application/json' \
+      -d "$clone_body" | jq -r '.id // empty')"
+    ;;
+  *) die "POST /v1/volumes/${TMPL_ID}/clone failed HTTP ${clone_http}: ${clone_resp:-no body}" ;;
+esac
 [[ -n "$VOL_ID" ]] || die "clone failed"
 
 if [[ -n "$DISK_GB" ]]; then
@@ -266,13 +323,30 @@ if [[ -n "$STATIC_IP" ]]; then
     api DELETE "/v1/volumes/${old_nc}" >/dev/null 2>&1 || true
   fi
   raw="$(mktemp /tmp/pertisk-netcfg.XXXXXX.raw)"
-  python3 - "$raw" "$cidr" "$gw" "$ns" <<'PY'
+  dual_line=""
+  if [[ "${DUAL_STACK:-0}" == "1" || "${PERTISK_DUAL_STACK:-0}" == "1" ]]; then
+    dual_line="DUAL_STACK=1"
+  fi
+  python3 - "$raw" "$cidr" "$gw" "$ns" "$dual_line" <<'PY'
 import sys
-path, cidr, gw, ns = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-blob = f"PERTISK-NET\nIPV4={cidr}\nGATEWAY={gw}\nNAMESERVER={ns}\nINTERFACE=eth0\n".encode()
+path, cidr, gw, ns, dual = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+lines = [
+    "PERTISK-NET",
+    f"IPV4={cidr}",
+    f"GATEWAY={gw}",
+    f"NAMESERVER={ns}",
+    "INTERFACE=eth0",
+]
+if dual:
+    lines.append(dual)
+blob = ("\n".join(lines) + "\n").encode()
 open(path, "wb").write(blob + b"\x00" * (1024 * 1024 - len(blob)))
 PY
-  log "attach netcfg ${netcfg_name} static=${cidr} gw=${gw}"
+  if [[ -n "$dual_line" ]]; then
+    log "attach netcfg ${netcfg_name} static=${cidr} gw=${gw} dual-stack"
+  else
+    log "attach netcfg ${netcfg_name} static=${cidr} gw=${gw}"
+  fi
   NC_ID="$("${CURL[@]}" -X POST "${BASE}/v1/volumes/import?name=$(printf '%s' "$netcfg_name" | jq -sRr @uri)&format=raw" \
     -H "$(auth)" -H 'Accept: application/json' \
     --data-binary @"${raw}" | jq -r '.id // empty')"
