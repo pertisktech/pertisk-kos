@@ -476,28 +476,82 @@ pub fn ula_cidr_from_ipv4(v4: std::net::Ipv4Addr) -> String {
     format!("fd00:{:x}:{:x}:{:x}::{:x}/64", o[0], o[1], o[2], o[3])
 }
 
+/// Result of dual-stack IPv6 ensure / reconcile on one interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DualStackIpv6Outcome {
+    /// Dual-stack sysctl off — nothing to do.
+    Disabled,
+    /// No usable IPv4 yet (cannot derive ULA).
+    NoIpv4,
+    /// SLAAC GUA already present (no synthetic ULA to remove).
+    Gua,
+    /// SLAAC GUA just adopted — synthetic ULA was dropped this pass.
+    /// Callers should restart kubelet so `--node-ip` picks the public address.
+    GuaPromoted,
+    /// Only synthetic / other ULA — waiting for late RA.
+    Ula,
+}
+
 /// If dual-stack is on and the iface has IPv4 but no global/ULA IPv6, add a
 /// stable ULA derived from the IPv4. Prefer SLAAC GUA (`2405:…`) when the LAN
 /// sends RAs — wait briefly before synthesizing ULA so kubelet `--node-ip`
 /// matches the real eth0 address. When a GUA is present, drop the synthetic ULA.
+///
+/// `wait_for_slaac`: on first boot apply, wait for RA before assigning ULA.
+/// Reaper reconcile passes `false` so a late GUA is adopted without blocking
+/// the supervise loop for several seconds each tick.
 #[cfg(target_os = "linux")]
-pub async fn ensure_stable_ula(iface: &str) -> Result<(), NetError> {
+pub async fn ensure_stable_ula(
+    iface: &str,
+    wait_for_slaac: bool,
+) -> Result<DualStackIpv6Outcome, NetError> {
     if !ipv6_enabled() {
-        return Ok(());
+        return Ok(DualStackIpv6Outcome::Disabled);
     }
     enable_iface_ipv6(iface);
 
-    // Give SLAAC a short window (Proxmox bridges often RA within ~1–3s).
     let mut addrs = list_addresses(iface).await?;
-    for _ in 0..16 {
-        if addrs.iter().any(|a| {
-            let ip = a.split('/').next().unwrap_or(a.as_str());
-            is_usable_global_ipv6(ip) && !is_ula_ipv6(ip)
-        }) {
-            break;
+
+    // Fast path: GUA already present (late RA after ULA) — drop synthetic ULA.
+    if iface_has_gua(&addrs) {
+        let promoted = drop_synthetic_ula(iface, &addrs).await;
+        if let Some(gua) = prefer_global_ipv6(addrs.iter().map(|s| s.as_str())) {
+            if promoted {
+                tracing::info!(
+                    interface = iface,
+                    ipv6 = %gua,
+                    "dual-stack promoted to SLAAC GUA (removed synthetic ULA)"
+                );
+            } else {
+                tracing::info!(interface = iface, ipv6 = %gua, "dual-stack using SLAAC GUA");
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        addrs = list_addresses(iface).await?;
+        return Ok(if promoted {
+            DualStackIpv6Outcome::GuaPromoted
+        } else {
+            DualStackIpv6Outcome::Gua
+        });
+    }
+
+    // Already have ULA (or other global v6) from a prior pass — do not block.
+    if iface_has_global_v6(&addrs) {
+        return Ok(DualStackIpv6Outcome::Ula);
+    }
+
+    if wait_for_slaac {
+        // Give SLAAC a window (bridges often RA within ~1–3s; pertisk-vms /
+        // post-reboot after IPv4-only early boot can need longer).
+        for _ in 0..30 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            addrs = list_addresses(iface).await?;
+            if iface_has_gua(&addrs) {
+                let _ = drop_synthetic_ula(iface, &addrs).await;
+                if let Some(gua) = prefer_global_ipv6(addrs.iter().map(|s| s.as_str())) {
+                    tracing::info!(interface = iface, ipv6 = %gua, "dual-stack using SLAAC GUA");
+                }
+                return Ok(DualStackIpv6Outcome::Gua);
+            }
+        }
     }
 
     let v4 = addrs.iter().find_map(|a| {
@@ -508,60 +562,78 @@ pub async fn ensure_stable_ula(iface: &str) -> Result<(), NetError> {
             None
         }
     });
-
-    let has_gua = addrs.iter().any(|a| {
-        let ip = a.split('/').next().unwrap_or(a.as_str());
-        is_usable_global_ipv6(ip) && !is_ula_ipv6(ip)
-    });
-    if has_gua {
-        if let Some(v4) = v4 {
-            let synthetic = ula_cidr_from_ipv4(v4);
-            let syn_ip = synthetic.split('/').next().unwrap_or(synthetic.as_str());
-            let still_present = addrs
-                .iter()
-                .any(|a| a.split('/').next().unwrap_or(a.as_str()) == syn_ip);
-            if still_present {
-                match del_address(iface, &synthetic).await {
-                    Ok(()) => tracing::info!(
-                        interface = iface,
-                        ula = %synthetic,
-                        "removed synthetic ULA (GUA present)"
-                    ),
-                    Err(err) => tracing::warn!(
-                        interface = iface,
-                        ula = %synthetic,
-                        error = %err,
-                        "failed to remove synthetic ULA"
-                    ),
-                }
-            }
-        }
-        if let Some(gua) = prefer_global_ipv6(addrs.iter().map(|s| s.as_str())) {
-            tracing::info!(interface = iface, ipv6 = %gua, "dual-stack using SLAAC GUA");
-        }
-        return Ok(());
-    }
-
-    let has_global_v6 = addrs.iter().any(|a| {
-        let ip = a.split('/').next().unwrap_or(a.as_str());
-        is_usable_global_ipv6(ip)
-    });
-    if has_global_v6 {
-        return Ok(());
-    }
     let Some(v4) = v4 else {
-        return Ok(());
+        return Ok(DualStackIpv6Outcome::NoIpv4);
     };
     let ula = ula_cidr_from_ipv4(v4);
     match add_address(iface, &ula).await {
         Ok(()) => {
-            tracing::info!(interface = iface, ula = %ula, "dual-stack ULA assigned (no RA)");
-            Ok(())
+            tracing::info!(interface = iface, ula = %ula, "dual-stack ULA assigned (no RA yet)");
+            Ok(DualStackIpv6Outcome::Ula)
         }
         Err(err) => {
             tracing::warn!(interface = iface, ula = %ula, error = %err, "ULA assign failed");
             // Soft-fail — DHCP/API still work on IPv4.
-            Ok(())
+            Ok(DualStackIpv6Outcome::NoIpv4)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn iface_has_gua(addrs: &[String]) -> bool {
+    addrs.iter().any(|a| {
+        let ip = a.split('/').next().unwrap_or(a.as_str());
+        is_usable_global_ipv6(ip) && !is_ula_ipv6(ip)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn iface_has_global_v6(addrs: &[String]) -> bool {
+    addrs.iter().any(|a| {
+        let ip = a.split('/').next().unwrap_or(a.as_str());
+        is_usable_global_ipv6(ip)
+    })
+}
+
+/// Remove the IPv4-derived synthetic ULA when a GUA is present. Returns true if removed.
+#[cfg(target_os = "linux")]
+async fn drop_synthetic_ula(iface: &str, addrs: &[String]) -> bool {
+    let v4 = addrs.iter().find_map(|a| {
+        let ip = a.split('/').next().unwrap_or(a.as_str());
+        if ip.contains('.') {
+            ip.parse::<std::net::Ipv4Addr>().ok()
+        } else {
+            None
+        }
+    });
+    let Some(v4) = v4 else {
+        return false;
+    };
+    let synthetic = ula_cidr_from_ipv4(v4);
+    let syn_ip = synthetic.split('/').next().unwrap_or(synthetic.as_str());
+    let still_present = addrs
+        .iter()
+        .any(|a| a.split('/').next().unwrap_or(a.as_str()) == syn_ip);
+    if !still_present {
+        return false;
+    }
+    match del_address(iface, &synthetic).await {
+        Ok(()) => {
+            tracing::info!(
+                interface = iface,
+                ula = %synthetic,
+                "removed synthetic ULA (GUA present)"
+            );
+            true
+        }
+        Err(err) => {
+            tracing::warn!(
+                interface = iface,
+                ula = %synthetic,
+                error = %err,
+                "failed to remove synthetic ULA"
+            );
+            false
         }
     }
 }

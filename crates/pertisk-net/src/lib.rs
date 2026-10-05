@@ -14,8 +14,49 @@ mod provider_net;
 pub use apply::{apply_network, NetError};
 pub use link::{
     ipv6_enabled, is_ula_ipv6, is_usable_global_ipv6, prefer_global_ipv6, set_ipv6_enabled,
+    DualStackIpv6Outcome,
 };
 pub use provider_net::{apply_provider_netcfg, try_apply_provider_netcfg};
+
+/// Reconcile dual-stack IPv6 on configured interfaces (no SLAAC wait).
+///
+/// Returns [`DualStackIpv6Outcome::Gua`] when any iface has a public/global
+/// address (and synthetic ULA was dropped). Used by pertiskd after reboot when
+/// RA arrives later than the initial apply window.
+pub fn reconcile_dual_stack_ipv6(network: &pertisk_config::Network) -> Result<DualStackIpv6Outcome, NetError> {
+    #[cfg(target_os = "linux")]
+    {
+        if !ipv6_enabled() {
+            return Ok(DualStackIpv6Outcome::Disabled);
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| NetError::Msg(e.to_string()))?;
+        let mut best = DualStackIpv6Outcome::NoIpv4;
+        for iface in &network.interfaces {
+            let name = match rt.block_on(link::resolve_iface(&iface.interface)) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            match rt.block_on(link::ensure_stable_ula(&name, false))? {
+                DualStackIpv6Outcome::GuaPromoted => {
+                    return Ok(DualStackIpv6Outcome::GuaPromoted);
+                }
+                DualStackIpv6Outcome::Gua => return Ok(DualStackIpv6Outcome::Gua),
+                DualStackIpv6Outcome::Ula => best = DualStackIpv6Outcome::Ula,
+                DualStackIpv6Outcome::Disabled => {}
+                DualStackIpv6Outcome::NoIpv4 => {}
+            }
+        }
+        Ok(best)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = network;
+        Ok(DualStackIpv6Outcome::Disabled)
+    }
+}
 
 #[cfg(target_os = "linux")]
 pub use dhcp::{clear_persisted_lease, stop_maintainer};
@@ -253,5 +294,17 @@ mod tests {
             pick_node_ipv4(["10.1.1.254/32"], &[]).as_deref(),
             Some("10.1.1.254")
         );
+    }
+
+    #[test]
+    fn prefer_global_ipv6_prefers_gua_over_ula() {
+        let gua = "2405:9800:b901:194c:5054:ff:fe4c:3568";
+        let ula = "fd00:a:1:1::fc";
+        assert_eq!(prefer_global_ipv6([ula, gua]), Some(gua));
+        assert_eq!(prefer_global_ipv6([ula]), Some(ula));
+        assert_eq!(prefer_global_ipv6(["fe80::1", ula]), Some(ula));
+        assert!(is_ula_ipv6(ula));
+        assert!(!is_ula_ipv6(gua));
+        assert!(is_usable_global_ipv6(gua));
     }
 }

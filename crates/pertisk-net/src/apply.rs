@@ -157,7 +157,8 @@ mod linux {
             }
 
             // Lab LANs often lack IPv6 RA — synthesize a stable ULA when dual-stack.
-            if let Err(err) = rt.block_on(link::ensure_stable_ula(&name)) {
+            // Wait for SLAAC on first apply; reaper reconciles late GUA after reboot.
+            if let Err(err) = rt.block_on(link::ensure_stable_ula(&name, true)) {
                 warn!(interface = %name, error = %err, "dual-stack ULA ensure failed");
             }
         }

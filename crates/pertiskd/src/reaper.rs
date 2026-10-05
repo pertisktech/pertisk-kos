@@ -57,6 +57,10 @@ mod unix_impl {
         let mut provider_netcfg_done = false;
         let mut netcfg_retry_at = std::time::Instant::now();
         let mut netcfg_tries: u32 = 0;
+        // After reboot, SLAAC GUA can arrive after the first dual-stack apply
+        // assigned synthetic ULA — keep promoting until GUA sticks (or give up).
+        let mut dual_stack_v6 = DualStackV6Watch::new(cfg.as_ref());
+        let mut dual_stack_reconcile_at = std::time::Instant::now();
 
         while !STOP.load(Ordering::SeqCst) {
             reap_zombies();
@@ -117,6 +121,8 @@ mod unix_impl {
                             info!("restarting kubelet after dual-stack network apply");
                             services.restart_kubelet(&new_cfg, crate::log_ring());
                         }
+                        dual_stack_v6 = DualStackV6Watch::new(Some(&new_cfg));
+                        dual_stack_reconcile_at = std::time::Instant::now();
                         cfg = Some(new_cfg);
                     }
                     None => warn!(path = %path.display(), "config reload failed to parse"),
@@ -241,6 +247,29 @@ mod unix_impl {
                 }
             }
 
+            // Late SLAAC after reboot: ULA was assigned first; promote to GUA and
+            // restart kubelet so Node InternalIP matches the public address.
+            if dual_stack_v6.active()
+                && std::time::Instant::now() >= dual_stack_reconcile_at
+            {
+                if let Some(ref c) = cfg {
+                    match pertisk_net::reconcile_dual_stack_ipv6(&c.machine.network) {
+                        Ok(outcome) => {
+                            if dual_stack_v6.on_outcome(outcome) {
+                                info!(
+                                    ?outcome,
+                                    "dual-stack SLAAC GUA available; restarting kubelet"
+                                );
+                                services.restart_kubelet(c, crate::log_ring());
+                            }
+                        }
+                        Err(err) => warn!(error = %err, "dual-stack IPv6 reconcile failed"),
+                    }
+                }
+                dual_stack_reconcile_at = std::time::Instant::now()
+                    + std::time::Duration::from_secs(dual_stack_v6.next_interval_secs());
+            }
+
             let power = state.lock().map(|s| s.power).unwrap_or(PowerAction::None);
             match power {
                 PowerAction::Reboot => {
@@ -301,6 +330,67 @@ mod unix_impl {
         let (cd, kl, cd_pid, kl_pid) = services.status_parts();
         if let Ok(mut st) = state.lock() {
             st.set_runtime_status(cd, kl, cd_pid, kl_pid);
+        }
+    }
+
+    /// Tracks dual-stack guests that still need a late SLAAC GUA after ULA fallback.
+    struct DualStackV6Watch {
+        enabled: bool,
+        /// Keep polling until GUA is stable (or attempts exhausted).
+        awaiting_gua: bool,
+        attempts: u32,
+    }
+
+    impl DualStackV6Watch {
+        fn new(cfg: Option<&MachineConfig>) -> Self {
+            let enabled = cfg
+                .and_then(|c| c.cluster.as_ref())
+                .map(|c| c.is_dual_stack())
+                .unwrap_or(false);
+            Self {
+                enabled,
+                awaiting_gua: enabled,
+                attempts: 0,
+            }
+        }
+
+        fn active(&self) -> bool {
+            self.enabled && self.awaiting_gua && self.attempts < 40
+        }
+
+        fn next_interval_secs(&self) -> u64 {
+            // Aggressive early (RA often within 30s of IPv6 enable), then back off.
+            if self.attempts < 12 {
+                5
+            } else {
+                15
+            }
+        }
+
+        /// Returns true when kubelet should restart (ULA → GUA promotion).
+        fn on_outcome(&mut self, outcome: pertisk_net::DualStackIpv6Outcome) -> bool {
+            use pertisk_net::DualStackIpv6Outcome::*;
+            self.attempts = self.attempts.saturating_add(1);
+            match outcome {
+                GuaPromoted => {
+                    self.awaiting_gua = false;
+                    true
+                }
+                Gua => {
+                    self.awaiting_gua = false;
+                    false
+                }
+                Ula => {
+                    self.awaiting_gua = true;
+                    false
+                }
+                Disabled => {
+                    self.enabled = false;
+                    self.awaiting_gua = false;
+                    false
+                }
+                NoIpv4 => false,
+            }
         }
     }
 
