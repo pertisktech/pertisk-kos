@@ -355,7 +355,9 @@ mod unix_impl {
         }
 
         fn active(&self) -> bool {
-            self.enabled && self.awaiting_gua && self.attempts < 40
+            // Keep trying for ~20+ minutes after reboot (ULA → GUA); RA can be
+            // delayed until accept_ra=2 sticks and the LAN router advertises.
+            self.enabled && self.awaiting_gua && self.attempts < 80
         }
 
         fn next_interval_secs(&self) -> u64 {

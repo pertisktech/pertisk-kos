@@ -89,11 +89,14 @@ mod linux_impl {
         ("net/ipv6/conf/default/autoconf", "0"),
     ];
 
+    // accept_ra=2: accept Router Advertisements even when IPv6 forwarding is
+    // enabled (Cilium dual-stack). With accept_ra=1, SLAAC stops after CNI
+    // starts and guests remain on the synthetic fd00 ULA after reboot.
     const IPV6_ON: &[(&str, &str)] = &[
         ("net/ipv6/conf/all/disable_ipv6", "0"),
         ("net/ipv6/conf/default/disable_ipv6", "0"),
-        ("net/ipv6/conf/all/accept_ra", "1"),
-        ("net/ipv6/conf/default/accept_ra", "1"),
+        ("net/ipv6/conf/all/accept_ra", "2"),
+        ("net/ipv6/conf/default/accept_ra", "2"),
         ("net/ipv6/conf/all/autoconf", "1"),
         ("net/ipv6/conf/default/autoconf", "1"),
     ];
@@ -174,7 +177,7 @@ mod linux_impl {
                     continue;
                 }
                 let _ = write_sysctl(&e.path().join("disable_ipv6"), "0");
-                let _ = write_sysctl(&e.path().join("accept_ra"), "1");
+                let _ = write_sysctl(&e.path().join("accept_ra"), "2");
                 let _ = write_sysctl(&e.path().join("autoconf"), "1");
             }
         }

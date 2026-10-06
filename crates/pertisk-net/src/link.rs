@@ -20,10 +20,14 @@ pub fn ipv6_enabled() -> bool {
 }
 
 /// Affirmatively allow SLAAC/RA on an interface (dual-stack).
+///
+/// `accept_ra=2` is required: Linux ignores RAs when IPv6 forwarding is on
+/// unless accept_ra is 2. Cilium (and kube-proxy) enable forwarding, so `1`
+/// leaves guests stuck on the synthetic `fd00:…` ULA after reboot.
 #[cfg(target_os = "linux")]
 pub fn enable_iface_ipv6(iface: &str) {
     let base = format!("/proc/sys/net/ipv6/conf/{iface}");
-    for (key, val) in [("disable_ipv6", "0"), ("accept_ra", "1"), ("autoconf", "1")] {
+    for (key, val) in [("disable_ipv6", "0"), ("accept_ra", "2"), ("autoconf", "1")] {
         let path = format!("{base}/{key}");
         let _ = std::fs::write(&path, val);
     }
@@ -533,25 +537,30 @@ pub async fn ensure_stable_ula(
         });
     }
 
-    // Already have ULA (or other global v6) from a prior pass — do not block.
-    if iface_has_global_v6(&addrs) {
-        return Ok(DualStackIpv6Outcome::Ula);
-    }
-
     if wait_for_slaac {
         // Give SLAAC a window (bridges often RA within ~1–3s; pertisk-vms /
-        // post-reboot after IPv4-only early boot can need longer).
+        // post-reboot after IPv4-only early boot can need longer). Keep waiting
+        // even when a synthetic ULA is already present from an earlier pass.
         for _ in 0..30 {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             addrs = list_addresses(iface).await?;
             if iface_has_gua(&addrs) {
-                let _ = drop_synthetic_ula(iface, &addrs).await;
+                let promoted = drop_synthetic_ula(iface, &addrs).await;
                 if let Some(gua) = prefer_global_ipv6(addrs.iter().map(|s| s.as_str())) {
                     tracing::info!(interface = iface, ipv6 = %gua, "dual-stack using SLAAC GUA");
                 }
-                return Ok(DualStackIpv6Outcome::Gua);
+                return Ok(if promoted {
+                    DualStackIpv6Outcome::GuaPromoted
+                } else {
+                    DualStackIpv6Outcome::Gua
+                });
             }
         }
+    }
+
+    // Already have ULA (or other global v6) from a prior pass — do not re-add.
+    if iface_has_global_v6(&addrs) {
+        return Ok(DualStackIpv6Outcome::Ula);
     }
 
     let v4 = addrs.iter().find_map(|a| {
