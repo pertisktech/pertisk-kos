@@ -53,6 +53,34 @@ export function ShellDockProvider({ children }) {
     setOpen(true)
   }, [])
 
+  /** Interactive kubectl exec into a pod (operator+). */
+  const openPodExec = useCallback((clusterId, namespace, podName, opts = {}) => {
+    if (!clusterId || !namespace || !podName) return
+    const container = opts.container || ''
+    const id = `exec:${clusterId}:${namespace}:${podName}:${container || 'default'}`
+    const title = `exec · ${namespace}/${podName}`
+    setTabs((prev) => {
+      if (prev.some((t) => t.id === id)) {
+        setActiveId(id)
+        return prev
+      }
+      return [
+        ...prev,
+        {
+          id,
+          kind: 'exec',
+          clusterId,
+          namespace,
+          podName,
+          container,
+          title,
+        },
+      ]
+    })
+    setActiveId(id)
+    setOpen(true)
+  }, [])
+
   /** Topbar: cluster kubectl shell when a ready cluster page is open, else pertiskctl. */
   const openShell = useCallback(() => {
     if (clusterCtx?.id && clusterCtx.ready) {
@@ -94,6 +122,7 @@ export function ShellDockProvider({ children }) {
       openShell,
       newMgmtTab,
       openClusterShell,
+      openPodExec,
       closeTab,
       toggle,
     }),
@@ -107,6 +136,7 @@ export function ShellDockProvider({ children }) {
       openShell,
       newMgmtTab,
       openClusterShell,
+      openPodExec,
       closeTab,
       toggle,
     ],

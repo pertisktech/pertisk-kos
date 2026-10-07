@@ -72,8 +72,14 @@ async fn auth_middleware(
         return Ok(next.run(req).await);
     }
 
-    // Host / mgmt shells use ?token=; live WS authenticates with the first message.
-    if path.ends_with("/k8s/shell") || path.ends_with("/mgmt/shell") || path == "/ws" {
+    // Host / mgmt / pod shells use ?token=; live WS authenticates with the first message.
+    let pod_ws = path.contains("/k8s/pods/")
+        && (path.ends_with("/logs") || path.ends_with("/exec"));
+    if path.ends_with("/k8s/shell")
+        || path.ends_with("/mgmt/shell")
+        || pod_ws
+        || path == "/ws"
+    {
         return Ok(next.run(req).await);
     }
 

@@ -1,10 +1,11 @@
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { getToken, logoutAndRedirect, setAuthProvider } from './api'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import { Icon } from './components/Icons'
 import ThemeToggle from './components/ThemeToggle'
 import BottomShell from './components/BottomShell'
+import CommandPalette from './components/CommandPalette'
 import { useConfirm } from './components/Confirm'
 import { APP_VERSION } from './utils/version'
 import { useShellDock } from './shell/ShellDockContext'
@@ -76,7 +77,11 @@ export default function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(getStoredCollapsed)
   const [search, setSearch] = useState('')
+  const [cmdOpen, setCmdOpen] = useState(false)
   const userMenuRef = useRef(null)
+
+  const openCmd = useCallback(() => setCmdOpen(true), [])
+  const closeCmd = useCallback(() => setCmdOpen(false), [])
 
   useEffect(() => {
     if (!getToken()) {
@@ -92,8 +97,20 @@ export default function Layout() {
   }, [nav])
 
   useEffect(() => {
+    function onKey(e) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setCmdOpen((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  useEffect(() => {
     setMobileOpen(false)
     setShowUserMenu(false)
+    setCmdOpen(false)
   }, [location.pathname])
 
   useEffect(() => {
@@ -238,12 +255,23 @@ export default function Layout() {
                 type="search"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search clusters, nodes, node IDs…"
+                onFocus={openCmd}
+                placeholder="Search… ⌘K"
                 aria-label="Search"
+                readOnly
               />
             </form>
           </div>
           <div className="topbar-actions">
+            <button
+              type="button"
+              className="theme-toggle"
+              title="Command palette (⌘K)"
+              aria-label="Open command palette"
+              onClick={openCmd}
+            >
+              <Icon name="search" size={16} />
+            </button>
             <button
               type="button"
               className="theme-toggle"
@@ -298,6 +326,7 @@ export default function Layout() {
         </div>
         <BottomShell />
       </div>
+      <CommandPalette open={cmdOpen} onClose={closeCmd} />
     </div>
   )
 }

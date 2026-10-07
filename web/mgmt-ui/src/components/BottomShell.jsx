@@ -104,7 +104,10 @@ export default function BottomShell() {
                 setOpen(true)
               }}
             >
-              <Icon name={tab.kind === 'mgmt' ? 'settings' : 'clusters'} size={12} />
+              <Icon
+                name={tab.kind === 'mgmt' ? 'settings' : tab.kind === 'exec' ? 'terminal' : 'clusters'}
+                size={12}
+              />
               <span>{tab.title}</span>
               {canClose && (
                 <span
@@ -165,6 +168,15 @@ export default function BottomShell() {
             >
               {tab.kind === 'mgmt' ? (
                 <Xterm kind="mgmt" bare />
+              ) : tab.kind === 'exec' ? (
+                <Xterm
+                  kind="exec"
+                  clusterId={tab.clusterId}
+                  namespace={tab.namespace}
+                  podName={tab.podName}
+                  container={tab.container}
+                  bare
+                />
               ) : (
                 <Xterm kind="cluster" clusterId={tab.clusterId} clusterName={tab.title} bare />
               )}

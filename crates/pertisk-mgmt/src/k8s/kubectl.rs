@@ -9,17 +9,29 @@ use tokio::process::Command;
 use crate::error::{ApiResult, AppError};
 use crate::state::AppState;
 
+/// Kubernetes resource kinds exposed by the mgmt K8s explorer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkloadKind {
+pub enum ResourceKind {
     Deployments,
     StatefulSets,
     DaemonSets,
     Jobs,
     CronJobs,
     Pods,
+    Services,
+    Ingresses,
+    ConfigMaps,
+    Secrets,
+    PersistentVolumeClaims,
+    Events,
+    Nodes,
 }
 
-impl WorkloadKind {
+/// Backward-compatible alias for workload-only call sites.
+#[allow(dead_code)]
+pub type WorkloadKind = ResourceKind;
+
+impl ResourceKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "deployments" | "deployment" | "deploy" => Some(Self::Deployments),
@@ -28,6 +40,15 @@ impl WorkloadKind {
             "jobs" | "job" => Some(Self::Jobs),
             "cronjobs" | "cronjob" | "cj" => Some(Self::CronJobs),
             "pods" | "pod" | "po" => Some(Self::Pods),
+            "services" | "service" | "svc" => Some(Self::Services),
+            "ingresses" | "ingress" | "ing" => Some(Self::Ingresses),
+            "configmaps" | "configmap" | "cm" => Some(Self::ConfigMaps),
+            "secrets" | "secret" => Some(Self::Secrets),
+            "persistentvolumeclaims" | "persistentvolumeclaim" | "pvc" => {
+                Some(Self::PersistentVolumeClaims)
+            }
+            "events" | "event" | "ev" => Some(Self::Events),
+            "nodes" | "node" | "no" => Some(Self::Nodes),
             _ => None,
         }
     }
@@ -40,13 +61,27 @@ impl WorkloadKind {
             Self::Jobs => "jobs",
             Self::CronJobs => "cronjobs",
             Self::Pods => "pods",
+            Self::Services => "services",
+            Self::Ingresses => "ingresses",
+            Self::ConfigMaps => "configmaps",
+            Self::Secrets => "secrets",
+            Self::PersistentVolumeClaims => "persistentvolumeclaims",
+            Self::Events => "events",
+            Self::Nodes => "nodes",
         }
     }
 
     pub fn as_str(self) -> &'static str {
         self.kubectl_resource()
     }
+
+    pub fn namespaced(self) -> bool {
+        !matches!(self, Self::Nodes)
+    }
 }
+
+/// Max YAML body for apply (2 MiB).
+pub const MAX_APPLY_YAML_BYTES: usize = 2 * 1024 * 1024;
 
 /// Resolve a readable kubeconfig for `cluster_id` (any status).
 #[allow(dead_code)]
@@ -145,6 +180,47 @@ pub async fn kubectl_ok(kubeconfig: &Path, args: &[&str]) -> ApiResult<()> {
         }));
     }
     Ok(())
+}
+
+/// `kubectl` returning stdout as text (for `-o yaml`).
+#[allow(dead_code)]
+pub async fn kubectl_text(kubeconfig: &Path, args: &[&str]) -> ApiResult<String> {
+    let mut cmd = Command::new("kubectl");
+    cmd.arg("--kubeconfig").arg(kubeconfig).args(args);
+    let out = cmd
+        .output()
+        .await
+        .map_err(|e| AppError::bad(format!("kubectl: {e}")))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let msg = stderr.trim();
+        return Err(AppError::bad(if msg.is_empty() {
+            format!("kubectl {:?} failed", args)
+        } else {
+            msg.to_string()
+        }));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Redact Secret `data` / `stringData` values in a kubectl JSON object.
+pub fn redact_secret_obj(mut obj: serde_json::Value) -> serde_json::Value {
+    if let Some(data) = obj.get_mut("data").and_then(|d| d.as_object_mut()) {
+        for (_k, v) in data.iter_mut() {
+            *v = serde_json::Value::String("***".into());
+        }
+    }
+    if let Some(data) = obj.get_mut("stringData").and_then(|d| d.as_object_mut()) {
+        for (_k, v) in data.iter_mut() {
+            *v = serde_json::Value::String("***".into());
+        }
+    }
+    obj
+}
+
+/// Convert a JSON object to YAML text (for editor display).
+pub fn json_to_yaml(obj: &serde_json::Value) -> ApiResult<String> {
+    serde_yaml::to_string(obj).map_err(|e| AppError::bad(format!("yaml encode: {e}")))
 }
 
 /// `kubectl get … -o json`, treating missing resources as `None`.
@@ -260,6 +336,79 @@ pub async fn helm_output(kubeconfig: Option<&Path>, args: &[&str]) -> ApiResult<
         let msg = stderr.trim();
         return Err(AppError::bad(if msg.is_empty() {
             format!("helm {:?} failed", args)
+        } else {
+            msg.to_string()
+        }));
+    }
+    Ok(format!("{stdout}{stderr}"))
+}
+
+/// `helm … -o json` parse.
+pub async fn helm_json(kubeconfig: &Path, args: &[&str]) -> ApiResult<serde_json::Value> {
+    let mut cmd = Command::new("helm");
+    cmd.arg("--kubeconfig").arg(kubeconfig).args(args);
+    let out = cmd.output().await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            AppError::bad("helm not found on the management host PATH")
+        } else {
+            AppError::bad(format!("helm: {e}"))
+        }
+    })?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let msg = stderr.trim();
+        return Err(AppError::bad(if msg.is_empty() {
+            format!("helm {:?} failed", args)
+        } else {
+            msg.to_string()
+        }));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::json!([]));
+    }
+    serde_json::from_str(trimmed).map_err(|e| AppError::bad(format!("helm json parse: {e}")))
+}
+
+/// `helm` with values YAML on stdin (`-f -`).
+pub async fn helm_with_values(
+    kubeconfig: &Path,
+    args: &[&str],
+    values_yaml: Option<&str>,
+) -> ApiResult<String> {
+    let mut cmd = Command::new("helm");
+    cmd.arg("--kubeconfig").arg(kubeconfig).args(args);
+    if values_yaml.is_some() {
+        cmd.arg("-f").arg("-");
+        cmd.stdin(Stdio::piped());
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            AppError::bad("helm not found on the management host PATH")
+        } else {
+            AppError::bad(format!("helm: {e}"))
+        }
+    })?;
+    if let Some(doc) = values_yaml {
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(doc.as_bytes())
+                .await
+                .map_err(|e| AppError::bad(format!("helm stdin: {e}")))?;
+        }
+    }
+    let out = child
+        .wait_with_output()
+        .await
+        .map_err(|e| AppError::bad(format!("helm: {e}")))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        let msg = stderr.trim();
+        return Err(AppError::bad(if msg.is_empty() {
+            "helm failed".into()
         } else {
             msg.to_string()
         }));

@@ -3,16 +3,22 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { buildHostShellWsUrl, buildMgmtShellWsUrl } from '../pages/cluster-k8s/api'
+import {
+  buildHostShellWsUrl,
+  buildMgmtShellWsUrl,
+  buildPodExecWsUrl,
+} from '../pages/cluster-k8s/api'
 
 /**
- * Interactive xterm attached to a management-host PTY WebSocket.
- * Provide either `wsUrl`, or `clusterId` (cluster kubectl shell), or kind=mgmt.
+ * Interactive xterm attached to a PTY WebSocket (mgmt / cluster shell / pod exec).
  */
 export default function Xterm({
   clusterId,
   clusterName,
   kind = 'cluster',
+  namespace,
+  podName,
+  container,
   wsUrl: wsUrlProp,
   label,
   onClose,
@@ -29,9 +35,11 @@ export default function Xterm({
     wsUrlProp ||
     (kind === 'mgmt'
       ? buildMgmtShellWsUrl()
-      : clusterId
-        ? buildHostShellWsUrl(clusterId)
-        : '')
+      : kind === 'exec' && clusterId && namespace && podName
+        ? buildPodExecWsUrl(clusterId, namespace, podName, { container })
+        : clusterId
+          ? buildHostShellWsUrl(clusterId)
+          : '')
 
   useEffect(() => {
     if (!terminalRef.current || !resolvedUrl) return undefined
@@ -48,14 +56,20 @@ export default function Xterm({
     const cursor =
       style.getPropertyValue('--primary').trim() || fg
 
+    const fontFamily =
+      style.getPropertyValue('--font-mono').trim() ||
+      style.getPropertyValue('--mono').trim() ||
+      'JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+
     const xterm = new XTerm({
       cursorBlink: true,
       fontSize: 13,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontFamily,
       theme: {
         background: bg,
         foreground: fg,
         cursor,
+        selectionBackground: style.getPropertyValue('--app-primary-soft').trim() || undefined,
       },
     })
     const fit = new FitAddon()
@@ -131,7 +145,9 @@ export default function Xterm({
     label ||
     (kind === 'mgmt'
       ? 'mgmt · pertiskctl'
-      : `host shell${clusterName ? ` · ${clusterName}` : ''} · kubectl / helm`)
+      : kind === 'exec'
+        ? `exec · ${namespace}/${podName}${container ? ` · ${container}` : ''}`
+        : `host shell${clusterName ? ` · ${clusterName}` : ''} · kubectl / helm`)
 
   if (bare) {
     return <div className="xterm-shell-body xterm-shell-body-tall" ref={terminalRef} />

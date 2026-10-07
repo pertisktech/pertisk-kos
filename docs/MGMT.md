@@ -135,13 +135,50 @@ A **Logs** panel tails `pertiskd` / `containerd` / `kubelet` / `dmesg` via `pert
 
 ## Cluster K8s tab
 
-When a cluster is **ready** (kubeconfig stored under `{data_dir}/kubeconfigs/{name}/`), the cluster detail **K8s** tab lists workloads via `kubectl` on the management host:
+When a cluster is **ready** (kubeconfig stored under `{data_dir}/kubeconfigs/{name}/`), the cluster detail **K8s** tab is a day-2 explorer (Rancher-style) plus Deploy (Devtron-lite), still via `kubectl` / `helm` on the management host.
+
+### Explorer
 
 | Kind | Actions |
 |------|---------|
-| Deployments | list, scale, rollout restart, delete |
-| StatefulSets / DaemonSets / Jobs / CronJobs | list, delete |
-| Pods | list |
+| Deployments | list, scale, rollout restart, delete, YAML apply |
+| StatefulSets / DaemonSets / Jobs / CronJobs | list, delete, YAML apply |
+| Pods | list, delete, logs (WebSocket), exec (PTY, operator+), YAML apply |
+| Services / Ingresses | list, delete, YAML apply |
+| ConfigMaps / Secrets | list, delete, YAML apply (secret values redacted; apply of `***` blocked) |
+| PVCs | list, delete, YAML apply |
+| Events | list (read-only) |
+| Nodes (Kubernetes) | list (cluster-scoped) |
+
+Resource detail drawer: **Overview** · **YAML** (edit + Apply) · **Events**.
+
+### Deploy sub-tab
+
+| Action | Notes |
+|--------|-------|
+| Helm releases | `helm list -A`; view values; uninstall |
+| Helm install | `helm upgrade --install` with optional repo URL, version, values YAML |
+| YAML apply | multi-doc `kubectl apply -f -` (max 2 MiB) |
+
+Curated Pertisk add-ons remain on the **Apps** tab.
+
+API (Bearer JWT; mutate needs **operator/admin**; pod logs allow **viewer+**; pod exec needs **operator/admin**):
+
+- `GET /api/clusters/{id}/k8s/namespaces`
+- `GET /api/clusters/{id}/k8s/resources/{kind}?namespace=`
+- `GET /api/clusters/{id}/k8s/resources/{kind}/{ns}/{name}` — summary + YAML (+ related events)
+- `PUT /api/clusters/{id}/k8s/resources/{kind}/{ns}/{name}` — `{ "yaml" }` apply
+- `DELETE /api/clusters/{id}/k8s/resources/{kind}/{ns}/{name}`
+- `POST /api/clusters/{id}/k8s/apply` — `{ "yaml" }` raw apply
+- `POST /api/clusters/{id}/k8s/deployments/{ns}/{name}/scale` · `…/restart`
+- `GET /api/clusters/{id}/k8s/pods/{ns}/{name}/logs?token=&container=&follow=1` (WebSocket)
+- `GET /api/clusters/{id}/k8s/pods/{ns}/{name}/exec?token=&container=` (WebSocket PTY)
+- `GET /api/clusters/{id}/helm/releases`
+- `GET /api/clusters/{id}/helm/releases/{ns}/{name}`
+- `POST /api/clusters/{id}/helm/install`
+- `DELETE /api/clusters/{id}/helm/releases/{ns}/{name}`
+
+Legacy `GET/DELETE …/k8s/workloads/…` still works for workloads.
 
 ## Cluster Add-ons tab
 
@@ -188,14 +225,14 @@ API (Bearer JWT; shell needs **operator/admin**):
 - `GET /api/clusters/{id}/kubeconfig` — admin kubeconfig YAML download
 - `GET /api/clusters/{id}/versions` — component/package versions for overview (also included on `GET /api/clusters/{id}` as `versions`)
 - `GET /api/clusters/{id}/config-bundle` — ZIP of `{data_dir}/kubeconfigs/{name}/` (`admin.conf`, `worker.yaml`, role MachineConfigs)
-- `GET /api/clusters/{id}/k8s/namespaces`
-- `GET /api/clusters/{id}/k8s/workloads/{kind}?namespace=`
-- `POST /api/clusters/{id}/k8s/deployments/{ns}/{name}/scale`
-- `POST /api/clusters/{id}/k8s/deployments/{ns}/{name}/restart`
-- `DELETE /api/clusters/{id}/k8s/workloads/{kind}/{ns}/{name}`
 - `GET /api/clusters/{id}/k8s/shell?token=` (WebSocket host PTY; `token` = JWT)
+- Resource / Helm / pod log+exec APIs — see **Cluster K8s tab** above
 
-Requires `kubectl` on the mgmt host PATH (same as node sync / `kubectl top`).
+Requires `kubectl` (and `helm` for Deploy / add-ons) on the mgmt host PATH (same as node sync / `kubectl top`).
+
+### UI chrome (Vela)
+
+The React shell uses Vela-aligned tokens (Plus Jakarta Sans / JetBrains Mono, dark/light). **⌘K / Ctrl+K** opens a command palette to jump to routes, clusters, and providers.
 
 Cluster **Overview** lists component/package versions: Kubernetes (kubelet), OS (Machine API `version` — same as the guest dashboard; not kubelet `osImage`), kernel and containerd (kubelet `nodeInfo`), CNI (cluster spec), and image pins for etcd / pause / kube-vip. OS **Target** is the latest catalog package for the cluster arch.
 

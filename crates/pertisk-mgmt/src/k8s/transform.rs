@@ -309,3 +309,272 @@ pub fn transform_pod(obj: &Value) -> Value {
         "age": item_age(created),
     })
 }
+
+pub fn transform_service(obj: &Value) -> Value {
+    let (name, ns, created) = meta(obj);
+    let spec = obj.get("spec").cloned().unwrap_or(Value::Null);
+    let svc_type = spec.get("type").and_then(|t| t.as_str()).unwrap_or("ClusterIP");
+    let cluster_ip = spec
+        .get("clusterIP")
+        .and_then(|i| i.as_str())
+        .unwrap_or("—");
+    let ports = spec
+        .get("ports")
+        .and_then(|p| p.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| {
+                    let port = p.get("port").and_then(|x| x.as_u64())?;
+                    let proto = p.get("protocol").and_then(|x| x.as_str()).unwrap_or("TCP");
+                    let name = p.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                    Some(if name.is_empty() {
+                        format!("{port}/{proto}")
+                    } else {
+                        format!("{name}:{port}/{proto}")
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    json!({
+        "kind": "services",
+        "name": name,
+        "namespace": ns,
+        "status": svc_type,
+        "ready": cluster_ip,
+        "ports": ports,
+        "age": item_age(created),
+    })
+}
+
+pub fn transform_ingress(obj: &Value) -> Value {
+    let (name, ns, created) = meta(obj);
+    let spec = obj.get("spec").cloned().unwrap_or(Value::Null);
+    let class = spec
+        .get("ingressClassName")
+        .and_then(|c| c.as_str())
+        .unwrap_or("—");
+    let hosts = spec
+        .get("rules")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|r| r.get("host").and_then(|h| h.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let tls = spec
+        .get("tls")
+        .and_then(|t| t.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    json!({
+        "kind": "ingresses",
+        "name": name,
+        "namespace": ns,
+        "status": if tls { "TLS" } else { "HTTP" },
+        "ready": class,
+        "hosts": if hosts.is_empty() { "—".into() } else { hosts },
+        "age": item_age(created),
+    })
+}
+
+pub fn transform_configmap(obj: &Value) -> Value {
+    let (name, ns, created) = meta(obj);
+    let keys = obj
+        .get("data")
+        .and_then(|d| d.as_object())
+        .map(|o| o.len())
+        .unwrap_or(0);
+    json!({
+        "kind": "configmaps",
+        "name": name,
+        "namespace": ns,
+        "status": "Active",
+        "ready": format!("{keys} keys"),
+        "keys": keys,
+        "age": item_age(created),
+    })
+}
+
+pub fn transform_secret(obj: &Value) -> Value {
+    let (name, ns, created) = meta(obj);
+    let secret_type = obj
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("Opaque");
+    let keys = obj
+        .get("data")
+        .and_then(|d| d.as_object())
+        .map(|o| o.len())
+        .unwrap_or(0);
+    json!({
+        "kind": "secrets",
+        "name": name,
+        "namespace": ns,
+        "status": secret_type,
+        "ready": format!("{keys} keys"),
+        "keys": keys,
+        "age": item_age(created),
+    })
+}
+
+pub fn transform_pvc(obj: &Value) -> Value {
+    let (name, ns, created) = meta(obj);
+    let status = obj.get("status").cloned().unwrap_or(Value::Null);
+    let phase = status
+        .get("phase")
+        .and_then(|p| p.as_str())
+        .unwrap_or("Unknown");
+    let capacity = status
+        .get("capacity")
+        .and_then(|c| c.get("storage"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("—");
+    let storage_class = obj
+        .get("spec")
+        .and_then(|s| s.get("storageClassName"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("—");
+    json!({
+        "kind": "persistentvolumeclaims",
+        "name": name,
+        "namespace": ns,
+        "status": phase,
+        "ready": capacity,
+        "storageClass": storage_class,
+        "age": item_age(created),
+    })
+}
+
+pub fn transform_event(obj: &Value) -> Value {
+    let (name, ns, created) = meta(obj);
+    let etype = obj
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("Normal");
+    let reason = obj
+        .get("reason")
+        .and_then(|r| r.as_str())
+        .unwrap_or("—");
+    let message = obj
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .chars()
+        .take(120)
+        .collect::<String>();
+    let involved = obj.get("involvedObject");
+    let object = involved
+        .map(|i| {
+            let kind = i.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+            let n = i.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            format!("{kind}/{n}")
+        })
+        .unwrap_or_else(|| "—".into());
+    let count = obj.get("count").and_then(|c| c.as_u64()).unwrap_or(1);
+    json!({
+        "kind": "events",
+        "name": name,
+        "namespace": ns,
+        "status": etype,
+        "ready": reason,
+        "object": object,
+        "message": message,
+        "count": count,
+        "age": item_age(created),
+    })
+}
+
+pub fn transform_node(obj: &Value) -> Value {
+    let (name, _, created) = meta(obj);
+    let status = obj.get("status").cloned().unwrap_or(Value::Null);
+    let ready = status
+        .get("conditions")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| {
+            arr.iter().find(|c| {
+                c.get("type").and_then(|t| t.as_str()) == Some("Ready")
+            })
+        })
+        .and_then(|c| c.get("status").and_then(|s| s.as_str()))
+        .unwrap_or("Unknown");
+    let ready_label = if ready == "True" { "Ready" } else { "NotReady" };
+    let roles = obj
+        .get("metadata")
+        .and_then(|m| m.get("labels"))
+        .and_then(|l| l.as_object())
+        .map(|labels| {
+            let mut roles: Vec<&str> = Vec::new();
+            for (k, _) in labels {
+                if let Some(role) = k.strip_prefix("node-role.kubernetes.io/") {
+                    if !role.is_empty() {
+                        roles.push(role);
+                    }
+                }
+            }
+            if roles.is_empty() {
+                "worker".into()
+            } else {
+                roles.join(",")
+            }
+        })
+        .unwrap_or_else(|| "worker".into());
+    let version = status
+        .get("nodeInfo")
+        .and_then(|n| n.get("kubeletVersion"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("—");
+    let cpu = status
+        .get("allocatable")
+        .and_then(|a| a.get("cpu"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("—");
+    let mem = status
+        .get("allocatable")
+        .and_then(|a| a.get("memory"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("—");
+    json!({
+        "kind": "nodes",
+        "name": name,
+        "namespace": "",
+        "status": ready_label,
+        "ready": format!("{cpu} cpu · {mem}"),
+        "roles": roles,
+        "version": version,
+        "age": item_age(created),
+    })
+}
+
+/// Dispatch list-item transform by resource kind string.
+pub fn transform_resource(kind: &str, obj: &Value) -> Value {
+    match crate::k8s::ResourceKind::parse(kind) {
+        Some(crate::k8s::ResourceKind::Deployments) => transform_deployment(obj),
+        Some(crate::k8s::ResourceKind::StatefulSets) => transform_statefulset(obj),
+        Some(crate::k8s::ResourceKind::DaemonSets) => transform_daemonset(obj),
+        Some(crate::k8s::ResourceKind::Jobs) => transform_job(obj),
+        Some(crate::k8s::ResourceKind::CronJobs) => transform_cronjob(obj),
+        Some(crate::k8s::ResourceKind::Pods) => transform_pod(obj),
+        Some(crate::k8s::ResourceKind::Services) => transform_service(obj),
+        Some(crate::k8s::ResourceKind::Ingresses) => transform_ingress(obj),
+        Some(crate::k8s::ResourceKind::ConfigMaps) => transform_configmap(obj),
+        Some(crate::k8s::ResourceKind::Secrets) => transform_secret(obj),
+        Some(crate::k8s::ResourceKind::PersistentVolumeClaims) => transform_pvc(obj),
+        Some(crate::k8s::ResourceKind::Events) => transform_event(obj),
+        Some(crate::k8s::ResourceKind::Nodes) => transform_node(obj),
+        None => {
+            let (name, ns, created) = meta(obj);
+            json!({
+                "kind": kind,
+                "name": name,
+                "namespace": ns,
+                "status": "—",
+                "ready": "—",
+                "age": item_age(created),
+            })
+        }
+    }
+}
