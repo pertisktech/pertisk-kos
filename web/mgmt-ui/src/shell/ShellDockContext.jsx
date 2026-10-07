@@ -13,6 +13,8 @@ export function ShellDockProvider({ children }) {
   const [height, setHeight] = useState(300)
   const [tabs, setTabs] = useState([MGMT_TAB])
   const [activeId, setActiveId] = useState(MGMT_TAB.id)
+  /** Active cluster page context for the topbar shell button. */
+  const [clusterCtx, setClusterCtx] = useState(null)
   const mgmtSeq = useRef(0)
 
   const openMgmtShell = useCallback(() => {
@@ -51,6 +53,15 @@ export function ShellDockProvider({ children }) {
     setOpen(true)
   }, [])
 
+  /** Topbar: cluster kubectl shell when a ready cluster page is open, else pertiskctl. */
+  const openShell = useCallback(() => {
+    if (clusterCtx?.id && clusterCtx.ready) {
+      openClusterShell(clusterCtx.id, clusterCtx.name)
+      return
+    }
+    openMgmtShell()
+  }, [clusterCtx, openClusterShell, openMgmtShell])
+
   const closeTab = useCallback((id) => {
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== id)
@@ -77,13 +88,28 @@ export function ShellDockProvider({ children }) {
       tabs,
       activeId,
       setActiveId,
+      clusterCtx,
+      setClusterCtx,
       openMgmtShell,
+      openShell,
       newMgmtTab,
       openClusterShell,
       closeTab,
       toggle,
     }),
-    [open, height, tabs, activeId, openMgmtShell, newMgmtTab, openClusterShell, closeTab, toggle],
+    [
+      open,
+      height,
+      tabs,
+      activeId,
+      clusterCtx,
+      openMgmtShell,
+      openShell,
+      newMgmtTab,
+      openClusterShell,
+      closeTab,
+      toggle,
+    ],
   )
 
   return <ShellDockContext.Provider value={value}>{children}</ShellDockContext.Provider>

@@ -2559,6 +2559,30 @@ th.col-actions, td.col-actions {
   gap: 1rem;
   margin-bottom: 1rem;
 }
+.overview-metrics {
+  margin: 0 0 1.5rem;
+  padding: 0 0 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.overview-metrics .section-head {
+  margin-bottom: 1rem;
+}
+.overview-metrics-charts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem 2rem;
+  align-items: center;
+}
+.overview-metrics-charts .resource-donut {
+  min-width: 10rem;
+}
+.overview-metrics-err {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.75rem 0 0;
+  font-size: 0.8rem;
+}
 .overview-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -3282,7 +3306,8 @@ th.col-actions, td.col-actions {
   flex-direction: column;
 }
 
-.addons-tab {
+.addons-tab,
+.apps-tab {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
@@ -3408,6 +3433,7 @@ th.col-actions, td.col-actions {
 
 @media (max-width: 900px) {
   .overview-grid { grid-template-columns: 1fr; }
+  .overview-metrics-charts { gap: 1rem 1.25rem; }
 }
 
 @media (max-width: 720px) {

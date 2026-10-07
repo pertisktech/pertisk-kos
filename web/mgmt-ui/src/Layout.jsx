@@ -247,9 +247,17 @@ export default function Layout() {
             <button
               type="button"
               className="theme-toggle"
-              title="Management shell"
-              aria-label="Open management shell"
-              onClick={() => shellDock.openMgmtShell()}
+              title={
+                shellDock.clusterCtx?.ready
+                  ? `Cluster shell · ${shellDock.clusterCtx.name || 'kubectl'}`
+                  : 'Management shell'
+              }
+              aria-label={
+                shellDock.clusterCtx?.ready
+                  ? 'Open cluster shell'
+                  : 'Open management shell'
+              }
+              onClick={() => shellDock.openShell()}
             >
               <Icon name="terminal" size={16} />
             </button>

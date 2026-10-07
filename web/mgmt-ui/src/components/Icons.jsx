@@ -117,6 +117,7 @@ const ICONS = {
   clock: HiOutlineClock,
   upgrade: HiOutlineTrendingUp,
   addons: HiOutlineCollection,
+  apps: HiOutlineCollection,
   search: HiOutlineSearch,
   radio: RadioTowerIcon,
 }

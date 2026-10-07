@@ -15,9 +15,10 @@ import OsBundlePicker, { osBundleReady } from '../components/OsBundlePicker'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import JobsTab from './JobsTab'
 import K8sTab from './cluster-k8s/K8sTab'
-import ShellTab from './cluster-k8s/ShellTab'
-import AddonsTab from './cluster-k8s/AddonsTab'
+import AppsTab from './cluster-k8s/AppsTab'
 import { listAddons } from './cluster-k8s/api'
+import ResourceDonut from '../components/ResourceDonut'
+import { useShellDock } from '../shell/ShellDockContext'
 import { readSessionJson, writeSessionJson } from '../utils/sessionCache'
 import { generateClusterTerraform, terraformFilename } from '../utils/terraformExport'
 import { formatDateTime } from '../utils/datetime'
@@ -30,12 +31,29 @@ const TABS = [
   { id: 'overview', label: 'Overview', icon: 'dashboard' },
   { id: 'nodes', label: 'Nodes', icon: 'worker' },
   { id: 'k8s', label: 'K8s', icon: 'cpu' },
-  { id: 'addons', label: 'Add-ons', icon: 'addons' },
-  { id: 'shell', label: 'Shell', icon: 'terminal' },
+  { id: 'apps', label: 'Apps', icon: 'apps' },
   { id: 'config', label: 'Config', icon: 'edit' },
   { id: 'upgrade', label: 'Upgrade', icon: 'upgrade' },
   { id: 'jobs', label: 'Jobs', icon: 'clock' },
 ]
+
+/** Legacy query aliases → current tab ids. */
+const TAB_ALIASES = { addons: 'apps', shell: 'overview' }
+
+const EMPTY_METRIC = {
+  used: null,
+  total: null,
+  percent: null,
+  unit: '',
+  display_used: null,
+  display_total: null,
+  error: null,
+}
+
+function resolveTab(raw) {
+  const id = TAB_ALIASES[raw] || raw
+  return TABS.some((t) => t.id === id) ? id : 'overview'
+}
 
 function NodeAddresses({ node, dualStack }) {
   const v4 = node.ip?.trim()
@@ -324,8 +342,10 @@ export default function ClusterDetail() {
   const [search, setSearch] = useSearchParams()
   const nav = useNavigate()
   const confirm = useConfirm()
+  const { setClusterCtx, openShell } = useShellDock()
   const [data, setData] = useState(() => readSessionJson(clusterCacheKey(id), null))
   const [jobs, setJobs] = useState([])
+  const [resources, setResources] = useState(null)
   const [log, setLog] = useState('')
   const [selectedJob, setSelectedJob] = useState(null)
   const [error, setError] = useState('')
@@ -373,9 +393,7 @@ export default function ClusterDetail() {
     setLog('')
   }
 
-  const tab = TABS.some((t) => t.id === search.get('tab'))
-    ? search.get('tab')
-    : 'overview'
+  const tab = resolveTab(search.get('tab'))
 
   function setTab(next) {
     setSearch(next === 'overview' ? {} : { tab: next }, { replace: true })
@@ -383,11 +401,13 @@ export default function ClusterDetail() {
 
   const load = useCallback(async () => {
     try {
-      const [d, j] = await Promise.all([
+      const [d, j, res] = await Promise.all([
         api(`/clusters/${id}`),
         api(`/clusters/${id}/jobs`).catch(() => []),
+        api(`/clusters/${id}/resources`).catch(() => null),
       ])
       setData(d)
+      setResources(res)
       writeSessionJson(clusterCacheKey(id), d)
       setUpgradeVer((prev) => prev || d?.cluster?.k8s_version || '')
       setSelectedNodes((prev) => {
@@ -418,6 +438,29 @@ export default function ClusterDetail() {
   }, [id])
 
   useMgmtRefresh(load, { clusterId: id })
+
+  const hollowReadyPreview = (() => {
+    const nodes = data?.nodes || []
+    return (
+      data?.cluster?.status === 'ready' &&
+      nodes.length > 0 &&
+      nodes.every((n) => !n.ip?.trim())
+    )
+  })()
+
+  useEffect(() => {
+    const c = data?.cluster
+    if (!c) {
+      setClusterCtx(null)
+      return undefined
+    }
+    setClusterCtx({
+      id,
+      name: c.name,
+      ready: c.status === 'ready' && !hollowReadyPreview,
+    })
+    return () => setClusterCtx(null)
+  }, [id, data?.cluster, hollowReadyPreview, setClusterCtx])
 
   useEffect(() => {
     let cancelled = false
@@ -1093,6 +1136,19 @@ export default function ClusterDetail() {
           <Link className="btn secondary btn-icon" to="/clusters">
             <Icon name="back" size={16} /> Back
           </Link>
+          <button
+            type="button"
+            className="secondary btn-icon"
+            onClick={openShell}
+            disabled={c.status !== 'ready' || hollowReady}
+            title={
+              c.status === 'ready' && !hollowReady
+                ? 'Open cluster shell (kubectl / helm)'
+                : 'Shell available when the cluster is ready'
+            }
+          >
+            <Icon name="terminal" size={16} /> Shell
+          </button>
           <button type="button" className="secondary btn-icon" onClick={downloadKc} title="Download kubeconfig YAML">
             <Icon name="download" size={16} /> Download kubeconfig
           </button>
@@ -1292,6 +1348,44 @@ export default function ClusterDetail() {
         <div className="tab-panel card" role="tabpanel">
           {tab === 'overview' && (
             <div className="tab-body">
+              <section className="overview-metrics">
+                <div className="section-head">
+                  <div>
+                    <h3 className="section-label">Resources</h3>
+                    <p className="muted">Live cluster CPU, memory, and disk across nodes</p>
+                  </div>
+                </div>
+                <div className="overview-metrics-charts">
+                  <ResourceDonut
+                    kind="cpu"
+                    label="CPU"
+                    icon="cpu"
+                    metric={resources?.cpu || { ...EMPTY_METRIC, unit: 'cores' }}
+                    size={88}
+                  />
+                  <ResourceDonut
+                    kind="memory"
+                    label="Memory"
+                    icon="memory"
+                    metric={resources?.memory || { ...EMPTY_METRIC, unit: 'GiB' }}
+                    size={88}
+                  />
+                  <ResourceDonut
+                    kind="disk"
+                    label="Disk"
+                    icon="disk"
+                    metric={resources?.disk || { ...EMPTY_METRIC, unit: 'GiB' }}
+                    size={88}
+                  />
+                </div>
+                {resources?.error && (
+                  <p className="muted overview-metrics-err" title={resources.error}>
+                    <Icon name="alert" size={12} />
+                    {resources.error}
+                  </p>
+                )}
+              </section>
+
               <div className="overview-grid">
                 <section>
                   <h3 className="section-label">Cluster</h3>
@@ -1531,8 +1625,8 @@ export default function ClusterDetail() {
             <K8sTab clusterId={id} ready={c.status === 'ready' && !hollowReady} />
           )}
 
-          {tab === 'addons' && (
-            <AddonsTab
+          {tab === 'apps' && (
+            <AppsTab
               clusterId={id}
               ready={c.status === 'ready' && !hollowReady}
               onInstalled={(res) => {
@@ -1540,14 +1634,6 @@ export default function ClusterDetail() {
                 setTab('jobs')
                 load()
               }}
-            />
-          )}
-
-          {tab === 'shell' && (
-            <ShellTab
-              clusterId={id}
-              clusterName={c.name}
-              ready={c.status === 'ready' && !hollowReady}
             />
           )}
 

@@ -148,7 +148,7 @@ function AddonCard({ clusterId, addon, onInstalled }) {
 
   async function onInstall() {
     const ok = await confirm({
-      title: addon.status === 'installed' ? 'Update add-on' : 'Install add-on',
+      title: addon.status === 'installed' ? 'Update app' : 'Install app',
       message: `Apply ${addon.name} to this cluster with the config below?`,
       confirmLabel: addon.status === 'installed' ? 'Update' : 'Install',
       tone: 'primary',
@@ -319,7 +319,7 @@ function sectionStatus(items) {
   return ''
 }
 
-export default function AddonsTab({ clusterId, ready, onInstalled }) {
+export default function AppsTab({ clusterId, ready, onInstalled }) {
   const [addons, setAddons] = useState([])
   const [group, setGroup] = useState('certificates')
   const [loading, setLoading] = useState(false)
@@ -333,7 +333,7 @@ export default function AddonsTab({ clusterId, ready, onInstalled }) {
       const res = await listAddons(clusterId)
       setAddons(res.data || [])
     } catch (e) {
-      setError(e.message || 'failed to load add-ons')
+      setError(e.message || 'failed to load apps')
       setAddons([])
     } finally {
       setLoading(false)
@@ -358,7 +358,7 @@ export default function AddonsTab({ clusterId, ready, onInstalled }) {
     return (
       <div className="tab-body">
         <p className="muted">
-          Add-ons can be installed when the cluster status is <span className="badge ready">ready</span>
+          Apps can be installed when the cluster status is <span className="badge ready">ready</span>
           {' '}and a kubeconfig has been stored.
         </p>
       </div>
@@ -369,14 +369,14 @@ export default function AddonsTab({ clusterId, ready, onInstalled }) {
   const items = active ? sectionItems(addons, active.id) : []
 
   return (
-    <div className="tab-body tab-body-fill addons-tab">
+    <div className="tab-body tab-body-fill apps-tab">
       <div className="section-head">
         <div>
-          <h3 className="section-label">Add-ons</h3>
+          <h3 className="section-label">Apps</h3>
           <p className="muted">
             Check config, then install into this cluster via kubectl or Helm on the management host.
             Config is saved by cluster name (including tokens) and reused when you recreate the cluster.
-            Add-on jobs run in parallel with other clusters (they do not wait in the global create queue).
+            App install jobs run in parallel with other clusters (they do not wait in the global create queue).
           </p>
         </div>
         <button type="button" className="secondary btn-icon" onClick={load} disabled={loading}>
@@ -387,7 +387,7 @@ export default function AddonsTab({ clusterId, ready, onInstalled }) {
       {error && <div className="error">{error}</div>}
 
       {visibleSections.length > 0 && (
-        <div className="addon-groups" role="tablist" aria-label="Add-on groups">
+        <div className="addon-groups" role="tablist" aria-label="App groups">
           {visibleSections.map((section) => {
             const count = sectionItems(addons, section.id).length
             const status = sectionStatus(sectionItems(addons, section.id))
