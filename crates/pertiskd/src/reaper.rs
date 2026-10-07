@@ -355,17 +355,20 @@ mod unix_impl {
         }
 
         fn active(&self) -> bool {
-            // Keep trying for ~20+ minutes after reboot (ULA → GUA); RA can be
-            // delayed until accept_ra=2 sticks and the LAN router advertises.
-            self.enabled && self.awaiting_gua && self.attempts < 80
+            // Keep polling while dual-stack is waiting on a public GUA. RAs can
+            // arrive long after boot when the hypervisor bridge reattaches late
+            // (pertisk-vms host reboot). Do not hard-cap attempts — back off instead.
+            self.enabled && self.awaiting_gua
         }
 
         fn next_interval_secs(&self) -> u64 {
             // Aggressive early (RA often within 30s of IPv6 enable), then back off.
             if self.attempts < 12 {
                 5
-            } else {
+            } else if self.attempts < 80 {
                 15
+            } else {
+                60
             }
         }
 

@@ -519,6 +519,18 @@ pub async fn ensure_stable_ula(
     // Fast path: GUA already present (late RA after ULA) — drop synthetic ULA.
     if iface_has_gua(&addrs) {
         let promoted = drop_synthetic_ula(iface, &addrs).await;
+        if promoted {
+            addrs = list_addresses(iface).await?;
+        }
+        // Drop failed or raced — keep reporting Ula so the reaper keeps polling
+        // instead of freezing on Gua with a synthetic fd00 still on eth0.
+        if iface_has_synthetic_ula(&addrs) {
+            tracing::warn!(
+                interface = iface,
+                "dual-stack GUA present but synthetic ULA still installed; will retry drop"
+            );
+            return Ok(DualStackIpv6Outcome::Ula);
+        }
         if let Some(gua) = prefer_global_ipv6(addrs.iter().map(|s| s.as_str())) {
             if promoted {
                 tracing::info!(
@@ -546,6 +558,16 @@ pub async fn ensure_stable_ula(
             addrs = list_addresses(iface).await?;
             if iface_has_gua(&addrs) {
                 let promoted = drop_synthetic_ula(iface, &addrs).await;
+                if promoted {
+                    addrs = list_addresses(iface).await?;
+                }
+                if iface_has_synthetic_ula(&addrs) {
+                    tracing::warn!(
+                        interface = iface,
+                        "dual-stack GUA present but synthetic ULA still installed; will retry drop"
+                    );
+                    return Ok(DualStackIpv6Outcome::Ula);
+                }
                 if let Some(gua) = prefer_global_ipv6(addrs.iter().map(|s| s.as_str())) {
                     tracing::info!(interface = iface, ipv6 = %gua, "dual-stack using SLAAC GUA");
                 }
@@ -602,6 +624,27 @@ fn iface_has_global_v6(addrs: &[String]) -> bool {
         let ip = a.split('/').next().unwrap_or(a.as_str());
         is_usable_global_ipv6(ip)
     })
+}
+
+/// True when the IPv4-derived synthetic ULA (`fd00:a:1:1::xx`) is still installed.
+#[cfg(target_os = "linux")]
+fn iface_has_synthetic_ula(addrs: &[String]) -> bool {
+    let v4 = addrs.iter().find_map(|a| {
+        let ip = a.split('/').next().unwrap_or(a.as_str());
+        if ip.contains('.') {
+            ip.parse::<std::net::Ipv4Addr>().ok()
+        } else {
+            None
+        }
+    });
+    let Some(v4) = v4 else {
+        return false;
+    };
+    let syn_ip = ula_cidr_from_ipv4(v4);
+    let syn_ip = syn_ip.split('/').next().unwrap_or(syn_ip.as_str());
+    addrs
+        .iter()
+        .any(|a| a.split('/').next().unwrap_or(a.as_str()) == syn_ip)
 }
 
 /// Remove the IPv4-derived synthetic ULA when a GUA is present. Returns true if removed.
