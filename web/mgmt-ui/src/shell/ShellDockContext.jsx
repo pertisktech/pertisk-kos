@@ -81,6 +81,35 @@ export function ShellDockProvider({ children }) {
     setOpen(true)
   }, [])
 
+  /** Stream pod logs in the bottom dock (viewer+). */
+  const openPodLogs = useCallback((clusterId, namespace, podName, opts = {}) => {
+    if (!clusterId || !namespace || !podName) return
+    const container = opts.container || ''
+    const id = `logs:${clusterId}:${namespace}:${podName}:${container || 'default'}`
+    const title = `logs · ${namespace}/${podName}`
+    setTabs((prev) => {
+      if (prev.some((t) => t.id === id)) {
+        setActiveId(id)
+        return prev
+      }
+      return [
+        ...prev,
+        {
+          id,
+          kind: 'logs',
+          clusterId,
+          namespace,
+          podName,
+          container,
+          containers: opts.containers || [],
+          title,
+        },
+      ]
+    })
+    setActiveId(id)
+    setOpen(true)
+  }, [])
+
   /** Topbar: cluster kubectl shell when a ready cluster page is open, else pertiskctl. */
   const openShell = useCallback(() => {
     if (clusterCtx?.id && clusterCtx.ready) {
@@ -123,6 +152,7 @@ export function ShellDockProvider({ children }) {
       newMgmtTab,
       openClusterShell,
       openPodExec,
+      openPodLogs,
       closeTab,
       toggle,
     }),
@@ -137,6 +167,7 @@ export function ShellDockProvider({ children }) {
       newMgmtTab,
       openClusterShell,
       openPodExec,
+      openPodLogs,
       closeTab,
       toggle,
     ],

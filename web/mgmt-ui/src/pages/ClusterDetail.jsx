@@ -1622,7 +1622,9 @@ export default function ClusterDetail() {
           )}
 
           {tab === 'k8s' && (
-            <K8sTab clusterId={id} ready={c.status === 'ready' && !hollowReady} />
+            <div className="tab-body tab-body-k8s">
+              <K8sTab clusterId={id} ready={c.status === 'ready' && !hollowReady} />
+            </div>
           )}
 
           {tab === 'apps' && (

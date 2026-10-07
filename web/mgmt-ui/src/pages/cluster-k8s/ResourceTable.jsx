@@ -30,25 +30,25 @@ function extraCells(kind, r) {
   if (kind === 'pods') {
     return [
       <td key="re">{r.restarts ?? 0}</td>,
-      <td key="node" className="mono-inline muted">{r.node || '—'}</td>,
+      <td key="node" className="k8s-td-muted">{r.node || '—'}</td>,
     ]
   }
   if (kind === 'cronjobs') {
     return [<td key="sch" className="mono-inline">{r.schedule || '—'}</td>]
   }
   if (kind === 'services') {
-    return [<td key="ports" className="muted">{r.ports || '—'}</td>]
+    return [<td key="ports" className="k8s-td-muted">{r.ports || '—'}</td>]
   }
   if (kind === 'ingresses') {
-    return [<td key="hosts" className="muted">{r.hosts || '—'}</td>]
+    return [<td key="hosts" className="k8s-td-muted">{r.hosts || '—'}</td>]
   }
   if (kind === 'persistentvolumeclaims') {
-    return [<td key="sc" className="mono-inline muted">{r.storageClass || '—'}</td>]
+    return [<td key="sc" className="mono-inline k8s-td-muted">{r.storageClass || '—'}</td>]
   }
   if (kind === 'events') {
     return [
       <td key="obj" className="mono-inline">{r.object || '—'}</td>,
-      <td key="msg" className="muted" style={{ maxWidth: 280 }}>{r.message || '—'}</td>,
+      <td key="msg" className="k8s-td-muted k8s-td-clamp">{r.message || '—'}</td>,
     ]
   }
   if (kind === 'nodes') {
@@ -59,99 +59,103 @@ function extraCells(kind, r) {
   }
   if (['deployments', 'statefulsets', 'daemonsets'].includes(kind)) {
     return [
-      <td key="img" className="muted" style={{ maxWidth: 220 }}>
-        {(r.images || []).slice(0, 2).join(', ') || '—'}
+      <td key="img" className="k8s-td-muted k8s-td-clamp">
+        {(r.images || []).map((img) => String(img).split('@')[0]).slice(0, 2).join(', ') || '—'}
       </td>,
     ]
   }
   return []
 }
 
+function rowKey(r) {
+  return `${r.namespace || ''}/${r.name}`
+}
+
 export default function ResourceTable({
   kind,
   rows,
+  selectedKey,
   onSelect,
-  onScale,
-  onRestart,
-  onDelete,
   onLogs,
   onExec,
 }) {
   const extras = extraColumns(kind)
-  const isDeploy = kind === 'deployments'
   const isPods = kind === 'pods'
   const clusterScoped = kind === 'nodes'
-  const canDelete = kind !== 'events' && kind !== 'nodes'
 
   return (
-    <div className="table-wrap k8s-table">
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            {!clusterScoped && <th>Namespace</th>}
-            <th>Status</th>
-            <th>Ready</th>
-            {extras.map((h) => (
-              <th key={h}>{h}</th>
-            ))}
-            <th>Age</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 && (
+    <div className="k8s-table-shell">
+      <div className="k8s-table-meta">
+        <span>
+          Total: <strong>{rows.length}</strong> records
+        </span>
+      </div>
+      <div className="table-wrap k8s-table">
+        <table>
+          <thead>
             <tr>
-              <td colSpan={6 + extras.length} className="muted">
-                No resources
-              </td>
+              <th>Name</th>
+              {!clusterScoped && <th>Namespace</th>}
+              <th>Status</th>
+              <th>Ready</th>
+              {extras.map((h) => (
+                <th key={h}>{h}</th>
+              ))}
+              <th>Age</th>
+              {isPods && <th className="k8s-th-actions">Actions</th>}
             </tr>
-          )}
-          {rows.map((r) => (
-            <tr
-              key={`${r.namespace || ''}/${r.name}`}
-              className="k8s-row-clickable"
-              onClick={() => onSelect?.(r)}
-            >
-              <td className="mono-inline">{r.name}</td>
-              {!clusterScoped && <td>{r.namespace || '—'}</td>}
-              <td>
-                <span className={`badge ${statusClass(r.status)}`}>{r.status}</span>
-              </td>
-              <td className="mono-inline">{kind === 'cronjobs' ? '—' : r.ready}</td>
-              {extraCells(kind, r)}
-              <td className="muted">{r.age}</td>
-              <td className="row-actions" onClick={(e) => e.stopPropagation()}>
-                {isPods && (
-                  <>
-                    <button type="button" className="secondary btn-icon" title="Logs" onClick={() => onLogs?.(r)}>
-                      <Icon name="logs" size={14} />
-                    </button>
-                    <button type="button" className="secondary btn-icon" title="Exec" onClick={() => onExec?.(r)}>
-                      <Icon name="terminal" size={14} />
-                    </button>
-                  </>
-                )}
-                {isDeploy && (
-                  <>
-                    <button type="button" className="secondary btn-icon" title="Scale" onClick={() => onScale?.(r)}>
-                      Scale
-                    </button>
-                    <button type="button" className="secondary btn-icon" title="Restart" onClick={() => onRestart?.(r)}>
-                      Restart
-                    </button>
-                  </>
-                )}
-                {canDelete && (
-                  <button type="button" className="danger btn-icon" title="Delete" onClick={() => onDelete?.(r)}>
-                    <Icon name="trash" size={14} />
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={5 + extras.length + (isPods ? 1 : 0)} className="k8s-td-empty">
+                  No data available
+                </td>
+              </tr>
+            )}
+            {rows.map((r) => {
+              const key = rowKey(r)
+              const selected = selectedKey === key
+              return (
+                <tr
+                  key={key}
+                  className={`k8s-row${selected ? ' is-selected' : ''}`}
+                  onClick={() => onSelect?.(r)}
+                >
+                  <td className="k8s-td-name">{r.name}</td>
+                  {!clusterScoped && <td className="k8s-td-muted">{r.namespace || '—'}</td>}
+                  <td>
+                    <span className={`k8s-status ${statusClass(r.status)}`}>{r.status}</span>
+                  </td>
+                  <td className="mono-inline">{kind === 'cronjobs' ? '—' : r.ready}</td>
+                  {extraCells(kind, r)}
+                  <td className="k8s-td-muted">{r.age}</td>
+                  {isPods && (
+                    <td className="k8s-td-actions" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        className="k8s-icon-btn"
+                        title="Logs"
+                        onClick={() => onLogs?.(r)}
+                      >
+                        <Icon name="logs" size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className="k8s-icon-btn"
+                        title="Exec"
+                        onClick={() => onExec?.(r)}
+                      >
+                        <Icon name="terminal" size={14} />
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

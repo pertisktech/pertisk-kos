@@ -7,6 +7,7 @@ export default function PodLogsPanel({
   namespace,
   name,
   containers = [],
+  docked = false,
   onClose,
 }) {
   const [container, setContainer] = useState(containers[0] || '')
@@ -14,6 +15,10 @@ export default function PodLogsPanel({
   const [status, setStatus] = useState('connecting')
   const preRef = useRef(null)
   const wsRef = useRef(null)
+
+  useEffect(() => {
+    if (containers.length && !container) setContainer(containers[0])
+  }, [containers, container])
 
   useEffect(() => {
     if (!clusterId || !namespace || !name) return undefined
@@ -50,18 +55,39 @@ export default function PodLogsPanel({
   }, [clusterId, namespace, name, container])
 
   return (
-    <div className="pod-logs-panel">
-      <div className="pod-logs-bar">
-        <div className="pod-logs-meta">
-          <Icon name="logs" size={14} />
-          <span className="mono-inline">
-            {namespace}/{name}
-          </span>
+    <div className={`pod-logs-panel${docked ? ' pod-logs-panel-docked' : ''}`}>
+      {!docked && (
+        <div className="pod-logs-bar">
+          <div className="pod-logs-meta">
+            <Icon name="logs" size={14} />
+            <span className="mono-inline">
+              {namespace}/{name}
+            </span>
+            <span className={`badge ${status === 'live' ? 'ready' : status === 'error' ? 'error' : ''}`}>
+              {status}
+            </span>
+          </div>
+          <div className="pod-logs-actions">
+            {containers.length > 1 && (
+              <select value={container} onChange={(e) => setContainer(e.target.value)}>
+                {containers.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button type="button" className="secondary btn-icon" onClick={onClose}>
+              <Icon name="x" size={14} /> Close
+            </button>
+          </div>
+        </div>
+      )}
+      {docked && (
+        <div className="pod-logs-bar pod-logs-bar-dock">
           <span className={`badge ${status === 'live' ? 'ready' : status === 'error' ? 'error' : ''}`}>
             {status}
           </span>
-        </div>
-        <div className="pod-logs-actions">
           {containers.length > 1 && (
             <select value={container} onChange={(e) => setContainer(e.target.value)}>
               {containers.map((c) => (
@@ -71,11 +97,8 @@ export default function PodLogsPanel({
               ))}
             </select>
           )}
-          <button type="button" className="secondary btn-icon" onClick={onClose}>
-            <Icon name="x" size={14} /> Close
-          </button>
         </div>
-      </div>
+      )}
       <pre ref={preRef} className="pod-logs-body color-log">
         {text || (status === 'connecting' ? 'Connecting…' : '')}
       </pre>

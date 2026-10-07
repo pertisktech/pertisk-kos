@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Icon } from './Icons'
 import Xterm from './Xterm'
+import PodLogsPanel from '../pages/cluster-k8s/PodLogsPanel'
 import { useShellDock } from '../shell/ShellDockContext'
 
 /**
@@ -105,7 +106,15 @@ export default function BottomShell() {
               }}
             >
               <Icon
-                name={tab.kind === 'mgmt' ? 'settings' : tab.kind === 'exec' ? 'terminal' : 'clusters'}
+                name={
+                  tab.kind === 'mgmt'
+                    ? 'settings'
+                    : tab.kind === 'exec'
+                      ? 'terminal'
+                      : tab.kind === 'logs'
+                        ? 'logs'
+                        : 'clusters'
+                }
                 size={12}
               />
               <span>{tab.title}</span>
@@ -176,6 +185,15 @@ export default function BottomShell() {
                   podName={tab.podName}
                   container={tab.container}
                   bare
+                />
+              ) : tab.kind === 'logs' ? (
+                <PodLogsPanel
+                  clusterId={tab.clusterId}
+                  namespace={tab.namespace}
+                  name={tab.podName}
+                  containers={tab.containers?.length ? tab.containers : tab.container ? [tab.container] : []}
+                  docked
+                  onClose={() => closeTab(tab.id)}
                 />
               ) : (
                 <Xterm kind="cluster" clusterId={tab.clusterId} clusterName={tab.title} bare />
