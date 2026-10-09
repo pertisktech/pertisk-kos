@@ -84,6 +84,11 @@ const ADDON_SECTIONS = [
     blurb: 'Install Pertisk CD for GitOps-style application delivery (requires external Postgres).',
   },
   {
+    id: 'ci',
+    title: 'CI',
+    blurb: 'Pertisk Gits runners that poll the API and execute pipeline jobs.',
+  },
+  {
     id: 'certificates',
     title: 'Certificates',
     blurb: 'Issue a wildcard TLS certificate and copy it into every namespace.',
@@ -288,6 +293,15 @@ function AddonCard({ clusterId, addon, onInstalled }) {
               <div><dt>Pull secret</dt><dd>{live.pull_secret ? 'present' : 'absent'}</dd></div>
               <div><dt>Admin host</dt><dd className="mono-inline">{live.admin_host || '—'}</dd></div>
               <div><dt>Admin TLS</dt><dd className="mono-inline">{live.admin_host ? (live.admin_tls_secret || (live.admin_tls ? 'yes' : 'none')) : '—'}</dd></div>
+            </dl>
+          )}
+          {addon.id === 'pertisk-gits-runner' && live.available && (
+            <dl className="kv addon-live">
+              <div><dt>Ready</dt><dd>{live.ready ? 'yes' : 'no'}</dd></div>
+              <div><dt>Replicas</dt><dd>{live.ready_replicas ?? 0}/{live.replicas ?? '—'}</dd></div>
+              <div><dt>Image</dt><dd className="mono-inline">{live.image || addon.config?.image || '—'}</dd></div>
+              <div><dt>API</dt><dd className="mono-inline">{addon.config?.api_url || '—'}</dd></div>
+              <div><dt>Executor</dt><dd className="mono-inline">{addon.config?.executor || '—'}</dd></div>
             </dl>
           )}
           {addon.id === 'kubernetes-dashboard' && live.available && (

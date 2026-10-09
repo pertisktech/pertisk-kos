@@ -66,6 +66,14 @@ const PERTISK_CD_NAMESPACE: &str = "pertisk-cd";
 const PERTISK_CD_DEPLOY: &str = "pertisk-cd";
 pub const PERTISK_CD_IMAGE_REPO: &str = "pertisk-cd/pertisk-cd";
 pub const PERTISK_CD_IMAGE_TAG: &str = "v0.1.2";
+const PERTISK_RUNNER_ID: &str = "pertisk-gits-runner";
+const PERTISK_RUNNER_HELM_CHART: &str = "pertisk-runner";
+const PERTISK_RUNNER_RELEASE: &str = "pertisk-runner";
+const PERTISK_RUNNER_NAMESPACE: &str = "pertisk-runner";
+const PERTISK_RUNNER_DEPLOY: &str = "pertisk-runner";
+pub const PERTISK_RUNNER_IMAGE_REPO: &str = "pertisk-gits/runner";
+pub const PERTISK_RUNNER_IMAGE_TAG: &str = "0.1.91";
+const PERTISK_RUNNER_PULL_SECRET: &str = "pertisk-runner-registry";
 const KUBERNETES_DASHBOARD_ID: &str = "kubernetes-dashboard";
 const KUBERNETES_DASHBOARD_HELM_CHART: &str = "pertisk-kube";
 const KUBERNETES_DASHBOARD_RELEASE: &str = "pertisk-kube";
@@ -376,6 +384,54 @@ const KOS_SCALER_FIELDS: &[AddonField] = &[
     },
 ];
 
+const PERTISK_RUNNER_FIELDS: &[AddonField] = &[
+    AddonField {
+        name: "api_url",
+        label: "Pertisk Gits API URL",
+        kind: "text",
+        required: true,
+        placeholder: "https://git.example.com",
+        options: None,
+        help: "Base URL of the Pertisk Gits API (no trailing slash). Must be reachable from the runner pods.",
+    },
+    AddonField {
+        name: "runner_token",
+        label: "Runner token",
+        kind: "password",
+        required: true,
+        placeholder: "ptr_…",
+        options: None,
+        help: "Token from Pertisk Gits runner registration (stored encrypted). Leave blank on update to keep the current token.",
+    },
+    AddonField {
+        name: "executor",
+        label: "Executor",
+        kind: "select",
+        required: true,
+        placeholder: "kubernetes",
+        options: Some(&["kubernetes", "shell"]),
+        help: "kubernetes runs each job in its own pod. shell runs steps inside the runner pod and mounts the host Docker socket.",
+    },
+    AddonField {
+        name: "replicas",
+        label: "Replicas",
+        kind: "text",
+        required: false,
+        placeholder: "1",
+        options: None,
+        help: "Runner pods. Each pod claims one job at a time. Autoscaling is left off so this count is fixed.",
+    },
+    AddonField {
+        name: "image_tag",
+        label: "Image tag",
+        kind: "text",
+        required: false,
+        placeholder: PERTISK_RUNNER_IMAGE_TAG,
+        options: None,
+        help: "Image tag for pertisk-gits/runner from the chart at charts.tools.thaidevops.co (default 0.1.91).",
+    },
+];
+
 const PERTISK_CD_FIELDS: &[AddonField] = &[
     AddonField {
         name: "database_url",
@@ -517,6 +573,14 @@ pub fn catalog() -> &'static [AddonCatalogEntry] {
             summary: "Continuous deployment control plane (Helm pertisk-cd). Requires an external Postgres DATABASE_URL.",
             section: "cd",
             fields: PERTISK_CD_FIELDS,
+            requires_cni: None,
+        },
+        AddonCatalogEntry {
+            id: PERTISK_RUNNER_ID,
+            name: "Pertisk Gits runner",
+            summary: "CI runner for Pertisk Gits (Helm pertisk-runner). Polls the API and runs pipeline jobs.",
+            section: "ci",
+            fields: PERTISK_RUNNER_FIELDS,
             requires_cni: None,
         },
         AddonCatalogEntry {
@@ -767,6 +831,20 @@ struct PertiskCdSecrets {
     git_token: String,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct PertiskRunnerConfig {
+    #[serde(default)]
+    pub api_url: String,
+    #[serde(default)]
+    pub runner_token: String,
+    #[serde(default)]
+    pub executor: String,
+    #[serde(default)]
+    pub replicas: i64,
+    #[serde(default)]
+    pub image_tag: String,
+}
+
 pub fn parse_addon_id(raw: &str) -> ApiResult<String> {
     match raw.trim() {
         NFS_ID => Ok(NFS_ID.into()),
@@ -775,6 +853,7 @@ pub fn parse_addon_id(raw: &str) -> ApiResult<String> {
         INGRESS_ID => Ok(INGRESS_ID.into()),
         KOS_SCALER_ID | KOS_SCALER_ID_LEGACY => Ok(KOS_SCALER_ID.into()),
         PERTISK_CD_ID => Ok(PERTISK_CD_ID.into()),
+        PERTISK_RUNNER_ID => Ok(PERTISK_RUNNER_ID.into()),
         KUBERNETES_DASHBOARD_ID => Ok(KUBERNETES_DASHBOARD_ID.into()),
         other => Err(AppError::bad(format!("unknown addon {other}"))),
     }
@@ -1692,6 +1771,128 @@ fn pertisk_cd_helm_values(
         } else {
             json!([{ "secretName": tls, "hosts": [host] }])
         };
+    }
+    values
+}
+
+fn runner_executor(raw: &str) -> String {
+    if raw.trim().eq_ignore_ascii_case("shell") {
+        "shell".into()
+    } else {
+        "kubernetes".into()
+    }
+}
+
+fn runner_replicas(n: i64) -> i64 {
+    if (1..=32).contains(&n) { n } else { 1 }
+}
+
+pub fn parse_pertisk_runner_stored(v: &Value) -> PertiskRunnerConfig {
+    let replicas = v
+        .get("replicas")
+        .and_then(|x| {
+            x.as_i64()
+                .or_else(|| x.as_str().and_then(|s| s.trim().parse().ok()))
+        })
+        .unwrap_or(1);
+    PertiskRunnerConfig {
+        api_url: json_str(v, "api_url"),
+        runner_token: json_str(v, "runner_token"),
+        executor: runner_executor(&json_str(v, "executor")),
+        replicas: runner_replicas(replicas),
+        image_tag: json_str(v, "image_tag"),
+    }
+}
+
+pub fn public_pertisk_runner_config(cfg: &PertiskRunnerConfig, registry: &str) -> Value {
+    let tag = if cfg.image_tag.trim().is_empty() {
+        PERTISK_RUNNER_IMAGE_TAG
+    } else {
+        cfg.image_tag.trim()
+    };
+    json!({
+        "api_url": cfg.api_url.trim().trim_end_matches('/'),
+        "executor": runner_executor(&cfg.executor),
+        "replicas": runner_replicas(cfg.replicas),
+        "image_tag": tag,
+        "image": format!(
+            "{}/{PERTISK_RUNNER_IMAGE_REPO}:{tag}",
+            registry.trim().trim_end_matches('/')
+        ),
+    })
+}
+
+pub fn validate_pertisk_runner(cfg: &PertiskRunnerConfig, require_token: bool) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    let url = cfg.api_url.trim();
+    if url.is_empty() {
+        errors.push("Pertisk Gits API URL is required".into());
+    } else if !(url.starts_with("https://") || url.starts_with("http://")) {
+        errors.push("API URL must start with https:// or http://".into());
+    } else if url.contains(['\n', '\r', '\0', ' ']) {
+        errors.push("API URL contains invalid characters".into());
+    }
+    if require_token && cfg.runner_token.trim().is_empty() {
+        errors.push("runner token is required".into());
+    }
+    if !cfg.runner_token.trim().is_empty() && cfg.runner_token.contains(['\n', '\r', '\0']) {
+        errors.push("runner token contains invalid characters".into());
+    }
+    let exec = cfg.executor.trim();
+    if !exec.is_empty() && exec != "kubernetes" && exec != "shell" {
+        errors.push("executor must be kubernetes or shell".into());
+    }
+    let tag = cfg.image_tag.trim();
+    if !tag.is_empty()
+        && (tag.len() > 128
+            || tag
+                .chars()
+                .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))))
+    {
+        errors.push("image tag must be a Docker tag (letters, digits, . _ - +)".into());
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn pertisk_runner_helm_values(
+    cfg: &PertiskRunnerConfig,
+    token: &str,
+    registry: &str,
+    arch: &str,
+    pull_secret: bool,
+) -> Value {
+    let tag = if cfg.image_tag.trim().is_empty() {
+        PERTISK_RUNNER_IMAGE_TAG
+    } else {
+        cfg.image_tag.trim()
+    };
+    let registry = registry.trim().trim_end_matches('/');
+    let executor = runner_executor(&cfg.executor);
+    let k8s = executor == "kubernetes";
+    let mut values = json!({
+        "replicaCount": runner_replicas(cfg.replicas),
+        "autoscaling": { "enabled": false },
+        "executor": executor,
+        "apiUrl": cfg.api_url.trim().trim_end_matches('/'),
+        "runnerToken": token.trim(),
+        "rbac": { "create": k8s },
+        "serviceAccount": { "create": k8s },
+        "dockerSock": { "enabled": !k8s },
+        "runAsRoot": !k8s,
+        "image": {
+            "repository": format!("{registry}/{PERTISK_RUNNER_IMAGE_REPO}"),
+            "tag": tag,
+        },
+        "nodeSelector": {
+            "kubernetes.io/arch": kube_arch(arch),
+        },
+    });
+    if pull_secret {
+        values["imagePullSecrets"] = json!([{ "name": PERTISK_RUNNER_PULL_SECRET }]);
     }
     values
 }
@@ -2960,6 +3161,148 @@ async fn live_pertisk_cd(kc: &Path) -> Value {
     })
 }
 
+async fn live_pertisk_runner(kc: &Path) -> Value {
+    let deploy = kubectl_json_optional(
+        kc,
+        &[
+            "get",
+            "deploy",
+            PERTISK_RUNNER_DEPLOY,
+            "-n",
+            PERTISK_RUNNER_NAMESPACE,
+            "-o",
+            "json",
+        ],
+    )
+    .await
+    .ok()
+    .flatten();
+    let ready = deploy.as_ref().and_then(|v| {
+        v.pointer("/status/readyReplicas")
+            .and_then(|n| n.as_u64())
+    });
+    let desired = deploy.as_ref().and_then(|v| {
+        v.pointer("/spec/replicas")
+            .and_then(|n| n.as_u64())
+    });
+    json!({
+        "installed": deploy.as_ref().map(deploy_ready).unwrap_or(false),
+        "partial": deploy.is_some(),
+        "ready": deploy.as_ref().map(deploy_ready).unwrap_or(false),
+        "replicas": desired,
+        "ready_replicas": ready,
+        "image": deploy.as_ref().and_then(container_image),
+    })
+}
+
+async fn install_pertisk_runner(
+    state: &AppState,
+    cluster_id: &str,
+    kc: &Path,
+    log_path: &str,
+    stored: &Value,
+    token: &str,
+) -> anyhow::Result<()> {
+    let cfg = parse_pertisk_runner_stored(stored);
+    if token.trim().is_empty() {
+        anyhow::bail!("runner token is not stored");
+    }
+    validate_pertisk_runner(&cfg, false).map_err(|e| anyhow::anyhow!(e.join("; ")))?;
+    let (_, _, arch) = cluster_net(state, cluster_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let registry = state.cfg().image_registry.as_str();
+    let (reg_user, reg_password) = resolve_registry_pull_creds(state, "", "");
+    let use_pull_secret = !reg_user.is_empty() && !reg_password.is_empty();
+    if use_pull_secret {
+        apply_registry_pull_secret(
+            kc,
+            log_path,
+            registry,
+            PERTISK_RUNNER_NAMESPACE,
+            PERTISK_RUNNER_PULL_SECRET,
+            &reg_user,
+            &reg_password,
+        )
+        .await?;
+    }
+    let values = pertisk_runner_helm_values(&cfg, token, registry, &arch, use_pull_secret);
+    let mut logged = values.clone();
+    if logged.get("runnerToken").is_some() {
+        logged["runnerToken"] = json!("***");
+    }
+    let values_path = state
+        .cfg()
+        .jobs_dir()
+        .join(format!("{cluster_id}-pertisk-runner-values.yaml"));
+    write_restricted_file(&values_path, &serde_json::to_string_pretty(&values)?)?;
+    let _cleanup = UnlinkOnDrop(values_path.clone());
+    crate::jobs::append_log(
+        log_path,
+        &format!(
+            "pertisk-runner chart {PERTISK_RUNNER_HELM_CHART} image={registry}/{PERTISK_RUNNER_IMAGE_REPO}:{} executor={} replicas={}\n",
+            if cfg.image_tag.trim().is_empty() {
+                PERTISK_RUNNER_IMAGE_TAG
+            } else {
+                cfg.image_tag.trim()
+            },
+            runner_executor(&cfg.executor),
+            runner_replicas(cfg.replicas),
+        ),
+    )?;
+    crate::jobs::append_log(
+        log_path,
+        &format!(
+            "helm values:\n{}\n",
+            serde_json::to_string_pretty(&logged).unwrap_or_default()
+        ),
+    )?;
+    let values_s = values_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("pertisk-runner values path is not utf-8"))?;
+    let repo = state.cfg().helm_chart_repo.as_str();
+    crate::jobs::append_log(
+        log_path,
+        &format!(
+            "helm repo add pertisk {repo} && helm upgrade --install {PERTISK_RUNNER_RELEASE} pertisk/{PERTISK_RUNNER_HELM_CHART} -n {PERTISK_RUNNER_NAMESPACE}\n"
+        ),
+    )?;
+    let helm_args = [
+        "upgrade",
+        "--install",
+        PERTISK_RUNNER_RELEASE,
+        PERTISK_RUNNER_HELM_CHART,
+        "--repo",
+        repo,
+        "--namespace",
+        PERTISK_RUNNER_NAMESPACE,
+        "--create-namespace",
+        "--timeout",
+        "5m",
+        "-f",
+        values_s,
+    ];
+    let out = helm_output(Some(kc), &helm_args)
+        .await
+        .map_err(anyhow_api)?;
+    crate::jobs::append_log(log_path, &out)?;
+    crate::jobs::append_log(log_path, "wait for pertisk-runner deployment\n")?;
+    kubectl_ok(
+        kc,
+        &[
+            "wait",
+            "--for=condition=Available",
+            &format!("deploy/{PERTISK_RUNNER_DEPLOY}"),
+            "-n",
+            PERTISK_RUNNER_NAMESPACE,
+            "--timeout=180s",
+        ],
+    )
+    .await
+    .map_err(anyhow_api)?;
+    Ok(())
+}
+
 async fn live_kubernetes_dashboard(kc: &Path, namespace: &str) -> Value {
     let deploy = kubectl_json_optional(
         kc,
@@ -3667,6 +4010,16 @@ pub async fn summarize_one(
                 }
                 public_config = public_pertisk_cd_config(&cfg, state.cfg().image_registry.as_str());
             }
+            PERTISK_RUNNER_ID => {
+                let mut cfg = parse_pertisk_runner_stored(body);
+                cfg.runner_token = json_str(body, "runner_token");
+                let need_token = cfg.runner_token.trim().is_empty() && !token_set;
+                if let Err(e) = validate_pertisk_runner(&cfg, need_token) {
+                    errors.extend(e);
+                }
+                public_config =
+                    public_pertisk_runner_config(&cfg, state.cfg().image_registry.as_str());
+            }
             KUBERNETES_DASHBOARD_ID => {
                 let mut cfg = parse_kubernetes_dashboard_stored(body);
                 cfg.password = json_str(body, "password");
@@ -3725,6 +4078,12 @@ pub async fn summarize_one(
             state.cfg().image_registry.as_str(),
         );
     }
+    if addon == PERTISK_RUNNER_ID {
+        public_config = public_pertisk_runner_config(
+            &parse_pertisk_runner_stored(&public_config),
+            state.cfg().image_registry.as_str(),
+        );
+    }
     if addon == KUBERNETES_DASHBOARD_ID {
         public_config = public_kubernetes_dashboard_config_with_registry(
             &parse_kubernetes_dashboard_stored(&public_config),
@@ -3753,6 +4112,7 @@ pub async fn summarize_one(
                     INGRESS_ID => live_ingress(&kc).await,
                     KOS_SCALER_ID => live_kos_scaler(&kc).await,
                     PERTISK_CD_ID => live_pertisk_cd(&kc).await,
+                    PERTISK_RUNNER_ID => live_pertisk_runner(&kc).await,
                     KUBERNETES_DASHBOARD_ID => {
                         let cfg = parse_kubernetes_dashboard_stored(&public_config);
                         live_kubernetes_dashboard(&kc, cfg.namespace.trim()).await
@@ -3958,6 +4318,13 @@ pub async fn summarize_one(
         && !live.get("ready").and_then(|v| v.as_bool()).unwrap_or(false)
     {
         warnings.push("pertisk-cd is installed but the deployment is not ready".into());
+    }
+    if addon == PERTISK_RUNNER_ID
+        && live.get("available") == Some(&json!(true))
+        && live_installed
+        && !live.get("ready").and_then(|v| v.as_bool()).unwrap_or(false)
+    {
+        warnings.push("pertisk-gits runner is installed but the deployment is not ready".into());
     }
     if addon == KUBERNETES_DASHBOARD_ID
         && live.get("available") == Some(&json!(true))
@@ -4311,6 +4678,54 @@ pub async fn upsert_install(
             .await?;
             Ok((NfsConfig::default(), CertManagerConfig::default(), public))
         }
+        PERTISK_RUNNER_ID => {
+            let row = load_row(state, cluster_id, addon).await?;
+            let stored_token = row
+                .as_ref()
+                .and_then(|r| r.secrets_enc.as_deref())
+                .map(|enc| crypto::decrypt(&state.cfg().secret_key, enc))
+                .transpose()
+                .map_err(|e| AppError::bad(format!("stored runner token: {e}")))?
+                .unwrap_or_default();
+            let mut cfg = parse_pertisk_runner_stored(&body);
+            cfg.runner_token = json_str(&body, "runner_token");
+            if let Err(e) = validate_pertisk_runner(
+                &cfg,
+                cfg.runner_token.trim().is_empty() && stored_token.trim().is_empty(),
+            ) {
+                return Err(AppError::bad(e.join("; ")));
+            }
+            let token = if cfg.runner_token.trim().is_empty() {
+                stored_token
+            } else {
+                cfg.runner_token.trim().to_string()
+            };
+            if token.trim().is_empty() {
+                return Err(AppError::bad("runner token is required"));
+            }
+            let public =
+                public_pertisk_runner_config(&cfg, state.cfg().image_registry.as_str());
+            let enc = crypto::encrypt(&state.cfg().secret_key, token.trim()).map_err(AppError::Anyhow)?;
+            sqlx::query(
+                r#"INSERT INTO cluster_addons
+                     (cluster_id, addon, status, config_json, secrets_enc, error, installed_at, updated_at)
+                   VALUES (?, ?, 'installing', ?, ?, NULL, NULL, ?)
+                   ON CONFLICT(cluster_id, addon) DO UPDATE SET
+                     status = 'installing',
+                     config_json = excluded.config_json,
+                     secrets_enc = excluded.secrets_enc,
+                     error = NULL,
+                     updated_at = excluded.updated_at"#,
+            )
+            .bind(cluster_id)
+            .bind(addon)
+            .bind(public.to_string())
+            .bind(&enc)
+            .bind(&now)
+            .execute(state.pool())
+            .await?;
+            Ok((NfsConfig::default(), CertManagerConfig::default(), public))
+        }
         KUBERNETES_DASHBOARD_ID => {
             let row = load_row(state, cluster_id, addon).await?;
             let mut secrets = row
@@ -4478,6 +4893,16 @@ pub async fn run_install_job(
                 anyhow::bail!("pertisk-cd database URL or admin password is not stored; update the add-on")
             }
             install_pertisk_cd(state, cid, &kc, log_path, &stored, &secrets).await
+        }
+        PERTISK_RUNNER_ID => {
+            let token = match row.secrets_enc.as_deref() {
+                Some(enc) if !enc.is_empty() => crypto::decrypt(&state.cfg().secret_key, enc)?,
+                _ => anyhow::bail!("runner token is not stored"),
+            };
+            if token.trim().is_empty() {
+                anyhow::bail!("runner token is not stored; update the app")
+            }
+            install_pertisk_runner(state, cid, &kc, log_path, &stored, &token).await
         }
         KUBERNETES_DASHBOARD_ID => {
             let secrets = match row.secrets_enc.as_deref() {
@@ -5562,6 +5987,7 @@ mod tests {
                 "ingress",
                 "pertisk-kos-scaler",
                 "pertisk-cd",
+                "pertisk-gits-runner",
                 "kubernetes-dashboard",
             ]
         );
@@ -5571,7 +5997,30 @@ mod tests {
         assert_eq!(catalog()[3].section, "ingress");
         assert_eq!(catalog()[4].id, KOS_SCALER_ID);
         assert_eq!(catalog()[5].id, PERTISK_CD_ID);
-        assert_eq!(catalog()[6].section, "dashboard");
+        assert_eq!(catalog()[6].id, PERTISK_RUNNER_ID);
+        assert_eq!(catalog()[6].section, "ci");
+        assert_eq!(catalog()[7].section, "dashboard");
+    }
+
+    #[test]
+    fn pertisk_runner_public_config_omits_token() {
+        let cfg = PertiskRunnerConfig {
+            api_url: "https://git.example.com/".into(),
+            runner_token: "ptr_secret".into(),
+            executor: "shell".into(),
+            replicas: 0,
+            image_tag: String::new(),
+        };
+        let public = public_pertisk_runner_config(&cfg, "registry.example");
+        assert!(public.get("runner_token").is_none());
+        assert_eq!(public["api_url"], "https://git.example.com");
+        assert_eq!(public["executor"], "shell");
+        assert_eq!(public["replicas"], 1);
+        assert_eq!(public["image"], "registry.example/pertisk-gits/runner:0.1.91");
+        let values = pertisk_runner_helm_values(&cfg, "ptr_secret", "registry.example", "amd64", false);
+        assert_eq!(values["runnerToken"], "ptr_secret");
+        assert_eq!(values["dockerSock"]["enabled"], true);
+        assert_eq!(values["autoscaling"]["enabled"], false);
     }
 
     #[test]
