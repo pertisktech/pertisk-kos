@@ -387,11 +387,6 @@ export default function AppsTab({ clusterId, ready, onInstalled }) {
       <div className="section-head">
         <div>
           <h3 className="section-label">Apps</h3>
-          <p className="muted">
-            Check config, then install into this cluster via kubectl or Helm on the management host.
-            Config is saved by cluster name (including tokens) and reused when you recreate the cluster.
-            App install jobs run in parallel with other clusters (they do not wait in the global create queue).
-          </p>
         </div>
         <button type="button" className="secondary btn-icon" onClick={load} disabled={loading}>
           <Icon name="refresh" size={14} /> Refresh
