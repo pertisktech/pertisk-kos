@@ -401,17 +401,40 @@ export default function AppsTab({ clusterId, ready, onInstalled }) {
       {error && <div className="error">{error}</div>}
 
       {visibleSections.length > 0 && (
-        <div className="addon-groups" role="tablist" aria-label="App groups">
+        <div
+          className="addon-groups"
+          role="tablist"
+          aria-label="App groups"
+          onKeyDown={(e) => {
+            const keys = ['ArrowRight', 'ArrowLeft', 'Home', 'End']
+            if (!keys.includes(e.key) || visibleSections.length === 0) return
+            e.preventDefault()
+            const ids = visibleSections.map((s) => s.id)
+            const i = Math.max(0, ids.indexOf(active?.id))
+            let next = ids[i]
+            if (e.key === 'ArrowRight') next = ids[(i + 1) % ids.length]
+            if (e.key === 'ArrowLeft') next = ids[(i - 1 + ids.length) % ids.length]
+            if (e.key === 'Home') next = ids[0]
+            if (e.key === 'End') next = ids[ids.length - 1]
+            setGroup(next)
+            requestAnimationFrame(() => {
+              document.getElementById(`addon-group-${next}`)?.focus()
+            })
+          }}
+        >
           {visibleSections.map((section) => {
             const count = sectionItems(addons, section.id).length
             const status = sectionStatus(sectionItems(addons, section.id))
+            const selected = active?.id === section.id
             return (
               <button
                 key={section.id}
+                id={`addon-group-${section.id}`}
                 type="button"
                 role="tab"
-                aria-selected={active?.id === section.id}
-                className={active?.id === section.id ? 'tab-btn active' : 'tab-btn'}
+                aria-selected={selected}
+                tabIndex={selected ? 0 : -1}
+                className={selected ? 'tab-btn active' : 'tab-btn'}
                 onClick={() => setGroup(section.id)}
               >
                 <span>{section.title}</span>

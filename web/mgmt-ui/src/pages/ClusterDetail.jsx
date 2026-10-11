@@ -14,7 +14,6 @@ import K8sVersionSelect from '../components/K8sVersionSelect'
 import OsBundlePicker, { osBundleReady } from '../components/OsBundlePicker'
 import { useMgmtRefresh } from '../hooks/useMgmtEvents'
 import JobsTab from './JobsTab'
-import K8sTab from './cluster-k8s/K8sTab'
 import AppsTab from './cluster-k8s/AppsTab'
 import { listAddons } from './cluster-k8s/api'
 import ResourceDonut from '../components/ResourceDonut'
@@ -24,21 +23,21 @@ import { generateClusterTerraform, terraformFilename } from '../utils/terraformE
 import { formatDateTime } from '../utils/datetime'
 import { jobDurationLabel, jobKindLabel, jobStatusLabel } from '../utils/jobs'
 import UsageBar from '../components/UsageBar'
+import TabBar from '../components/TabBar'
 
 const YamlEditor = lazy(() => import('../components/YamlEditor'))
 
 const TABS = [
   { id: 'overview', label: 'Overview', icon: 'dashboard' },
   { id: 'nodes', label: 'Nodes', icon: 'worker' },
-  { id: 'k8s', label: 'K8s', icon: 'cpu' },
   { id: 'apps', label: 'Apps', icon: 'apps' },
   { id: 'config', label: 'Config', icon: 'edit' },
   { id: 'upgrade', label: 'Upgrade', icon: 'upgrade' },
   { id: 'jobs', label: 'Jobs', icon: 'clock' },
 ]
 
-/** Legacy query aliases → current tab ids. */
-const TAB_ALIASES = { addons: 'apps', shell: 'overview' }
+/** Legacy query aliases → current tab ids. The K8s resource browser was removed. */
+const TAB_ALIASES = { addons: 'apps', shell: 'overview', k8s: 'overview' }
 
 const EMPTY_METRIC = {
   used: null,
@@ -1323,29 +1322,21 @@ export default function ClusterDetail() {
       </div>
 
       <div className="tabs-shell">
-        <div className="tabs" role="tablist">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.id}
-              className={`tab ${tab === t.id ? 'active' : ''}`}
-              onClick={() => setTab(t.id)}
-            >
-              <Icon name={t.icon} size={16} />
-              {t.label}
-              {t.id === 'nodes' && nodes.length > 0 && (
-                <span className="tab-count">{nodes.length}</span>
-              )}
-              {t.id === 'jobs' && jobs.length > 0 && (
-                <span className="tab-count">{jobs.length}</span>
-              )}
-            </button>
-          ))}
-        </div>
+        <TabBar
+          label="Cluster"
+          tabs={TABS}
+          value={tab}
+          onChange={setTab}
+          idPrefix="cluster-tab"
+          counts={{ nodes: nodes.length, jobs: jobs.length }}
+        />
 
-        <div className="tab-panel card" role="tabpanel">
+        <div
+          id="cluster-tab-panel"
+          className="tab-panel card"
+          role="tabpanel"
+          aria-labelledby={`cluster-tab-${tab}`}
+        >
           {tab === 'overview' && (
             <div className="tab-body">
               <section className="overview-metrics">
@@ -1618,12 +1609,6 @@ export default function ClusterDetail() {
                   Live status updates as Proxmox creates VMs and nodes join — also watch the Jobs tab.
                 </p>
               )}
-            </div>
-          )}
-
-          {tab === 'k8s' && (
-            <div className="tab-body tab-body-k8s">
-              <K8sTab clusterId={id} ready={c.status === 'ready' && !hollowReady} />
             </div>
           )}
 

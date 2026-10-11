@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../api'
-import { Icon } from '../components/Icons'
 import PageHeader from '../components/PageHeader'
 import { APP_VERSION } from '../utils/version'
+import TabBar from '../components/TabBar'
 
 const TABS = [
   { id: 'session', label: 'Session', icon: 'user' },
@@ -86,23 +86,20 @@ export default function Settings() {
       {error && <div className="error">{error}</div>}
 
       <div className="tabs-shell">
-        <div className="tabs" role="tablist" aria-label="Settings sections">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.id}
-              className={`tab ${tab === t.id ? 'active' : ''}`}
-              onClick={() => setTab(t.id)}
-            >
-              <Icon name={t.icon} size={16} />
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <TabBar
+          label="Settings sections"
+          tabs={TABS}
+          value={tab}
+          onChange={setTab}
+          idPrefix="settings-tab"
+        />
 
-        <div className="tab-panel card" role="tabpanel">
+        <div
+          id="settings-tab-panel"
+          className="tab-panel card"
+          role="tabpanel"
+          aria-labelledby={`settings-tab-${tab}`}
+        >
           {tab === 'session' && (
             <div className="tab-body">
               <p className="section-label">Signed-in account</p>
