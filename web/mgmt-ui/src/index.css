@@ -3118,19 +3118,41 @@ th.col-actions, td.col-actions {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
-.k8s-select-menu {
+.k8s-pill.alpha {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+}
+.k8s-pill.beta {
+  color: var(--info, #3b8ef0);
+  border-color: color-mix(in srgb, var(--info, #3b8ef0) 45%, var(--border));
+}
+.k8s-pill.rc {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.k8s-select-panel {
   position: absolute;
   z-index: 40;
   top: calc(100% + 6px);
   left: 0;
   right: 0;
-  margin: 0;
-  padding: 0.35rem;
-  list-style: none;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+.k8s-select-filter {
+  display: flex;
+  align-items: center;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.82rem;
+}
+.k8s-select-menu {
+  margin: 0;
+  padding: 0.35rem;
+  list-style: none;
   max-height: 280px;
   overflow: auto;
 }
