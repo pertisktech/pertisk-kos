@@ -1489,12 +1489,6 @@ export default function ClusterDetail() {
                     </button>
                   </div>
                 </div>
-                <p className="muted" style={{ margin: 0 }}>
-                  Copy or download this cluster’s kubeconfig for kubectl or kube-web (
-                  <code className="mono-inline">KUBECONFIG</code>
-                  ). Use <strong>Download config</strong> in the header for a ZIP of the
-                  full cluster-out directory (kubeconfig + machine/join YAMLs).
-                </p>
               </section>
 
               {latestJob && (
