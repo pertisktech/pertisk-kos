@@ -10,18 +10,32 @@ use tracing::{info, warn};
 
 use crate::paths::KubeletPaths;
 
-/// Ensure `/usr/local/bin/kubelet` matches `want` (e.g. `v1.36.3`).
+/// Kubelet copied here survives reboot. `/usr/local/bin` is on the ephemeral root.
+const STATE_RUNTIME: &str = "/system/state/runtime";
+
+/// Ensure `/usr/local/bin/kubelet` matches `want` (e.g. `v1.36.3` or `v1.38.0-alpha.2`).
 /// Returns `true` when the binary was replaced (caller should restart kubelet).
+///
+/// The image pin is restored on every boot. A matching binary under STATE is
+/// installed first; otherwise it is downloaded and copied back to STATE.
 pub fn ensure_kubelet_version(paths: &KubeletPaths, want: &str) -> Result<bool> {
     let want = normalize_k8s_version(want);
     if let Some(cur) = read_kubelet_version(&paths.binary) {
         if cur == want {
+            persist_kubelet(&paths.binary, &want);
             return Ok(false);
         }
-        info!(current = %cur, target = %want, "kubelet version mismatch; downloading");
+        info!(current = %cur, target = %want, "kubelet version mismatch");
     } else {
-        info!(target = %want, "kubelet version unknown; downloading");
+        info!(target = %want, "kubelet version unknown");
     }
+
+    if restore_persisted_kubelet(paths, &want)? {
+        info!(version = %want, "restored kubelet from STATE");
+        return Ok(true);
+    }
+
+    info!(target = %want, "downloading kubelet");
 
     let arch = host_arch();
     let url = format!("https://dl.k8s.io/release/{want}/bin/linux/{arch}/kubelet");
@@ -54,8 +68,70 @@ pub fn ensure_kubelet_version(paths: &KubeletPaths, want: &str) -> Result<bool> 
 
     fs::rename(&tmp, &paths.binary)
         .with_context(|| format!("install kubelet → {}", paths.binary.display()))?;
+    persist_kubelet(&paths.binary, &want);
     info!(path = %paths.binary.display(), version = %want, "kubelet binary upgraded");
     Ok(true)
+}
+
+fn state_kubelet() -> std::path::PathBuf {
+    Path::new(STATE_RUNTIME).join("kubelet")
+}
+
+fn state_kubelet_ver() -> std::path::PathBuf {
+    Path::new(STATE_RUNTIME).join("kubelet.version")
+}
+
+fn restore_persisted_kubelet(paths: &KubeletPaths, want: &str) -> Result<bool> {
+    let bin = state_kubelet();
+    let ver_path = state_kubelet_ver();
+    if !bin.is_file() || !ver_path.is_file() {
+        return Ok(false);
+    }
+    let stored = fs::read_to_string(&ver_path).unwrap_or_default();
+    if stored.trim() != want {
+        return Ok(false);
+    }
+    if read_kubelet_version(&bin).as_deref() != Some(want) {
+        warn!(path = %bin.display(), "STATE kubelet does not match recorded version");
+        return Ok(false);
+    }
+    if let Some(parent) = paths.binary.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&bin, &paths.binary)
+        .with_context(|| format!("restore kubelet {} → {}", bin.display(), paths.binary.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&paths.binary)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&paths.binary, perms)?;
+    }
+    Ok(true)
+}
+
+fn persist_kubelet(binary: &Path, want: &str) {
+    if !Path::new("/system/state").is_dir() {
+        return;
+    }
+    if let Err(err) = (|| -> Result<()> {
+        fs::create_dir_all(STATE_RUNTIME)?;
+        let dest = state_kubelet();
+        fs::copy(binary, &dest)
+            .with_context(|| format!("persist kubelet → {}", dest.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&dest)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&dest, perms)?;
+        }
+        fs::write(state_kubelet_ver(), format!("{want}\n"))?;
+        info!(path = %dest.display(), version = %want, "persisted kubelet on STATE");
+        Ok(())
+    })() {
+        warn!(error = %err, "failed to persist kubelet on STATE");
+    }
 }
 
 pub fn read_kubelet_version(bin: &Path) -> Option<String> {

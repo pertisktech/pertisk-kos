@@ -5431,7 +5431,7 @@ if [ "$CP" = "1" ]; then
            /host/manifests/kube-controller-manager.yaml \
            /host/manifests/kube-scheduler.yaml; do
     [ -f "$f" ] || continue
-    sed -i -E "s#(image:[[:space:]]*registry\.k8s\.io/kube-[^:]+):v[0-9]+\.[0-9]+\.[0-9]+#\1:${{VER}}#g" "$f"
+    sed -i -E "s#(image:[[:space:]]*registry\.k8s\.io/kube-[^:]+):v[0-9]+\.[0-9]+\.[0-9]+([-A-Za-z0-9.]+)?#\1:${{VER}}#g" "$f"
     echo "bumped $f"
   done
 fi
@@ -5441,6 +5441,12 @@ echo "download kubelet $VER ($A)"
 curl -fsSL -o /host/bin/.kubelet.new "https://dl.k8s.io/release/${{VER}}/bin/linux/${{A}}/kubelet"
 chmod 755 /host/bin/.kubelet.new
 mv /host/bin/.kubelet.new /host/bin/kubelet
+if [ -d /host/state ]; then
+  mkdir -p /host/state/runtime
+  cp -a /host/bin/kubelet /host/state/runtime/kubelet
+  printf '%s\n' "$VER" > /host/state/runtime/kubelet.version
+  echo "persisted kubelet on STATE"
+fi
 echo "installed kubelet"
 # hostPID: kill host kubelet; pertiskd will restart it. Do this last — CNI may
 # die and the agent pod can be torn down before exit 0 is observed.
@@ -5494,6 +5500,8 @@ spec:
       mountPath: /host/manifests
     - name: bin
       mountPath: /host/bin
+    - name: state
+      mountPath: /host/state
     command: ["/bin/sh", "-c"]
     args:
       - |
@@ -5506,6 +5514,10 @@ spec:
   - name: bin
     hostPath:
       path: /usr/local/bin
+      type: Directory
+  - name: state
+    hostPath:
+      path: /system/state
       type: Directory
 "#
     );

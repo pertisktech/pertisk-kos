@@ -94,6 +94,9 @@ impl NodeServices {
         }
 
         if services.containerd.is_some() && cfg.cluster.is_some() {
+            // Root `/usr/local/bin/kubelet` is the image pin (stable). Re-apply
+            // `kubernetesVersion` before start so an alpha/beta/RC upgrade survives reboot.
+            services.align_kubernetes_version(cfg);
             wait_for_guest_ipv4(std::time::Duration::from_secs(180));
             if !has_global_ipv4() {
                 warn!("deferring kubelet until guest IPv4 is up");
@@ -140,6 +143,7 @@ impl NodeServices {
         // plugin not ready). Start/retry even when the handle was never stored.
         if self.kubelet.is_none() && self.containerd.is_some() && cfg.cluster.is_some() {
             if has_global_ipv4() {
+                self.align_kubernetes_version(cfg);
                 match try_start_kubelet_with_sink(
                     &KubeletPaths::default(),
                     cfg,
@@ -186,36 +190,7 @@ impl NodeServices {
             }
         }
 
-        let mut kubelet_needs_restart = false;
-        if let Some(cluster) = cfg.cluster.as_ref() {
-            if let Some(ver) = cluster
-                .kubernetes_version
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                if matches!(cfg.machine.machine_type, MachineType::Controlplane) {
-                    match pertisk_bootstrap::static_pods::bump_control_plane_images(
-                        std::path::Path::new("/etc/kubernetes/manifests"),
-                        ver,
-                    ) {
-                        Ok(0) => {}
-                        Ok(n) => {
-                            info!(files = n, version = %ver, "bumped control-plane static pod images")
-                        }
-                        Err(err) => warn!(error = %err, "static pod image bump failed"),
-                    }
-                }
-                match ensure_kubelet_version(&KubeletPaths::default(), ver) {
-                    Ok(true) => {
-                        info!(version = %ver, "kubelet binary upgraded; will restart");
-                        kubelet_needs_restart = true;
-                    }
-                    Ok(false) => {}
-                    Err(err) => warn!(error = %err, "kubelet binary upgrade failed"),
-                }
-            }
-        }
+        let kubelet_needs_restart = self.align_kubernetes_version(cfg);
 
         if self.kubelet.is_none() && self.containerd.is_some() && cfg.cluster.is_some() {
             match start_kubelet_with_sink(&KubeletPaths::default(), cfg, Some(logs.sink("kubelet")))
@@ -230,6 +205,43 @@ impl NodeServices {
             info!("config reload: still no cluster block; kubelet not started");
         } else if kubelet_needs_restart {
             self.restart_kubelet(cfg, logs);
+        }
+    }
+
+    /// Match static-pod images and the kubelet binary to `cluster.kubernetesVersion`.
+    /// Returns true when the binary was replaced and kubelet should restart.
+    fn align_kubernetes_version(&mut self, cfg: &MachineConfig) -> bool {
+        let Some(ver) = cfg
+            .cluster
+            .as_ref()
+            .and_then(|c| c.kubernetes_version.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return false;
+        };
+        if matches!(cfg.machine.machine_type, MachineType::Controlplane) {
+            match pertisk_bootstrap::static_pods::bump_control_plane_images(
+                std::path::Path::new("/etc/kubernetes/manifests"),
+                ver,
+            ) {
+                Ok(0) => {}
+                Ok(n) => {
+                    info!(files = n, version = %ver, "bumped control-plane static pod images")
+                }
+                Err(err) => warn!(error = %err, "static pod image bump failed"),
+            }
+        }
+        match ensure_kubelet_version(&KubeletPaths::default(), ver) {
+            Ok(true) => {
+                info!(version = %ver, "kubelet binary matches requested version after replace");
+                true
+            }
+            Ok(false) => false,
+            Err(err) => {
+                warn!(error = %err, "kubelet binary upgrade failed");
+                false
+            }
         }
     }
 
