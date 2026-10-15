@@ -21,7 +21,7 @@ const STATE_RUNTIME: &str = "/system/state/runtime";
 pub fn ensure_kubelet_version(paths: &KubeletPaths, want: &str) -> Result<bool> {
     let want = normalize_k8s_version(want);
     if let Some(cur) = read_kubelet_version(&paths.binary) {
-        if cur == want {
+        if versions_match(&cur, &want) {
             persist_kubelet(&paths.binary, &want);
             return Ok(false);
         }
@@ -58,7 +58,7 @@ pub fn ensure_kubelet_version(paths: &KubeletPaths, want: &str) -> Result<bool> 
 
     // Sanity-check the downloaded binary before swapping.
     if let Some(got) = read_kubelet_version(&tmp) {
-        if got != want {
+        if !versions_match(&got, &want) {
             let _ = fs::remove_file(&tmp);
             bail!("downloaded kubelet reports {got}, expected {want}");
         }
@@ -88,10 +88,10 @@ fn restore_persisted_kubelet(paths: &KubeletPaths, want: &str) -> Result<bool> {
         return Ok(false);
     }
     let stored = fs::read_to_string(&ver_path).unwrap_or_default();
-    if stored.trim() != want {
+    if !versions_match(stored.trim(), want) {
         return Ok(false);
     }
-    if read_kubelet_version(&bin).as_deref() != Some(want) {
+    if read_kubelet_version(&bin).as_deref().is_none_or(|got| !versions_match(got, want)) {
         warn!(path = %bin.display(), "STATE kubelet does not match recorded version");
         return Ok(false);
     }
@@ -144,6 +144,15 @@ pub fn read_kubelet_version(bin: &Path) -> Option<String> {
     s.split_whitespace()
         .find(|t| t.starts_with('v') && t.contains('.'))
         .map(|t| t.trim().to_string())
+}
+
+/// `v1.38.0-alpha.2` matches a kubelet that reports the same tag, with or
+/// without a leading `v` or a `+build` suffix.
+fn versions_match(got: &str, want: &str) -> bool {
+    let got = got.trim().trim_start_matches('v');
+    let want = want.trim().trim_start_matches('v');
+    let got = got.split('+').next().unwrap_or(got);
+    got == want
 }
 
 fn normalize_k8s_version(v: &str) -> String {

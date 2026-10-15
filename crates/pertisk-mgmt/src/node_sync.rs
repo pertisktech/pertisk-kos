@@ -675,10 +675,10 @@ pub async fn heal_absent_kubelets(state: &AppState, cluster_id: &str) -> anyhow:
         let Ok(yaml) = std::fs::read_to_string(&cfg_path) else {
             continue;
         };
-        let mut yaml = patch_yaml_hostname(&yaml, &name);
-        if let Some(ver) = snap.k8s_version.as_deref() {
-            yaml = patch_yaml_kubernetes_version(&yaml, ver);
-        }
+        // Do not copy the live kubelet version into the config. After reboot the
+        // image pin (stable) is what the node reports until pertiskd restores
+        // kubernetesVersion; writing that back would drop an alpha/beta/RC upgrade.
+        let yaml = patch_yaml_hostname(&yaml, &name);
         let tmp =
             state
                 .cfg()

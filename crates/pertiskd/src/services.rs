@@ -49,6 +49,8 @@ pub struct NodeServices {
     pub kubelet: Option<KubeletHandle>,
     pub guest_agent: Option<GuestAgentHandle>,
     kubelet_retry_warn_at: Option<std::time::Instant>,
+    /// True once the running binary matches `cluster.kubernetesVersion`.
+    kubelet_version_ok: bool,
 }
 
 impl NodeServices {
@@ -58,6 +60,7 @@ impl NodeServices {
             kubelet: None,
             guest_agent,
             kubelet_retry_warn_at: None,
+            kubelet_version_ok: false,
         }
     }
 
@@ -78,6 +81,7 @@ impl NodeServices {
             kubelet: None,
             guest_agent,
             kubelet_retry_warn_at: None,
+            kubelet_version_ok: false,
         };
 
         match start_containerd_with_sink(&RuntimePaths::default(), Some(logs.sink("containerd"))) {
@@ -94,10 +98,13 @@ impl NodeServices {
         }
 
         if services.containerd.is_some() && cfg.cluster.is_some() {
-            // Root `/usr/local/bin/kubelet` is the image pin (stable). Re-apply
-            // `kubernetesVersion` before start so an alpha/beta/RC upgrade survives reboot.
-            services.align_kubernetes_version(cfg);
+            // `/usr/local/bin` is the image pin and is wiped on reboot. Wait for
+            // an address first — downloading the requested version (alpha/beta/RC)
+            // before DHCP fails and leaves the stable image binary running.
             wait_for_guest_ipv4(std::time::Duration::from_secs(180));
+            if has_global_ipv4() {
+                let _ = services.align_kubernetes_version(cfg);
+            }
             if !has_global_ipv4() {
                 warn!("deferring kubelet until guest IPv4 is up");
             } else {
@@ -141,9 +148,17 @@ impl NodeServices {
         }
         // After reboot kubelet can lose the CRI race (containerd socket exists,
         // plugin not ready). Start/retry even when the handle was never stored.
+        if self.containerd.is_some() && cfg.cluster.is_some() && has_global_ipv4() && !self.kubelet_version_ok
+        {
+            if self.align_kubernetes_version(cfg) == Some(true) {
+                if self.kubelet.is_some() {
+                    info!("restarting kubelet after version restore");
+                    self.restart_kubelet(cfg, crate::log_ring());
+                }
+            }
+        }
         if self.kubelet.is_none() && self.containerd.is_some() && cfg.cluster.is_some() {
             if has_global_ipv4() {
-                self.align_kubernetes_version(cfg);
                 match try_start_kubelet_with_sink(
                     &KubeletPaths::default(),
                     cfg,
@@ -190,7 +205,8 @@ impl NodeServices {
             }
         }
 
-        let kubelet_needs_restart = self.align_kubernetes_version(cfg);
+        self.kubelet_version_ok = false;
+        let kubelet_needs_restart = self.align_kubernetes_version(cfg) == Some(true);
 
         if self.kubelet.is_none() && self.containerd.is_some() && cfg.cluster.is_some() {
             match start_kubelet_with_sink(&KubeletPaths::default(), cfg, Some(logs.sink("kubelet")))
@@ -209,8 +225,9 @@ impl NodeServices {
     }
 
     /// Match static-pod images and the kubelet binary to `cluster.kubernetesVersion`.
-    /// Returns true when the binary was replaced and kubelet should restart.
-    fn align_kubernetes_version(&mut self, cfg: &MachineConfig) -> bool {
+    /// `Some(true)` when the binary was replaced, `Some(false)` when it already
+    /// matched, `None` when the download/restore failed (caller should retry).
+    fn align_kubernetes_version(&mut self, cfg: &MachineConfig) -> Option<bool> {
         let Some(ver) = cfg
             .cluster
             .as_ref()
@@ -218,7 +235,8 @@ impl NodeServices {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         else {
-            return false;
+            self.kubelet_version_ok = true;
+            return Some(false);
         };
         if matches!(cfg.machine.machine_type, MachineType::Controlplane) {
             match pertisk_bootstrap::static_pods::bump_control_plane_images(
@@ -233,14 +251,17 @@ impl NodeServices {
             }
         }
         match ensure_kubelet_version(&KubeletPaths::default(), ver) {
-            Ok(true) => {
-                info!(version = %ver, "kubelet binary matches requested version after replace");
-                true
+            Ok(replaced) => {
+                self.kubelet_version_ok = true;
+                if replaced {
+                    info!(version = %ver, "kubelet binary matches requested version after replace");
+                }
+                Some(replaced)
             }
-            Ok(false) => false,
             Err(err) => {
-                warn!(error = %err, "kubelet binary upgrade failed");
-                false
+                self.kubelet_version_ok = false;
+                warn!(error = %err, version = %ver, "kubelet binary upgrade failed; will retry");
+                None
             }
         }
     }
