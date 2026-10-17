@@ -3,7 +3,7 @@ import { applyTheme } from '../utils/theme'
 import { Icon } from './Icons'
 
 export default function ThemeToggle({ className = '' }) {
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light')
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
 
   useEffect(() => {
     applyTheme(theme)

@@ -256,7 +256,7 @@ export default function Layout() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 onFocus={openCmd}
-                placeholder="Search… ⌘K"
+                placeholder="Search clusters, machines…"
                 aria-label="Search"
                 readOnly
               />
@@ -265,7 +265,7 @@ export default function Layout() {
           <div className="topbar-actions">
             <button
               type="button"
-              className="theme-toggle"
+              className="theme-toggle topbar-search-btn"
               title="Command palette (⌘K)"
               aria-label="Open command palette"
               onClick={openCmd}
@@ -313,6 +313,12 @@ export default function Layout() {
                 <div className="user-menu-dropdown" role="menu">
                   {user?.username && <div className="user-menu-meta">{user.username}</div>}
                   {user?.role && <div className="user-menu-meta">{user.role}</div>}
+                  <NavLink to="/settings" role="menuitem" onClick={() => setShowUserMenu(false)}>
+                    Settings
+                  </NavLink>
+                  <NavLink to="/audit" role="menuitem" onClick={() => setShowUserMenu(false)}>
+                    Audit log
+                  </NavLink>
                   <button type="button" role="menuitem" onClick={logout}>
                     <Icon name="logout" size={14} /> Logout
                   </button>
